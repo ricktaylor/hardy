@@ -392,11 +392,11 @@ pub mod id {
 }
 
 trait CaptureFieldIdErr<T> {
-    fn map_field_id_err(self, field: &'static str) -> Result<T, id::Error>;
+    fn map_field_id_err(self, field: &'static str) -> core::result::Result<T, id::Error>;
 }
 
-impl<T, E: Into<id::Error>> CaptureFieldIdErr<T> for Result<T, E> {
-    fn map_field_id_err(self, field: &'static str) -> Result<T, id::Error> {
+impl<T, E: Into<id::Error>> CaptureFieldIdErr<T> for core::result::Result<T, E> {
+    fn map_field_id_err(self, field: &'static str) -> core::result::Result<T, id::Error> {
         self.map_err(|e| id::Error::InvalidField {
             field,
             source: Box::new(e.into()),
@@ -427,7 +427,7 @@ impl Id {
     /// Deserializes a bundle ID from a compact, base64-encoded string representation.
     ///
     /// This is useful for using the bundle ID as a key in databases or other systems.
-    pub fn from_key(k: &str) -> Result<Self, id::Error> {
+    pub fn from_key(k: &str) -> core::result::Result<Self, id::Error> {
         hardy_cbor::decode::parse_array(
             &BASE64_URL_SAFE_NO_PAD
                 .decode(k)
@@ -664,8 +664,9 @@ impl hardy_cbor::encode::ToCbor for Flags {
 impl hardy_cbor::decode::FromCbor for Flags {
     type Error = Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::error::parse_canonical::<u64, Error>(data, Error::NotCanonical)?;
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
+        let (value, len) =
+            crate::canonical::parse_canonical::<u64, Error>(data, Error::NotCanonical)?;
         Ok((value.into(), true, len))
     }
 }

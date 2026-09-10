@@ -15,7 +15,7 @@ use bytes::{Bytes, BytesMut};
 use hardy_cbor::decode::{Error as CborError, Head, Marker, Untagged};
 use smallvec::SmallVec;
 
-use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock};
+use crate::{canonical::CaptureFieldErr, primary_block::PrimaryBlock};
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
@@ -36,7 +36,7 @@ struct BlockHeader {
 impl hardy_cbor::decode::FromCbor for BlockHeader {
     type Error = Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
         // Block array head — RFC 9171 §4.3.2: SHALL be a CBOR array with
         // 5 items (no CRC) or 6 items (with CRC); §4.1 carve-out permits
         // indefinite-length. The three legal head bytes are 0x85, 0x86, 0x9F.
@@ -322,7 +322,7 @@ impl PayloadTail {
     /// ([`Error::NotCanonical`]), or bytes after the outer break
     /// ([`Error::AdditionalData`]). On `Ok`, the whole run belonged to the
     /// bundle and should be persisted by the caller.
-    pub fn push(&mut self, mut bytes: &[u8]) -> Result<bool, Error> {
+    pub fn push(&mut self, mut bytes: &[u8]) -> Result<bool> {
         let start = bytes.len();
         while let Some(&b) = bytes.first() {
             match self.phase {
@@ -396,7 +396,7 @@ impl PayloadTail {
     /// Assert the bundle completed. Errors with `NeedMoreData` (the still-
     /// outstanding count) if the stream ended before the outer break — i.e. the
     /// bundle was truncated.
-    pub fn finish(self) -> Result<(), Error> {
+    pub fn finish(self) -> Result<()> {
         if matches!(self.phase, TailPhase::Done) {
             Ok(())
         } else {
@@ -409,7 +409,7 @@ impl PayloadTail {
     /// Transition out of the `Body` phase, running the CRC verification eagerly
     /// when the next thing expected is the outer break (no CRC / no block break
     /// between here and it).
-    fn enter_after_body(&mut self) -> Result<(), Error> {
+    fn enter_after_body(&mut self) -> Result<()> {
         self.phase = after_body(self.crc_type, self.is_indefinite);
         if matches!(self.phase, TailPhase::OuterBreak) {
             self.verify_crc()?;
@@ -419,7 +419,7 @@ impl PayloadTail {
 
     /// Compare the accumulated digest against the captured wire value. A no-op
     /// when the block declared no CRC. Consumes the digest so it runs once.
-    fn verify_crc(&mut self) -> Result<(), Error> {
+    fn verify_crc(&mut self) -> Result<()> {
         if let Some(digest) = self.digest.take()
             && !digest.verify(&self.crc_value[..crc_value_len(self.crc_type)])
         {
@@ -497,7 +497,7 @@ impl BundleParser {
     /// # Panics
     ///
     /// Panics if called again after a terminal `Ready`/`Partial` result.
-    pub fn push(&mut self, data_in: Bytes) -> Result<ParserProgress, Error> {
+    pub fn push(&mut self, data_in: Bytes) -> Result<ParserProgress> {
         // If we have a cached buffer, extend with data_in and take it out for parsing.
         // Otherwise leave cached = None and parse against data_in directly.
         let cached = self.data.take().map(|mut buf| {
@@ -599,7 +599,7 @@ impl BundleParser {
     ///
     /// Panics if called before [`push`](Self::push) has returned a terminal
     /// [`ParserProgress::Ready`] or [`ParserProgress::Partial`] result.
-    pub fn finish(mut self, data: Bytes) -> Result<Parsed, Error> {
+    pub fn finish(mut self, data: Bytes) -> Result<Parsed> {
         assert!(
             matches!(self.state, State::Done | State::Partial),
             "finish called before parser reached a terminal state"
@@ -638,7 +638,7 @@ impl BundleParser {
     fn validate_bpsec_structure(
         &mut self,
         data: &[u8],
-    ) -> Result<HashMap<u64, bpsec::bib::OperationSet>, Error> {
+    ) -> Result<HashMap<u64, bpsec::bib::OperationSet>> {
         let pending_bibs = core::mem::take(&mut self.pending_bibs);
         let bundle = self
             .bundle
@@ -746,7 +746,7 @@ impl BundleParser {
         Ok(bibs)
     }
 
-    fn parse_start(&mut self, data: &[u8]) -> Result<usize, Error> {
+    fn parse_start(&mut self, data: &[u8]) -> Result<usize> {
         // Bundle outer array head. RFC 9171 §4.1: a bundle SHALL be
         // represented as a CBOR *indefinite-length* array, so the only
         // conformant first byte is 0x9F. A definite-length outer array is
@@ -798,7 +798,7 @@ impl BundleParser {
         self.parse_primary(data, offset)
     }
 
-    fn parse_primary(&mut self, data: &[u8], mut offset: usize) -> Result<usize, Error> {
+    fn parse_primary(&mut self, data: &[u8], mut offset: usize) -> Result<usize> {
         let block_start = offset;
         let primary: PrimaryBlock = parse_canonical(data, &mut offset, "primary block")?;
 
@@ -849,7 +849,7 @@ impl BundleParser {
         self.parse_blocks(data, offset)
     }
 
-    fn parse_blocks(&mut self, data: &[u8], mut offset: usize) -> Result<usize, Error> {
+    fn parse_blocks(&mut self, data: &[u8], mut offset: usize) -> Result<usize> {
         let bundle = self
             .bundle
             .as_mut()
@@ -1176,7 +1176,7 @@ fn try_consume_block_after_body(
     mut offset: usize,
     crc_type: crc::CrcType,
     is_indefinite_array: bool,
-) -> Result<(usize, Option<usize>), Error> {
+) -> Result<(usize, Option<usize>)> {
     let crc_value_start = match crc_type {
         crc::CrcType::None => None,
         crc::CrcType::CRC16_X25 => Some(consume_crc(data, &mut offset, 0x42, 2)?),
@@ -1201,12 +1201,7 @@ fn try_consume_block_after_body(
 /// `*offset` past the CRC. `NeedMoreData` is reported for the exact
 /// shortfall so the caller can wait one chunk; any other shape is a
 /// canonical-encoding violation.
-fn consume_crc(
-    data: &[u8],
-    offset: &mut usize,
-    head: u8,
-    value_len: usize,
-) -> Result<usize, Error> {
+fn consume_crc(data: &[u8], offset: &mut usize, head: u8, value_len: usize) -> Result<usize> {
     let needed = 1 + value_len;
     if data.len() < *offset + needed {
         return Err(Error::InvalidCBOR(CborError::NeedMoreData(
@@ -1233,7 +1228,7 @@ fn consume_crc(
 /// what translates the cbor-level rejection into the domain error). The
 /// one grammar position where a tag is legal (`#6.24` on block data) has
 /// its own hand-rolled guard in `BlockHeader::from_cbor` instead.
-fn parse_canonical<T>(data: &[u8], offset: &mut usize, field: &'static str) -> Result<T, Error>
+fn parse_canonical<T>(data: &[u8], offset: &mut usize, field: &'static str) -> Result<T>
 where
     T: hardy_cbor::decode::FromCbor,
     <T as hardy_cbor::decode::FromCbor>::Error: From<CborError>,
@@ -1253,26 +1248,6 @@ where
         .checked_add(l)
         .ok_or(Error::InvalidCBOR(CborError::TooBig))?;
     Ok(v)
-}
-
-/// Array-element decode that accepts non-canonical encodings —
-/// for CBOR array fields (EIDs, timestamps) where RFC 9171 §4.1 permits
-/// indefinite-length encoding. Returns the value and its canonical flag;
-/// the caller accumulates the flag to decide whether re-encoding is
-/// needed. Still decodes through [`Untagged`] — §4.1 has no carveout for
-/// tags. The strict counterpart (shortest-form required) is
-/// [`crate::error::require_canonical`].
-pub(super) fn parse_item<T>(
-    block: &mut hardy_cbor::decode::Array<'_>,
-    field: &'static str,
-) -> Result<(T, bool), Error>
-where
-    T: hardy_cbor::decode::FromCbor,
-    <T as hardy_cbor::decode::FromCbor>::Error: From<CborError>,
-    Error: From<<T as hardy_cbor::decode::FromCbor>::Error>,
-{
-    let (Untagged(v), s): (Untagged<T>, bool) = block.parse().map_field_err::<Error>(field)?;
-    Ok((v, s))
 }
 
 /// Cold path: the block-array first byte wasn't `0x85`, `0x86`, or
@@ -1308,7 +1283,7 @@ fn slow_block_array_error(data: &[u8]) -> Error {
 /// directly via [`BundleParser::push`] until it yields
 /// [`ParserProgress::Ready`] (complete) or [`ParserProgress::Partial`]
 /// (oversized payload — the caller drains the body tail).
-pub fn parse(data: Bytes) -> Result<Parsed, Error> {
+pub fn parse(data: Bytes) -> Result<Parsed> {
     let mut parser = BundleParser::default();
     let data = match parser.push(data)? {
         ParserProgress::NeedMore(more) => {

@@ -22,7 +22,7 @@ const URI_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
 mod error;
 mod parse;
 
-pub use error::Error;
+pub use self::error::{Error, Result};
 
 /// A fully qualified node number in the `ipn` EID scheme (RFC 9171 Section 4.2.5.1.2).
 ///
@@ -104,7 +104,7 @@ pub enum NodeId {
 impl TryFrom<Eid> for NodeId {
     type Error = Error;
 
-    fn try_from(value: Eid) -> Result<Self, Self::Error> {
+    fn try_from(value: Eid) -> core::result::Result<Self, Self::Error> {
         match value {
             Eid::LocalNode(0) => Ok(NodeId::LocalNode),
             Eid::LegacyIpn {
@@ -168,7 +168,7 @@ pub struct UnknownSsp(Box<[u8]>);
 impl UnknownSsp {
     /// Fails with [`Error::InvalidSsp`] unless `data` is exactly one
     /// well-formed CBOR data item.
-    pub fn new(data: Box<[u8]>) -> Result<Self, Error> {
+    pub fn new(data: Box<[u8]>) -> Result<Self> {
         let (_, len) = skip_value(&data, 16).map_err(Error::InvalidCBOR)?;
         if len != data.len() {
             // Trailing bytes after the first data item.
@@ -261,7 +261,7 @@ impl Eid {
     }
 
     /// Converts this EID into a [`NodeId`], discarding the service component.
-    pub fn try_to_node_id(self) -> Result<NodeId, Error> {
+    pub fn try_to_node_id(self) -> Result<NodeId> {
         match self {
             Eid::LocalNode(_) => Ok(NodeId::LocalNode),
             Eid::LegacyIpn { fqnn, .. } | Eid::Ipn { fqnn, .. } => Ok(NodeId::Ipn(fqnn)),
@@ -271,7 +271,7 @@ impl Eid {
     }
 
     /// Returns the [`NodeId`] for this EID without consuming it.
-    pub fn to_node_id(&self) -> Result<NodeId, Error> {
+    pub fn to_node_id(&self) -> Result<NodeId> {
         match self {
             Eid::LocalNode(_) => Ok(NodeId::LocalNode),
             Eid::LegacyIpn { fqnn, .. } | Eid::Ipn { fqnn, .. } => Ok(NodeId::Ipn(*fqnn)),
@@ -294,7 +294,7 @@ impl From<NodeId> for Eid {
 impl TryFrom<(NodeId, Service)> for Eid {
     type Error = Error;
 
-    fn try_from(value: (NodeId, Service)) -> Result<Self, Self::Error> {
+    fn try_from(value: (NodeId, Service)) -> core::result::Result<Self, Self::Error> {
         match value {
             (NodeId::LocalNode, Service::Ipn(service_number)) => Ok(Eid::LocalNode(service_number)),
             (NodeId::Ipn(fqnn), Service::Ipn(service_number)) => Ok(Eid::Ipn {

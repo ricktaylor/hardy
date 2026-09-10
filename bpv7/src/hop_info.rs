@@ -12,7 +12,7 @@ use hardy_cbor::{
     encode::{Encoder, ToCbor},
 };
 
-use crate::{Error, error::require_canonical};
+use crate::{Error, canonical::require_canonical};
 /// Contains hop limit and hop count information for a bundle.
 ///
 /// The hop limit is the maximum number of hops a bundle is allowed to traverse,

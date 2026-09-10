@@ -113,7 +113,7 @@ impl FromCbor for Flags {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         Ok((value.into(), true, len))
     }
 }
@@ -196,7 +196,7 @@ impl FromCbor for Type {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         Ok((value.into(), true, len))
     }
 }

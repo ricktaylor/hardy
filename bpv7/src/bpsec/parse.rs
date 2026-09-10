@@ -6,7 +6,7 @@ use core::ops::Range;
 use hardy_cbor::decode::Untagged;
 use smallvec::SmallVec;
 
-use crate::{HashMap, eid, error::require_canonical};
+use crate::{HashMap, canonical::require_canonical, eid};
 
 /// Strict-canonical helper per RFC 9172 §4 — no §4.1 carveout for ASB
 /// content, so every encoding violation (non-shortest, indefinite-
@@ -14,7 +14,7 @@ use crate::{HashMap, eid, error::require_canonical};
 fn parse_ranges<const D: usize>(
     seq: &mut hardy_cbor::decode::Series<D>,
     mut offset: usize,
-) -> Result<Option<HashMap<u64, Range<usize>>>, Error> {
+) -> Result<Option<HashMap<u64, Range<usize>>>> {
     if seq.at_end()? {
         return Ok(None);
     }
@@ -58,7 +58,7 @@ pub struct UnknownOperation {
 /// range is in-bounds. The check guards against a caller passing a
 /// partial slice (early-block-processing case) or a mismatched buffer —
 /// it converts a release-mode panic into a clean [`Error::SourceOutOfRange`].
-pub(super) fn bounded_slice(data: &[u8], range: Range<usize>) -> Result<&[u8], Error> {
+pub(super) fn bounded_slice(data: &[u8], range: Range<usize>) -> Result<&[u8]> {
     data.get(range.clone()).ok_or(Error::SourceOutOfRange {
         start: range.start,
         end: range.end,
@@ -67,10 +67,7 @@ pub(super) fn bounded_slice(data: &[u8], range: Range<usize>) -> Result<&[u8], E
 }
 
 // Copies each range of `data` into an owned buffer, keyed as on the wire.
-fn slice_map(
-    ranges: HashMap<u64, Range<usize>>,
-    data: &[u8],
-) -> Result<HashMap<u64, Box<[u8]>>, Error> {
+fn slice_map(ranges: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<HashMap<u64, Box<[u8]>>> {
     let mut map = HashMap::with_capacity(ranges.len());
     for (id, range) in ranges {
         map.insert(id, bounded_slice(data, range)?.into());
@@ -82,7 +79,7 @@ impl UnknownOperation {
     pub fn parse(
         asb: AbstractSyntaxBlock,
         source_data: &[u8],
-    ) -> Result<(eid::Eid, HashMap<u64, Self>), Error> {
+    ) -> Result<(eid::Eid, HashMap<u64, Self>)> {
         asb.into_operations(
             source_data,
             "security context parameters",
@@ -145,10 +142,10 @@ impl AbstractSyntaxBlock {
         data: &[u8],
         params_field: &'static str,
         results_field: &'static str,
-        parse_params: impl FnOnce(HashMap<u64, Range<usize>>, &[u8]) -> Result<P, Error>,
-        parse_results: impl Fn(HashMap<u64, Range<usize>>, &[u8]) -> Result<R, Error>,
+        parse_params: impl FnOnce(HashMap<u64, Range<usize>>, &[u8]) -> Result<P>,
+        parse_results: impl Fn(HashMap<u64, Range<usize>>, &[u8]) -> Result<R>,
         make: impl Fn(Arc<P>, R) -> Op,
-    ) -> Result<(eid::Eid, HashMap<u64, Op>), Error> {
+    ) -> Result<(eid::Eid, HashMap<u64, Op>)> {
         let parameters =
             Arc::new(parse_params(self.parameters, data).map_field_err::<Error>(params_field)?);
         let mut operations = HashMap::with_capacity(self.results.len());
@@ -169,7 +166,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
     /// apply here). Any non-shortest scalar, unexpected tag, or
     /// indefinite-length container is rejected with `NotCanonical`. The
     /// returned `shortest` flag is therefore always `true` on `Ok`.
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_sequence(data, |seq| {
             // Targets
             let targets = seq
@@ -266,7 +263,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
 /// Per RFC 9172 §4 (deterministic CBOR, no §4.1 carveout), tagged or
 /// indefinite-length byte strings are rejected with `NotCanonical`.
 #[cfg(feature = "rfc9173")]
-pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> {
+pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>> {
     let data = bounded_slice(data, range)?;
     hardy_cbor::decode::parse_value(data, |v, s, tags| match v {
         hardy_cbor::decode::Value::Bytes(r) if s && tags.is_empty() => Ok(data[r].into()),

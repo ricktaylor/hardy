@@ -56,7 +56,7 @@ impl From<hardy_cbor::decode::Error> for Error {
     }
 }
 
-impl crate::error::HasInvalidField for Error {
+impl crate::canonical::HasInvalidField for Error {
     fn invalid_field(field: &'static str, source: Self) -> Self {
         Error::InvalidField {
             field,
@@ -64,3 +64,5 @@ impl crate::error::HasInvalidField for Error {
         }
     }
 }
+
+pub type Result<T> = core::result::Result<T, Error>;

@@ -18,7 +18,7 @@ use alloc::{boxed::Box, vec::Vec};
 use hardy_cbor::decode::FromCbor;
 use smallvec::SmallVec;
 
-use crate::{Error, HashMap, block, bpsec, error::CaptureFieldErr};
+use crate::{Error, HashMap, block, bpsec, canonical::CaptureFieldErr};
 /// View into a partially-processed bundle for BPSec operations.
 ///
 /// Returns the current best payload for each block: a decrypted body if a

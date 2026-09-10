@@ -19,7 +19,7 @@ pub mod key;
 pub mod edit;
 
 mod error;
-pub use error::Error;
+pub use self::error::{Error, Result};
 
 mod parse;
 
@@ -38,7 +38,7 @@ pub mod encryptor;
 #[cfg(feature = "bpsec")]
 pub mod signer;
 
-use crate::{HashMap, block, bundle, error::CaptureFieldErr};
+use crate::{HashMap, block, bundle, canonical::CaptureFieldErr};
 
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.
@@ -78,8 +78,8 @@ impl ToCbor for Context {
 impl FromCbor for Context {
     type Error = Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
+        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         Ok((
             match value {
                 #[cfg(feature = "rfc9173")]
@@ -154,7 +154,7 @@ pub fn block_data<'a, K>(
     source_data: &'a [u8],
     bcb_ops: &HashMap<u64, bcb::OperationSet>,
     keys: &K,
-) -> Result<block::Payload<'a>, crate::Error>
+) -> crate::Result<block::Payload<'a>>
 where
     K: key::KeySource + ?Sized,
 {

@@ -7,7 +7,7 @@ given source node can be uniquely identified, even if created at the same time.
 use portable_atomic::{AtomicU64, Ordering};
 
 use super::*;
-use crate::error::{CaptureFieldErr, require_canonical};
+use crate::canonical::{CaptureFieldErr, require_canonical};
 
 static GLOBAL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -197,7 +197,7 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
     /// from its first byte, without reading the run). Indefinite-length
     /// array encoding is accepted (§4.1 carveout) and reflected in the
     /// returned `shortest` flag as `false`.
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
             if !shortest || !tags.is_empty() {
                 return Err(Error::NotCanonical);
@@ -227,7 +227,7 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
 impl TryFrom<time::OffsetDateTime> for CreationTimestamp {
     type Error = <dtn_time::DtnTime as TryFrom<time::OffsetDateTime>>::Error;
 
-    fn try_from(value: time::OffsetDateTime) -> Result<Self, Self::Error> {
+    fn try_from(value: time::OffsetDateTime) -> core::result::Result<Self, Self::Error> {
         Ok(Self {
             creation_time: Some(value.try_into()?),
             sequence_number: (value.nanosecond() % 1_000_000) as u64,

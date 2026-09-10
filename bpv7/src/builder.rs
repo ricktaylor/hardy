@@ -17,6 +17,8 @@ pub enum Error {
     InternalError(#[from] error::Error),
 }
 
+pub type Result<T> = core::result::Result<T, Error>;
+
 /// A builder for creating a new bundle.
 ///
 /// [`Builder::build`] returns the parsed [`bundle::Bundle`]
@@ -96,7 +98,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Adds an extension block to this [`Builder`].
-    pub fn add_extension_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
+    pub fn add_extension_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>> {
         if let block::Type::Primary = block_type {
             Err(Error::PrimaryBlock)
         } else {
@@ -133,7 +135,7 @@ impl<'a> Builder<'a> {
     pub fn build(
         self,
         timestamp: creation_timestamp::CreationTimestamp,
-    ) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
+    ) -> Result<(bundle::Bundle, Box<[u8]>)> {
         let primary = primary_block::PrimaryBlock {
             flags: self.bundle_flags,
             id: bundle::Id {
@@ -250,7 +252,7 @@ impl<'a> BlockTemplate<'a> {
     }
 
     /// Builds the [`block::Block`] to standalone bytes.
-    pub fn build_to_vec(mut self, block_number: u64) -> Result<(block::Block, Vec<u8>), Error> {
+    pub fn build_to_vec(mut self, block_number: u64) -> Result<(block::Block, Vec<u8>)> {
         let data = self.data.take().ok_or(Error::NoBlockData)?;
         let bytes = crc::append_crc_value(
             self.block.crc_type,
@@ -278,7 +280,7 @@ impl<'a> BlockTemplate<'a> {
     }
 
     /// Builds the [`block::Block`] with the given block number and array.
-    pub fn build(mut self, block_number: u64, array: &mut Array) -> Result<block::Block, Error> {
+    pub fn build(mut self, block_number: u64, array: &mut Array) -> Result<block::Block> {
         self.block.emit(
             block_number,
             self.data

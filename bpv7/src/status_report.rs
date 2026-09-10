@@ -14,8 +14,9 @@ use hardy_cbor::{
 use thiserror::Error;
 
 use crate::{
-    bundle, dtn_time,
-    error::{CaptureFieldErr, HasInvalidField, require_canonical},
+    bundle,
+    canonical::{CaptureFieldErr, HasInvalidField, require_canonical},
+    dtn_time,
 };
 /// Errors that can occur when working with status reports.
 #[derive(Error, Debug)]
@@ -55,6 +56,8 @@ pub enum Error {
     InvalidCBOR(hardy_cbor::decode::Error),
 }
 
+pub type Result<T> = core::result::Result<T, Error>;
+
 // Manual rather than `#[from]`: an `UnexpectedTag` from an `Untagged`
 // decode is an RFC 9171 §4.1 violation in this domain, so it surfaces as
 // `NotCanonical` (see `crate::error` for the rationale).
@@ -73,7 +76,7 @@ impl From<crate::Error> for Error {
     }
 }
 
-impl crate::error::HasInvalidField for Error {
+impl crate::canonical::HasInvalidField for Error {
     fn invalid_field(field: &'static str, source: Self) -> Self {
         Error::InvalidField {
             field,
@@ -154,7 +157,7 @@ impl From<ReasonCode> for u64 {
 impl TryFrom<u64> for ReasonCode {
     type Error = Error;
 
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
+    fn try_from(value: u64) -> core::result::Result<Self, Self::Error> {
         match value {
             0 => Ok(ReasonCode::NoAdditionalInformation),
             1 => Ok(ReasonCode::LifetimeExpired),
@@ -190,8 +193,8 @@ impl ToCbor for ReasonCode {
 impl FromCbor for ReasonCode {
     type Error = Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (v, len) = crate::error::parse_canonical::<u64, Error>(data, Error::NotCanonical)?;
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
+        let (v, len) = crate::canonical::parse_canonical::<u64, Error>(data, Error::NotCanonical)?;
         Ok((v.try_into()?, true, len))
     }
 }
@@ -217,7 +220,7 @@ fn emit_status_assertion(a: &mut Array, sa: &Option<StatusAssertion>) {
 fn parse_status_assertion(
     a: &mut hardy_cbor::decode::Array,
     canonical: &mut bool,
-) -> Result<Option<StatusAssertion>, Error> {
+) -> Result<Option<StatusAssertion>> {
     a.parse_array(|a, s, tags| {
         // RFC 9171 §4.1 carveout: indefinite-length array OK; non-shortest
         // array head and unexpected tags are RFC violations.
@@ -312,7 +315,7 @@ impl FromCbor for BundleStatusReport {
     /// and unexpected tags are RFC violations and rejected;
     /// indefinite-length arrays are RFC-permitted and demote the
     /// returned `shortest` flag without erroring.
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
         parse_array(data, |a, s, tags| {
             if !s || !tags.is_empty() {
                 return Err(Error::NotCanonical);
@@ -400,7 +403,7 @@ impl FromCbor for AdministrativeRecord {
     /// and unexpected tags are RFC violations and rejected;
     /// indefinite-length arrays are RFC-permitted and demote the
     /// returned `shortest` flag without erroring.
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
         parse_array(data, |a, s, tags| {
             // Canonical: reject non-shortest encodings and any tags.
             if !s || !tags.is_empty() {

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `Result<T>` aliases over the owning `Error` at the crate root and in `eid`, `bpsec`, `crc`, `builder`, `editor`, and `status_report`, per the house error convention. Signatures across the crate now spell `Result<T>`; the editor/signer/encryptor recovery-tuple returns (`Result<T, (Self, Error)>`) deliberately stay explicit, because the `(Self, Error)` payload is the point of those signatures.
+
 ### Removed
 - **BREAKING:** the `lifetime` module and its `Lifetime` newtype. It had no consumers: `PrimaryBlock::lifetime` is a `core::time::Duration` and no other code referenced the type.
 - **BREAKING:** the `eid::IpnServiceNumber` and `eid::DtnServiceName` type aliases. They were transparent spellings of `u32` and `Box<str>`; the underlying types now appear directly in the `Service` and `Eid` signatures (same types, so only code naming the aliases breaks).

@@ -12,7 +12,7 @@ use winnow::{
     token::take_while,
 };
 
-use crate::error::{CaptureFieldErr, HasInvalidField};
+use crate::canonical::{CaptureFieldErr, HasInvalidField};
 
 fn parse_ipn_parts(input: &mut &str) -> ModalResult<Eid> {
     (
@@ -118,7 +118,7 @@ pub fn parse_eid(input: &mut &str) -> ModalResult<Eid> {
 impl core::str::FromStr for NodeId {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> core::result::Result<Self, Self::Err> {
         Eid::from_str(s)?.try_into()
     }
 }
@@ -126,7 +126,7 @@ impl core::str::FromStr for NodeId {
 impl core::str::FromStr for Eid {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> core::result::Result<Self, Self::Err> {
         parse_eid
             .parse(s)
             .map_err(|e| Error::ParseError(e.to_string()))
@@ -136,7 +136,7 @@ impl core::str::FromStr for Eid {
 impl TryFrom<&str> for NodeId {
     type Error = Error;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &str) -> core::result::Result<Self, Self::Error> {
         value.parse()
     }
 }
@@ -144,7 +144,7 @@ impl TryFrom<&str> for NodeId {
 impl TryFrom<&str> for Eid {
     type Error = Error;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &str) -> core::result::Result<Self, Self::Error> {
         value.parse()
     }
 }
@@ -152,7 +152,7 @@ impl TryFrom<&str> for Eid {
 impl TryFrom<Cow<'_, str>> for NodeId {
     type Error = Error;
 
-    fn try_from(value: Cow<'_, str>) -> Result<Self, Self::Error> {
+    fn try_from(value: Cow<'_, str>) -> core::result::Result<Self, Self::Error> {
         value.parse()
     }
 }
@@ -160,7 +160,7 @@ impl TryFrom<Cow<'_, str>> for NodeId {
 impl TryFrom<Cow<'_, str>> for Eid {
     type Error = Error;
 
-    fn try_from(value: Cow<'_, str>) -> Result<Self, Self::Error> {
+    fn try_from(value: Cow<'_, str>) -> core::result::Result<Self, Self::Error> {
         value.parse()
     }
 }
@@ -175,10 +175,7 @@ impl TryFrom<Cow<'_, str>> for Eid {
 /// that with the per-encoding canonical signal (3-element form with
 /// `allocator_id=0` is RFC-valid but not the recommended form per
 /// RFC 9758 §6.1.2, so returns `false` to trigger a rewrite).
-fn ipn_from_cbor(
-    value: &mut hardy_cbor::decode::Array,
-    canonical: bool,
-) -> Result<(Eid, bool), Error> {
+fn ipn_from_cbor(value: &mut hardy_cbor::decode::Array, canonical: bool) -> Result<(Eid, bool)> {
     let (Untagged(a), s1): (Untagged<u64>, bool) = value.parse()?;
     if !s1 {
         return Err(Error::NotCanonical);
@@ -274,7 +271,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
     ///     accept and queue a rewrite to uint 0)
     ///   * 3-element ipn EID with `allocator_id == 0` (RFC 9758
     ///     §6.1.2 recommends the 2-element form)
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |a, s, tags| {
             if !s || !tags.is_empty() {
                 return Err(Error::NotCanonical);

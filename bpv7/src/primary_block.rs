@@ -8,7 +8,7 @@ decode and emit. Reachable from [`Bundle::primary`](crate::bundle::Bundle).
 */
 
 use super::*;
-use crate::error::{CaptureFieldErr, require_canonical};
+use crate::canonical::{CaptureFieldErr, require_canonical};
 use hardy_cbor::decode::Error as CborError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,7 +35,7 @@ impl PrimaryBlock {
     /// `PrimaryBlock` — callers that have a `Bundle` pass
     /// `bundle.primary.emit()`; builder constructs a `PrimaryBlock`
     /// from its fields.
-    pub fn emit(&self) -> Result<Vec<u8>, Error> {
+    pub fn emit(&self) -> Result<Vec<u8>> {
         crc::append_crc_value(
             self.crc_type,
             hardy_cbor::encode::emit_array(
@@ -80,7 +80,7 @@ impl PrimaryBlock {
 impl hardy_cbor::decode::FromCbor for PrimaryBlock {
     type Error = Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |block, s, tags| {
             // RFC 9171 §4.1: indefinite-length items are not prohibited for
             // any field. Tags are still rejected (no RFC carve-out for those).
@@ -111,11 +111,14 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             // EIDs and timestamp are CBOR arrays; RFC 9171 §4.1 permits
             // indefinite-length encoding. Use parse_item and accumulate the flag.
             let (destination, dest_s) =
-                parse::parse_item::<eid::Eid>(block, "destination endpoint id")?;
-            let (source, src_s) = parse::parse_item::<eid::Eid>(block, "source endpoint id")?;
-            let (report_to, rpt_s) = parse::parse_item::<eid::Eid>(block, "report-to endpoint id")?;
-            let (timestamp, ts_s) =
-                parse::parse_item::<creation_timestamp::CreationTimestamp>(block, "timestamp")?;
+                crate::canonical::parse_item::<eid::Eid>(block, "destination endpoint id")?;
+            let (source, src_s) =
+                crate::canonical::parse_item::<eid::Eid>(block, "source endpoint id")?;
+            let (report_to, rpt_s) =
+                crate::canonical::parse_item::<eid::Eid>(block, "report-to endpoint id")?;
+            let (timestamp, ts_s) = crate::canonical::parse_item::<
+                creation_timestamp::CreationTimestamp,
+            >(block, "timestamp")?;
             canonical &= dest_s & src_s & rpt_s & ts_s;
 
             let lifetime = core::time::Duration::from_millis(require_canonical(
@@ -142,7 +145,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
 
             // Parse the CRC value (or its absence) out of the block array,
             // then drive a Digest over the block bytes to verify it.
-            (|| -> Result<(), Error> {
+            (|| -> Result<()> {
                 let crc_start = block.offset();
                 let crc_value = block.try_parse_value(|value, s, tags| {
                     if !s || !tags.is_empty() {

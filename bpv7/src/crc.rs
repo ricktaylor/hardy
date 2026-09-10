@@ -39,6 +39,8 @@ pub enum Error {
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
 }
 
+pub type Result<T> = core::result::Result<T, Error>;
+
 /// Represents the type of CRC used in a bundle block.
 #[allow(non_camel_case_types)]
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
@@ -88,9 +90,9 @@ impl ToCbor for CrcType {
 impl FromCbor for CrcType {
     type Error = crate::Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
         let (value, len) =
-            crate::error::parse_canonical::<u64, _>(data, crate::Error::NotCanonical)?;
+            crate::canonical::parse_canonical::<u64, _>(data, crate::Error::NotCanonical)?;
         Ok((value.into(), true, len))
     }
 }
@@ -107,7 +109,7 @@ impl FromCbor for CrcType {
 ///
 /// # Returns
 /// A `Result` containing the data with the appended CRC, or an `Error` if the CRC type is invalid.
-pub(super) fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+pub(super) fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Result<Vec<u8>> {
     if matches!(crc_type, CrcType::None) {
         return Ok(data);
     }
@@ -144,7 +146,7 @@ impl Digest {
     /// Constructs a new digest for the given CRC type. Errors for
     /// [`CrcType::None`] (no CRC is expected — don't create a digest)
     /// and [`CrcType::Unrecognised`] (unknown wire-form code).
-    pub fn new(crc_type: CrcType) -> Result<Self, Error> {
+    pub fn new(crc_type: CrcType) -> Result<Self> {
         let state = match crc_type {
             CrcType::CRC16_X25 => DigestState::Crc16(X25.digest()),
             CrcType::CRC32_CASTAGNOLI => DigestState::Crc32(CASTAGNOLI.digest()),

@@ -39,6 +39,8 @@ pub enum Error {
     Builder(#[from] builder::Error),
 }
 
+pub type Result<T> = core::result::Result<T, Error>;
+
 impl From<bpsec::Error> for Error {
     fn from(e: bpsec::Error) -> Self {
         Error::Builder(builder::Error::InternalError(e.into()))
@@ -361,7 +363,7 @@ impl<'a> Editor<'a> {
         }
     }
 
-    fn primary_block(&mut self) -> Result<&mut primary_block::PrimaryBlock, Error> {
+    fn primary_block(&mut self) -> Result<&mut primary_block::PrimaryBlock> {
         // Check if primary block is still protected by an untouched BIB
         if let Some(primary) = self.original.blocks.get(&0) {
             match primary.bib {
@@ -387,7 +389,10 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn with_bundle_flags(mut self, flags: bundle::Flags) -> Result<Self, (Self, Error)> {
+    pub fn with_bundle_flags(
+        mut self,
+        flags: bundle::Flags,
+    ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
                 pb.flags = flags;
@@ -401,7 +406,10 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn with_bundle_crc_type(mut self, crc_type: crc::CrcType) -> Result<Self, (Self, Error)> {
+    pub fn with_bundle_crc_type(
+        mut self,
+        crc_type: crc::CrcType,
+    ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
                 pb.crc_type = crc_type;
@@ -418,7 +426,7 @@ impl<'a> Editor<'a> {
     pub fn with_timestamp(
         mut self,
         timestamp: creation_timestamp::CreationTimestamp,
-    ) -> Result<Self, (Self, Error)> {
+    ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
                 pb.id.timestamp = timestamp;
@@ -432,7 +440,7 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn with_source(mut self, source: eid::Eid) -> Result<Self, (Self, Error)> {
+    pub fn with_source(mut self, source: eid::Eid) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
                 pb.id.source = source;
@@ -446,7 +454,10 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn with_destination(mut self, destination: eid::Eid) -> Result<Self, (Self, Error)> {
+    pub fn with_destination(
+        mut self,
+        destination: eid::Eid,
+    ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
                 pb.destination = destination;
@@ -460,7 +471,10 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn with_report_to(mut self, report_to: eid::Eid) -> Result<Self, (Self, Error)> {
+    pub fn with_report_to(
+        mut self,
+        report_to: eid::Eid,
+    ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
                 pb.report_to = report_to;
@@ -474,7 +488,10 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn with_lifetime(mut self, lifetime: core::time::Duration) -> Result<Self, (Self, Error)> {
+    pub fn with_lifetime(
+        mut self,
+        lifetime: core::time::Duration,
+    ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
                 pb.lifetime = lifetime.min(core::time::Duration::from_millis(u64::MAX));
@@ -491,7 +508,7 @@ impl<'a> Editor<'a> {
     pub fn with_fragment_info(
         mut self,
         fragment_info: Option<bundle::FragmentInfo>,
-    ) -> Result<Self, (Self, Error)> {
+    ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
                 pb.id.fragment_info = fragment_info;
@@ -508,7 +525,10 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn push_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
+    pub fn push_block(
+        self,
+        block_type: block::Type,
+    ) -> core::result::Result<BlockBuilder<'a>, (Self, Error)> {
         match block_type {
             block::Type::Primary => {
                 return Err((self, Error::PrimaryBlock));
@@ -546,7 +566,7 @@ impl<'a> Editor<'a> {
     pub(crate) fn alloc_block(
         self,
         block_type: block::Type,
-    ) -> Result<BlockBuilder<'a>, (Self, Error)> {
+    ) -> core::result::Result<BlockBuilder<'a>, (Self, Error)> {
         let mut block_number = 2u64;
         while self.blocks.contains_key(&block_number) {
             block_number = match block_number.checked_add(1) {
@@ -565,7 +585,10 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn insert_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
+    pub fn insert_block(
+        self,
+        block_type: block::Type,
+    ) -> core::result::Result<BlockBuilder<'a>, (Self, Error)> {
         match block_type {
             block::Type::Primary => return Err((self, Error::PrimaryBlock)),
             block::Type::BlockIntegrity | block::Type::BlockSecurity => {
@@ -620,7 +643,10 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn update_block(mut self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
+    pub fn update_block(
+        mut self,
+        block_number: u64,
+    ) -> core::result::Result<BlockBuilder<'a>, (Self, Error)> {
         // Check block type and get security references in one lookup
         let (bib, bcb) = match self.block(block_number) {
             Some((block, _)) => {
@@ -714,7 +740,7 @@ impl<'a> Editor<'a> {
     pub(crate) fn update_block_inner(
         self,
         block_number: u64,
-    ) -> Result<BlockBuilder<'a>, (Self, Error)> {
+    ) -> core::result::Result<BlockBuilder<'a>, (Self, Error)> {
         let (is_new, template) = match self.blocks.get(&block_number) {
             None => return Err((self, Error::NoSuchBlock(block_number))),
             Some(BlockTemplate::Keep(t)) => {
@@ -765,7 +791,7 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn remove_block(self, block_number: u64) -> Result<Self, (Self, Error)> {
+    pub fn remove_block(self, block_number: u64) -> core::result::Result<Self, (Self, Error)> {
         if block_number == 0 {
             return Err((self, Error::PrimaryBlock));
         }
@@ -810,7 +836,10 @@ impl<'a> Editor<'a> {
     }
 
     #[allow(clippy::result_large_err)]
-    pub(crate) fn remove_block_inner(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
+    pub(crate) fn remove_block_inner(
+        mut self,
+        block_number: u64,
+    ) -> core::result::Result<Self, (Self, Error)> {
         // Get the block's security references BEFORE removing it
         let (bib, bcb) = if let Some((block, _)) = self.block(block_number) {
             (block.bib.clone(), block.bcb)
@@ -882,7 +911,7 @@ impl<'a> Editor<'a> {
         mut self,
         target_block: u64,
         bib_block: u64,
-    ) -> Result<Self, (Self, Error)> {
+    ) -> core::result::Result<Self, (Self, Error)> {
         if let Some((_, Some(bib_payload))) = self.block(bib_block) {
             let mut opset =
                 match hardy_cbor::decode::parse_exact::<bpsec::bib::OperationSet>(bib_payload) {
@@ -929,7 +958,7 @@ impl<'a> Editor<'a> {
         mut self,
         target_block: u64,
         bcb_block: u64,
-    ) -> Result<Self, (Self, Error)> {
+    ) -> core::result::Result<Self, (Self, Error)> {
         if let Some((_, Some(bcb_payload))) = self.block(bcb_block) {
             let mut opset =
                 match hardy_cbor::decode::parse_exact::<bpsec::bcb::OperationSet>(bcb_payload) {
@@ -1010,7 +1039,7 @@ impl<'a> Editor<'a> {
     /// - The public API prevents adding/updating security blocks
     /// - Cascade deletes preserve or remove security block references
     /// - Signer/Encryptor set bib/bcb overrides explicitly
-    pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Vec<Chunk>), Error> {
+    pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Vec<Chunk>)> {
         let mut blocks_out: HashMap<u64, block::Block> = HashMap::new();
 
         let primary_block = self.blocks.remove(&0).expect("No primary block!");
@@ -1111,7 +1140,7 @@ impl<'a> Editor<'a> {
     /// `Chunk::Unchanged` references ranges in the original `source_data`,
     /// `Chunk::New` contains freshly encoded bytes. Use `Chunk::flatten()`
     /// to concatenate into contiguous bytes.
-    pub fn rebuild(mut self) -> Result<Vec<Chunk>, Error> {
+    pub fn rebuild(mut self) -> Result<Vec<Chunk>> {
         let primary_block = self.blocks.remove(&0).expect("No primary block!");
 
         // Build primary chunk
@@ -1160,7 +1189,7 @@ impl<'a> Editor<'a> {
         &self,
         block_number: u64,
         template: BlockTemplate,
-    ) -> Result<(block::Block, Chunk), Error> {
+    ) -> Result<(block::Block, Chunk)> {
         if let BlockTemplate::Update(template) | BlockTemplate::Insert(template) = template {
             let (block, bytes) = template.build_to_vec(block_number).map_err(Error::from)?;
             Ok((block, Chunk::New(bytes.into())))

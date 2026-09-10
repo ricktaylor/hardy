@@ -45,7 +45,7 @@ impl FromCbor for ShaVariant {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         Ok((
             match value {
                 5 => Self::HMAC_256_256,
