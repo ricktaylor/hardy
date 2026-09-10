@@ -159,8 +159,8 @@ impl Cla for BibeCla {
             // signal would sweep the whole peer queue back to Waiting on
             // every routing event for this bundle's lifetime.
             return Err(ClaError::PayloadTooLarge {
-                size: outer.len(),
-                max: usize::try_from(cap).unwrap_or(usize::MAX),
+                size: outer.len() as u64,
+                max: cap,
             });
         }
 
