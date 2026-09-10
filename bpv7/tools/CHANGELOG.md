@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Removed
+- `add-block` no longer accepts `block-integrity` (`bib`) or `block-security` (`bcb`) as `--type` values, and its help no longer advertises them: with every editor door refusing the reserved wire codes, no `add-block` invocation can craft a BIB/BCB — a numeric `--type 11`/`12` now surfaces the editor's typed `SecurityBlock` refusal. Properly-formed security blocks come from the signing and encryption commands.
+
 ## [0.2.0]
 
 ### Added
