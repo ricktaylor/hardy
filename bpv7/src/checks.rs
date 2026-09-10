@@ -21,7 +21,7 @@ use smallvec::SmallVec;
 use crate::{
     Error, HashMap, block, bpsec,
     error::CaptureFieldErr,
-    reader::{PlainReader, Reader},
+    reader::{Availability, PlainReader, Reader},
 };
 /// View into a partially-processed bundle for BPSec operations.
 ///
@@ -38,10 +38,7 @@ struct OverlayReader<'a> {
 }
 
 impl<'a> Reader<'a> for OverlayReader<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let block = self.blocks.get(&block_number)?;
         let payload = if let Some(b) = self.decrypted_data.get(&block_number) {
             Some(b.as_ref())
@@ -51,7 +48,12 @@ impl<'a> Reader<'a> for OverlayReader<'a> {
             // `source_data` is the full in-memory bundle.
             block.payload(self.source_data)
         };
-        Some((block, payload.map(block::Payload::Borrowed)))
+        Some((
+            block,
+            payload
+                .map(block::Payload::Borrowed)
+                .map_or(Availability::NotResident, Availability::Available),
+        ))
     }
 
     fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {

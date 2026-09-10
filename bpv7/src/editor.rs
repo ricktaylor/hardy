@@ -1,5 +1,5 @@
 use super::*;
-use crate::reader::Reader;
+use crate::reader::{Availability, Reader};
 use alloc::borrow::Cow;
 use bytes::Bytes;
 use core::ops::Range;
@@ -1259,11 +1259,13 @@ pub(crate) struct EditorReader<'a> {
 }
 
 impl<'a> Reader<'a> for EditorReader<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let (block, payload) = self.editor.block(block_number)?;
-        Some((block, payload.map(block::Payload::Borrowed)))
+        Some((
+            block,
+            payload
+                .map(block::Payload::Borrowed)
+                .map_or(Availability::NotResident, Availability::Available),
+        ))
     }
 }

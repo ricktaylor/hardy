@@ -21,10 +21,46 @@ use crate::{
     block::{Block, Payload},
 };
 
+/// The outcome of asking a [`Reader`] for a block's payload.
+///
+/// A present block's payload can be unavailable for three distinct reasons,
+/// and a caller's correct response differs for each — a policy filter may
+/// treat an undecryptable block as tampering evidence while passing over one
+/// it merely holds no key for — so the states are never conflated into a
+/// bare `None`. This is the *outcome* axis only: how available bytes are
+/// held (borrowed slice vs owned decrypted buffer) remains [`Payload`]'s
+/// concern, wrapped in [`Available`](Self::Available).
+pub enum Availability<'a> {
+    /// The payload bytes are available.
+    Available(Payload<'a>),
+    /// The block's extents lie outside the resident bytes — the
+    /// headers-only or streaming case.
+    NotResident,
+    /// The block is BCB-covered and no usable key is held.
+    NoKey,
+    /// The block is BCB-covered and decryption was attempted and failed.
+    NotDecryptable,
+}
+
+impl<'a> Availability<'a> {
+    /// The payload when [`Available`](Self::Available), otherwise `None`.
+    ///
+    /// For callers to whom every unavailable state means the same thing —
+    /// IPPT construction treats them all as a missing security target.
+    /// Callers that respond differently per state match the enum instead.
+    pub fn available(self) -> Option<Payload<'a>> {
+        match self {
+            Availability::Available(payload) => Some(payload),
+            _ => None,
+        }
+    }
+}
+
 /// Provides access to bundle blocks by number, used during BPSec IPPT construction.
 pub trait Reader<'a> {
-    /// Returns the block and its payload for the given block number, or `None` if absent.
-    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<Payload<'a>>)>;
+    /// Returns the block and its payload's [`Availability`] for the given
+    /// block number, or `None` if the bundle has no such block.
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Availability<'a>)>;
 
     /// Returns just the block header for the given block number, or `None`
     /// if absent — for callers (e.g. per-OperationSet structural
@@ -50,11 +86,14 @@ pub struct PlainReader<'a> {
 }
 
 impl<'a> Reader<'a> for PlainReader<'a> {
-    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<Payload<'a>>)> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Availability<'a>)> {
         let block = self.blocks.get(&block_number)?;
         Some((
             block,
-            block.payload(self.source_data).map(Payload::Borrowed),
+            block
+                .payload(self.source_data)
+                .map(Payload::Borrowed)
+                .map_or(Availability::NotResident, Availability::Available),
         ))
     }
 

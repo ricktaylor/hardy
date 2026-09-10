@@ -8,7 +8,7 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     editor::{Chunk, Editor},
     parse,
-    reader::Reader,
+    reader::{Availability, Reader},
 };
 use std::collections::HashMap;
 
@@ -116,22 +116,20 @@ struct DecryptingBlockSet<'a> {
 }
 
 impl<'a> Reader<'a> for DecryptingBlockSet<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a Block, Option<hardy_bpv7::block::Payload<'a>>)> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Availability<'a>)> {
         let block = self.blocks.get(&block_number)?;
-        let payload = if let Some(bcb_num) = block.bcb {
+        let availability = if let Some(bcb_num) = block.bcb {
             if Some(block_number) == self.skip_decrypt {
                 // Caller (e.g. block_data for a BCB target) wants the
                 // raw ciphertext bytes — don't recurse into decrypt.
                 block
                     .payload(self.source_data)
                     .map(hardy_bpv7::block::Payload::Borrowed)
+                    .map_or(Availability::NotResident, Availability::Available)
             } else {
                 let opset = self.bcb_ops.get(&bcb_num)?;
                 let op = opset.operations().get(&block_number)?;
-                op.decrypt(
+                match op.decrypt(
                     self.keys,
                     bpsec::bcb::OperationArgs {
                         bpsec_source: opset.source(),
@@ -146,16 +144,21 @@ impl<'a> Reader<'a> for DecryptingBlockSet<'a> {
                             skip_decrypt: Some(block_number),
                         },
                     },
-                )
-                .ok()
-                .map(hardy_bpv7::block::Payload::Decrypted)
+                ) {
+                    Ok(plaintext) => {
+                        Availability::Available(hardy_bpv7::block::Payload::Decrypted(plaintext))
+                    }
+                    Err(bpsec::Error::NoKey) => Availability::NoKey,
+                    Err(_) => Availability::NotDecryptable,
+                }
             }
         } else {
             block
                 .payload(self.source_data)
                 .map(hardy_bpv7::block::Payload::Borrowed)
+                .map_or(Availability::NotResident, Availability::Available)
         };
-        Some((block, payload))
+        Some((block, availability))
     }
 }
 
