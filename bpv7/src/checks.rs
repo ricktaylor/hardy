@@ -18,7 +18,11 @@ use alloc::{boxed::Box, vec::Vec};
 use hardy_cbor::decode::FromCbor;
 use smallvec::SmallVec;
 
-use crate::{Error, HashMap, block, bpsec, error::CaptureFieldErr};
+use crate::{
+    Error, HashMap, block, bpsec,
+    error::CaptureFieldErr,
+    reader::{PlainReader, Reader},
+};
 /// View into a partially-processed bundle for BPSec operations.
 ///
 /// Returns the current best payload for each block: a decrypted body if a
@@ -26,14 +30,14 @@ use crate::{Error, HashMap, block, bpsec, error::CaptureFieldErr};
 /// OperationSet was shrunk, or the original byte range from `source_data`.
 /// Takes `&HashMap<u64, block::Block>` directly — no Bundle type
 /// dependency.
-struct BundleBlockSet<'a> {
+struct OverlayReader<'a> {
     blocks: &'a HashMap<u64, block::Block>,
     source_data: &'a [u8],
     decrypted_data: &'a HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
     to_update: &'a HashMap<u64, Vec<u8>>,
 }
 
-impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
+impl<'a> Reader<'a> for OverlayReader<'a> {
     fn block(
         &'a self,
         block_number: u64,
@@ -228,10 +232,10 @@ pub fn decrypt_and_validate_covered_bibs(
             .get(&bcb_block_number)
             .expect("BCB referenced by an encrypted BIB must be in bcb_ops");
 
-        // Scope the BlockSet so its `blocks` borrow ends before we mutate
+        // Scope the reader so its `blocks` borrow ends before we mutate
         // for coverage stamping.
         let plaintext = {
-            let block_set = BundleBlockSet {
+            let block_set = OverlayReader {
                 blocks,
                 source_data: data,
                 decrypted_data,
@@ -279,7 +283,7 @@ pub fn decrypt_and_validate_covered_bibs(
         // reach this branch for BCB-encrypted BIBs.
         bib_op_set.check(
             bib_block_number,
-            &bpsec::PlainBlockSet {
+            &PlainReader {
                 blocks: &*blocks,
                 source_data: data,
             },
@@ -391,7 +395,7 @@ pub fn verify_all_bibs(
                 defer = true;
                 continue;
             }
-            let block_set = BundleBlockSet {
+            let block_set = OverlayReader {
                 blocks,
                 source_data: data,
                 decrypted_data,
@@ -445,7 +449,7 @@ pub fn verify_payload(
         if target_block.bcb.is_some() && !decrypted_data.contains_key(&1) {
             continue;
         }
-        let block_set = BundleBlockSet {
+        let block_set = OverlayReader {
             blocks,
             source_data: data,
             decrypted_data,
@@ -543,7 +547,7 @@ pub fn verify(
             .get(&bcb_block_number)
             .expect("BCB referenced by encrypted block must be in bcb_ops");
         let result = {
-            let block_set = BundleBlockSet {
+            let block_set = OverlayReader {
                 blocks,
                 source_data: data,
                 decrypted_data: decrypted,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::reader::Reader;
 use alloc::borrow::Cow;
 use bytes::Bytes;
 use core::ops::Range;
@@ -1253,11 +1254,11 @@ impl<'a> BlockBuilder<'a> {
     }
 }
 
-pub(crate) struct EditorBlockSet<'a> {
+pub(crate) struct EditorReader<'a> {
     pub editor: Editor<'a>,
 }
 
-impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
+impl<'a> Reader<'a> for EditorReader<'a> {
     fn block(
         &'a self,
         block_number: u64,

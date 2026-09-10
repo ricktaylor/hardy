@@ -213,7 +213,7 @@ impl<'a> Signer<'a> {
             let source = b.block_number();
             editor = b.rebuild();
 
-            let editor_bs = editor::EditorBlockSet { editor };
+            let editor_bs = editor::EditorReader { editor };
 
             let mut operation_set = bib::OperationSet {
                 source: bpsec_source.clone(),

@@ -8,6 +8,7 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     editor::{Chunk, Editor},
     parse,
+    reader::Reader,
 };
 use std::collections::HashMap;
 
@@ -96,11 +97,11 @@ fn validate_with_keys(
     Ok((data, bundle, bcb_ops, bib_ops))
 }
 
-/// A `BlockSet` over `(blocks, bytes)` that decrypts on demand: if a
+/// A `Reader` over `(blocks, bytes)` that decrypts on demand: if a
 /// queried block is BCB-protected, it's decrypted on the fly so BIB
 /// verification over BCB-encrypted targets sees the plaintext the BIB
 /// actually signed (RFC 9172 §3.10 — sign before encrypt). Distinct from
-/// the canonical [`bpsec::PlainBlockSet`], which returns raw wire bytes;
+/// the canonical [`hardy_bpv7::reader::PlainReader`], which returns raw wire bytes;
 /// this recursion is why the per-block `verify_block` helper below can't
 /// just use the plain one.
 struct DecryptingBlockSet<'a> {
@@ -114,7 +115,7 @@ struct DecryptingBlockSet<'a> {
     skip_decrypt: Option<u64>,
 }
 
-impl<'a> bpsec::BlockSet<'a> for DecryptingBlockSet<'a> {
+impl<'a> Reader<'a> for DecryptingBlockSet<'a> {
     fn block(
         &'a self,
         block_number: u64,
