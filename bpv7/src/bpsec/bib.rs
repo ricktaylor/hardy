@@ -8,8 +8,9 @@ use smallvec::SmallVec;
 use crate::bpsec::rfc9173;
 use crate::{
     HashMap, block,
-    bpsec::{BlockSet, Context, Error, key, parse},
+    bpsec::{Context, Error, key, parse},
     crc, eid,
+    reader::Reader,
 };
 /// A parsed BIB (Block Integrity Block) security operation.
 #[allow(clippy::upper_case_acronyms)]
@@ -32,7 +33,7 @@ pub struct OperationArgs<'a> {
     /// The block number of the BIB itself.
     pub source: u64,
     /// A view of the bundle's blocks for accessing related data during verification.
-    pub blocks: &'a dyn BlockSet<'a>,
+    pub blocks: &'a dyn Reader<'a>,
 }
 
 impl Operation {
@@ -157,7 +158,7 @@ impl OperationSet {
     /// different block set is a caller error, not a recoverable state.
     pub fn check<'a, B>(&self, bib_block_number: u64, blocks: &'a B) -> Result<(), Error>
     where
-        B: BlockSet<'a> + ?Sized,
+        B: Reader<'a> + ?Sized,
     {
         // Whether this BIB is itself protected by a BCB — used by the §3.9
         // check on each target.
