@@ -434,7 +434,7 @@ pub fn verify_all_bibs(
 ///
 /// `NoKey` is a soft skip, as in [`verify_all_bibs`]. A BCB-encrypted payload
 /// is skipped here too — its integrity is established at delivery, when the
-/// payload is decrypted ([`bpsec::block_data`]).
+/// payload is decrypted ([`bpsec::DecryptingReader`]).
 pub fn verify_payload(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
@@ -584,7 +584,7 @@ pub fn verify(
     // `facts.deferred_bibs` — the exact map `verify_payload` re-checks once
     // the payload is resident. (A block-1 BCB — payload confidentiality — is
     // left untouched in `bcb_ops` by §B/§C8 and decrypted at delivery via
-    // `bpsec::block_data`.)
+    // `bpsec::DecryptingReader::block_data`.)
     for n in verify_all_bibs(data, key_source, blocks, bib_ops, decrypted, to_update)?.iter() {
         let ops = bib_ops
             .remove(&n)

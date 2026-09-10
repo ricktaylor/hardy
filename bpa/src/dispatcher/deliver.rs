@@ -145,7 +145,15 @@ impl Dispatcher {
                         ..
                     }) => {
                         let key_source = self.key_source(&raw, &buf);
-                        match bpsec::block_data(1, &raw.blocks, &buf, &bcb_ops, &*key_source) {
+                        match bpsec::DecryptingReader::new(
+                            &raw.blocks,
+                            &buf,
+                            &bcb_ops,
+                            &*key_source,
+                        )
+                        .block_data(1)
+                        .and_then(|p| p.ok_or(Bpv7Error::Altered))
+                        {
                             Ok(Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
                             Ok(Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
                             Err(e) => Err(e),
