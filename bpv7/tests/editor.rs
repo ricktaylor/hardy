@@ -901,3 +901,219 @@ fn extension_editor_materialises_inserts_and_skips_untouched() {
     assert_eq!(block.payload(&new_data).expect("resident"), b"materialised");
     assert_eq!(new_bundle.blocks.len(), reparsed.blocks.len());
 }
+
+// === insert_block replace-by-type: BIB/BCB coverage parity =============
+
+// A bundle whose HopCount block is BIB-signed: (bundle, data, hop block
+// number, BIB block number, signing key).
+fn make_signed_hop_count() -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            hop,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the hop count block")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+    let bib = signed
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::BlockIntegrity))
+        .map(|(n, _)| *n)
+        .expect("the BIB is present");
+    (signed, signed_bytes, hop, bib, kek)
+}
+
+#[test]
+fn insert_block_replace_strips_bib_coverage_like_update_block() {
+    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count();
+
+    // Replace the signed hop count via the replace-by-type door.
+    let (rebuilt, chunks) =
+        ok(Editor::new(&signed, &signed_bytes).insert_block(block::Type::HopCount))
+            .with_data(
+                hardy_cbor::encode::emit(&hop_info::HopInfo {
+                    limit: NonZeroU8::new(30).unwrap(),
+                    count: 1,
+                })
+                .0
+                .into(),
+            )
+            .rebuild()
+            .rebuild_bundle()
+            .expect("rebuild the replaced bundle");
+
+    // In-memory and wire agree: no BIB claims the replaced block.
+    assert!(
+        matches!(
+            rebuilt.blocks.get(&hop).unwrap().bib,
+            block::BibCoverage::None
+        ),
+        "the rebuilt Bundle must not report BIB coverage on the replaced block"
+    );
+    let new_data = Chunk::flatten(chunks, &signed_bytes);
+    let parsed = hardy_bpv7::parse::parse(bytes::Bytes::copy_from_slice(&new_data))
+        .expect("the emitted wire form parses");
+    assert!(
+        parsed
+            .bibs
+            .values()
+            .all(|ops| !ops.operations().contains_key(&hop)),
+        "no BIB on the wire may still target the block whose body was replaced"
+    );
+    assert!(
+        matches!(
+            parsed.bundle.blocks.get(&hop).unwrap().bib,
+            block::BibCoverage::None
+        ),
+        "a reparse agrees the replaced block is uncovered"
+    );
+}
+
+#[test]
+fn insert_block_replace_refuses_an_encrypted_bib() {
+    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count();
+
+    // Encrypt the signed hop count: the cascade also encrypts its BIB.
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let encrypted_bytes = encryptor::Encryptor::new(&signed, &signed_bytes)
+        .encrypt_block(
+            hop,
+            encryptor::Context::AES_GCM(flags),
+            "ipn:2.1".parse().unwrap(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the signed hop count")
+        .rebuild()
+        .expect("rebuild encrypted");
+    let encrypted = reparse(&encrypted_bytes);
+
+    // A structural (keyless) parse cannot prove what the encrypted BIB
+    // covers, so the hop count reads as Maybe — and the replace refuses on
+    // unprovable coverage, exactly as update_block does. (BibIsEncrypted is
+    // the verify-stamped shape, where coverage is known to be Some.)
+    let result = Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount);
+    assert!(
+        matches!(
+            result,
+            Err((
+                _,
+                Error::Builder(builder::Error::InternalError(hardy_bpv7::Error::InvalidBPSec(
+                    hardy_bpv7::bpsec::Error::MaybeHasBib(n)
+                )))
+            )) if n == hop
+        ),
+        "replacing a block under an encrypted BIB must refuse, as update_block does"
+    );
+}
+
+#[test]
+fn insert_block_replace_refuses_unprovable_coverage() {
+    // The bystander shape: the hop count is swept to BibCoverage::Maybe by
+    // someone else's encrypted BIB, without being a target itself.
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the payload")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let encrypted_bytes = encryptor::Encryptor::new(&signed, &signed_bytes)
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(flags),
+            "ipn:2.1".parse().unwrap(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the payload (and so its covering BIB)")
+        .rebuild()
+        .expect("rebuild encrypted");
+    let encrypted = reparse(&encrypted_bytes);
+    assert!(
+        matches!(
+            encrypted.blocks.get(&hop).unwrap().bib,
+            block::BibCoverage::Maybe
+        ),
+        "the sweep must leave the hop count's coverage unprovable"
+    );
+
+    let result = Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount);
+    assert!(
+        matches!(
+            result,
+            Err((
+                _,
+                Error::Builder(builder::Error::InternalError(hardy_bpv7::Error::InvalidBPSec(
+                    hardy_bpv7::bpsec::Error::MaybeHasBib(n)
+                )))
+            )) if n == hop
+        ),
+        "replacing a Maybe-covered block must refuse with MaybeHasBib, as update_block does"
+    );
+}
