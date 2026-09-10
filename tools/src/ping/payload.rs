@@ -1,5 +1,6 @@
 use super::*;
-use hardy_bpv7::{block, builder::Builder, crc::CrcType, hop_info::HopInfo};
+use hardy_bpv7::bundle::{BlockFlags, BlockType};
+use hardy_bpv7::{builder::Builder, crc::CrcType, hop_info::HopInfo};
 use hardy_cbor::{decode, encode};
 
 // The echo-service draft defines no payload wire format — the echo reflects the
@@ -73,7 +74,7 @@ fn build_bundle_with_padding(
     let source = args.source.clone().unwrap();
 
     // Always request all status reports - receiver decides whether to generate them
-    let bundle_flags = hardy_bpv7::bundle::Flags {
+    let bundle_flags = hardy_bpv7::bundle::BundleFlags {
         report_status_time: true,
         receipt_report_requested: true,
         forward_report_requested: true,
@@ -101,9 +102,9 @@ fn build_bundle_with_padding(
         // DTNME has a bug where it doesn't validate payload block CRC but rejects
         // bundles when CRC validation fails.
         builder = builder
-            .add_extension_block(block::Type::Payload)
+            .add_extension_block(BlockType::Payload)
             .expect("Failed to add payload block")
-            .with_flags(block::Flags {
+            .with_flags(BlockFlags {
                 delete_bundle_on_failure: true,
                 ..Default::default()
             })

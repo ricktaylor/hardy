@@ -1,7 +1,7 @@
 use core::num::NonZeroUsize;
 
 use hardy_async::TaskPool;
-use hardy_bpv7::{bundle::Id, eid::Eid};
+use hardy_bpv7::{bundle::BundleId, eid::Eid};
 use trace_err::*;
 use tracing::error;
 #[cfg(feature = "instrument")]
@@ -147,7 +147,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn get_metadata(&self, bundle_id: &Id) -> Option<Bundle> {
+    pub async fn get_metadata(&self, bundle_id: &BundleId) -> Option<Bundle> {
         let m = self
             .metadata_storage
             .get(bundle_id)
@@ -166,7 +166,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn tombstone_metadata(&self, bundle_id: &Id) {
+    pub async fn tombstone_metadata(&self, bundle_id: &BundleId) {
         self.metadata_storage
             .tombstone(bundle_id)
             .await
@@ -174,7 +174,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn confirm_exists(&self, bundle_id: &Id) -> Option<ConfirmResponse> {
+    pub async fn confirm_exists(&self, bundle_id: &BundleId) -> Option<ConfirmResponse> {
         self.metadata_storage
             .confirm_exists(bundle_id)
             .await
@@ -388,7 +388,7 @@ mod tests {
 
         #[async_trait]
         impl MetadataStorage for FailingMetadata {
-            async fn get(&self, _bundle_id: &Id) -> Result<Option<Bundle>> {
+            async fn get(&self, _bundle_id: &BundleId) -> Result<Option<Bundle>> {
                 unimplemented!()
             }
             async fn insert(&self, _bundle: &Bundle) -> Result<bool> {
@@ -399,7 +399,7 @@ mod tests {
             }
             async fn swap_status(
                 &self,
-                _bundle_id: &Id,
+                _bundle_id: &BundleId,
                 _expected: &BundleStatus,
                 _status: &BundleStatus,
             ) -> Result<bool> {
@@ -407,18 +407,18 @@ mod tests {
             }
             async fn tombstone_if(
                 &self,
-                _bundle_id: &Id,
+                _bundle_id: &BundleId,
                 _expected: &BundleStatus,
             ) -> Result<bool> {
                 unimplemented!()
             }
-            async fn tombstone(&self, _bundle_id: &Id) -> Result<()> {
+            async fn tombstone(&self, _bundle_id: &BundleId) -> Result<()> {
                 unimplemented!()
             }
             async fn start_recovery(&self) {}
             async fn confirm_exists(
                 &self,
-                _bundle_id: &Id,
+                _bundle_id: &BundleId,
             ) -> Result<Option<super::super::ConfirmResponse>> {
                 unimplemented!()
             }

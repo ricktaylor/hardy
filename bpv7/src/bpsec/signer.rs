@@ -6,8 +6,9 @@ use thiserror::Error;
 
 #[cfg(feature = "rfc9173")]
 use crate::bpsec::rfc9173;
+use crate::bundle::{BibCoverage, BlockType};
 use crate::{
-    HashMap, block,
+    HashMap,
     bpsec::{self, bib, key},
     builder, bundle, crc,
     editor::{self, Chunk, Editor},
@@ -101,18 +102,18 @@ impl<'a> Signer<'a> {
             return Err((self, editor::Error::NoSuchBlock(block_number).into()));
         };
 
-        if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
+        if let BlockType::BlockIntegrity | BlockType::BlockSecurity = block.block_type {
             return Err((self, Error::InvalidTarget(block_number)));
         }
 
         match block.bib {
-            block::BibCoverage::Some(_) => {
+            BibCoverage::Some(_) => {
                 return Err((self, Error::AlreadySigned(block_number)));
             }
-            block::BibCoverage::Maybe => {
+            BibCoverage::Maybe => {
                 return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
             }
-            block::BibCoverage::None => {}
+            BibCoverage::None => {}
         }
 
         if block.bcb.is_some() {
@@ -206,7 +207,7 @@ impl<'a> Signer<'a> {
 
             // Reserve a block number for the BIB block
             let b = editor
-                .alloc_block(block::Type::BlockIntegrity)
+                .alloc_block(BlockType::BlockIntegrity)
                 .map_err(|(_, e)| e)?
                 .with_crc_type(crc::CrcType::None);
 

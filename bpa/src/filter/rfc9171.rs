@@ -12,7 +12,7 @@ These checks are separated from the parser because:
 */
 
 use hardy_async::async_trait;
-use hardy_bpv7::block::BibCoverage;
+use hardy_bpv7::bundle::BibCoverage;
 use hardy_bpv7::crc::CrcType;
 use hardy_bpv7::status_report::ReasonCode;
 use tracing::debug;

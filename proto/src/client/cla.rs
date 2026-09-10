@@ -10,7 +10,7 @@ async fn forward(
         .ok_or(tonic::Status::invalid_argument("Missing address"))?
         .try_into()?;
 
-    let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+    let bundle_id = hardy_bpv7::bundle::BundleId::from_key(&request.bundle_id)
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
     // The unary wire message already delivered the whole bundle, so it
@@ -139,7 +139,7 @@ impl hardy_bpa::cla::Sink for Sink {
 
     async fn transfer_outcome(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         outcome: hardy_bpa::cla::TransferOutcome,
     ) -> hardy_bpa::cla::Result<()> {
         let outcome = match outcome {

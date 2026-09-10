@@ -108,7 +108,7 @@ impl hardy_bpa::services::Application for Application {
     // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
         total_len: u64,
@@ -136,7 +136,7 @@ impl hardy_bpa::services::Application for Application {
 
     async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         from: &hardy_bpv7::eid::Eid,
         kind: hardy_bpa::services::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,

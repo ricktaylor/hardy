@@ -1,5 +1,6 @@
 use clap::ValueEnum;
-use hardy_bpv7::{block, bundle, crc};
+use hardy_bpv7::bundle::{BlockFlags, BundleFlags};
+use hardy_bpv7::crc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ArgBlockFlags {
@@ -27,8 +28,8 @@ pub enum ArgBlockFlags {
 }
 
 impl ArgBlockFlags {
-    pub fn to_block_flags(args: &[ArgBlockFlags]) -> block::Flags {
-        let mut flags = block::Flags::default();
+    pub fn to_block_flags(args: &[ArgBlockFlags]) -> BlockFlags {
+        let mut flags = BlockFlags::default();
 
         for arg in args {
             match arg {
@@ -39,7 +40,7 @@ impl ArgBlockFlags {
                     flags.delete_block_on_failure = true;
                 }
                 ArgBlockFlags::None => {
-                    flags = block::Flags::default();
+                    flags = BlockFlags::default();
                 }
                 ArgBlockFlags::MustReplicate => flags.must_replicate = true,
                 ArgBlockFlags::ReportOnFailure => flags.report_on_failure = true,
@@ -93,11 +94,11 @@ pub enum ArgBundleFlags {
 }
 
 impl ArgBundleFlags {
-    pub fn to_bundle_flags(args: &[ArgBundleFlags]) -> Option<bundle::Flags> {
+    pub fn to_bundle_flags(args: &[ArgBundleFlags]) -> Option<BundleFlags> {
         if args.is_empty() {
             None
         } else {
-            let mut flags = bundle::Flags::default();
+            let mut flags = BundleFlags::default();
             for arg in args {
                 match arg {
                     ArgBundleFlags::All => {
@@ -111,7 +112,7 @@ impl ArgBundleFlags {
                         flags.delete_report_requested = true;
                     }
                     ArgBundleFlags::None => {
-                        flags = bundle::Flags::default();
+                        flags = BundleFlags::default();
                     }
                     ArgBundleFlags::IsAdminRecord => flags.is_admin_record = true,
                     ArgBundleFlags::DoNotFragment => flags.do_not_fragment = true,

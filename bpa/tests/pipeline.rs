@@ -17,9 +17,9 @@ use hardy_bpa::{
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
-    block::Type,
     builder::Builder,
-    bundle::{Flags, Id},
+    bundle::BlockType,
+    bundle::{BundleFlags, BundleId},
     creation_timestamp::CreationTimestamp,
     dtn_time::DtnTime,
     editor::{Chunk, Editor},
@@ -80,7 +80,7 @@ impl cla::Cla for PipelineCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         total_len: u64,
         stream: &mut dyn Receiver<cla::Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -122,7 +122,7 @@ impl services::Application for TestApp {
 
     async fn on_deliver(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         total_len: u64,
@@ -136,7 +136,7 @@ impl services::Application for TestApp {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -171,7 +171,7 @@ impl services::Service for EchoService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -204,7 +204,7 @@ impl services::Service for EchoService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -251,7 +251,7 @@ impl cla::Cla for TimedCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<cla::Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -828,7 +828,7 @@ async fn reception_report_carries_unknown_security_operation() {
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
     let (_, data) = Builder::new(remote_source.clone(), dest.clone())
-        .with_flags(Flags {
+        .with_flags(BundleFlags {
             receipt_report_requested: true,
             ..Default::default()
         })
@@ -874,7 +874,7 @@ async fn reception_report_carries_unknown_security_operation() {
             .bundle
             .blocks
             .values()
-            .any(|b| matches!(b.block_type, Type::BlockSecurity)),
+            .any(|b| matches!(b.block_type, BlockType::BlockSecurity)),
         "Forwarded bundle should still carry the BCB"
     );
 
@@ -1330,7 +1330,7 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
-    let report_flags = Flags {
+    let report_flags = BundleFlags {
         receipt_report_requested: true,
         delete_report_requested: true,
         ..Default::default()
@@ -1901,7 +1901,7 @@ impl services::Application for FailingApp {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
@@ -1914,7 +1914,7 @@ impl services::Application for FailingApp {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -2002,12 +2002,12 @@ async fn dispatcher_handles_on_deliver_err() {
 
 struct DeferringCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-    offers_tx: flume::Sender<Id>,
+    offers_tx: flume::Sender<BundleId>,
     remaining_accepts: AtomicUsize,
 }
 
 impl DeferringCla {
-    fn new(accepts: usize) -> (Arc<Self>, flume::Receiver<Id>) {
+    fn new(accepts: usize) -> (Arc<Self>, flume::Receiver<BundleId>) {
         let (tx, rx) = flume::bounded(16);
         (
             Arc::new(Self {
@@ -2040,7 +2040,7 @@ impl cla::Cla for DeferringCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<cla::Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -2061,7 +2061,11 @@ impl cla::Cla for DeferringCla {
 async fn deferring_setup(
     accepts: usize,
     peer_node_number: u32,
-) -> (hardy_bpa::bpa::Bpa, Arc<DeferringCla>, flume::Receiver<Id>) {
+) -> (
+    hardy_bpa::bpa::Bpa,
+    Arc<DeferringCla>,
+    flume::Receiver<BundleId>,
+) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
@@ -2091,7 +2095,7 @@ async fn deferring_setup(
     (bpa, cla, offers_rx)
 }
 
-async fn expect_offer(rx: &flume::Receiver<Id>) -> Id {
+async fn expect_offer(rx: &flume::Receiver<BundleId>) -> BundleId {
     // Event-driven wait; the timeout only bounds a regression.
     tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv_async())
         .await
@@ -2101,7 +2105,7 @@ async fn expect_offer(rx: &flume::Receiver<Id>) -> Id {
 
 // Known test-guide deviation (quiet-window absence helper):
 // scheduled for the dedicated pipeline de-flake pass (see bpa/docs/TODO.md).
-async fn expect_no_offer(rx: &flume::Receiver<Id>) {
+async fn expect_no_offer(rx: &flume::Receiver<BundleId>) {
     assert!(
         tokio::time::timeout(tokio::time::Duration::from_secs(1), rx.recv_async())
             .await
@@ -2282,7 +2286,7 @@ async fn deferred_outcome_ignores_wrong_cla() {
     let id = expect_offer(&offers_a).await;
 
     // An outcome for a bundle the BPA has never seen is ignored without error.
-    let unknown = Id {
+    let unknown = BundleId {
         source: "ipn:0.9.9".parse().unwrap(),
         timestamp: CreationTimestamp::now(),
         fragment_info: None,
@@ -2329,13 +2333,13 @@ async fn deferred_outcome_ignores_wrong_cla() {
 
 struct BlockingCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-    offered_tx: flume::Sender<Id>,
+    offered_tx: flume::Sender<BundleId>,
     release_rx: flume::Receiver<()>,
     first: AtomicBool,
 }
 
 impl BlockingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
+    fn new() -> (Arc<Self>, flume::Receiver<BundleId>, flume::Sender<()>) {
         let (offered_tx, offered_rx) = flume::bounded(16);
         let (release_tx, release_rx) = flume::bounded(1);
         (
@@ -2367,7 +2371,7 @@ impl cla::Cla for BlockingCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -2565,7 +2569,7 @@ async fn configured_endpoints_activate_at_start() {
             &self,
             _lane: Option<u32>,
             _cla_addr: &cla::ClaAddress,
-            _bundle_id: &Id,
+            _bundle_id: &BundleId,
             _total_len: u64,
             _stream: &mut dyn Receiver<Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {

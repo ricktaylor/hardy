@@ -124,7 +124,7 @@ impl cla::Sink for Sink {
 
     async fn transfer_outcome(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         outcome: cla::TransferOutcome,
     ) -> cla::Result<()> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
@@ -466,7 +466,7 @@ mod tests {
             &self,
             _lane: Option<u32>,
             _cla_addr: &ClaAddress,
-            _bundle_id: &hardy_bpv7::bundle::Id,
+            _bundle_id: &hardy_bpv7::bundle::BundleId,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {

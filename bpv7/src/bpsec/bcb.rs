@@ -8,8 +8,9 @@ use smallvec::SmallVec;
 
 #[cfg(feature = "rfc9173")]
 use crate::bpsec::rfc9173;
+use crate::bundle::BlockType;
 use crate::{
-    HashMap, block,
+    HashMap,
     bpsec::{BlockSet, Context, Error, key, parse},
     crc, eid,
 };
@@ -248,10 +249,10 @@ impl OperationSet {
                 .block_header(target_number)
                 .ok_or(Error::MissingSecurityTarget)?;
             match target_block.block_type {
-                block::Type::Primary | block::Type::BlockSecurity => {
+                BlockType::Primary | BlockType::BlockSecurity => {
                     return Err(Error::InvalidBCBTarget);
                 }
-                block::Type::Payload if !must_replicate => {
+                BlockType::Payload if !must_replicate => {
                     return Err(Error::BCBMustReplicate);
                 }
                 _ => {}

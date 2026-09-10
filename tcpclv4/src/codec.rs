@@ -19,11 +19,11 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     /// A SESS_INIT node ID is not valid UTF-8.
-    #[error("Invalid Node Id string: {0}")]
+    #[error("Invalid Node BundleId string: {0}")]
     InvalidNodeIdUtf8(#[from] std::string::FromUtf8Error),
 
     /// A SESS_INIT node ID does not parse as a BPv7 EID.
-    #[error("Invalid Node Id: {0}")]
+    #[error("Invalid Node BundleId: {0}")]
     InvalidNodeId(#[from] hardy_bpv7::eid::Error),
 
     /// A session extension item claims more bytes than its message holds.
@@ -193,7 +193,7 @@ impl SessionInitMessage {
                      1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 3 3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +---------------+---------------+---------------+---------------+
-|  Item Flags   |           Item Type           | Item Length...|
+|  Item BundleFlags   |           Item Type           | Item Length...|
 +---------------+---------------+---------------+---------------+
 | length contd. | Item Value...                                 |
 +---------------+---------------+---------------+---------------+ */
@@ -244,7 +244,7 @@ impl From<SessionInitExtensionFlags> for u8 {
 +-----------------------------+
 |       Message Header        |
 +-----------------------------+
-|     Message Flags (U8)      |
+|     Message BundleFlags (U8)      |
 +-----------------------------+
 |      Reason Code (U8)       |
 +-----------------------------+ */
@@ -526,7 +526,7 @@ impl From<TransferRefuseReasonCode> for u8 {
 +-----------------------------+
 |       Message Header        |
 +-----------------------------+
-|     Message Flags (U8)      |
+|     Message BundleFlags (U8)      |
 +-----------------------------+
 |      Transfer ID (U64)      |
 +-----------------------------+
@@ -593,7 +593,7 @@ impl Message {
 +------------------------------+
 |       Message Header         |
 +------------------------------+
-|     Message Flags (U8)       |
+|     Message BundleFlags (U8)       |
 +------------------------------+
 |      Transfer ID (U64)       |
 +------------------------------+
@@ -752,7 +752,7 @@ impl From<TransferSegmentMessageFlags> for u8 {
                      1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 3 3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +---------------+---------------+---------------+---------------+
-|  Item Flags   |           Item Type           | Item Length...|
+|  Item BundleFlags   |           Item Type           | Item Length...|
 +---------------+---------------+---------------+---------------+
 | length contd. | Item Value...                                 |
 +---------------+---------------+---------------+---------------+ */

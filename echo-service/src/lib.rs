@@ -21,7 +21,7 @@ use hardy_bpa::{
 };
 use hardy_bpv7::{
     builder::Builder,
-    bundle::{Flags, Id},
+    bundle::{BundleFlags, BundleId},
     creation_timestamp::CreationTimestamp,
     eid::Eid,
     parse::{Parsed, parse},
@@ -154,7 +154,7 @@ impl hardy_bpa::services::Service for EchoService {
     /// No-op; the echo service does not act on status reports.
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: StatusNotify,
         _reason: ReasonCode,
@@ -171,7 +171,7 @@ impl hardy_bpa::services::Service for EchoService {
     // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -182,7 +182,7 @@ impl hardy_bpa::services::Service for EchoService {
 }
 
 // Whether the request asked for any kind of status report.
-fn requested_status_reports(flags: &Flags) -> bool {
+fn requested_status_reports(flags: &BundleFlags) -> bool {
     flags.receipt_report_requested
         || flags.forward_report_requested
         || flags.delivery_report_requested
@@ -195,8 +195,8 @@ fn requested_status_reports(flags: &Flags) -> bool {
 // flags and the "status time requested in reports" flag. Every other flag
 // (notably administrative-record, fragment, and application-acknowledgement)
 // takes the node-sourced default.
-fn response_flags(request: &Flags) -> Flags {
-    let mut flags = Flags {
+fn response_flags(request: &BundleFlags) -> BundleFlags {
+    let mut flags = BundleFlags {
         do_not_fragment: request.do_not_fragment,
         ..Default::default()
     };

@@ -1,4 +1,5 @@
 use super::*;
+use crate::bundle::{BibCoverage, Block, BlockFlags, BlockType, BundleFlags, Payload};
 use alloc::borrow::Cow;
 use bytes::Bytes;
 use core::ops::Range;
@@ -7,7 +8,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Attempt to add duplicate block of type {0:?}")]
-    IllegalDuplicate(block::Type),
+    IllegalDuplicate(BlockType),
 
     #[error("No more available block numbers")]
     OutOfBlockNumbers,
@@ -323,14 +324,14 @@ pub struct Editor<'a> {
     /// caller has modified at least one primary field; `None` = use
     /// `original.primary` verbatim. Isomorphic to a `PrimaryBlock`
     /// because that's exactly what the edits collectively form.
-    primary: Option<primary_block::PrimaryBlock>,
+    primary: Option<bundle::PrimaryBlock>,
     blocks: HashMap<u64, BlockTemplate<'a>>,
-    bib_overrides: HashMap<u64, block::BibCoverage>,
+    bib_overrides: HashMap<u64, BibCoverage>,
     bcb_overrides: HashMap<u64, Option<u64>>,
 }
 
 enum BlockTemplate<'a> {
-    Keep(block::Type),
+    Keep(BlockType),
     Update(builder::BlockTemplate<'a>),
     Insert(builder::BlockTemplate<'a>),
 }
@@ -363,16 +364,16 @@ impl<'a> Editor<'a> {
         }
     }
 
-    fn primary_block(&mut self) -> Result<&mut primary_block::PrimaryBlock> {
+    fn primary_block(&mut self) -> Result<&mut bundle::PrimaryBlock> {
         // Check if primary block is still protected by an untouched BIB
         if let Some(primary) = self.original.blocks.get(&0) {
             match primary.bib {
-                block::BibCoverage::Some(bib_num)
+                BibCoverage::Some(bib_num)
                     if matches!(self.blocks.get(&bib_num), Some(BlockTemplate::Keep(_))) =>
                 {
                     return Err(Error::PrimaryBlockHasBib);
                 }
-                block::BibCoverage::Maybe => {
+                BibCoverage::Maybe => {
                     return Err(bpsec::Error::MaybeHasBib(0).into());
                 }
                 _ => {}
@@ -391,7 +392,7 @@ impl<'a> Editor<'a> {
     #[allow(clippy::result_large_err)]
     pub fn with_bundle_flags(
         mut self,
-        flags: bundle::Flags,
+        flags: BundleFlags,
     ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
@@ -527,19 +528,19 @@ impl<'a> Editor<'a> {
     #[allow(clippy::result_large_err)]
     pub fn push_block(
         self,
-        block_type: block::Type,
+        block_type: BlockType,
     ) -> core::result::Result<BlockBuilder<'a>, (Self, Error)> {
         match block_type {
-            block::Type::Primary => {
+            BlockType::Primary => {
                 return Err((self, Error::PrimaryBlock));
             }
-            block::Type::BlockIntegrity | block::Type::BlockSecurity => {
+            BlockType::BlockIntegrity | BlockType::BlockSecurity => {
                 return Err((self, Error::SecurityBlock));
             }
-            block::Type::Payload
-            | block::Type::BundleAge
-            | block::Type::HopCount
-            | block::Type::PreviousNode => {
+            BlockType::Payload
+            | BlockType::BundleAge
+            | BlockType::HopCount
+            | BlockType::PreviousNode => {
                 for template in self.blocks.values() {
                     match template {
                         BlockTemplate::Keep(t) if t == &block_type => {
@@ -565,7 +566,7 @@ impl<'a> Editor<'a> {
     #[allow(clippy::result_large_err)]
     pub(crate) fn alloc_block(
         self,
-        block_type: block::Type,
+        block_type: BlockType,
     ) -> core::result::Result<BlockBuilder<'a>, (Self, Error)> {
         let mut block_number = 2u64;
         while self.blocks.contains_key(&block_number) {
@@ -587,11 +588,11 @@ impl<'a> Editor<'a> {
     #[allow(clippy::result_large_err)]
     pub fn insert_block(
         self,
-        block_type: block::Type,
+        block_type: BlockType,
     ) -> core::result::Result<BlockBuilder<'a>, (Self, Error)> {
         match block_type {
-            block::Type::Primary => return Err((self, Error::PrimaryBlock)),
-            block::Type::BlockIntegrity | block::Type::BlockSecurity => {
+            BlockType::Primary => return Err((self, Error::PrimaryBlock)),
+            BlockType::BlockIntegrity | BlockType::BlockSecurity => {
                 return Err((self, Error::SecurityBlock));
             }
             _ => {}
@@ -651,10 +652,10 @@ impl<'a> Editor<'a> {
         let (bib, bcb) = match self.block(block_number) {
             Some((block, _)) => {
                 match block.block_type {
-                    block::Type::Primary => {
+                    BlockType::Primary => {
                         return Err((self, Error::PrimaryBlock));
                     }
-                    block::Type::BlockIntegrity | block::Type::BlockSecurity => {
+                    BlockType::BlockIntegrity | BlockType::BlockSecurity => {
                         return Err((self, Error::SecurityBlock));
                     }
                     _ => {}
@@ -666,10 +667,10 @@ impl<'a> Editor<'a> {
 
         // Handle BIB coverage — must remove from target list if present
         match bib {
-            block::BibCoverage::Maybe => {
+            BibCoverage::Maybe => {
                 return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
             }
-            block::BibCoverage::Some(bib_num) => {
+            BibCoverage::Some(bib_num) => {
                 if let Some((bib_block, _)) = self.block(bib_num)
                     && bib_block.bcb.is_some()
                 {
@@ -677,7 +678,7 @@ impl<'a> Editor<'a> {
                 }
                 self = self.remove_from_bib_targets(block_number, bib_num)?;
             }
-            block::BibCoverage::None => {}
+            BibCoverage::None => {}
         }
 
         // Remove from BCB target list if present
@@ -695,7 +696,7 @@ impl<'a> Editor<'a> {
     #[cfg(feature = "bpsec")]
     pub(crate) fn set_bib_target(&mut self, target_block: u64, bib_block: u64) {
         self.bib_overrides
-            .insert(target_block, block::BibCoverage::Some(bib_block));
+            .insert(target_block, BibCoverage::Some(bib_block));
     }
 
     /// Record that a BCB covers the given target block.
@@ -717,14 +718,14 @@ impl<'a> Editor<'a> {
     #[cfg(feature = "bpsec")]
     pub(crate) fn set_canonical_primary(
         &mut self,
-        primary: primary_block::PrimaryBlock,
+        primary: bundle::PrimaryBlock,
         data: Cow<'a, [u8]>,
     ) {
         self.blocks.insert(
             0,
             BlockTemplate::Update(builder::BlockTemplate::new(
-                block::Type::Primary,
-                block::Flags::default(),
+                BlockType::Primary,
+                BlockFlags::default(),
                 crc::CrcType::None,
                 Some(data),
             )),
@@ -744,7 +745,7 @@ impl<'a> Editor<'a> {
         let (is_new, template) = match self.blocks.get(&block_number) {
             None => return Err((self, Error::NoSuchBlock(block_number))),
             Some(BlockTemplate::Keep(t)) => {
-                if let &block::Type::Primary = t {
+                if let &BlockType::Primary = t {
                     return Err((self, Error::PrimaryBlock));
                 }
                 let block = match self.original.blocks.get(&block_number) {
@@ -809,16 +810,16 @@ impl<'a> Editor<'a> {
             // integrity protection.
             if matches!(
                 block.block_type,
-                block::Type::BlockIntegrity | block::Type::BlockSecurity
+                BlockType::BlockIntegrity | BlockType::BlockSecurity
             ) {
                 return Err((self, Error::SecurityBlock));
             }
 
             match block.bib {
-                block::BibCoverage::Maybe => {
+                BibCoverage::Maybe => {
                     return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
                 }
-                block::BibCoverage::Some(bib) => {
+                BibCoverage::Some(bib) => {
                     // Check if the BIB is encrypted
                     if let Some((bib_block, _)) = self.block(bib)
                         && bib_block.bcb.is_some()
@@ -826,7 +827,7 @@ impl<'a> Editor<'a> {
                         return Err((self, Error::BibIsEncrypted(block_number)));
                     }
                 }
-                block::BibCoverage::None => {}
+                BibCoverage::None => {}
             }
         }
         // Note: BCB case is fine - we can silently update the BCB's target list
@@ -844,7 +845,7 @@ impl<'a> Editor<'a> {
         let (bib, bcb) = if let Some((block, _)) = self.block(block_number) {
             (block.bib.clone(), block.bcb)
         } else {
-            (block::BibCoverage::None, None)
+            (BibCoverage::None, None)
         };
 
         // Removing a BIB outright orphans its targets' coverage stamps —
@@ -866,20 +867,20 @@ impl<'a> Editor<'a> {
         // integrity check that genuinely existed.
         let mut bib_targets: Vec<u64> = Vec::new();
         if let Some((block, Some(payload))) = self.block(block_number)
-            && matches!(block.block_type, block::Type::BlockIntegrity)
+            && matches!(block.block_type, BlockType::BlockIntegrity)
             && let Ok(opset) = hardy_cbor::decode::parse_exact::<bpsec::bib::OperationSet>(payload)
         {
             bib_targets.extend(opset.operations.keys().copied());
         }
         for target in bib_targets {
             let covered_by_this = match self.bib_overrides.get(&target) {
-                Some(cov) => matches!(cov, block::BibCoverage::Some(n) if *n == block_number),
+                Some(cov) => matches!(cov, BibCoverage::Some(n) if *n == block_number),
                 None => self.block(target).is_some_and(
-                    |(b, _)| matches!(b.bib, block::BibCoverage::Some(n) if n == block_number),
+                    |(b, _)| matches!(b.bib, BibCoverage::Some(n) if n == block_number),
                 ),
             };
             if covered_by_this {
-                self.bib_overrides.insert(target, block::BibCoverage::None);
+                self.bib_overrides.insert(target, BibCoverage::None);
             }
         }
 
@@ -887,7 +888,7 @@ impl<'a> Editor<'a> {
         if self.blocks.remove(&block_number).is_some() {
             // If there is a BIB, remove the block from the list of targets
             // If the BIB is now empty, recursively call this function.
-            if let block::BibCoverage::Some(bib) = bib {
+            if let BibCoverage::Some(bib) = bib {
                 self = self.remove_from_bib_targets(block_number, bib)?;
             }
 
@@ -944,8 +945,7 @@ impl<'a> Editor<'a> {
                 // The target is no longer covered by this BIB. Clear its
                 // coverage so `rebuild_bundle()` does not report a dangling
                 // reference to a BIB that has been removed or rewritten.
-                self.bib_overrides
-                    .insert(target_block, block::BibCoverage::None);
+                self.bib_overrides.insert(target_block, BibCoverage::None);
             }
         }
         Ok(self)
@@ -999,10 +999,7 @@ impl<'a> Editor<'a> {
 
     /// Resolve a block number to its current `Block` header + payload
     /// view, accounting for any in-flight Keep / Update / Insert template.
-    pub(crate) fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a block::Block, Option<&'a [u8]>)> {
+    pub(crate) fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<&'a [u8]>)> {
         match self.blocks.get(&block_number)? {
             BlockTemplate::Keep(_) => {
                 let block = self.original.blocks.get(&block_number)?;
@@ -1040,7 +1037,7 @@ impl<'a> Editor<'a> {
     /// - Cascade deletes preserve or remove security block references
     /// - Signer/Encryptor set bib/bcb overrides explicitly
     pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Vec<Chunk>)> {
-        let mut blocks_out: HashMap<u64, block::Block> = HashMap::new();
+        let mut blocks_out: HashMap<u64, Block> = HashMap::new();
 
         let primary_block = self.blocks.remove(&0).expect("No primary block!");
 
@@ -1053,10 +1050,7 @@ impl<'a> Editor<'a> {
             // `extent` here is a placeholder — the offset-fixup loop in
             // `assemble` rewrites it once all chunks are placed. Only
             // `data` (= 0..len) needs to be correct in the meantime.
-            blocks_out.insert(
-                0,
-                primary_block::PrimaryBlock::as_block(primary.crc_type, 0..len),
-            );
+            blocks_out.insert(0, bundle::PrimaryBlock::as_block(primary.crc_type, 0..len));
             (primary, (0u64, Chunk::New(primary_bytes.into())))
         } else if let BlockTemplate::Update(template) = primary_block {
             // Caller supplied raw primary bytes directly (e.g. via the
@@ -1067,7 +1061,7 @@ impl<'a> Editor<'a> {
             let len = primary_bytes.len();
             blocks_out.insert(
                 0,
-                primary_block::PrimaryBlock::as_block(self.original.primary.crc_type, 0..len),
+                bundle::PrimaryBlock::as_block(self.original.primary.crc_type, 0..len),
             );
             (
                 self.original.primary.clone(),
@@ -1185,11 +1179,7 @@ impl<'a> Editor<'a> {
         ))
     }
 
-    fn build_chunk(
-        &self,
-        block_number: u64,
-        template: BlockTemplate,
-    ) -> Result<(block::Block, Chunk)> {
+    fn build_chunk(&self, block_number: u64, template: BlockTemplate) -> Result<(Block, Chunk)> {
         if let BlockTemplate::Update(template) | BlockTemplate::Insert(template) = template {
             let (block, bytes) = template.build_to_vec(block_number).map_err(Error::from)?;
             Ok((block, Chunk::New(bytes.into())))
@@ -1209,11 +1199,11 @@ impl<'a> Editor<'a> {
 }
 
 impl<'a> BlockBuilder<'a> {
-    fn new(editor: Editor<'a>, block_number: u64, block_type: block::Type) -> Self {
+    fn new(editor: Editor<'a>, block_number: u64, block_type: BlockType) -> Self {
         Self {
             template: builder::BlockTemplate::new(
                 block_type,
-                block::Flags::default(),
+                BlockFlags::default(),
                 editor.original.primary.crc_type,
                 None,
             ),
@@ -1237,8 +1227,8 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    /// Set the `Flags` for this block.
-    pub fn with_flags(mut self, flags: block::Flags) -> Self {
+    /// Set the `BundleFlags` for this block.
+    pub fn with_flags(mut self, flags: BlockFlags) -> Self {
         self.template.block.flags = flags;
         self
     }
@@ -1280,11 +1270,8 @@ pub(crate) struct EditorBlockSet<'a> {
 }
 
 impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<Payload<'a>>)> {
         let (block, payload) = self.editor.block(block_number)?;
-        Some((block, payload.map(block::Payload::Borrowed)))
+        Some((block, payload.map(Payload::Borrowed)))
     }
 }

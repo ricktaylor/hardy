@@ -33,7 +33,7 @@ impl Dispatcher {
         payload: Bytes,
         lifetime: core::time::Duration,
         flags: Option<services::SendOptions>,
-    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+    ) -> Result<hardy_bpv7::bundle::BundleId, services::Error> {
         // Build bundle and run Originate filter before storing. The bundle
         // id is unique within this process by construction —
         // `CreationTimestamp::now` issues process-monotonic `(time,
@@ -48,7 +48,7 @@ impl Dispatcher {
 
         // Set flags
         if let Some(flags) = &flags {
-            builder = builder.with_flags(hardy_bpv7::bundle::Flags {
+            builder = builder.with_flags(hardy_bpv7::bundle::BundleFlags {
                 do_not_fragment: flags.do_not_fragment,
                 app_ack_requested: flags.request_ack,
                 report_status_time: flags.report_status_time,
@@ -93,7 +93,7 @@ impl Dispatcher {
         self: &Arc<Self>,
         expected_source: &Eid,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+    ) -> Result<hardy_bpv7::bundle::BundleId, services::Error> {
         let data = crate::stream::concat_stream(stream, self.max_bundle_size)
             .await
             .map_err(|e| match e {
@@ -115,7 +115,7 @@ impl Dispatcher {
         self: &Arc<Self>,
         expected_source: &Eid,
         data: Bytes,
-    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+    ) -> Result<hardy_bpv7::bundle::BundleId, services::Error> {
         // Parse + validate the bundle (security boundary — can't trust
         // service-provided bytes). Non-canonical input is rejected, not rewritten;
         // the bytes are stored and forwarded as received. As the origin we must be
@@ -145,7 +145,7 @@ impl Dispatcher {
         bundle: hardy_bpv7::bundle::Bundle,
         extensions: bundle::ExtensionFields,
         data: Bytes,
-    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+    ) -> Result<hardy_bpv7::bundle::BundleId, services::Error> {
         // Wrap in bundle::Bundle with Dispatching status so that restart
         // recovery skips the Ingress filter (originated bundles only run the
         // Originate filter, never the Ingress filter).
@@ -325,8 +325,8 @@ impl Dispatcher {
                             &bcb_ops,
                             &*key_source,
                         ) {
-                            Ok(hardy_bpv7::block::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
-                            Ok(hardy_bpv7::block::Payload::Decrypted(d)) => {
+                            Ok(hardy_bpv7::bundle::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
+                            Ok(hardy_bpv7::bundle::Payload::Decrypted(d)) => {
                                 Ok(Bytes::from_owner(d))
                             }
                             Err(e) => Err(e),

@@ -10,7 +10,7 @@ async fn receive(
         .map(from_timestamp)
         .ok_or(tonic::Status::invalid_argument("Missing expiry"))??;
 
-    let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+    let bundle_id = hardy_bpv7::bundle::BundleId::from_key(&request.bundle_id)
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
     // The unary wire message already delivered the whole bundle, so it
@@ -53,7 +53,7 @@ async fn status_notify(
     let reason = hardy_bpv7::status_report::ReasonCode::try_from(request.reason)
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 
-    let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+    let bundle_id = hardy_bpv7::bundle::BundleId::from_key(&request.bundle_id)
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
     let from = request
@@ -95,7 +95,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
     async fn send(
         &self,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
+    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::BundleId> {
         // The transport cap doubles as the pre-check from
         // `client::application::Sink::send`: an oversized bundle returns a
         // typed error here instead of letting tonic break the gRPC stream,
@@ -118,7 +118,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
             .await?
         {
             bpa_to_service::Msg::Send(response) => {
-                hardy_bpv7::bundle::Id::from_key(&response.bundle_id)
+                hardy_bpv7::bundle::BundleId::from_key(&response.bundle_id)
                     .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
             }
             msg => {

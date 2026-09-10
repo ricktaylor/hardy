@@ -15,7 +15,8 @@ use bytes::{Bytes, BytesMut};
 use hardy_cbor::decode::{Error as CborError, Head, Marker, Untagged};
 use smallvec::SmallVec;
 
-use crate::{canonical::CaptureFieldErr, primary_block::PrimaryBlock};
+use crate::bundle::{BibCoverage, Block, BlockFlags, BlockType};
+use crate::{bundle::PrimaryBlock, canonical::CaptureFieldErr};
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
@@ -25,8 +26,8 @@ struct BlockHeader {
     /// `from_cbor`.
     is_indefinite: bool,
     number: u64,
-    block_type: block::Type,
-    flags: block::Flags,
+    block_type: BlockType,
+    flags: BlockFlags,
     crc_type: crc::CrcType,
     // Block payload relative to the start of the block
     data_start: u64,
@@ -53,18 +54,18 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
         };
         let expected_count = data[0];
 
-        let block_type: block::Type = parse_canonical(data, &mut offset, "block type")?;
+        let block_type: BlockType = parse_canonical(data, &mut offset, "block type")?;
 
         let block_number: u64 = parse_canonical(data, &mut offset, "block number")?;
         match (block_number, block_type) {
-            (1, block::Type::Payload) => {}
-            (0 | 1, _) | (_, block::Type::Primary | block::Type::Payload) => {
+            (1, BlockType::Payload) => {}
+            (0 | 1, _) | (_, BlockType::Primary | BlockType::Payload) => {
                 return Err(Error::InvalidBlockNumber(block_number, block_type));
             }
             _ => {}
         }
 
-        let flags: block::Flags = parse_canonical(data, &mut offset, "block flags")?;
+        let flags: BlockFlags = parse_canonical(data, &mut offset, "block flags")?;
 
         let crc_type: crc::CrcType = parse_canonical(data, &mut offset, "block crc type")?;
 
@@ -440,7 +441,7 @@ pub struct BundleParser {
     /// MUST appear at most once per bundle. Tracked as a small set
     /// during the streaming walk; `insert` returning `false` is the
     /// duplicate detection.
-    unique_blocks: HashSet<block::Type>,
+    unique_blocks: HashSet<BlockType>,
 
     /// Block numbers of every BIB encountered, recorded in walk
     /// order. BIBs are NOT parsed inline because a BIB may itself be
@@ -722,7 +723,7 @@ impl BundleParser {
                     .blocks
                     .get_mut(&target_number)
                     .expect("OperationSet::check verified every target exists")
-                    .bib = block::BibCoverage::Some(bib_block_number);
+                    .bib = BibCoverage::Some(bib_block_number);
             }
 
             bibs.insert(bib_block_number, ops);
@@ -735,10 +736,10 @@ impl BundleParser {
             for block in bundle.blocks.values_mut() {
                 if !matches!(
                     block.block_type,
-                    block::Type::BlockIntegrity | block::Type::BlockSecurity
-                ) && matches!(block.bib, block::BibCoverage::None)
+                    BlockType::BlockIntegrity | BlockType::BlockSecurity
+                ) && matches!(block.bib, BibCoverage::None)
                 {
-                    block.bib = block::BibCoverage::Maybe;
+                    block.bib = BibCoverage::Maybe;
                 }
             }
         }
@@ -832,11 +833,11 @@ impl BundleParser {
         self.bundle = Some(Bundle {
             blocks: [(
                 0,
-                block::Block {
-                    block_type: block::Type::Primary,
-                    flags: block::Flags::primary(),
+                Block {
+                    block_type: BlockType::Primary,
+                    flags: BlockFlags::primary(),
                     crc_type: primary.crc_type,
-                    bib: block::BibCoverage::None,
+                    bib: BibCoverage::None,
                     bcb: None,
                     extent: block_start as u64..offset as u64,
                     data: 0..(offset - block_start) as u64,
@@ -879,7 +880,7 @@ impl BundleParser {
             // `block_start` on the next push, so bookkeeping written before
             // that point would read as a duplicate on the retry.
             match header.block_type {
-                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
+                BlockType::PreviousNode | BlockType::BundleAge | BlockType::HopCount
                     if self.unique_blocks.contains(&header.block_type) =>
                 {
                     return Err(Error::DuplicateBlocks(header.block_type));
@@ -913,7 +914,7 @@ impl BundleParser {
                 .checked_add(trailer_len as u64)
                 .ok_or(Error::InvalidCBOR(CborError::TooBig))?;
 
-            let is_payload = matches!(header.block_type, block::Type::Payload);
+            let is_payload = matches!(header.block_type, BlockType::Payload);
             if (data.len() as u64) < body_end {
                 // Body doesn't fit in the buffer yet. Keep the shortfall in
                 // u64: the streaming-fallback path below must stay reachable on
@@ -1040,7 +1041,7 @@ impl BundleParser {
             // and let `finish()` decide after BCBs have been processed
             // and BCB-coverage on each block is known.
             let bcb_ops = match header.block_type {
-                block::Type::BlockSecurity => {
+                BlockType::BlockSecurity => {
                     let mut o = block_start + header.data_start as usize;
                     let body_end = block_start + header.data_end as usize;
                     // See the BIB call in `finish()` for the slice-bound
@@ -1057,16 +1058,16 @@ impl BundleParser {
 
             // Past every fallible step for this block — record it.
             match header.block_type {
-                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount => {
+                BlockType::PreviousNode | BlockType::BundleAge | BlockType::HopCount => {
                     self.unique_blocks.insert(header.block_type);
                 }
-                block::Type::BlockIntegrity => {
+                BlockType::BlockIntegrity => {
                     // Body range is recoverable from bundle.blocks[n]
                     // (extent + data) at finalize time — no need to
                     // duplicate it here.
                     self.pending_bibs.push(header.number);
                 }
-                block::Type::BlockSecurity => {
+                BlockType::BlockSecurity => {
                     self.bcbs.insert(
                         header.number,
                         bcb_ops.expect("BlockSecurity always decodes ops above"),
@@ -1076,11 +1077,11 @@ impl BundleParser {
             }
             bundle.blocks.insert(
                 header.number,
-                block::Block {
+                Block {
                     block_type: header.block_type,
                     flags: header.flags,
                     crc_type: header.crc_type,
-                    bib: block::BibCoverage::None,
+                    bib: BibCoverage::None,
                     bcb: None,
                     extent: block_start_u64..extent_end,
                     data: header.data_start..header.data_end,

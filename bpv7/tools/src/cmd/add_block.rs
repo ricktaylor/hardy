@@ -1,7 +1,7 @@
 use super::*;
 use hardy_bpv7::{
-    block,
     bpsec::key::KeySet,
+    bundle::BlockType,
     editor::{Chunk, Editor},
 };
 use std::str::FromStr;
@@ -33,15 +33,15 @@ impl FromStr for BlockTypeArg {
     }
 }
 
-impl From<BlockTypeArg> for block::Type {
+impl From<BlockTypeArg> for BlockType {
     fn from(value: BlockTypeArg) -> Self {
         match value {
-            BlockTypeArg::BundleAge => block::Type::BundleAge,
-            BlockTypeArg::HopCount => block::Type::HopCount,
-            BlockTypeArg::PreviousNode => block::Type::PreviousNode,
-            BlockTypeArg::BlockIntegrity => block::Type::BlockIntegrity,
-            BlockTypeArg::BlockSecurity => block::Type::BlockSecurity,
-            BlockTypeArg::Numeric(n) => block::Type::Unrecognised(n),
+            BlockTypeArg::BundleAge => BlockType::BundleAge,
+            BlockTypeArg::HopCount => BlockType::HopCount,
+            BlockTypeArg::PreviousNode => BlockType::PreviousNode,
+            BlockTypeArg::BlockIntegrity => BlockType::BlockIntegrity,
+            BlockTypeArg::BlockSecurity => BlockType::BlockSecurity,
+            BlockTypeArg::Numeric(n) => BlockType::Unrecognised(n),
         }
     }
 }
@@ -115,7 +115,7 @@ impl Command {
             ));
         };
 
-        let block_type: block::Type = self.block_type.into();
+        let block_type: BlockType = self.block_type.into();
 
         let editor = Editor::new(&bundle, &data);
 

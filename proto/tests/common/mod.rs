@@ -183,7 +183,7 @@ impl cla::Sink for ClaSinkWrapper {
     }
     async fn transfer_outcome(
         &self,
-        id: &hardy_bpv7::bundle::Id,
+        id: &hardy_bpv7::bundle::BundleId,
         o: cla::TransferOutcome,
     ) -> cla::Result<()> {
         self.0.transfer_outcome(id, o).await
@@ -198,7 +198,7 @@ impl services::ServiceSink for ServiceSinkWrapper {
     async fn send(
         &self,
         s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
+    ) -> services::Result<hardy_bpv7::bundle::BundleId> {
         self.0.send(s).await
     }
 }
@@ -214,7 +214,7 @@ impl services::ApplicationSink for ApplicationSinkWrapper {
         data: hardy_bpa::Bytes,
         lt: core::time::Duration,
         opts: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
+    ) -> services::Result<hardy_bpv7::bundle::BundleId> {
         self.0.send(dest, data, lt, opts).await
     }
 }

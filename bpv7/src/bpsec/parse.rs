@@ -201,7 +201,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             // Context
             let context = require_canonical(seq, "security context id", Error::NotCanonical)?;
 
-            // Flags
+            // BundleFlags
             let flags: u64 = require_canonical(seq, "security context flags", Error::NotCanonical)?;
 
             // Source

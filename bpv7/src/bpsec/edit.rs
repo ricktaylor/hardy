@@ -34,8 +34,9 @@ use alloc::{boxed::Box, vec::Vec};
 use hardy_cbor::{decode::parse_exact, encode::emit};
 use smallvec::SmallVec;
 
+use crate::bundle::{BibCoverage, BlockType};
 use crate::{
-    HashMap, HashSet, block,
+    HashMap, HashSet,
     bpsec::{Error, bcb, bib, key},
     crc,
     editor::{Editor, EditorBlockSet, Error as EditorError},
@@ -61,7 +62,7 @@ pub trait BPSecEditor: Sized {
     /// removed wholesale in the cascade step via `remove_block_inner`,
     /// which strips it from its BCB's plaintext OperationSet without
     /// needing to read the BIB body; (c) a target whose encrypted-BIB
-    /// coverage is unresolved ([`block::BibCoverage::Maybe`]) is silently
+    /// coverage is unresolved ([`BibCoverage::Maybe`]) is silently
     /// retained while any undecryptable BIB survives — removing it would
     /// leave that BIB's ciphertext OperationSet listing a nonexistent
     /// block for downstream key-holders.
@@ -140,7 +141,7 @@ impl<'a> BPSecEditor for Editor<'a> {
         for &n in &to_remove {
             if !self
                 .block(n)
-                .is_some_and(|(b, _)| matches!(b.block_type, block::Type::BlockSecurity))
+                .is_some_and(|(b, _)| matches!(b.block_type, BlockType::BlockSecurity))
             {
                 continue;
             }
@@ -159,7 +160,7 @@ impl<'a> BPSecEditor for Editor<'a> {
             .block_numbers()
             .filter_map(|n| {
                 let (block, _) = self.block(n)?;
-                if matches!(block.block_type, block::Type::BlockIntegrity) {
+                if matches!(block.block_type, BlockType::BlockIntegrity) {
                     block.bcb.map(|bcb_n| (n, bcb_n))
                 } else {
                     None
@@ -252,7 +253,7 @@ impl<'a> BPSecEditor for Editor<'a> {
                 resolved_targets.contains(&n)
                     || !self
                         .block(n)
-                        .is_some_and(|(b, _)| matches!(b.bib, block::BibCoverage::Maybe))
+                        .is_some_and(|(b, _)| matches!(b.bib, BibCoverage::Maybe))
             });
         }
 
@@ -308,7 +309,7 @@ impl<'a> BPSecEditor for Editor<'a> {
         let Some((target_block, _)) = self.block(block_number) else {
             return Err((self, EditorError::NoSuchBlock(block_number)));
         };
-        let block::BibCoverage::Some(bib) = target_block.bib else {
+        let BibCoverage::Some(bib) = target_block.bib else {
             return Err((self, Error::NotSigned.into()));
         };
         remove_integrity_inner(self, block_number, bib)
@@ -390,7 +391,7 @@ where
     let mut block = editor
         .update_block_inner(block_number)?
         .with_data(target_payload.into_vec().into());
-    if matches!(original_block.bib, block::BibCoverage::None)
+    if matches!(original_block.bib, BibCoverage::None)
         && matches!(original_block.crc_type, crc::CrcType::None)
     {
         block = block.with_crc_type(crc::CrcType::CRC32_CASTAGNOLI);
@@ -408,7 +409,7 @@ where
             .filter(|&target| {
                 editor
                     .block(target)
-                    .is_some_and(|(blk, _)| matches!(blk.block_type, block::Type::BlockIntegrity))
+                    .is_some_and(|(blk, _)| matches!(blk.block_type, BlockType::BlockIntegrity))
             })
             .collect();
 

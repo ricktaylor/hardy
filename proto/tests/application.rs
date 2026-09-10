@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 struct MockApplication {
     registered: AtomicBool,
     received: AtomicBool,
-    received_id: hardy_async::sync::spin::Mutex<Option<hardy_bpv7::bundle::Id>>,
+    received_id: hardy_async::sync::spin::Mutex<Option<hardy_bpv7::bundle::BundleId>>,
     status_notified: AtomicBool,
     sink: hardy_async::sync::spin::Mutex<Option<Box<dyn ApplicationSink>>>,
 }
@@ -50,7 +50,7 @@ impl Application for MockApplication {
 
     async fn on_deliver(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
@@ -63,7 +63,7 @@ impl Application for MockApplication {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _from: &Eid,
         _kind: StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
@@ -176,7 +176,7 @@ async fn app_cli_04_receive_payload() {
         .expect("BPA should have the server-side application");
 
     let source: Eid = "ipn:2.1".parse().unwrap();
-    let bundle_id = hardy_bpv7::bundle::Id {
+    let bundle_id = hardy_bpv7::bundle::BundleId {
         source: source.clone(),
         ..Default::default()
     };
@@ -228,7 +228,7 @@ async fn app_cli_05_status_notify() {
         .clone()
         .expect("BPA should have the server-side application");
 
-    let bundle_id = hardy_bpv7::bundle::Id {
+    let bundle_id = hardy_bpv7::bundle::BundleId {
         source: "ipn:1.42".parse().unwrap(),
         timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::new_sequential(),
         fragment_info: None,

@@ -1056,7 +1056,7 @@ mod tests {
         }
         async fn transfer_outcome(
             &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
+            _bundle_id: &hardy_bpv7::bundle::BundleId,
             _outcome: hardy_bpa::cla::TransferOutcome,
         ) -> hardy_bpa::cla::Result<()> {
             Ok(())

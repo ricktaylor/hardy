@@ -3,7 +3,7 @@ pub(crate) mod registry;
 use core::time::Duration;
 
 use hardy_async::async_trait;
-use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::{bundle::BundleId, eid::Eid, status_report::ReasonCode};
 use thiserror::Error;
 
 use crate::Bytes;
@@ -191,7 +191,7 @@ pub trait Application: Send + Sync {
     /// whose errors convert into this module's [`Error`] via `?`.
     async fn on_deliver(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
         total_len: u64,
@@ -201,7 +201,7 @@ pub trait Application: Send + Sync {
     /// Called when a status report is received for a bundle sent by this application.
     async fn on_status_notify(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         from: &Eid,
         kind: StatusNotify,
         reason: ReasonCode,
@@ -254,7 +254,7 @@ pub trait ApplicationSink: Send + Sync {
         data: Bytes,
         lifetime: Duration,
         options: Option<SendOptions>,
-    ) -> Result<Id>;
+    ) -> Result<BundleId>;
 }
 
 /// Low-level service trait with raw bundle access.
@@ -340,7 +340,7 @@ pub trait Service: Send + Sync {
     /// whose errors convert into this module's [`Error`] via `?`.
     async fn on_deliver(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -349,7 +349,7 @@ pub trait Service: Send + Sync {
     /// Called when status report received for a sent bundle
     async fn on_status_notify(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         from: &Eid,
         kind: StatusNotify,
         reason: ReasonCode,
@@ -392,7 +392,7 @@ pub trait ServiceSink: Send + Sync {
     async fn send(
         &self,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-    ) -> Result<Id>;
+    ) -> Result<BundleId>;
 }
 
 #[cfg(test)]
@@ -407,7 +407,7 @@ pub(crate) mod tests {
         async fn on_unregister(&self) {}
         async fn on_deliver(
             &self,
-            _: &Id,
+            _: &BundleId,
             _: time::OffsetDateTime,
             _: u64,
             _: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -416,7 +416,7 @@ pub(crate) mod tests {
         }
         async fn on_status_notify(
             &self,
-            _: &Id,
+            _: &BundleId,
             _: &Eid,
             _: StatusNotify,
             _: ReasonCode,

@@ -8,7 +8,7 @@ use hardy_bpa::{
     stream::{Receiver, buffer_stream},
 };
 use hardy_bpv7::{
-    bundle::Id,
+    bundle::BundleId,
     eid::{Eid, NodeId},
 };
 use hardy_cbor::{decode, encode};
@@ -100,7 +100,7 @@ impl Cla for BibeCla {
         &self,
         _lane: Option<u32>,
         cla_addr: &ClaAddress,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> ClaResult<ForwardBundleResult> {

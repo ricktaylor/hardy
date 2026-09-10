@@ -38,8 +38,8 @@ impl Dispatcher {
             }) => {
                 let key_source = self.key_source(&raw, &buf);
                 match hardy_bpv7::bpsec::block_data(1, &raw.blocks, &buf, &bcb_ops, &*key_source) {
-                    Ok(hardy_bpv7::block::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
-                    Ok(hardy_bpv7::block::Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
+                    Ok(hardy_bpv7::bundle::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
+                    Ok(hardy_bpv7::bundle::Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
                     Err(e) => Err(e),
                 }
             }

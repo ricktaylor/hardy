@@ -19,7 +19,7 @@ use hardy_bpa::{
 };
 use hardy_bpv7::{
     builder::Builder,
-    bundle::Id,
+    bundle::BundleId,
     creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId, Service},
     status_report::ReasonCode,
@@ -29,7 +29,7 @@ use hardy_bpv7::{
 /// the release sender fires (or is dropped).
 struct HoldService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
-    delivered_tx: flume::Sender<Id>,
+    delivered_tx: flume::Sender<BundleId>,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
@@ -37,7 +37,7 @@ struct HoldService {
 impl HoldService {
     fn new() -> (
         Arc<Self>,
-        flume::Receiver<Id>,
+        flume::Receiver<BundleId>,
         flume::Receiver<()>,
         flume::Sender<()>,
     ) {
@@ -68,7 +68,7 @@ impl services::Service for HoldService {
 
     async fn on_deliver(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -87,7 +87,7 @@ impl services::Service for HoldService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -116,7 +116,7 @@ impl cla::Cla for IngressCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -127,7 +127,7 @@ impl cla::Cla for IngressCla {
 /// Poll the metadata store until `id` reaches `expected`. Storage writes
 /// have no external completion signal, so this is a bounded status wait;
 /// the deadline only bounds a regression.
-async fn await_status(store: &MetadataMemStorage, id: &Id, expected: &BundleStatus) {
+async fn await_status(store: &MetadataMemStorage, id: &BundleId, expected: &BundleStatus) {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
     loop {
         let status = store

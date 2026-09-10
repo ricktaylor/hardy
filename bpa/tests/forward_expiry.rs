@@ -18,7 +18,7 @@ use hardy_bpa::{
 };
 use hardy_bpv7::{
     builder::Builder,
-    bundle::{Flags, Id},
+    bundle::{BundleFlags, BundleId},
     creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId, Service},
     parse::parse,
@@ -64,7 +64,7 @@ impl services::Service for CaptureService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -86,7 +86,7 @@ impl services::Service for CaptureService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -104,11 +104,11 @@ impl services::Service for CaptureService {
 /// `Sink::transfer_outcome`.
 struct AcceptingCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-    accepted_tx: flume::Sender<Id>,
+    accepted_tx: flume::Sender<BundleId>,
 }
 
 impl AcceptingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>) {
+    fn new() -> (Arc<Self>, flume::Receiver<BundleId>) {
         let (tx, rx) = flume::bounded(1);
         (
             Arc::new(Self {
@@ -136,7 +136,7 @@ impl cla::Cla for AcceptingCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -175,7 +175,7 @@ impl cla::Cla for IngressCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -229,7 +229,7 @@ async fn expiry_mid_transfer_rig() -> (
     Arc<MetadataMemStorage>,
     flume::Receiver<Event>,
     Arc<AcceptingCla>,
-    Id,
+    BundleId,
 ) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
@@ -280,7 +280,7 @@ async fn expiry_mid_transfer_rig() -> (
 
     let (bundle_a, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.1".parse().unwrap())
         .with_report_to("ipn:0.1.9".parse().unwrap())
-        .with_flags(Flags {
+        .with_flags(BundleFlags {
             delete_report_requested: true,
             ..Default::default()
         })
@@ -312,7 +312,7 @@ async fn expiry_mid_transfer_rig() -> (
     // parks as WaitingForService straight from dispatch.
     let (_, data) = Builder::new("ipn:0.2.2".parse().unwrap(), "ipn:0.1.6".parse().unwrap())
         .with_report_to("ipn:0.1.9".parse().unwrap())
-        .with_flags(Flags {
+        .with_flags(BundleFlags {
             delete_report_requested: true,
             ..Default::default()
         })
@@ -503,7 +503,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
     // the two deferred rows heading the expiry order.
     let (_, data) = Builder::new("ipn:0.2.3".parse().unwrap(), "ipn:0.1.6".parse().unwrap())
         .with_report_to("ipn:0.1.9".parse().unwrap())
-        .with_flags(Flags {
+        .with_flags(BundleFlags {
             delete_report_requested: true,
             ..Default::default()
         })

@@ -6,8 +6,9 @@ use thiserror::Error;
 
 #[cfg(feature = "rfc9173")]
 use crate::bpsec::rfc9173;
+use crate::bundle::{BibCoverage, BlockFlags, BlockType};
 use crate::{
-    HashMap, block,
+    HashMap,
     bpsec::{self, bcb, key},
     bundle, crc,
     editor::{self, Chunk, Editor},
@@ -109,7 +110,7 @@ impl<'a> Encryptor<'a> {
             return Err((self, Error::AlreadyEncrypted(block_number)));
         }
 
-        if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
+        if let BlockType::BlockIntegrity | BlockType::BlockSecurity = block.block_type {
             return Err((self, Error::InvalidTarget(block_number)));
         }
 
@@ -117,10 +118,10 @@ impl<'a> Encryptor<'a> {
          * We take the 'all-or-nothing' approach and encrypt all BIB targets, rather than splitting the BIB
          * because splitting requires integrity keys */
         match block.bib {
-            block::BibCoverage::Maybe => {
+            BibCoverage::Maybe => {
                 return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
             }
-            block::BibCoverage::Some(bib_block) => {
+            BibCoverage::Some(bib_block) => {
                 let Some(bib) = self.original.blocks.get(&bib_block) else {
                     return Err((self, crate::Error::Altered.into()));
                 };
@@ -167,7 +168,7 @@ impl<'a> Encryptor<'a> {
                     },
                 );
             }
-            block::BibCoverage::None => {}
+            BibCoverage::None => {}
         }
 
         self.templates.insert(
@@ -269,10 +270,10 @@ impl<'a> Encryptor<'a> {
 
             // Reserve a block number for the BCB block
             let b = editor
-                .alloc_block(block::Type::BlockSecurity)
+                .alloc_block(BlockType::BlockSecurity)
                 .map_err(|(_, e)| e)?
                 .with_crc_type(crc::CrcType::None)
-                .with_flags(block::Flags {
+                .with_flags(BlockFlags {
                     must_replicate: true,
                     ..Default::default()
                 });

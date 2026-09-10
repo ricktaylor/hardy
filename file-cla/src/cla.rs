@@ -5,7 +5,7 @@ use hardy_bpa::{
     async_trait,
     stream::{Receiver, buffer_stream},
 };
-use hardy_bpv7::{bundle::Id, eid::NodeId};
+use hardy_bpv7::{bundle::BundleId, eid::NodeId};
 use tracing::{error, warn};
 
 use crate::Cla;
@@ -54,7 +54,7 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         _lane: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         total_len: u64,
         stream: &mut dyn Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {

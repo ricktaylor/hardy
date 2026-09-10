@@ -6,7 +6,7 @@
 use core::{iter::repeat_n, num::NonZeroU8};
 
 use bytes::Bytes;
-use hardy_bpv7::{Error, block, builder, crc, creation_timestamp, hop_info, parse};
+use hardy_bpv7::{Error, builder, bundle::BlockType, crc, creation_timestamp, hop_info, parse};
 // Aliased: collides with the bpv7 `Error` imported above.
 use hardy_cbor::decode::Error as CborError;
 use hex_literal::hex;
@@ -102,7 +102,7 @@ fn hop_count_extraction() {
         .bundle
         .blocks
         .values()
-        .find(|b| matches!(b.block_type, block::Type::HopCount))
+        .find(|b| matches!(b.block_type, BlockType::HopCount))
         .expect("HopCount block present");
     let body = hc_block
         .payload(&parsed.data)
@@ -135,7 +135,7 @@ fn extension_block_parsing() {
             .bundle
             .blocks
             .values()
-            .any(|b| matches!(b.block_type, block::Type::HopCount))
+            .any(|b| matches!(b.block_type, BlockType::HopCount))
     );
 
     // Payload block exists
@@ -550,7 +550,7 @@ fn encoded_len_is_the_wire_length() {
 // status-report reason code is the BPA's concern, not the parser's.
 mod block_rules {
     use bytes::Bytes;
-    use hardy_bpv7::{Error, block, parse};
+    use hardy_bpv7::{Error, bundle::BlockType, parse};
     use hardy_cbor::encode::emit;
 
     use super::build_minimal_bundle;
@@ -586,7 +586,7 @@ mod block_rules {
             panic!("two BundleAge blocks must be rejected");
         };
         assert!(
-            matches!(err, Error::DuplicateBlocks(block::Type::BundleAge)),
+            matches!(err, Error::DuplicateBlocks(BlockType::BundleAge)),
             "two BundleAge blocks, got: {err:?}"
         );
     }

@@ -3,8 +3,7 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    Error, builder, bundle, crc, creation_timestamp, dtn_time, eid, parse,
-    primary_block::PrimaryBlock,
+    Error, builder, bundle, bundle::PrimaryBlock, crc, creation_timestamp, dtn_time, eid, parse,
 };
 // Aliased: `decode::Error` collides with the bpv7 `Error` and
 // `encode::Bytes` with `bytes::Bytes` imported above.

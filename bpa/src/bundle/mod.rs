@@ -7,9 +7,8 @@ pub use self::metadata::{BundleMetadata, ExtensionFields, Origin, WritableMetada
 pub use self::status::BundleStatus;
 
 use hardy_bpv7::{
-    bundle::{Bundle as Bpv7Bundle, Id},
+    bundle::{Bundle as Bpv7Bundle, BundleId, PrimaryBlock},
     eid::Eid,
-    primary_block::PrimaryBlock,
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -93,7 +92,7 @@ impl Bundle {
     }
 
     /// The bundle's ID (from the primary block).
-    pub fn id(&self) -> &Id {
+    pub fn id(&self) -> &BundleId {
         &self.bpv7.primary.id
     }
 
@@ -195,7 +194,7 @@ pub mod tests {
     // individual fields on the returned value.
     pub fn test_bundle(source: &str, destination: &str) -> Bundle {
         test_bundle_with_id(
-            Id {
+            BundleId {
                 source: source.parse().unwrap(),
                 timestamp: CreationTimestamp::now(),
                 fragment_info: None,
@@ -204,8 +203,8 @@ pub mod tests {
         )
     }
 
-    // `test_bundle` with a caller-supplied full `Id` (fragment tests).
-    pub fn test_bundle_with_id(id: Id, destination: &str) -> Bundle {
+    // `test_bundle` with a caller-supplied full `BundleId` (fragment tests).
+    pub fn test_bundle_with_id(id: BundleId, destination: &str) -> Bundle {
         Bundle::new(
             Bpv7Bundle {
                 primary: PrimaryBlock {

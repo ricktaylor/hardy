@@ -7,9 +7,10 @@
 #![cfg(all(feature = "rfc9173", feature = "serde"))]
 
 use hardy_bpv7::{
-    Bundle, block,
+    Bundle,
     bpsec::{self, edit::BPSecEditor, key, rfc9173::ScopeFlags, signer},
     builder::Builder,
+    bundle::BlockType,
     checks, crc,
     creation_timestamp::CreationTimestamp,
     editor::Editor,
@@ -19,6 +20,7 @@ use std::collections::HashMap;
 
 mod common;
 use self::common::rand_k;
+use hardy_bpv7::bundle::BibCoverage;
 // Signer works on a parse-shaped `Bundle`; re-parse the builder output to
 // get one with real wire extents.
 fn reparse(
@@ -93,7 +95,7 @@ fn sign_primary_removes_crc_and_verifies() {
         crc::CrcType::None,
         "signing the primary must remove its CRC (RFC 9173 §3.8.1)"
     );
-    assert!(matches!(signed.blocks[&0].bib, block::BibCoverage::Some(_)));
+    assert!(matches!(signed.blocks[&0].bib, BibCoverage::Some(_)));
 }
 
 // remove_integrity must clear the target's BIB coverage in the rebuilt Bundle,
@@ -142,7 +144,7 @@ fn remove_integrity_clears_target_coverage() {
     .expect("Failed to verify signed bundle");
     assert!(deferred.is_empty(), "a complete buffer defers nothing");
     assert!(
-        matches!(signed.blocks[&1].bib, block::BibCoverage::Some(_)),
+        matches!(signed.blocks[&1].bib, BibCoverage::Some(_)),
         "payload block should report BIB coverage after signing"
     );
     // Default scope flags include the primary block in the IPPT, but the primary
@@ -164,14 +166,14 @@ fn remove_integrity_clears_target_coverage() {
 
     assert_eq!(
         rebuilt.blocks[&1].bib,
-        block::BibCoverage::None,
+        BibCoverage::None,
         "coverage must be cleared after remove_integrity"
     );
     assert!(
         !rebuilt
             .blocks
             .values()
-            .any(|b| b.block_type == block::Type::BlockIntegrity),
+            .any(|b| b.block_type == BlockType::BlockIntegrity),
         "no BIB block should remain after remove_integrity"
     );
 }

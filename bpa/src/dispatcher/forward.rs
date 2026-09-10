@@ -178,7 +178,7 @@ impl Dispatcher {
     pub async fn transfer_outcome(
         &self,
         cla: &cla::registry::Cla,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         outcome: cla::TransferOutcome,
     ) {
         let Some(mut bundle) = self.store.get_metadata(bundle_id).await else {
@@ -269,9 +269,9 @@ impl Dispatcher {
 
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
-            .insert_block(hardy_bpv7::block::Type::PreviousNode)
+            .insert_block(hardy_bpv7::bundle::BlockType::PreviousNode)
             .map_err(|(_, e)| e)?
-            .with_flags(hardy_bpv7::block::Flags {
+            .with_flags(hardy_bpv7::bundle::BlockFlags {
                 report_on_failure,
                 ..Default::default()
             })
@@ -289,9 +289,9 @@ impl Dispatcher {
         // Increment Hop Count
         if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
             editor = editor
-                .insert_block(hardy_bpv7::block::Type::HopCount)
+                .insert_block(hardy_bpv7::bundle::BlockType::HopCount)
                 .map_err(|(_, e)| e)?
-                .with_flags(hardy_bpv7::block::Flags {
+                .with_flags(hardy_bpv7::bundle::BlockFlags {
                     report_on_failure,
                     must_replicate: true,
                     ..Default::default()
@@ -316,9 +316,9 @@ impl Dispatcher {
                 .clamp(0, u64::MAX as i128) as u64;
 
             editor = editor
-                .insert_block(hardy_bpv7::block::Type::BundleAge)
+                .insert_block(hardy_bpv7::bundle::BlockType::BundleAge)
                 .map_err(|(_, e)| e)?
-                .with_flags(hardy_bpv7::block::Flags {
+                .with_flags(hardy_bpv7::bundle::BlockFlags {
                     report_on_failure,
                     must_replicate: true,
                     ..Default::default()
@@ -346,7 +346,7 @@ mod tests {
     use core::num::NonZeroUsize;
 
     use hardy_bpv7::{
-        bundle::Id,
+        bundle::BundleId,
         eid::{IpnNodeId, NodeId},
     };
 
@@ -357,7 +357,7 @@ mod tests {
     };
 
     struct RecordingCla {
-        offers_tx: flume::Sender<Id>,
+        offers_tx: flume::Sender<BundleId>,
     }
 
     #[async_trait]
@@ -374,7 +374,7 @@ mod tests {
             &self,
             _lane: Option<u32>,
             _cla_addr: &cla::ClaAddress,
-            bundle_id: &Id,
+            bundle_id: &BundleId,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {

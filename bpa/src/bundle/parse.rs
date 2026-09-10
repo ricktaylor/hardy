@@ -28,7 +28,11 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    Bundle as Bpv7Bundle, block, bpsec, bundle_age, checks, editor::Chunk, parse, rewrite,
+    Bundle as Bpv7Bundle, bpsec,
+    bundle::{Block, BlockType},
+    bundle_age, checks,
+    editor::Chunk,
+    parse, rewrite,
     status_report::ReasonCode,
 };
 use time::OffsetDateTime;
@@ -114,7 +118,7 @@ pub struct Validated {
     /// The §C8 extension blocks that were BCB-encrypted but undecryptable
     /// (no key) — facts for the call site to adjudicate (see
     /// [`reject_undecryptable_liveness`]).
-    pub nokey_ext: Vec<(u64, block::Type)>,
+    pub nokey_ext: Vec<(u64, BlockType)>,
 }
 
 /// One-shot keyed validation of a complete in-memory bundle. Returns a
@@ -186,9 +190,9 @@ where
 /// immortal bundle. Contrast a non-liveness block, where the two failure modes
 /// diverge — a corrupt one is stripped (RFC 9172 §5.1.1), an undecipherable one
 /// is forwarded intact for a downstream security acceptor.
-fn is_liveness_critical(block_type: block::Type, is_clocked: bool) -> bool {
-    matches!(block_type, block::Type::HopCount)
-        || (!is_clocked && matches!(block_type, block::Type::BundleAge))
+fn is_liveness_critical(block_type: BlockType, is_clocked: bool) -> bool {
+    matches!(block_type, BlockType::HopCount)
+        || (!is_clocked && matches!(block_type, BlockType::BundleAge))
 }
 
 /// Call-site NoKey policy: reject a bundle carrying a liveness-critical extension
@@ -197,7 +201,7 @@ fn is_liveness_critical(block_type: block::Type, is_clocked: bool) -> bool {
 /// A node that accepts/forwards applies this; a restart re-check tolerates a
 /// key that has since rotated away and skips it.
 pub fn reject_undecryptable_liveness(
-    nokey: &[(u64, block::Type)],
+    nokey: &[(u64, BlockType)],
     is_clocked: bool,
 ) -> Result<(), hardy_bpv7::Error> {
     if nokey
@@ -570,11 +574,11 @@ where
 /// Decode one `PreviousNode` / `BundleAge` / `HopCount` field: the BCB-decrypted
 /// plaintext when §C8 supplied it (smuggling-checked via
 /// [`hardy_cbor::decode::parse_exact`]), else the block's wire payload via
-/// [`block::Block::extract`] (`None` for an encrypted block with no plaintext, or
+/// [`Block::extract`] (`None` for an encrypted block with no plaintext, or
 /// a not-resident payload). Selecting wire-vs-decrypted is BPA policy; the decode
 /// + smuggling check are bpv7's.
 fn decode_field<T>(
-    block: &block::Block,
+    block: &Block,
     source: &[u8],
     decrypted: Option<&[u8]>,
 ) -> Result<Option<T>, hardy_bpv7::Error>
@@ -598,7 +602,7 @@ where
 /// `Zeroizing` type never needs naming here.
 fn extract_extension_block_fields<V: AsRef<[u8]>>(
     data: &[u8],
-    blocks: &HashMap<u64, block::Block>,
+    blocks: &HashMap<u64, Block>,
     decrypted_data: &HashMap<u64, V>,
 ) -> Result<ExtensionFields, hardy_bpv7::Error> {
     let mut out = ExtensionFields::default();
@@ -608,14 +612,14 @@ fn extract_extension_block_fields<V: AsRef<[u8]>>(
     for (&block_number, target_block) in blocks {
         let decrypted = decrypted_data.get(&block_number).map(AsRef::as_ref);
         match target_block.block_type {
-            block::Type::PreviousNode => {
+            BlockType::PreviousNode => {
                 out.previous_node = decode_field(target_block, data, decrypted)?;
             }
-            block::Type::BundleAge => {
+            BlockType::BundleAge => {
                 out.age = decode_field::<bundle_age::BundleAge>(target_block, data, decrypted)?
                     .map(Into::into);
             }
-            block::Type::HopCount => {
+            BlockType::HopCount => {
                 out.hop_count = decode_field(target_block, data, decrypted)?;
             }
             _ => {}
@@ -755,7 +759,7 @@ mod tests {
         let hop_block = *built
             .blocks
             .iter()
-            .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+            .find(|(_, b)| matches!(b.block_type, BlockType::HopCount))
             .expect("builder emitted the Hop Count block")
             .0;
 
@@ -793,14 +797,14 @@ mod tests {
         let nokey = parse_validate_with_provider(encrypted, no_keys)
             .expect("validate returns the facts")
             .nokey_ext;
-        assert_eq!(nokey, vec![(hop_block, block::Type::HopCount)]);
+        assert_eq!(nokey, vec![(hop_block, BlockType::HopCount)]);
         assert!(matches!(
             reject_undecryptable_liveness(&nokey, true),
             Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
         ));
 
         // BundleAge is liveness-critical only on an unclocked node.
-        let age_fact = [(9, block::Type::BundleAge)];
+        let age_fact = [(9, BlockType::BundleAge)];
         assert!(reject_undecryptable_liveness(&age_fact, true).is_ok());
         assert!(matches!(
             reject_undecryptable_liveness(&age_fact, false),

@@ -1,6 +1,8 @@
 use super::*;
 use core::time::Duration;
-use hardy_bpv7::{block, bpsec, bundle, bundle_age, crc, eid, hop_info};
+use hardy_bpv7::bundle::BundleId;
+use hardy_bpv7::bundle::{BlockFlags, BundleFlags};
+use hardy_bpv7::{bpsec, bundle_age, crc, eid, hop_info};
 use hardy_cbor::decode::{parse_exact, parse_value};
 use std::collections::HashMap;
 #[derive(Parser, Debug)]
@@ -123,12 +125,12 @@ struct ExtFields {
 /// at their `None` default. Errors on a malformed body.
 fn extension_fields(
     data: &[u8],
-    blocks: &HashMap<u64, block::Block>,
+    blocks: &HashMap<u64, Block>,
 ) -> Result<ExtFields, hardy_bpv7::Error> {
     let mut out = ExtFields::default();
     for b in blocks.values() {
         match b.block_type {
-            block::Type::PreviousNode => {
+            BlockType::PreviousNode => {
                 if let Some((v, shortest)) =
                     extract_known::<(eid::Eid, bool)>(b, data, "Previous Node Block")?
                 {
@@ -136,14 +138,14 @@ fn extension_fields(
                     out.previous_node = Some(v);
                 }
             }
-            block::Type::BundleAge => {
+            BlockType::BundleAge => {
                 if let Some(v) =
                     extract_known::<bundle_age::BundleAge>(b, data, "Bundle Age Block")?
                 {
                     out.age = Some(v.into());
                 }
             }
-            block::Type::HopCount => {
+            BlockType::HopCount => {
                 if let Some((v, shortest)) =
                     extract_known::<(hop_info::HopInfo, bool)>(b, data, "Hop Count Block")?
                 {
@@ -164,8 +166,8 @@ fn extension_fields(
 #[derive(serde::Serialize)]
 struct JsonBundle<'a> {
     #[serde(flatten)]
-    id: &'a bundle::Id,
-    flags: &'a bundle::Flags,
+    id: &'a BundleId,
+    flags: &'a BundleFlags,
     crc_type: crc::CrcType,
     destination: &'a eid::Eid,
     report_to: &'a eid::Eid,
@@ -176,7 +178,7 @@ struct JsonBundle<'a> {
     age: Option<Duration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hop_count: Option<&'a hop_info::HopInfo>,
-    blocks: &'a HashMap<u64, block::Block>,
+    blocks: &'a HashMap<u64, Block>,
 }
 
 fn dump_json(
@@ -251,10 +253,10 @@ fn dump_markdown(
 
     dump_crc(primary.crc_type, &output)?;
 
-    if primary.flags == bundle::Flags::default() {
-        output.append_str("Bundle Flags: None\n\n")?;
+    if primary.flags == BundleFlags::default() {
+        output.append_str("Bundle BundleFlags: None\n\n")?;
     } else {
-        output.append_str("Bundle Flags:\n\n")?;
+        output.append_str("Bundle BundleFlags:\n\n")?;
 
         if primary.flags.is_fragment {
             output.append_str("* Is a fragment\n")?;
@@ -363,9 +365,9 @@ fn dump_crc(crc: crc::CrcType, output: &io::Output) -> anyhow::Result<()> {
 }
 
 fn dump_block(
-    blocks: &HashMap<u64, block::Block>,
+    blocks: &HashMap<u64, Block>,
     block_number: u64,
-    block: &block::Block,
+    block: &Block,
     data: &[u8],
     output: &io::Output,
     security: &BlockSecurity,
@@ -373,22 +375,22 @@ fn dump_block(
 ) -> anyhow::Result<()> {
     output.append_str(format!("## Block {block_number}: "))?;
     match &block.block_type {
-        block::Type::Primary => unreachable!("Primary block handled separately"),
-        block::Type::Payload => output.append_str("Payload\n\n"),
-        block::Type::PreviousNode => output.append_str("Previous Node\n\n"),
-        block::Type::BundleAge => output.append_str("Bundle Age\n\n"),
-        block::Type::HopCount => output.append_str("Hop Count\n\n"),
-        block::Type::BlockIntegrity => output.append_str("Block Integrity\n\n"),
-        block::Type::BlockSecurity => output.append_str("Block Security\n\n"),
-        block::Type::Unrecognised(u) => output.append_str(format!("Unrecognised Type {u}\n\n")),
+        BlockType::Primary => unreachable!("Primary block handled separately"),
+        BlockType::Payload => output.append_str("Payload\n\n"),
+        BlockType::PreviousNode => output.append_str("Previous Node\n\n"),
+        BlockType::BundleAge => output.append_str("Bundle Age\n\n"),
+        BlockType::HopCount => output.append_str("Hop Count\n\n"),
+        BlockType::BlockIntegrity => output.append_str("Block Integrity\n\n"),
+        BlockType::BlockSecurity => output.append_str("Block Security\n\n"),
+        BlockType::Unrecognised(u) => output.append_str(format!("Unrecognised Type {u}\n\n")),
     }?;
 
     dump_crc(block.crc_type, output)?;
 
-    if block.flags == block::Flags::default() {
-        output.append_str("Block Flags: None\n\n")?;
+    if block.flags == BlockFlags::default() {
+        output.append_str("Block BundleFlags: None\n\n")?;
     } else {
-        output.append_str("Block Flags:\n\n")?;
+        output.append_str("Block BundleFlags:\n\n")?;
 
         if block.flags.must_replicate {
             output.append_str("* Must replicate\n")?;
@@ -413,7 +415,7 @@ fn dump_block(
         output.append_str("\n")?;
     }
 
-    if let hardy_bpv7::block::BibCoverage::Some(bib) = block.bib {
+    if let hardy_bpv7::bundle::BibCoverage::Some(bib) = block.bib {
         output.append_str(format!("Signed by Integrity Block {bib}: "))?;
 
         match verify_block(
@@ -426,7 +428,7 @@ fn dump_block(
             Err(e) => output.append_str(format!("Error {e}\n\n"))?,
             Ok(_) => output.append_str("✔\n\n")?,
         }
-    } else if matches!(block.bib, hardy_bpv7::block::BibCoverage::Maybe) {
+    } else if matches!(block.bib, hardy_bpv7::bundle::BibCoverage::Maybe) {
         output.append_str("Signed by Integrity Block: Unknown (encrypted BIB)\n\n")?;
     }
 
@@ -470,28 +472,28 @@ fn dump_block(
         // is a BCB-decrypted known block (`ext` only unpacks plaintext) —
         // fall back to the raw CBOR dump.
         match block.block_type {
-            block::Type::Primary => unreachable!("Primary block handled separately"),
-            block::Type::PreviousNode => match &ext.previous_node {
+            BlockType::Primary => unreachable!("Primary block handled separately"),
+            BlockType::PreviousNode => match &ext.previous_node {
                 Some(eid) => output.append_str(format!("Previous Node: {eid}\n\n")),
                 None => dump_unknown(payload.as_ref(), output),
             },
-            block::Type::BundleAge => match ext.age {
+            BlockType::BundleAge => match ext.age {
                 Some(age) => output.append_str(format!(
                     "Bundle Age: {}\n\n",
                     humantime::format_duration(age)
                 )),
                 None => dump_unknown(payload.as_ref(), output),
             },
-            block::Type::HopCount => match &ext.hop_count {
+            BlockType::HopCount => match &ext.hop_count {
                 Some(hop_count) => output.append_str(format!(
                     "Hop Count: {} of {}\n\n",
                     hop_count.count, hop_count.limit
                 )),
                 None => dump_unknown(payload.as_ref(), output),
             },
-            block::Type::BlockIntegrity => dump_bib(payload.as_ref(), output),
-            block::Type::BlockSecurity => dump_bcb(payload.as_ref(), output),
-            block::Type::Payload | block::Type::Unrecognised(_) => {
+            BlockType::BlockIntegrity => dump_bib(payload.as_ref(), output),
+            BlockType::BlockSecurity => dump_bcb(payload.as_ref(), output),
+            BlockType::Payload | BlockType::Unrecognised(_) => {
                 dump_unknown(payload.as_ref(), output)
             }
         }
@@ -576,9 +578,9 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
             }
 
             if op.parameters.flags == bpsec::rfc9173::ScopeFlags::NONE {
-                output.append_str("Scope Flags: None\n\n")?;
+                output.append_str("Scope BundleFlags: None\n\n")?;
             } else {
-                output.append_str("Scope Flags:\n\n")?;
+                output.append_str("Scope BundleFlags:\n\n")?;
 
                 if op.parameters.flags.include_primary_block {
                     output.append_str("* Include primary block\n")?;
@@ -647,9 +649,9 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
             }
 
             if op.parameters.flags == bpsec::rfc9173::ScopeFlags::NONE {
-                output.append_str("Scope Flags: None\n\n")?;
+                output.append_str("Scope BundleFlags: None\n\n")?;
             } else {
-                output.append_str("Scope Flags:\n\n")?;
+                output.append_str("Scope BundleFlags:\n\n")?;
 
                 if op.parameters.flags.include_primary_block {
                     output.append_str("* Include primary block\n")?;

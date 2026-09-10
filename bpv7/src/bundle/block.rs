@@ -12,130 +12,12 @@ use hardy_cbor::{
     encode::{Array, Encoder, Raw, ToCbor, emit_array},
 };
 
-use crate::{Error, crc};
-/// Represents the processing control flags for a BPv7 block.
-///
-/// These flags, defined in RFC 9171 Section 4.2.2, control how a node should
-/// process the block, especially in cases of failure or fragmentation.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Flags {
-    /// If set, the block must be replicated in every fragment of the bundle.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
-    pub must_replicate: bool,
-    /// If set, a status report should be generated if block processing fails.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
-    pub report_on_failure: bool,
-    /// If set, the entire bundle should be deleted if block processing fails.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
-    pub delete_bundle_on_failure: bool,
-    /// If set, this block should be deleted if its processing fails.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
-    pub delete_block_on_failure: bool,
-
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    /// A bitmask of any unrecognized flags encountered during parsing.
-    pub unrecognised: Option<u64>,
-}
-
-impl From<&Flags> for u64 {
-    fn from(value: &Flags) -> Self {
-        let mut flags = value.unrecognised.unwrap_or(0);
-        if value.must_replicate {
-            flags |= 1 << 0;
-        }
-        if value.report_on_failure {
-            flags |= 1 << 1;
-        }
-        if value.delete_bundle_on_failure {
-            flags |= 1 << 2;
-        }
-        if value.delete_block_on_failure {
-            flags |= 1 << 4;
-        }
-        flags
-    }
-}
-
-impl From<u64> for Flags {
-    fn from(value: u64) -> Self {
-        let mut flags = Self::default();
-        let mut unrecognised = value;
-
-        if (value & 1) != 0 {
-            flags.must_replicate = true;
-            unrecognised &= !1;
-        }
-        if (value & 2) != 0 {
-            flags.report_on_failure = true;
-            unrecognised &= !2;
-        }
-        if (value & 4) != 0 {
-            flags.delete_bundle_on_failure = true;
-            unrecognised &= !4;
-        }
-        if (value & 16) != 0 {
-            flags.delete_block_on_failure = true;
-            unrecognised &= !16;
-        }
-
-        if unrecognised != 0 {
-            flags.unrecognised = Some(unrecognised);
-        }
-        flags
-    }
-}
-
-impl ToCbor for Flags {
-    type Result = ();
-
-    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        encoder.emit(&u64::from(self))
-    }
-}
-
-impl FromCbor for Flags {
-    type Error = Error;
-
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
-        Ok((value.into(), true, len))
-    }
-}
-
-impl Flags {
-    /// The processing-control flags for a primary block (RFC 9171 §4.2.3):
-    /// must-replicate, report-on-failure, and delete-bundle-on-failure set.
-    pub fn primary() -> Self {
-        Self {
-            must_replicate: true,
-            report_on_failure: true,
-            delete_bundle_on_failure: true,
-            delete_block_on_failure: false,
-            unrecognised: None,
-        }
-    }
-}
+use crate::{Error, bundle::BlockFlags, crc};
 
 /// The type of a BPv7 block, as defined in RFC 9171 Section 4.2.1.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Type {
+pub enum BlockType {
     /// Primary Block (type code 0).
     Primary,
     /// Payload Block (type code 1).
@@ -154,37 +36,37 @@ pub enum Type {
     Unrecognised(u64),
 }
 
-impl From<Type> for u64 {
-    fn from(value: Type) -> Self {
+impl From<BlockType> for u64 {
+    fn from(value: BlockType) -> Self {
         match value {
-            Type::Primary => 0,
-            Type::Payload => 1,
-            Type::PreviousNode => 6,
-            Type::BundleAge => 7,
-            Type::HopCount => 10,
-            Type::BlockIntegrity => 11,
-            Type::BlockSecurity => 12,
-            Type::Unrecognised(v) => v,
+            BlockType::Primary => 0,
+            BlockType::Payload => 1,
+            BlockType::PreviousNode => 6,
+            BlockType::BundleAge => 7,
+            BlockType::HopCount => 10,
+            BlockType::BlockIntegrity => 11,
+            BlockType::BlockSecurity => 12,
+            BlockType::Unrecognised(v) => v,
         }
     }
 }
 
-impl From<u64> for Type {
+impl From<u64> for BlockType {
     fn from(value: u64) -> Self {
         match value {
-            0 => Type::Primary,
-            1 => Type::Payload,
-            6 => Type::PreviousNode,
-            7 => Type::BundleAge,
-            10 => Type::HopCount,
-            11 => Type::BlockIntegrity,
-            12 => Type::BlockSecurity,
-            value => Type::Unrecognised(value),
+            0 => BlockType::Primary,
+            1 => BlockType::Payload,
+            6 => BlockType::PreviousNode,
+            7 => BlockType::BundleAge,
+            10 => BlockType::HopCount,
+            11 => BlockType::BlockIntegrity,
+            12 => BlockType::BlockSecurity,
+            value => BlockType::Unrecognised(value),
         }
     }
 }
 
-impl ToCbor for Type {
+impl ToCbor for BlockType {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
@@ -192,7 +74,7 @@ impl ToCbor for Type {
     }
 }
 
-impl FromCbor for Type {
+impl FromCbor for BlockType {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -281,9 +163,9 @@ fn bib_is_none(bib: &BibCoverage) -> bool {
 pub struct Block {
     /// The type of the block.
     #[cfg_attr(feature = "serde", serde(rename = "type"))]
-    pub block_type: Type,
+    pub block_type: BlockType,
     /// The block-specific processing control flags.
-    pub flags: Flags,
+    pub flags: BlockFlags,
     /// The type of CRC used for this block's integrity check.
     pub crc_type: crc::CrcType,
     /// The BIB coverage state for this block.
@@ -309,8 +191,8 @@ pub struct Block {
 impl Default for Block {
     fn default() -> Self {
         Self {
-            block_type: Type::Payload,
-            flags: Flags::default(),
+            block_type: BlockType::Payload,
+            flags: BlockFlags::default(),
             crc_type: crc::CrcType::None,
             bib: BibCoverage::None,
             bcb: None,

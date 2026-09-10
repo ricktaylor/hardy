@@ -1,7 +1,7 @@
 use super::*;
 use hardy_bpv7::{
-    block::{Block, Type},
     bpsec::key::KeySet,
+    bundle::{Block, BlockType},
     bundle_age::BundleAge,
     eid::Eid,
     hop_info::HopInfo,
@@ -75,19 +75,20 @@ fn known_blocks_canonical(
     blocks: &HashMap<u64, Block>,
 ) -> Result<bool, hardy_bpv7::Error> {
     for b in blocks.values() {
-        let shortest =
-            match b.block_type {
-                Type::PreviousNode => extract_known::<(Eid, bool)>(b, data, "Previous Node Block")?
-                    .is_none_or(|(_, s)| s),
-                Type::HopCount => extract_known::<(HopInfo, bool)>(b, data, "Hop Count Block")?
-                    .is_none_or(|(_, s)| s),
-                Type::BundleAge => {
-                    // Always canonical; decoded only to reject a malformed body.
-                    extract_known::<BundleAge>(b, data, "Bundle Age Block")?;
-                    true
-                }
-                _ => true,
-            };
+        let shortest = match b.block_type {
+            BlockType::PreviousNode => {
+                extract_known::<(Eid, bool)>(b, data, "Previous Node Block")?.is_none_or(|(_, s)| s)
+            }
+            BlockType::HopCount => {
+                extract_known::<(HopInfo, bool)>(b, data, "Hop Count Block")?.is_none_or(|(_, s)| s)
+            }
+            BlockType::BundleAge => {
+                // Always canonical; decoded only to reject a malformed body.
+                extract_known::<BundleAge>(b, data, "Bundle Age Block")?;
+                true
+            }
+            _ => true,
+        };
         if !shortest {
             return Ok(false);
         }

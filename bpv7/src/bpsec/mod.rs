@@ -38,7 +38,8 @@ pub mod encryptor;
 #[cfg(feature = "bpsec")]
 pub mod signer;
 
-use crate::{HashMap, block, bundle, canonical::CaptureFieldErr};
+use crate::bundle::{Block, Payload};
+use crate::{HashMap, bundle, canonical::CaptureFieldErr};
 
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.
@@ -97,46 +98,40 @@ impl FromCbor for Context {
 /// Provides access to bundle blocks by number, used during BPSec IPPT construction.
 pub trait BlockSet<'a> {
     /// Returns the block and its payload for the given block number, or `None` if absent.
-    fn block(&'a self, block_number: u64)
-    -> Option<(&'a block::Block, Option<block::Payload<'a>>)>;
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<Payload<'a>>)>;
 
     /// Returns just the block header for the given block number, or `None`
     /// if absent — for callers (e.g. per-OperationSet structural
     /// validation) that need only the header fields, not the payload. The
     /// default delegates to [`block`](BlockSet::block); impls override it
     /// when they can resolve the header without computing the payload.
-    fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
+    fn block_header(&'a self, block_number: u64) -> Option<&'a Block> {
         self.block(block_number).map(|(block, _)| block)
     }
 }
 
 /// The canonical [`BlockSet`] over a parsed bundle held wholly in memory:
 /// a blocks map plus the contiguous bundle bytes the offsets index into.
-/// Each block's payload is the raw wire body ([`block::Block::payload`]) —
+/// Each block's payload is the raw wire body ([`Block::payload`]) —
 /// no decryption, no staged rewrites. This is the BlockSet to use when
 /// feeding [`block_data`] / signer / encryptor for an in-memory bundle.
 pub struct PlainBlockSet<'a> {
     /// The bundle's blocks, keyed by block number (e.g. `Bundle::blocks`).
-    pub blocks: &'a HashMap<u64, block::Block>,
+    pub blocks: &'a HashMap<u64, Block>,
     /// The complete, contiguous bundle byte stream the offsets index into.
     pub source_data: &'a [u8],
 }
 
 impl<'a> BlockSet<'a> for PlainBlockSet<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<Payload<'a>>)> {
         let block = self.blocks.get(&block_number)?;
         Some((
             block,
-            block
-                .payload(self.source_data)
-                .map(block::Payload::Borrowed),
+            block.payload(self.source_data).map(Payload::Borrowed),
         ))
     }
 
-    fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
+    fn block_header(&'a self, block_number: u64) -> Option<&'a Block> {
         self.blocks.get(&block_number)
     }
 }
@@ -150,11 +145,11 @@ impl<'a> BlockSet<'a> for PlainBlockSet<'a> {
 /// (BPA delivery, `bundle` CLI) don't each re-implement it.
 pub fn block_data<'a, K>(
     block_number: u64,
-    blocks: &'a HashMap<u64, block::Block>,
+    blocks: &'a HashMap<u64, Block>,
     source_data: &'a [u8],
     bcb_ops: &HashMap<u64, bcb::OperationSet>,
     keys: &K,
-) -> crate::Result<block::Payload<'a>>
+) -> crate::Result<Payload<'a>>
 where
     K: key::KeySource + ?Sized,
 {
@@ -166,7 +161,7 @@ where
         // Unencrypted — the raw wire body is the plaintext.
         return target
             .payload(source_data)
-            .map(block::Payload::Borrowed)
+            .map(Payload::Borrowed)
             .ok_or(crate::Error::Altered);
     };
 
@@ -187,6 +182,6 @@ where
             },
         },
     )
-    .map(block::Payload::Decrypted)
+    .map(Payload::Decrypted)
     .map_err(crate::Error::InvalidBPSec)
 }

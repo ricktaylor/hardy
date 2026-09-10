@@ -79,7 +79,7 @@ impl Service {
     }
     pub async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         from: &Eid,
         kind: services::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
@@ -161,7 +161,7 @@ impl services::ServiceSink for Sink {
     async fn send(
         &self,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
+    ) -> services::Result<hardy_bpv7::bundle::BundleId> {
         let service = self
             .service
             .upgrade()
@@ -194,7 +194,7 @@ impl services::ApplicationSink for Sink {
         data: Bytes,
         lifetime: core::time::Duration,
         options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
+    ) -> services::Result<hardy_bpv7::bundle::BundleId> {
         self.service
             .upgrade()
             .ok_or(services::Error::Disconnected)?;
@@ -525,7 +525,7 @@ mod tests {
         async fn on_unregister(&self) {}
         async fn on_deliver(
             &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
+            _bundle_id: &hardy_bpv7::bundle::BundleId,
             _expiry: time::OffsetDateTime,
             _ack_requested: bool,
             _total_len: u64,
@@ -535,7 +535,7 @@ mod tests {
         }
         async fn on_status_notify(
             &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
+            _bundle_id: &hardy_bpv7::bundle::BundleId,
             _from: &hardy_bpv7::eid::Eid,
             _kind: services::StatusNotify,
             _reason: hardy_bpv7::status_report::ReasonCode,
@@ -620,7 +620,7 @@ mod tests {
 
         async fn on_deliver(
             &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
+            _bundle_id: &hardy_bpv7::bundle::BundleId,
             _expiry: time::OffsetDateTime,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -630,7 +630,7 @@ mod tests {
 
         async fn on_status_notify(
             &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
+            _bundle_id: &hardy_bpv7::bundle::BundleId,
             _from: &hardy_bpv7::eid::Eid,
             _kind: services::StatusNotify,
             _reason: hardy_bpv7::status_report::ReasonCode,

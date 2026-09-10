@@ -3,8 +3,8 @@ use bytes::Bytes;
 use clap::{Parser, ValueEnum};
 use hardy_bpv7::{
     Bundle, CaptureFieldErr,
-    block::{Block, Type},
     bpsec::{bib, key::KeySet},
+    bundle::{Block, BlockType},
     bundle_age::BundleAge,
     checks,
     editor::Chunk,
@@ -134,9 +134,9 @@ pub(crate) fn verify_block(
         .ok_or(hardy_bpv7::Error::MissingBlock(block_number))?;
 
     let bib_block_number = match target.bib {
-        hardy_bpv7::block::BibCoverage::Some(n) => n,
-        hardy_bpv7::block::BibCoverage::None => return Ok(false),
-        hardy_bpv7::block::BibCoverage::Maybe => {
+        hardy_bpv7::bundle::BibCoverage::Some(n) => n,
+        hardy_bpv7::bundle::BibCoverage::None => return Ok(false),
+        hardy_bpv7::bundle::BibCoverage::Maybe => {
             return Err(hardy_bpv7::Error::InvalidBPSec(
                 hardy_bpv7::bpsec::Error::MaybeHasBib(block_number),
             ));
@@ -221,10 +221,10 @@ pub(crate) fn full_rewrite(
     }
     for (_, block_type) in &facts.nokey_ext {
         match block_type {
-            Type::HopCount => {
+            BlockType::HopCount => {
                 return Err(hardy_bpv7::bpsec::Error::NoKey.into());
             }
-            Type::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
+            BlockType::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
                 return Err(hardy_bpv7::bpsec::Error::NoKey.into());
             }
             _ => {}
@@ -238,7 +238,7 @@ pub(crate) fn full_rewrite(
     // here only to reject a malformed body.
     for (&n, b) in &bundle.blocks {
         match b.block_type {
-            Type::PreviousNode => {
+            BlockType::PreviousNode => {
                 if let Some((v, shortest)) =
                     extract_known::<(Eid, bool)>(b, &data, "Previous Node Block")?
                     && !shortest
@@ -246,10 +246,10 @@ pub(crate) fn full_rewrite(
                     to_update.insert(n, emit(&v).0);
                 }
             }
-            Type::BundleAge => {
+            BlockType::BundleAge => {
                 extract_known::<BundleAge>(b, &data, "Bundle Age Block")?;
             }
-            Type::HopCount => {
+            BlockType::HopCount => {
                 if let Some((v, shortest)) =
                     extract_known::<(HopInfo, bool)>(b, &data, "Hop Count Block")?
                     && !shortest

@@ -5,7 +5,9 @@
 use bytes::Bytes;
 use hardy_bpv7::parse::Parsed;
 use hardy_bpv7::{
-    Bundle, Error, block, bpsec, builder, checks, creation_timestamp, editor, eid, parse, rewrite,
+    Bundle, Error, bpsec, builder,
+    bundle::{BibCoverage, BlockType},
+    checks, creation_timestamp, editor, eid, parse, rewrite,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -396,10 +398,10 @@ mod cascade_reencryption_tests {
         bundle
             .blocks
             .iter()
-            .find_map(|(&n, b)| matches!(b.block_type, block::Type::BlockIntegrity).then_some(n))
+            .find_map(|(&n, b)| matches!(b.block_type, BlockType::BlockIntegrity).then_some(n))
     }
 
-    fn count_type(bundle: &Bundle, ty: block::Type) -> usize {
+    fn count_type(bundle: &Bundle, ty: BlockType) -> usize {
         bundle
             .blocks
             .values()
@@ -429,10 +431,7 @@ mod cascade_reencryption_tests {
             parsed_bundle.blocks[&bib_num].bcb.is_some(),
             "BIB must be BCB-encrypted (the case the helper handles)"
         );
-        assert!(matches!(
-            parsed_bundle.blocks[&1].bib,
-            block::BibCoverage::Some(_)
-        ));
+        assert!(matches!(parsed_bundle.blocks[&1].bib, BibCoverage::Some(_)));
 
         // Capture the pre-cascade IV of the BCB protecting the BIB.
         let old_iv = iv_protecting(&encrypted, bib_num);
@@ -452,7 +451,7 @@ mod cascade_reencryption_tests {
         // with only the payload target left.
         assert!(!new_bundle.blocks.contains_key(&2), "unknown block dropped");
         assert_eq!(
-            count_type(&new_bundle, block::Type::BlockSecurity),
+            count_type(&new_bundle, BlockType::BlockSecurity),
             2,
             "BCB over unknown block must be orphaned and dropped"
         );
@@ -514,12 +513,12 @@ mod cascade_reencryption_tests {
 
         assert!(!new_bundle.blocks.contains_key(&2), "unknown block dropped");
         assert_eq!(
-            count_type(&new_bundle, block::Type::BlockIntegrity),
+            count_type(&new_bundle, BlockType::BlockIntegrity),
             0,
             "BIB (emptied by cascade) must be dropped — helper must NOT be invoked"
         );
         assert_eq!(
-            count_type(&new_bundle, block::Type::BlockSecurity),
+            count_type(&new_bundle, BlockType::BlockSecurity),
             0,
             "All BCBs (orphaned by BIB drop) must be dropped"
         );
@@ -738,8 +737,8 @@ mod cascade_reencryption_tests {
 
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&signed)).unwrap();
         let bib_num = find_bib(&raw).expect("BIB present");
-        assert!(matches!(raw.blocks[&1].bib, block::BibCoverage::Some(n) if n == bib_num));
-        assert!(matches!(raw.blocks[&2].bib, block::BibCoverage::Some(n) if n == bib_num));
+        assert!(matches!(raw.blocks[&1].bib, BibCoverage::Some(n) if n == bib_num));
+        assert!(matches!(raw.blocks[&2].bib, BibCoverage::Some(n) if n == bib_num));
 
         let (editor, removed) = Editor::new(&raw, &bytes)
             .remove_blocks(HashSet::from([bib_num]), &empty_keys())
@@ -750,11 +749,11 @@ mod cascade_reencryption_tests {
         let (bundle, _) = editor.rebuild_bundle().unwrap();
         assert!(!bundle.blocks.contains_key(&bib_num), "BIB removed");
         assert!(
-            matches!(bundle.blocks[&1].bib, block::BibCoverage::None),
+            matches!(bundle.blocks[&1].bib, BibCoverage::None),
             "target 1 coverage cleared"
         );
         assert!(
-            matches!(bundle.blocks[&2].bib, block::BibCoverage::None),
+            matches!(bundle.blocks[&2].bib, BibCoverage::None),
             "target 2 coverage cleared"
         );
     }
@@ -812,7 +811,7 @@ mod cascade_reencryption_tests {
 
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
         let bib_num = find_bib(&raw).expect("BIB present");
-        assert!(matches!(raw.blocks[&2].bib, block::BibCoverage::Maybe));
+        assert!(matches!(raw.blocks[&2].bib, BibCoverage::Maybe));
 
         // No keys: the BIB stays opaque, and block 2 must be retained.
         let (editor, removed) = Editor::new(&raw, &bytes)

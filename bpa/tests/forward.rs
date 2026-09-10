@@ -74,7 +74,7 @@ impl cla::Cla for StreamingCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -140,7 +140,7 @@ impl cla::Cla for BufferedCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -185,7 +185,7 @@ impl cla::Cla for FailingCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -220,7 +220,7 @@ impl services::Application for SendOnlyApp {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
@@ -231,7 +231,7 @@ impl services::Application for SendOnlyApp {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,

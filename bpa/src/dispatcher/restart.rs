@@ -147,7 +147,7 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use hardy_bpv7::{
-        bundle::Id,
+        bundle::BundleId,
         eid::{Eid, IpnNodeId, NodeId},
     };
 
@@ -163,7 +163,7 @@ mod tests {
 
     struct RecordingCla {
         sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-        offers_tx: flume::Sender<Id>,
+        offers_tx: flume::Sender<BundleId>,
     }
 
     #[async_trait]
@@ -182,7 +182,7 @@ mod tests {
             &self,
             _lane: Option<u32>,
             _cla_addr: &cla::ClaAddress,
-            bundle_id: &Id,
+            bundle_id: &BundleId,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {
@@ -200,7 +200,7 @@ mod tests {
 
     #[async_trait]
     impl MetadataStorage for RecoverableMem {
-        async fn get(&self, bundle_id: &Id) -> StorageResult<Option<bundle::Bundle>> {
+        async fn get(&self, bundle_id: &BundleId) -> StorageResult<Option<bundle::Bundle>> {
             self.0.get(bundle_id).await
         }
 
@@ -214,7 +214,7 @@ mod tests {
 
         async fn swap_status(
             &self,
-            bundle_id: &Id,
+            bundle_id: &BundleId,
             expected: &bundle::BundleStatus,
             status: &bundle::BundleStatus,
         ) -> StorageResult<bool> {
@@ -223,19 +223,22 @@ mod tests {
 
         async fn tombstone_if(
             &self,
-            bundle_id: &Id,
+            bundle_id: &BundleId,
             expected: &bundle::BundleStatus,
         ) -> StorageResult<bool> {
             self.0.tombstone_if(bundle_id, expected).await
         }
 
-        async fn tombstone(&self, bundle_id: &Id) -> StorageResult<()> {
+        async fn tombstone(&self, bundle_id: &BundleId) -> StorageResult<()> {
             self.0.tombstone(bundle_id).await
         }
 
         async fn start_recovery(&self) {}
 
-        async fn confirm_exists(&self, bundle_id: &Id) -> StorageResult<Option<ConfirmResponse>> {
+        async fn confirm_exists(
+            &self,
+            bundle_id: &BundleId,
+        ) -> StorageResult<Option<ConfirmResponse>> {
             Ok(self
                 .0
                 .get(bundle_id)
@@ -485,7 +488,7 @@ mod tests {
     struct CapturingService {
         // Retained: dropping the sink unregisters the service.
         sink: hardy_async::sync::spin::Once<Box<dyn crate::services::ServiceSink>>,
-        delivered_tx: flume::Sender<Id>,
+        delivered_tx: flume::Sender<BundleId>,
     }
 
     #[async_trait]
@@ -498,7 +501,7 @@ mod tests {
 
         async fn on_deliver(
             &self,
-            bundle_id: &Id,
+            bundle_id: &BundleId,
             _expiry: time::OffsetDateTime,
             _total_len: u64,
             stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -515,7 +518,7 @@ mod tests {
 
         async fn on_status_notify(
             &self,
-            _bundle_id: &Id,
+            _bundle_id: &BundleId,
             _from: &Eid,
             _kind: crate::services::StatusNotify,
             _reason: hardy_bpv7::status_report::ReasonCode,

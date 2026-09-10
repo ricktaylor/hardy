@@ -14,7 +14,7 @@ use hardy_cbor::{
 use thiserror::Error;
 
 use crate::{
-    bundle,
+    bundle::{BundleId, FragmentInfo},
     canonical::{CaptureFieldErr, HasInvalidField, require_canonical},
     dtn_time,
 };
@@ -259,7 +259,7 @@ fn parse_status_assertion(
 #[derive(Default, Debug, Clone)]
 pub struct BundleStatusReport {
     /// The ID of the bundle that this report pertains to.
-    pub bundle_id: bundle::Id,
+    pub bundle_id: BundleId,
     /// Status assertion for when the bundle was received.
     pub received: Option<StatusAssertion>,
     /// Status assertion for when the bundle was forwarded.
@@ -346,7 +346,7 @@ impl FromCbor for BundleStatusReport {
             let source = require_canonical(a, "source", Error::NotCanonical)?;
             let timestamp = require_canonical(a, "timestamp", Error::NotCanonical)?;
 
-            report.bundle_id = bundle::Id {
+            report.bundle_id = BundleId {
                 source,
                 timestamp,
                 fragment_info: None,
@@ -365,7 +365,7 @@ impl FromCbor for BundleStatusReport {
                 }
                 let total_adu_length =
                     require_canonical(a, "fragment total ADU length", Error::NotCanonical)?;
-                report.bundle_id.fragment_info = Some(bundle::FragmentInfo {
+                report.bundle_id.fragment_info = Some(FragmentInfo {
                     offset,
                     total_adu_length,
                 });

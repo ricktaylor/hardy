@@ -1,3 +1,4 @@
+use hardy_bpv7::bundle::BundleId;
 use hardy_bpv7::{
     bundle, creation_timestamp, dtn_time,
     status_report::{AdministrativeRecord, BundleStatusReport, Error, ReasonCode, StatusAssertion},
@@ -25,7 +26,7 @@ fn roundtrip_admin(record: &AdministrativeRecord) -> AdministrativeRecord {
 #[test]
 fn minimal_status_report_roundtrip() {
     let report = BundleStatusReport {
-        bundle_id: bundle::Id {
+        bundle_id: BundleId {
             source: "ipn:1.0".parse().unwrap(),
             timestamp: creation_timestamp::CreationTimestamp::now(),
             fragment_info: None,
@@ -47,7 +48,7 @@ fn minimal_status_report_roundtrip() {
 #[test]
 fn deletion_report() {
     let report = BundleStatusReport {
-        bundle_id: bundle::Id {
+        bundle_id: BundleId {
             source: "ipn:10.0".parse().unwrap(),
             timestamp: creation_timestamp::CreationTimestamp::now(),
             fragment_info: None,
@@ -66,7 +67,7 @@ fn deletion_report() {
 #[test]
 fn all_assertions_set() {
     let report = BundleStatusReport {
-        bundle_id: bundle::Id {
+        bundle_id: BundleId {
             source: "ipn:1.0".parse().unwrap(),
             timestamp: creation_timestamp::CreationTimestamp::now(),
             fragment_info: None,
@@ -88,7 +89,7 @@ fn all_assertions_set() {
 #[test]
 fn fragment_info_roundtrip() {
     let report = BundleStatusReport {
-        bundle_id: bundle::Id {
+        bundle_id: BundleId {
             source: "ipn:1.0".parse().unwrap(),
             timestamp: creation_timestamp::CreationTimestamp::now(),
             fragment_info: Some(bundle::FragmentInfo {
@@ -113,7 +114,7 @@ fn fragment_info_roundtrip() {
 #[test]
 fn administrative_record_roundtrip() {
     let report = BundleStatusReport {
-        bundle_id: bundle::Id {
+        bundle_id: BundleId {
             source: "ipn:1.0".parse().unwrap(),
             timestamp: creation_timestamp::CreationTimestamp::now(),
             fragment_info: None,
@@ -139,7 +140,7 @@ fn administrative_record_roundtrip() {
 fn timestamped_assertion_roundtrip() {
     let event_time: time::OffsetDateTime = dtn_time::DtnTime::new(820_000_000_000).into();
     let report = BundleStatusReport {
-        bundle_id: bundle::Id {
+        bundle_id: BundleId {
             source: "ipn:1.0".parse().unwrap(),
             timestamp: creation_timestamp::CreationTimestamp::now(),
             fragment_info: None,
@@ -169,7 +170,7 @@ fn zero_timestamp_assertion_decodes_without_time() {
     // The DTN epoch encodes as DTN time 0, so this emits [true, 0].
     let epoch: time::OffsetDateTime = dtn_time::DtnTime::new(0).into();
     let report = BundleStatusReport {
-        bundle_id: bundle::Id {
+        bundle_id: BundleId {
             source: "ipn:1.0".parse().unwrap(),
             timestamp: creation_timestamp::CreationTimestamp::now(),
             fragment_info: None,
@@ -194,7 +195,7 @@ fn zero_timestamp_assertion_decodes_without_time() {
 fn assertion_positions_roundtrip() {
     for position in 0..4 {
         let mut report = BundleStatusReport {
-            bundle_id: bundle::Id {
+            bundle_id: BundleId {
                 source: "ipn:1.0".parse().unwrap(),
                 timestamp: creation_timestamp::CreationTimestamp::now(),
                 fragment_info: None,
@@ -292,7 +293,7 @@ fn unknown_admin_record_type() {
 #[test]
 fn tagged_status_flag_is_rejected_as_not_canonical() {
     let report = BundleStatusReport {
-        bundle_id: bundle::Id {
+        bundle_id: BundleId {
             source: "ipn:1.0".parse().unwrap(),
             timestamp: creation_timestamp::CreationTimestamp::now(),
             fragment_info: None,

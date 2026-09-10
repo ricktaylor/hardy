@@ -14,7 +14,7 @@ use hardy_bpa::{
 };
 use hardy_bpv7::{
     builder::Builder,
-    bundle::{Flags, Id},
+    bundle::{BundleFlags, BundleId},
     creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId, Service},
     parse::parse,
@@ -31,10 +31,10 @@ use std::{
 
 enum Event {
     /// The buffering service assembled the whole bundle.
-    Received(Id, Bytes),
+    Received(BundleId, Bytes),
     /// The streaming service pulled the stream to completion.
     Streamed {
-        bundle_id: Id,
+        bundle_id: BundleId,
         segments: Vec<Segment>,
         total_len: u64,
     },
@@ -78,7 +78,7 @@ impl services::Service for StreamingService {
 
     async fn on_deliver(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -111,7 +111,7 @@ impl services::Service for StreamingService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -150,7 +150,7 @@ impl services::Service for BufferedService {
 
     async fn on_deliver(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -164,7 +164,7 @@ impl services::Service for BufferedService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -210,7 +210,7 @@ impl services::Service for HoldingService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -237,7 +237,7 @@ impl services::Service for HoldingService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -278,7 +278,7 @@ impl cla::Cla for IngressCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -300,7 +300,7 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 
 /// The identity of a bundle built by [`build_bundle`], for direct
 /// `on_deliver` calls.
-fn bundle_id_of(data: &Bytes) -> Id {
+fn bundle_id_of(data: &Bytes) -> BundleId {
     parse(data.clone())
         .expect("Failed to parse built bundle")
         .bundle
@@ -563,7 +563,7 @@ async fn expiry_mid_delivery_rig(
 
     let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
         .with_report_to("ipn:0.1.9".parse().unwrap())
-        .with_flags(Flags {
+        .with_flags(BundleFlags {
             delete_report_requested: true,
             ..Default::default()
         })
@@ -602,7 +602,7 @@ async fn expiry_mid_delivery_rig(
     // it parks as WaitingForService straight from dispatch (never Waiting).
     let (_, data) = Builder::new("ipn:0.2.2".parse().unwrap(), "ipn:0.1.6".parse().unwrap())
         .with_report_to("ipn:0.1.9".parse().unwrap())
-        .with_flags(Flags {
+        .with_flags(BundleFlags {
             delete_report_requested: true,
             ..Default::default()
         })

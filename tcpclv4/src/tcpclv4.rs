@@ -7,7 +7,7 @@ use hardy_bpa::{
     async_trait,
     cla::{self, Cla, ClaAddress, ClaAddressType, ForwardBundleResult, Sink, TransferOutcome},
 };
-use hardy_bpv7::bundle::Id;
+use hardy_bpv7::bundle::BundleId;
 
 use super::*;
 
@@ -214,7 +214,7 @@ impl Cla for Tcpclv4 {
         &self,
         _lane: Option<u32>,
         cla_addr: &ClaAddress,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
     ) -> cla::Result<ForwardBundleResult> {

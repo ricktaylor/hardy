@@ -4,9 +4,10 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    block,
     bpsec::{self, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
-    bundle, checks,
+    bundle,
+    bundle::{BibCoverage, BlockType},
+    checks,
     editor::{Chunk, Editor},
     eid::Eid,
     parse, rewrite,
@@ -29,8 +30,8 @@ pub fn check_required_bcb(bundle: &bundle::Bundle, target: u64) -> PolicyAction 
 
 pub fn check_required_bib(bundle: &bundle::Bundle, target: u64) -> PolicyAction {
     match bundle.blocks.get(&target) {
-        Some(blk) if blk.bib != block::BibCoverage::None => PolicyAction::Pass,
-        Some(blk) if matches!(blk.block_type, block::Type::Payload | block::Type::Primary) => {
+        Some(blk) if blk.bib != BibCoverage::None => PolicyAction::Pass,
+        Some(blk) if matches!(blk.block_type, BlockType::Payload | BlockType::Primary) => {
             PolicyAction::Reject
         }
         Some(_) => PolicyAction::RemoveBlock(target),
@@ -404,7 +405,7 @@ fn pics_2_6_acceptor_decrypt_then_verify_both() {
         .filter(|(_, b)| {
             matches!(
                 b.block_type,
-                block::Type::BlockIntegrity | block::Type::BlockSecurity
+                BlockType::BlockIntegrity | BlockType::BlockSecurity
             )
         })
         .map(|(&n, _)| n)
@@ -559,7 +560,7 @@ fn pics_2_8_acceptor_decrypt_and_verify_interleaved() {
         .filter(|(_, b)| {
             matches!(
                 b.block_type,
-                block::Type::BlockIntegrity | block::Type::BlockSecurity
+                BlockType::BlockIntegrity | BlockType::BlockSecurity
             )
         })
         .map(|(&n, _)| n)
@@ -601,7 +602,7 @@ fn pics_7_1_bib_cannot_target_bib() {
         .bundle
         .blocks
         .iter()
-        .find(|(_, b)| b.block_type == block::Type::BlockIntegrity)
+        .find(|(_, b)| b.block_type == BlockType::BlockIntegrity)
         .map(|(bn, _)| *bn)
         .expect("No BIB found");
 
@@ -634,7 +635,7 @@ fn pics_7_2_bib_cannot_target_bcb() {
         .bundle
         .blocks
         .iter()
-        .find(|(_, b)| b.block_type == block::Type::BlockSecurity)
+        .find(|(_, b)| b.block_type == BlockType::BlockSecurity)
         .map(|(bn, _)| *bn)
         .expect("No BCB found");
 
@@ -671,7 +672,7 @@ fn pics_14_1_bcb_cannot_target_bcb() {
         .bundle
         .blocks
         .iter()
-        .find(|(_, b)| b.block_type == block::Type::BlockSecurity)
+        .find(|(_, b)| b.block_type == BlockType::BlockSecurity)
         .map(|(bn, _)| *bn)
         .expect("No BCB found");
 
@@ -736,7 +737,7 @@ fn pics_16_1_bcb_cannot_target_bib_directly() {
         .bundle
         .blocks
         .iter()
-        .find(|(_, b)| b.block_type == block::Type::BlockIntegrity)
+        .find(|(_, b)| b.block_type == BlockType::BlockIntegrity)
         .map(|(bn, _)| *bn)
         .expect("No BIB found");
 
@@ -899,7 +900,7 @@ fn pics_27_1_not_acceptor_bcb_passes_through() {
             .bundle
             .blocks
             .values()
-            .any(|b| b.block_type == block::Type::BlockSecurity),
+            .any(|b| b.block_type == BlockType::BlockSecurity),
         "BCB should be preserved"
     );
     assert!(
@@ -1044,7 +1045,7 @@ fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
     for blk in bundle.blocks.values() {
         assert_ne!(
             blk.block_type,
-            block::Type::BlockSecurity,
+            BlockType::BlockSecurity,
             "BCB should have been removed"
         );
     }
@@ -1071,7 +1072,7 @@ fn pics_42_1_not_acceptor_bib_passes_through() {
             .bundle
             .blocks
             .values()
-            .any(|b| b.block_type == block::Type::BlockIntegrity),
+            .any(|b| b.block_type == BlockType::BlockIntegrity),
         "BIB should be preserved"
     );
 }
@@ -1099,7 +1100,7 @@ fn pics_47_1_bib_not_processed_when_target_encrypted() {
             .bundle
             .blocks
             .values()
-            .any(|b| b.block_type == block::Type::BlockSecurity),
+            .any(|b| b.block_type == BlockType::BlockSecurity),
         "BCB should be preserved"
     );
     assert!(
@@ -1107,7 +1108,7 @@ fn pics_47_1_bib_not_processed_when_target_encrypted() {
             .bundle
             .blocks
             .values()
-            .any(|b| b.block_type == block::Type::BlockIntegrity),
+            .any(|b| b.block_type == BlockType::BlockIntegrity),
         "Encrypted BIB should be preserved"
     );
 }
@@ -1204,11 +1205,11 @@ fn pics_54_1_verifier_keeps_bib() {
     assert!(
         raw.blocks
             .values()
-            .any(|b| b.block_type == block::Type::BlockIntegrity),
+            .any(|b| b.block_type == BlockType::BlockIntegrity),
         "BIB should be preserved after verification"
     );
     assert!(
-        raw.blocks[&1].bib != block::BibCoverage::None,
+        raw.blocks[&1].bib != BibCoverage::None,
         "Payload should still have BIB coverage"
     );
 }

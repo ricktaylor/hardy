@@ -6,7 +6,7 @@ use hardy_cbor::{
 };
 use rand::TryRng;
 
-use crate::{bpsec::Error, primary_block};
+use crate::{bpsec::Error, bundle};
 pub(crate) mod bcb_aes_gcm;
 pub(crate) mod bib_hmac_sha2;
 
@@ -22,7 +22,7 @@ mod mac_tag;
 ///   cannot silently fall back to raw bytes and produce a wrong IPPT/AAD.
 /// - Parse fails: errors — we cannot verify or produce a canonical form.
 pub(super) fn canonical_primary(raw: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
-    match parse_exact::<(primary_block::PrimaryBlock, bool)>(raw) {
+    match parse_exact::<(bundle::PrimaryBlock, bool)>(raw) {
         Ok((_, true)) => Ok(Cow::Borrowed(raw)),
         Ok((pb, false)) => pb.emit().map(Cow::Owned).map_err(|_| Error::NotCanonical),
         Err(_) => Err(Error::NotCanonical),

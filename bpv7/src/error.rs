@@ -10,7 +10,8 @@ use alloc::boxed::Box;
 use hardy_cbor::decode::Error as CborError;
 use thiserror::Error;
 
-use crate::{block, bpsec, canonical::HasInvalidField, crc, eid, status_report};
+use crate::bundle::BlockType;
+use crate::{bpsec, canonical::HasInvalidField, crc, eid, status_report};
 
 /// The primary error type for the `bpv7` crate.
 #[derive(Error, Debug)]
@@ -45,7 +46,7 @@ pub enum Error {
 
     /// Indicates that a block has an invalid block number for its type.
     #[error("{1:?} block cannot be block number {0}")]
-    InvalidBlockNumber(u64, block::Type),
+    InvalidBlockNumber(u64, BlockType),
 
     /// Indicates that the fragment information is invalid (e.g., offset is greater than total length).
     #[error("Invalid fragment information: offset {0}, total length {1}")]
@@ -58,7 +59,7 @@ pub enum Error {
 
     /// Indicates that a bundle has multiple blocks of a type that should be unique.
     #[error("Bundle has multiple {0:?} blocks")]
-    DuplicateBlocks(block::Type),
+    DuplicateBlocks(BlockType),
 
     /// Indicates that a block has an unsupported block type or block content sub-type.
     #[error("Block {0} has an unsupported block type or block content sub-type")]

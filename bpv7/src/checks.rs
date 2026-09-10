@@ -18,26 +18,24 @@ use alloc::{boxed::Box, vec::Vec};
 use hardy_cbor::decode::FromCbor;
 use smallvec::SmallVec;
 
-use crate::{Error, HashMap, block, bpsec, canonical::CaptureFieldErr};
+use crate::bundle::{BibCoverage, Block, BlockType, Payload};
+use crate::{Error, HashMap, bpsec, canonical::CaptureFieldErr};
 /// View into a partially-processed bundle for BPSec operations.
 ///
 /// Returns the current best payload for each block: a decrypted body if a
 /// BCB target has been decrypted, an in-progress canonical rewrite if its
 /// OperationSet was shrunk, or the original byte range from `source_data`.
-/// Takes `&HashMap<u64, block::Block>` directly — no Bundle type
+/// Takes `&HashMap<u64, Block>` directly — no Bundle type
 /// dependency.
 struct BundleBlockSet<'a> {
-    blocks: &'a HashMap<u64, block::Block>,
+    blocks: &'a HashMap<u64, Block>,
     source_data: &'a [u8],
     decrypted_data: &'a HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
     to_update: &'a HashMap<u64, Vec<u8>>,
 }
 
 impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<Payload<'a>>)> {
         let block = self.blocks.get(&block_number)?;
         let payload = if let Some(b) = self.decrypted_data.get(&block_number) {
             Some(b.as_ref())
@@ -47,10 +45,10 @@ impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
             // `source_data` is the full in-memory bundle.
             block.payload(self.source_data)
         };
-        Some((block, payload.map(block::Payload::Borrowed)))
+        Some((block, payload.map(Payload::Borrowed)))
     }
 
-    fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
+    fn block_header(&'a self, block_number: u64) -> Option<&'a Block> {
         self.blocks.get(&block_number)
     }
 }
@@ -112,7 +110,7 @@ pub struct Classification {
 /// [`parse`](crate::parse::parse) over the same bundle; mixing outputs
 /// from different parses is a caller error, not a recoverable state.
 pub fn classify_unsupported(
-    blocks: &HashMap<u64, block::Block>,
+    blocks: &HashMap<u64, Block>,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     supported: &[u64],
@@ -121,7 +119,7 @@ pub fn classify_unsupported(
 
     // A1 — unrecognised blocks.
     for (&block_number, block) in blocks {
-        let block::Type::Unrecognised(block_type) = block.block_type else {
+        let BlockType::Unrecognised(block_type) = block.block_type else {
             continue;
         };
         if supported.contains(&block_type) {
@@ -198,7 +196,7 @@ pub fn classify_unsupported(
 pub fn decrypt_and_validate_covered_bibs(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
-    blocks: &mut HashMap<u64, block::Block>,
+    blocks: &mut HashMap<u64, Block>,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
     decrypted_data: &mut HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
@@ -213,7 +211,7 @@ pub fn decrypt_and_validate_covered_bibs(
     let encrypted_bibs: SmallVec<[u64; 4]> = blocks
         .iter()
         .filter_map(|(&n, b)| {
-            (matches!(b.block_type, block::Type::BlockIntegrity) && b.bcb.is_some()).then_some(n)
+            (matches!(b.block_type, BlockType::BlockIntegrity) && b.bcb.is_some()).then_some(n)
         })
         .collect();
 
@@ -302,7 +300,7 @@ pub fn decrypt_and_validate_covered_bibs(
             blocks
                 .get_mut(&target_number)
                 .expect("OperationSet::check verified every target exists")
-                .bib = block::BibCoverage::Some(bib_block_number);
+                .bib = BibCoverage::Some(bib_block_number);
         }
 
         decrypted_data.insert(bib_block_number, plaintext);
@@ -314,8 +312,8 @@ pub fn decrypt_and_validate_covered_bibs(
     // target; a failed BIB leaves its targets unknown until it is dropped.
     if !had_nokey && failed.is_empty() {
         for block in blocks.values_mut() {
-            if matches!(block.bib, block::BibCoverage::Maybe) {
-                block.bib = block::BibCoverage::None;
+            if matches!(block.bib, BibCoverage::Maybe) {
+                block.bib = BibCoverage::None;
             }
         }
     }
@@ -365,7 +363,7 @@ impl DeferredBibs {
 pub fn verify_all_bibs(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
-    blocks: &HashMap<u64, block::Block>,
+    blocks: &HashMap<u64, Block>,
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     decrypted_data: &HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
     to_update: &HashMap<u64, Vec<u8>>,
@@ -432,7 +430,7 @@ pub fn verify_all_bibs(
 pub fn verify_payload(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
-    blocks: &HashMap<u64, block::Block>,
+    blocks: &HashMap<u64, Block>,
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     decrypted_data: &HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
     to_update: &HashMap<u64, Vec<u8>>,
@@ -484,7 +482,7 @@ pub struct VerifyFacts {
     /// BCB-protected extension blocks for which no key was available, with
     /// their block type — caller applies the per-type NoKey policy
     /// (Preserve-soft; strict for `HopCount` + unclocked `BundleAge`).
-    pub nokey_ext: SmallVec<[(u64, block::Type); 4]>,
+    pub nokey_ext: SmallVec<[(u64, BlockType); 4]>,
     /// BIB OperationSets (keyed by block number) with an unchecked block-1
     /// (payload) target — the payload wasn't resident in this buffer (the
     /// streaming ingress gate ran on headers only). [`verify`] drains them
@@ -511,7 +509,7 @@ pub struct VerifyFacts {
 pub fn verify(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
-    blocks: &mut HashMap<u64, block::Block>,
+    blocks: &mut HashMap<u64, Block>,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
     decrypted: &mut HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
@@ -527,12 +525,12 @@ pub fn verify(
     facts.failed.extend(failed_bibs);
 
     // §C8 — decrypt BCB-protected extension blocks.
-    let to_decrypt: SmallVec<[(u64, block::Type, u64); 4]> = blocks
+    let to_decrypt: SmallVec<[(u64, BlockType, u64); 4]> = blocks
         .iter()
         .filter_map(|(&n, b)| {
             matches!(
                 b.block_type,
-                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
+                BlockType::PreviousNode | BlockType::BundleAge | BlockType::HopCount
             )
             .then(|| b.bcb.map(|bcb_n| (n, b.block_type, bcb_n)))
             .flatten()

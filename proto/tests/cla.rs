@@ -66,7 +66,7 @@ impl cla::Cla for MockCla {
         &self,
         _queue: Option<u32>,
         _cla_addr: &ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<ForwardBundleResult> {
@@ -164,7 +164,7 @@ async fn cla_cli_03_forward_bundle() {
     let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
     let mut bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
     let total_len = bundle.len() as u64;
-    let bundle_id = hardy_bpv7::bundle::Id {
+    let bundle_id = hardy_bpv7::bundle::BundleId {
         source: "ipn:0.9.1".parse().unwrap(),
         timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
         fragment_info: None,
@@ -274,7 +274,7 @@ async fn cla_cli_06_deferred_outcome() {
     let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
     let mut bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
     let total_len = bundle.len() as u64;
-    let bundle_id = hardy_bpv7::bundle::Id {
+    let bundle_id = hardy_bpv7::bundle::BundleId {
         source: "ipn:0.9.2".parse().unwrap(),
         timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
         fragment_info: None,

@@ -26,7 +26,7 @@ impl RandomBundle {
         }
 
         if let Some(flags) = self.flags {
-            let mut flags = hardy_bpv7::bundle::Flags::from(flags as u64);
+            let mut flags = hardy_bpv7::bundle::BundleFlags::from(flags as u64);
             flags.is_fragment = false;
             builder = builder.with_flags(flags);
         }
@@ -106,7 +106,7 @@ impl hardy_bpa::cla::Cla for NullCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &hardy_bpa::cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {

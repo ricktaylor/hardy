@@ -316,8 +316,8 @@ pub fn watch_keys(tasks: &TaskPool, config: BPSecConfig, provider: Arc<PatternKe
 mod tests {
     use hardy_bpa::keys::KeyProvider;
     use hardy_bpv7::{
-        block,
         bpsec::key::{EncAlgorithm, KeyAlgorithm, Type, Use},
+        bundle::BlockType,
         checks,
     };
 
@@ -660,7 +660,7 @@ mod tests {
         bundle
             .blocks
             .values()
-            .filter(|b| b.block_type == block::Type::BlockSecurity)
+            .filter(|b| b.block_type == BlockType::BlockSecurity)
             .count()
     }
 

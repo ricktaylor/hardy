@@ -6,8 +6,9 @@ use smallvec::SmallVec;
 
 #[cfg(feature = "rfc9173")]
 use crate::bpsec::rfc9173;
+use crate::bundle::{BibCoverage, BlockType};
 use crate::{
-    HashMap, block,
+    HashMap,
     bpsec::{BlockSet, Context, Error, key, parse},
     crc, eid,
 };
@@ -172,11 +173,11 @@ impl OperationSet {
                 .ok_or(Error::MissingSecurityTarget)?;
             if matches!(
                 target_block.block_type,
-                block::Type::BlockSecurity | block::Type::BlockIntegrity
+                BlockType::BlockSecurity | BlockType::BlockIntegrity
             ) {
                 return Err(Error::InvalidBIBTarget);
             }
-            if matches!(target_block.bib, block::BibCoverage::Some(n) if n != bib_block_number) {
+            if matches!(target_block.bib, BibCoverage::Some(n) if n != bib_block_number) {
                 return Err(Error::DuplicateOpTarget);
             }
             if target_block.bcb.is_some() && bib_bcb.is_none() {

@@ -8,8 +8,9 @@ use hardy_cbor::{
 use hmac::{KeyInit, Mac};
 
 use super::{ScopeFlags, canonical_primary, key_wrap::KeyWrap, mac_tag::MacTag, rand_bytes};
+use crate::bundle::BlockType;
 use crate::{
-    HashMap, block,
+    HashMap,
     bpsec::{Context, Error, bib, key, parse},
     eid,
 };
@@ -167,7 +168,7 @@ where
         .ok_or(Error::MissingSecurityTarget)?;
     let payload = payload.ok_or(Error::MissingSecurityTarget)?;
 
-    if !matches!(target_block.block_type, block::Type::Primary) {
+    if !matches!(target_block.block_type, BlockType::Primary) {
         if flags.include_primary_block {
             let raw = args
                 .blocks
@@ -204,7 +205,7 @@ where
     // Step 5: CBOR byte-string encoding of the security target's canonical form
     // (confirmed by RFC 9173 Appendix A.3 test vector: primary block is also
     // byte-string-wrapped). For primary block targets, canonicalize before wrapping.
-    if matches!(target_block.block_type, block::Type::Primary) {
+    if matches!(target_block.block_type, BlockType::Primary) {
         // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
         let bytes = canonical_primary(payload.as_ref())?;
         mac.update(&emit(&hardy_cbor::encode::BytesHeader(bytes.len() as u64)).0);

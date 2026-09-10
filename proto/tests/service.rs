@@ -48,7 +48,7 @@ impl Service for MockService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
@@ -59,7 +59,7 @@ impl Service for MockService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _from: &Eid,
         _kind: StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
@@ -145,7 +145,7 @@ async fn svc_cli_03_receive_bundle() {
 
     let mut data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00");
     let total_len = data.len() as u64;
-    let bundle_id = hardy_bpv7::bundle::Id::default();
+    let bundle_id = hardy_bpv7::bundle::BundleId::default();
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     server_svc
         .on_deliver(&bundle_id, expiry, total_len, &mut data)
@@ -185,7 +185,7 @@ async fn svc_cli_04_status_notify() {
         .clone()
         .expect("BPA should have the server-side service");
 
-    let bundle_id = hardy_bpv7::bundle::Id {
+    let bundle_id = hardy_bpv7::bundle::BundleId {
         source: "ipn:1.42".parse().unwrap(),
         timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::new_sequential(),
         fragment_info: None,
@@ -230,7 +230,7 @@ impl Service for ReplyingService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
@@ -248,7 +248,7 @@ impl Service for ReplyingService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _from: &Eid,
         _kind: StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
@@ -295,7 +295,7 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
             let total_len = data.len() as u64;
             let _ = server_svc
                 .on_deliver(
-                    &hardy_bpv7::bundle::Id::default(),
+                    &hardy_bpv7::bundle::BundleId::default(),
                     expiry,
                     total_len,
                     &mut data,

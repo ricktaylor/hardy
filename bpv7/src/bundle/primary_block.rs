@@ -7,19 +7,26 @@ decode and emit. Reachable from [`Bundle::primary`](crate::bundle::Bundle).
 [RFC 9171]: https://www.rfc-editor.org/rfc/rfc9171.html
 */
 
-use super::*;
-use crate::canonical::{CaptureFieldErr, require_canonical};
+use alloc::vec::Vec;
+
 use hardy_cbor::decode::Error as CborError;
+
+use crate::{
+    Error, Result, bundle,
+    bundle::{Block, BlockFlags, BlockType, BundleFlags, BundleId},
+    canonical::{CaptureFieldErr, require_canonical},
+    crc, creation_timestamp, eid,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// The BPv7 primary block (RFC 9171 §4.2): the bundle's identifying header.
 pub struct PrimaryBlock {
     /// Bundle processing control flags.
-    pub flags: bundle::Flags,
+    pub flags: BundleFlags,
     /// Bundle identity: source EID, creation timestamp, and fragment info.
     #[cfg_attr(feature = "serde", serde(flatten))]
-    pub id: bundle::Id,
+    pub id: BundleId,
     /// CRC type protecting the primary block.
     pub crc_type: crc::CrcType,
     /// Destination EID.
@@ -101,7 +108,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             }
 
             // Newtypes (Flags, CrcType) self-enforce canonical in their own from_cbor.
-            let flags: bundle::Flags = require_canonical(
+            let flags: BundleFlags = require_canonical(
                 block,
                 "bundle processing control flags",
                 Error::NotCanonical,
@@ -184,7 +191,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             Ok((
                 PrimaryBlock {
                     flags,
-                    id: bundle::Id {
+                    id: BundleId {
                         source,
                         timestamp,
                         fragment_info,
@@ -202,7 +209,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
 }
 
 impl PrimaryBlock {
-    /// Build a [`block::Block`] entry for a freshly-emitted primary
+    /// Build a [`Block`] entry for a freshly-emitted primary
     /// block. `extent` is the absolute byte range in the bundle's wire
     /// stream — caller must pass the `Range` returned by the CBOR
     /// encoder's `emit` call (the primary block sits after the outer
@@ -211,14 +218,11 @@ impl PrimaryBlock {
     /// `data` is set to `0..extent.len()` per the primary-block
     /// convention (no inner CBOR wrapper — the whole primary block IS
     /// the data, head byte included).
-    pub(crate) fn as_block(
-        crc_type: crc::CrcType,
-        extent: core::ops::Range<usize>,
-    ) -> block::Block {
+    pub(crate) fn as_block(crc_type: crc::CrcType, extent: core::ops::Range<usize>) -> Block {
         let len = extent.len() as u64;
-        block::Block {
-            block_type: block::Type::Primary,
-            flags: block::Flags::primary(),
+        Block {
+            block_type: BlockType::Primary,
+            flags: BlockFlags::primary(),
             crc_type,
             data: 0..len,
             extent: extent.start as u64..extent.end as u64,

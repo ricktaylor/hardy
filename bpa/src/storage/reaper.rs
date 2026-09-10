@@ -19,7 +19,7 @@ use core::cmp::Ordering;
 
 use futures::{FutureExt, join, select_biased};
 use hardy_async::{Notify, TaskPool, sync::Mutex};
-use hardy_bpv7::{bundle::Id, eid::Eid};
+use hardy_bpv7::{bundle::BundleId, eid::Eid};
 use time::OffsetDateTime;
 use tracing::{debug, error};
 
@@ -35,7 +35,7 @@ use crate::{
 #[derive(Clone, Eq, PartialEq)]
 pub(super) struct CacheEntry {
     expiry: OffsetDateTime,
-    id: Id,
+    id: BundleId,
     destination: Eid,
 }
 
@@ -271,7 +271,7 @@ mod tests {
     fn make_entry(secs_from_now: i64, node: u32) -> CacheEntry {
         CacheEntry {
             expiry: OffsetDateTime::now_utc() + time::Duration::seconds(secs_from_now),
-            id: Id {
+            id: BundleId {
                 source: format!("ipn:0.{node}.1").parse().unwrap(),
                 timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
                 fragment_info: None,

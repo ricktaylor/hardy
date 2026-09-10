@@ -26,7 +26,7 @@ use hardy_bpa::{
 };
 use hardy_bpv7::{
     builder::Builder,
-    bundle::Id,
+    bundle::BundleId,
     creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId},
 };
@@ -44,7 +44,7 @@ use hardy_bpv7::{
 struct SweepGate {
     inner: MetadataMemStorage,
     /// Fires (bundle id) after any commit into `ForwardPending`.
-    fp_notify_tx: flume::Sender<Id>,
+    fp_notify_tx: flume::Sender<BundleId>,
     /// One-shot: the next `ForwardPending` swap after arming parks here.
     fp_armed: AtomicBool,
     fp_entered_tx: flume::Sender<()>,
@@ -61,7 +61,7 @@ struct SweepGate {
 }
 
 struct SweepGateHandles {
-    fp_notify_rx: flume::Receiver<Id>,
+    fp_notify_rx: flume::Receiver<BundleId>,
     fp_entered_rx: flume::Receiver<()>,
     fp_release_tx: flume::Sender<()>,
     qs_entered_rx: flume::Receiver<()>,
@@ -112,7 +112,7 @@ impl SweepGate {
 
 #[async_trait]
 impl MetadataStorage for SweepGate {
-    async fn get(&self, bundle_id: &Id) -> storage::Result<Option<Bundle>> {
+    async fn get(&self, bundle_id: &BundleId) -> storage::Result<Option<Bundle>> {
         self.inner.get(bundle_id).await
     }
 
@@ -126,7 +126,7 @@ impl MetadataStorage for SweepGate {
 
     async fn swap_status(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         expected: &BundleStatus,
         status: &BundleStatus,
     ) -> storage::Result<bool> {
@@ -143,11 +143,15 @@ impl MetadataStorage for SweepGate {
         Ok(swapped)
     }
 
-    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> storage::Result<bool> {
+    async fn tombstone_if(
+        &self,
+        bundle_id: &BundleId,
+        expected: &BundleStatus,
+    ) -> storage::Result<bool> {
         self.inner.tombstone_if(bundle_id, expected).await
     }
 
-    async fn tombstone(&self, bundle_id: &Id) -> storage::Result<()> {
+    async fn tombstone(&self, bundle_id: &BundleId) -> storage::Result<()> {
         self.inner.tombstone(bundle_id).await
     }
 
@@ -157,7 +161,7 @@ impl MetadataStorage for SweepGate {
 
     async fn confirm_exists(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
     ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
         self.inner.confirm_exists(bundle_id).await
     }
@@ -231,12 +235,12 @@ impl MetadataStorage for SweepGate {
 /// the egress queue consumer busy so later sends queue behind it.
 struct StallCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-    forward_entered_tx: flume::Sender<Id>,
+    forward_entered_tx: flume::Sender<BundleId>,
     forward_release_rx: flume::Receiver<()>,
 }
 
 impl StallCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
+    fn new() -> (Arc<Self>, flume::Receiver<BundleId>, flume::Sender<()>) {
         let (forward_entered_tx, forward_entered_rx) = flume::unbounded();
         let (forward_release_tx, forward_release_rx) = flume::unbounded();
         (
@@ -267,7 +271,7 @@ impl cla::Cla for StallCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -306,7 +310,7 @@ impl cla::Cla for IngressCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -324,7 +328,7 @@ async fn recv<T>(rx: &flume::Receiver<T>, what: &str) -> T {
         .unwrap_or_else(|_| panic!("Channel gone waiting for {what}"))
 }
 
-fn build_bundle(source: &str, destination: &str) -> (Id, Bytes) {
+fn build_bundle(source: &str, destination: &str) -> (BundleId, Bytes) {
     let (bundle, data) = Builder::new(source.parse().unwrap(), destination.parse().unwrap())
         .with_payload(Cow::Borrowed(b"payload".as_slice()))
         .build(CreationTimestamp::now())

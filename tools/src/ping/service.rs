@@ -10,7 +10,7 @@ use hardy_bpa::{
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
-    bundle::Id,
+    bundle::BundleId,
     eid::{Eid, NodeId},
     parse::{Parsed, parse},
     status_report::{AdministrativeRecord, ReasonCode},
@@ -98,7 +98,7 @@ struct ReturnHop {
 
 // Shared mutable state protected by a single mutex.
 struct SharedState {
-    sent_bundles: HashMap<Id, SentBundle>,
+    sent_bundles: HashMap<BundleId, SentBundle>,
     // Sequence number -> (send time, the payload bytes we sent). The send time
     // drives the RTT calculation; the payload bytes are compared against the
     // reflected payload for round-trip integrity.
@@ -115,7 +115,7 @@ struct SharedState {
     // Return (Pong) journeys, keyed by the echo response bundle-id (echo source
     // + creation timestamp). A status report carries no echoed sequence number,
     // so return-leg reports can only be grouped per response bundle, not per ping.
-    return_journeys: HashMap<Id, Vec<ReturnHop>>,
+    return_journeys: HashMap<BundleId, Vec<ReturnHop>>,
 }
 
 pub struct Service {
@@ -597,7 +597,7 @@ impl hardy_bpa::services::Service for Service {
     // see bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -712,7 +712,7 @@ impl hardy_bpa::services::Service for Service {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: StatusNotify,
         _reason: ReasonCode,

@@ -1,7 +1,7 @@
 use core::num::NonZeroUsize;
 
 use hardy_async::{async_trait, sync::Mutex};
-use hardy_bpv7::{bundle::Id, eid::Eid};
+use hardy_bpv7::{bundle::BundleId, eid::Eid};
 use lru::LruCache;
 use time::OffsetDateTime;
 use tracing::{info, warn};
@@ -40,7 +40,7 @@ impl Entry {
 }
 
 struct Inner {
-    entries: LruCache<Id, Entry>,
+    entries: LruCache<BundleId, Entry>,
     live: usize,
     tombstones: usize,
     near_capacity: bool,
@@ -58,7 +58,7 @@ impl Inner {
     // expired tombstone guards nothing. The expiry test happens once, at
     // write time; a tombstone that outlives its bundle's expiry in place
     // simply ages out of the LRU normally.
-    fn upsert(&mut self, key: Id, value: Entry) {
+    fn upsert(&mut self, key: BundleId, value: Entry) {
         // Expiry wins: a live entry never replaces a tombstone. Without this,
         // an unconditional metadata write racing a deletion (a transfer
         // outcome or a rewrite against the reaper) re-installs the deleted
@@ -183,7 +183,7 @@ impl MetadataMemStorage {
 
     // Apply a mutation, then emit any watermark transition once the lock has
     // been released.
-    fn apply(&self, key: Id, value: Entry) {
+    fn apply(&self, key: BundleId, value: Entry) {
         let edge = {
             let mut inner = self.inner.lock();
             inner.upsert(key, value);
@@ -226,7 +226,7 @@ impl MetadataMemStorage {
 
 #[async_trait]
 impl MetadataStorage for MetadataMemStorage {
-    async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle>> {
+    async fn get(&self, bundle_id: &BundleId) -> Result<Option<Bundle>> {
         Ok(self
             .inner
             .lock()
@@ -259,7 +259,7 @@ impl MetadataStorage for MetadataMemStorage {
 
     async fn swap_status(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         expected: &BundleStatus,
         status: &BundleStatus,
     ) -> Result<bool> {
@@ -279,7 +279,7 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(swapped)
     }
 
-    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> Result<bool> {
+    async fn tombstone_if(&self, bundle_id: &BundleId, expected: &BundleStatus) -> Result<bool> {
         let edge = {
             let mut inner = self.inner.lock();
             // peek() leaves the LRU order untouched on a miss
@@ -294,7 +294,7 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(true)
     }
 
-    async fn tombstone(&self, bundle_id: &Id) -> Result<()> {
+    async fn tombstone(&self, bundle_id: &BundleId) -> Result<()> {
         let edge = {
             let mut inner = self.inner.lock();
             // An id that is already gone (evicted under pressure) is not
@@ -318,7 +318,7 @@ impl MetadataStorage for MetadataMemStorage {
         // No-op for in-memory store
     }
 
-    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<ConfirmResponse>> {
+    async fn confirm_exists(&self, _bundle_id: &BundleId) -> Result<Option<ConfirmResponse>> {
         Ok(None)
     }
 

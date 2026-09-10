@@ -9,7 +9,7 @@
 //! `use hardy_bpa::storage::backend::*`.
 
 use hardy_async::async_trait;
-use hardy_bpv7::{bundle::Id, eid::Eid};
+use hardy_bpv7::{bundle::BundleId, eid::Eid};
 use time::OffsetDateTime;
 
 use crate::{
@@ -50,7 +50,7 @@ pub type ConfirmResponse = (BundleMetadata, BundleStatus);
 pub trait MetadataStorage: Send + Sync {
     /// Retrieves the metadata for the bundle with the given `bundle_id`, or
     /// `None` if no entry exists.
-    async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle>>;
+    async fn get(&self, bundle_id: &BundleId) -> Result<Option<Bundle>>;
 
     /// Inserts a new bundle's metadata, returning whether it was newly
     /// inserted (`false` if an entry already exists).
@@ -70,7 +70,7 @@ pub trait MetadataStorage: Send + Sync {
     /// returns `false`.
     async fn swap_status(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         expected: &BundleStatus,
         status: &BundleStatus,
     ) -> Result<bool>;
@@ -83,7 +83,7 @@ pub trait MetadataStorage: Send + Sync {
     /// atomicity requirement: callers use it when the resolution of a race is
     /// the deletion itself, so the bundle never transits an intermediate
     /// status that another queue's poller could recover.
-    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> Result<bool>;
+    async fn tombstone_if(&self, bundle_id: &BundleId, expected: &BundleStatus) -> Result<bool>;
 
     /// Removes any metadata for the given `bundle_id` and leaves a "tombstone".
     ///
@@ -96,7 +96,7 @@ pub trait MetadataStorage: Send + Sync {
     /// operator drop, or completing a bundle the caller has already claimed.
     /// Use [`Self::tombstone_if`] when the authority to delete derives from
     /// the bundle still being in an expected state.
-    async fn tombstone(&self, bundle_id: &Id) -> Result<()>;
+    async fn tombstone(&self, bundle_id: &BundleId) -> Result<()>;
 
     /// Begins the startup recovery protocol by marking all existing metadata
     /// entries as unconfirmed. The BPA then calls `confirm_exists()` for each
@@ -121,7 +121,7 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// Non-persistent backends (e.g. in-memory) have nothing to recover, so
     /// this returns `Ok(None)`.
-    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<ConfirmResponse>>;
+    async fn confirm_exists(&self, bundle_id: &BundleId) -> Result<Option<ConfirmResponse>>;
 
     /// Final step of the startup recovery protocol. Removes all metadata
     /// entries that were not confirmed via `confirm_exists()` since the last

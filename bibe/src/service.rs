@@ -8,7 +8,7 @@ use hardy_bpa::{
     },
     stream::{Receiver, Segment, buffer_stream},
 };
-use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::{bundle::BundleId, eid::Eid, status_report::ReasonCode};
 use time::OffsetDateTime;
 use tracing::{debug, warn};
 
@@ -58,7 +58,7 @@ impl Service for DecapService {
     // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _expiry: OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -87,7 +87,7 @@ impl Service for DecapService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: StatusNotify,
         _reason: ReasonCode,

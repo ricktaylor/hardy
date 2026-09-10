@@ -56,7 +56,7 @@ impl routing::RoutingSink for MockRoutingSink {
 
 pub struct MockClaSink {
     unregistered: AtomicBool,
-    outcomes: std::sync::Mutex<Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)>>,
+    outcomes: std::sync::Mutex<Vec<(hardy_bpv7::bundle::BundleId, cla::TransferOutcome)>>,
 }
 
 impl MockClaSink {
@@ -67,7 +67,7 @@ impl MockClaSink {
         }
     }
 
-    pub fn outcomes(&self) -> Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)> {
+    pub fn outcomes(&self) -> Vec<(hardy_bpv7::bundle::BundleId, cla::TransferOutcome)> {
         self.outcomes.lock().unwrap().clone()
     }
 }
@@ -101,7 +101,7 @@ impl cla::Sink for MockClaSink {
 
     async fn transfer_outcome(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         outcome: cla::TransferOutcome,
     ) -> cla::Result<()> {
         self.outcomes
@@ -135,7 +135,7 @@ impl services::ServiceSink for MockServiceSink {
     async fn send(
         &self,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
+    ) -> services::Result<hardy_bpv7::bundle::BundleId> {
         Err(services::Error::Internal(
             "mock sink: send not implemented".into(),
         ))
@@ -168,7 +168,7 @@ impl services::ApplicationSink for MockApplicationSink {
         _data: hardy_bpa::Bytes,
         _lifetime: core::time::Duration,
         _options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
+    ) -> services::Result<hardy_bpv7::bundle::BundleId> {
         Err(services::Error::Internal(
             "mock sink: send not implemented".into(),
         ))

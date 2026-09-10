@@ -97,7 +97,7 @@ impl Cla {
         &self,
         request: TransferOutcomeRequest,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+        let bundle_id = hardy_bpv7::bundle::BundleId::from_key(&request.bundle_id)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
         let outcome = match request.outcome {
@@ -164,7 +164,7 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         lane: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {

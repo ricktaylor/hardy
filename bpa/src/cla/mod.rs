@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::bundle::Id;
+use hardy_bpv7::bundle::BundleId;
 use thiserror::Error;
 
 pub use crate::stream::Segment;
@@ -344,7 +344,7 @@ pub trait Cla: Send + Sync {
         &self,
         lane: Option<u32>,
         cla_addr: &ClaAddress,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         total_len: u64,
         stream: &mut dyn crate::stream::Receiver<Segment>,
     ) -> Result<ForwardBundleResult>;
@@ -437,7 +437,7 @@ pub trait Sink: Send + Sync {
     /// removed. An outcome is honoured only while the named bundle is still
     /// awaiting one via a peer of the reporting CLA; anything else — already
     /// resolved, expired, another CLA's transfer — is logged and dropped.
-    async fn transfer_outcome(&self, bundle_id: &Id, outcome: TransferOutcome) -> Result<()>;
+    async fn transfer_outcome(&self, bundle_id: &BundleId, outcome: TransferOutcome) -> Result<()>;
 }
 
 #[cfg(test)]

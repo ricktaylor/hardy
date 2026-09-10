@@ -26,7 +26,7 @@ use hardy_bpa::{
 };
 use hardy_bpv7::{
     builder::Builder,
-    bundle::Id,
+    bundle::BundleId,
     creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId, Service},
     status_report::ReasonCode,
@@ -98,7 +98,7 @@ impl InjectingStorage {
 
 #[async_trait]
 impl MetadataStorage for InjectingStorage {
-    async fn get(&self, bundle_id: &Id) -> storage::Result<Option<Bundle>> {
+    async fn get(&self, bundle_id: &BundleId) -> storage::Result<Option<Bundle>> {
         self.inner.get(bundle_id).await
     }
 
@@ -112,7 +112,7 @@ impl MetadataStorage for InjectingStorage {
 
     async fn swap_status(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         expected: &BundleStatus,
         status: &BundleStatus,
     ) -> storage::Result<bool> {
@@ -123,11 +123,15 @@ impl MetadataStorage for InjectingStorage {
         Ok(swapped)
     }
 
-    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> storage::Result<bool> {
+    async fn tombstone_if(
+        &self,
+        bundle_id: &BundleId,
+        expected: &BundleStatus,
+    ) -> storage::Result<bool> {
         self.inner.tombstone_if(bundle_id, expected).await
     }
 
-    async fn tombstone(&self, bundle_id: &Id) -> storage::Result<()> {
+    async fn tombstone(&self, bundle_id: &BundleId) -> storage::Result<()> {
         self.inner.tombstone(bundle_id).await
     }
 
@@ -137,7 +141,7 @@ impl MetadataStorage for InjectingStorage {
 
     async fn confirm_exists(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
     ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
         self.inner.confirm_exists(bundle_id).await
     }
@@ -248,7 +252,7 @@ impl services::Service for CountingHoldService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -269,7 +273,7 @@ impl services::Service for CountingHoldService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
@@ -310,7 +314,7 @@ impl cla::Cla for IngressCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
+        _bundle_id: &BundleId,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -453,7 +457,7 @@ async fn stale_poller_duplicate_never_redelivers() {
 /// concurrently.
 struct ClaimGate {
     inner: MetadataMemStorage,
-    gated: Mutex<Option<Id>>,
+    gated: Mutex<Option<BundleId>>,
     entered_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
@@ -477,7 +481,7 @@ impl ClaimGate {
 
 #[async_trait]
 impl MetadataStorage for ClaimGate {
-    async fn get(&self, bundle_id: &Id) -> storage::Result<Option<Bundle>> {
+    async fn get(&self, bundle_id: &BundleId) -> storage::Result<Option<Bundle>> {
         self.inner.get(bundle_id).await
     }
 
@@ -491,7 +495,7 @@ impl MetadataStorage for ClaimGate {
 
     async fn swap_status(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
         expected: &BundleStatus,
         status: &BundleStatus,
     ) -> storage::Result<bool> {
@@ -515,11 +519,15 @@ impl MetadataStorage for ClaimGate {
         self.inner.swap_status(bundle_id, expected, status).await
     }
 
-    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> storage::Result<bool> {
+    async fn tombstone_if(
+        &self,
+        bundle_id: &BundleId,
+        expected: &BundleStatus,
+    ) -> storage::Result<bool> {
         self.inner.tombstone_if(bundle_id, expected).await
     }
 
-    async fn tombstone(&self, bundle_id: &Id) -> storage::Result<()> {
+    async fn tombstone(&self, bundle_id: &BundleId) -> storage::Result<()> {
         self.inner.tombstone(bundle_id).await
     }
 
@@ -529,7 +537,7 @@ impl MetadataStorage for ClaimGate {
 
     async fn confirm_exists(
         &self,
-        bundle_id: &Id,
+        bundle_id: &BundleId,
     ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
         self.inner.confirm_exists(bundle_id).await
     }

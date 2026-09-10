@@ -11,7 +11,6 @@ This crate provides the building blocks for working with BPv7 bundles, including
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.
 - [`editor`]: Offers an [`Editor`](editor::Editor) for modifying existing bundles.
 - [`eid`]: Implements Endpoint Identifiers (EIDs) as defined in BPv7.
-- [`block`]: Defines the structure of blocks within a bundle.
 
 # Usage Example
 
@@ -19,7 +18,6 @@ The following example demonstrates how to create a new BPv7 bundle with a payloa
 
 ```rust,cfg(feature = "std")
 use hardy_bpv7::builder::Builder;
-use hardy_bpv7::block;
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
 
@@ -92,7 +90,7 @@ configuration required (typically a `RUSTFLAGS` override or a platform crate dep
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};
@@ -100,7 +98,6 @@ use std::collections::{HashMap, HashSet};
 #[cfg(not(feature = "std"))]
 use hashbrown::{HashMap, HashSet};
 
-pub mod block;
 pub mod bpsec;
 pub mod builder;
 pub mod bundle;
@@ -113,7 +110,6 @@ pub mod editor;
 pub mod eid;
 pub mod hop_info;
 pub mod parse;
-pub mod primary_block;
 pub mod rewrite;
 pub mod status_report;
 

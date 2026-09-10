@@ -212,7 +212,10 @@ fn decode_bundle(bundle_bytes: Vec<u8>, status: Option<BundleStatus>) -> Option<
 #[async_trait]
 impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
-    async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
+    async fn get(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
+    ) -> storage::Result<Option<Bundle>> {
         let bundle_key = bundle_id.to_key();
 
         let row = sqlx::query_as::<_, MetadataRow>(
@@ -318,7 +321,7 @@ impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     async fn swap_status(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         expected: &BundleStatus,
         status: &BundleStatus,
     ) -> storage::Result<bool> {
@@ -369,7 +372,7 @@ impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     async fn tombstone_if(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         expected: &BundleStatus,
     ) -> storage::Result<bool> {
         let bundle_key = bundle_id.to_key();
@@ -402,7 +405,7 @@ impl storage::MetadataStorage for PostgresStorage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
-    async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
+    async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::BundleId) -> storage::Result<()> {
         let bundle_key = bundle_id.to_key();
 
         // Delete the metadata row; bundles row is kept permanently so its UNIQUE
@@ -432,7 +435,7 @@ impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     async fn confirm_exists(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
     ) -> storage::Result<Option<ConfirmResponse>> {
         let bundle_key = bundle_id.to_key();
 

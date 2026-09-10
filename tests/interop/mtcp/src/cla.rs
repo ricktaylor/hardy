@@ -84,7 +84,7 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         _lane: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {

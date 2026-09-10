@@ -4,7 +4,12 @@ use core::{num::NonZeroU8, time::Duration};
 use hardy_cbor::encode::{Array, Raw, emit, emit_array};
 use thiserror::Error;
 
-use crate::{HashMap, block, bundle, crc, creation_timestamp, eid, error, hop_info, primary_block};
+use crate::{
+    HashMap,
+    bundle::{Block, BlockFlags, BlockType, Bundle, BundleFlags, BundleId, PrimaryBlock},
+    crc, creation_timestamp, eid, error, hop_info,
+};
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Cannot add a primary block")]
@@ -26,7 +31,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 ///
 /// See [`Builder::new()`] for more information.
 pub struct Builder<'a> {
-    bundle_flags: bundle::Flags,
+    bundle_flags: BundleFlags,
     crc_type: crc::CrcType,
     source: eid::Eid,
     destination: eid::Eid,
@@ -41,7 +46,7 @@ impl<'a> Builder<'a> {
     ///
     /// # Examples
     /// ```
-    /// use hardy_bpv7::{block, builder::Builder, creation_timestamp::CreationTimestamp};
+    /// use hardy_bpv7::{builder::Builder, bundle::BlockType, creation_timestamp::CreationTimestamp};
     ///
     /// let (bundle, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
     ///     .with_report_to("ipn:3.0".parse().unwrap())
@@ -52,13 +57,13 @@ impl<'a> Builder<'a> {
         Self {
             source,
             destination,
-            bundle_flags: bundle::Flags::default(),
+            bundle_flags: BundleFlags::default(),
             crc_type: crc::CrcType::CRC32_CASTAGNOLI,
             report_to: None,
             lifetime: Duration::new(24 * 60 * 60, 0),
             payload: BlockTemplate::new(
-                block::Type::Payload,
-                block::Flags::default(),
+                BlockType::Payload,
+                BlockFlags::default(),
                 crc::CrcType::CRC32_CASTAGNOLI,
                 None,
             ),
@@ -66,8 +71,8 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Sets the [`bundle::Flags`] for this [`Builder`].
-    pub fn with_flags(mut self, flags: bundle::Flags) -> Self {
+    /// Sets the [`BundleFlags`] for this [`Builder`].
+    pub fn with_flags(mut self, flags: BundleFlags) -> Self {
         self.bundle_flags = flags;
 
         // The fragment flag is owned by the fragmentation logic, not the
@@ -98,8 +103,8 @@ impl<'a> Builder<'a> {
     }
 
     /// Adds an extension block to this [`Builder`].
-    pub fn add_extension_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>> {
-        if let block::Type::Primary = block_type {
+    pub fn add_extension_block(self, block_type: BlockType) -> Result<BlockBuilder<'a>> {
+        if let BlockType::Primary = block_type {
             Err(Error::PrimaryBlock)
         } else {
             Ok(BlockBuilder::new(self, block_type))
@@ -108,9 +113,9 @@ impl<'a> Builder<'a> {
 
     /// Adds the payload block to this [`Builder`].
     pub fn with_payload(self, data: Cow<'a, [u8]>) -> Self {
-        self.add_extension_block(block::Type::Payload)
+        self.add_extension_block(BlockType::Payload)
             .expect("Failed to add payload block")
-            .with_flags(block::Flags {
+            .with_flags(BlockFlags {
                 delete_bundle_on_failure: true,
                 ..Default::default()
             })
@@ -119,9 +124,9 @@ impl<'a> Builder<'a> {
 
     /// Adds the HopCount block to this [`Builder`].
     pub fn with_hop_count(self, hop_info: &hop_info::HopInfo) -> Self {
-        self.add_extension_block(block::Type::HopCount)
+        self.add_extension_block(BlockType::HopCount)
             .expect("Failed to add HopCount block")
-            .with_flags(block::Flags {
+            .with_flags(BlockFlags {
                 report_on_failure: true,
                 must_replicate: true,
                 ..Default::default()
@@ -135,10 +140,10 @@ impl<'a> Builder<'a> {
     pub fn build(
         self,
         timestamp: creation_timestamp::CreationTimestamp,
-    ) -> Result<(bundle::Bundle, Box<[u8]>)> {
-        let primary = primary_block::PrimaryBlock {
+    ) -> Result<(Bundle, Box<[u8]>)> {
+        let primary = PrimaryBlock {
             flags: self.bundle_flags,
-            id: bundle::Id {
+            id: BundleId {
                 source: self.source.clone(),
                 timestamp,
                 ..Default::default()
@@ -159,10 +164,7 @@ impl<'a> Builder<'a> {
             // instead of the primary's own array head.
             let primary_bytes = primary.emit()?;
             let extent = a.emit(&Raw(&primary_bytes));
-            blocks.insert(
-                0,
-                primary_block::PrimaryBlock::as_block(primary.crc_type, extent),
-            );
+            blocks.insert(0, PrimaryBlock::as_block(primary.crc_type, extent));
 
             // Emit extension blocks, numbered from 2 (primary is 0, payload
             // is 1).
@@ -176,32 +178,27 @@ impl<'a> Builder<'a> {
             Ok::<_, Error>(())
         })?;
 
-        Ok((bundle::Bundle { primary, blocks }, data.into()))
+        Ok((Bundle { primary, blocks }, data.into()))
     }
 }
 
-/// A builder for creating a new [`block::Block`].
+/// A builder for creating a new [`Block`].
 pub struct BlockBuilder<'a> {
     builder: Builder<'a>,
     template: BlockTemplate<'a>,
 }
 
 impl<'a> BlockBuilder<'a> {
-    /// Creates a new [`BlockBuilder`] for creating a [`block::Block`].
-    fn new(builder: Builder<'a>, block_type: block::Type) -> Self {
+    /// Creates a new [`BlockBuilder`] for creating a [`Block`].
+    fn new(builder: Builder<'a>, block_type: BlockType) -> Self {
         Self {
-            template: BlockTemplate::new(
-                block_type,
-                block::Flags::default(),
-                builder.crc_type,
-                None,
-            ),
+            template: BlockTemplate::new(block_type, BlockFlags::default(), builder.crc_type, None),
             builder,
         }
     }
 
-    /// Sets the [`block::Flags`] for this [`BlockBuilder`].
-    pub fn with_flags(mut self, flags: block::Flags) -> Self {
+    /// Sets the [`BlockFlags`] for this [`BlockBuilder`].
+    pub fn with_flags(mut self, flags: BlockFlags) -> Self {
         self.template.block.flags = flags;
         self
     }
@@ -212,11 +209,11 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Builds the [`block::Block`] with the given data.
+    /// Builds the [`Block`] with the given data.
     pub fn build(mut self, data: Cow<'a, [u8]>) -> Builder<'a> {
         self.template.data = Some(data);
 
-        if let block::Type::Payload = self.template.block.block_type {
+        if let BlockType::Payload = self.template.block.block_type {
             self.builder.payload = self.template;
         } else {
             self.builder.extensions.push(self.template);
@@ -225,23 +222,23 @@ impl<'a> BlockBuilder<'a> {
     }
 }
 
-/// A template for creating a new [`block::Block`].
+/// A template for creating a new [`Block`].
 #[derive(Clone)]
 pub(crate) struct BlockTemplate<'a> {
-    pub block: block::Block,
+    pub block: Block,
     pub data: Option<Cow<'a, [u8]>>,
 }
 
 impl<'a> BlockTemplate<'a> {
-    /// Creates a new [`BlockTemplate`] for creating a [`block::Block`].
+    /// Creates a new [`BlockTemplate`] for creating a [`Block`].
     pub fn new(
-        block_type: block::Type,
-        flags: block::Flags,
+        block_type: BlockType,
+        flags: BlockFlags,
         crc_type: crc::CrcType,
         data: Option<Cow<'a, [u8]>>,
     ) -> Self {
         Self {
-            block: block::Block {
+            block: Block {
                 block_type,
                 flags,
                 crc_type,
@@ -251,8 +248,8 @@ impl<'a> BlockTemplate<'a> {
         }
     }
 
-    /// Builds the [`block::Block`] to standalone bytes.
-    pub fn build_to_vec(mut self, block_number: u64) -> Result<(block::Block, Vec<u8>)> {
+    /// Builds the [`Block`] to standalone bytes.
+    pub fn build_to_vec(mut self, block_number: u64) -> Result<(Block, Vec<u8>)> {
         let data = self.data.take().ok_or(Error::NoBlockData)?;
         let bytes = crc::append_crc_value(
             self.block.crc_type,
@@ -279,8 +276,8 @@ impl<'a> BlockTemplate<'a> {
         Ok((self.block, bytes))
     }
 
-    /// Builds the [`block::Block`] with the given block number and array.
-    pub fn build(mut self, block_number: u64, array: &mut Array) -> Result<block::Block> {
+    /// Builds the [`Block`] with the given block number and array.
+    pub fn build(mut self, block_number: u64, array: &mut Array) -> Result<Block> {
         self.block.emit(
             block_number,
             self.data
@@ -304,7 +301,7 @@ pub struct BundleTemplate {
     /// The report_to of the bundle.
     pub report_to: Option<eid::Eid>,
     /// The flags of the bundle.
-    pub flags: Option<bundle::Flags>,
+    pub flags: Option<BundleFlags>,
     /// The crc_type of the bundle.
     pub crc_type: Option<crc::CrcType>,
     /// The lifetime of the bundle.
@@ -360,10 +357,10 @@ fn test_builder() {
 fn test_builder_block_map_keys() {
     let prev_node: eid::Eid = "ipn:3.0".parse().unwrap();
     let (bundle, _data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
-        .add_extension_block(block::Type::PreviousNode)
+        .add_extension_block(BlockType::PreviousNode)
         .unwrap()
         .build(emit(&prev_node).0.into())
-        .add_extension_block(block::Type::BundleAge)
+        .add_extension_block(BlockType::BundleAge)
         .unwrap()
         .build(emit(&0u64).0.into())
         .with_payload("Hello".as_bytes().into())
@@ -371,10 +368,10 @@ fn test_builder_block_map_keys() {
         .unwrap();
 
     assert_eq!(bundle.blocks.len(), 4);
-    assert_eq!(bundle.blocks[&0].block_type, block::Type::Primary);
-    assert_eq!(bundle.blocks[&1].block_type, block::Type::Payload);
-    assert_eq!(bundle.blocks[&2].block_type, block::Type::PreviousNode);
-    assert_eq!(bundle.blocks[&3].block_type, block::Type::BundleAge);
+    assert_eq!(bundle.blocks[&0].block_type, BlockType::Primary);
+    assert_eq!(bundle.blocks[&1].block_type, BlockType::Payload);
+    assert_eq!(bundle.blocks[&2].block_type, BlockType::PreviousNode);
+    assert_eq!(bundle.blocks[&3].block_type, BlockType::BundleAge);
 }
 
 // Requirement: LLR 1.1.25

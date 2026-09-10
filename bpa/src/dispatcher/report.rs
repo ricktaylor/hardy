@@ -151,7 +151,7 @@ impl Dispatcher {
                 self.node_ids.get_admin_endpoint(report_to),
                 report_to.clone(),
             )
-            .with_flags(hardy_bpv7::bundle::Flags {
+            .with_flags(hardy_bpv7::bundle::BundleFlags {
                 is_admin_record: true,
                 ..Default::default()
             })

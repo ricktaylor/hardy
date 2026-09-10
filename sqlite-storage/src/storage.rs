@@ -231,7 +231,10 @@ fn to_status(
 #[async_trait]
 impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
+    async fn get(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
+    ) -> storage::Result<Option<Bundle>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3)) = self
             .read(move |conn| {
@@ -316,7 +319,7 @@ impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn swap_status(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         expected: &BundleStatus,
         status: &BundleStatus,
     ) -> storage::Result<bool> {
@@ -349,7 +352,7 @@ impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn tombstone_if(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
         expected: &BundleStatus,
     ) -> storage::Result<bool> {
         let (expected_code, expected_param1, expected_param2, expected_param3) =
@@ -374,7 +377,7 @@ impl MetadataStorage for SqliteStorage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
+    async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::BundleId) -> storage::Result<()> {
         let id = serde_json::to_vec(bundle_id)?;
         if self
             .write(move |conn| {
@@ -408,7 +411,7 @@ impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn confirm_exists(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::BundleId,
     ) -> storage::Result<Option<ConfirmResponse>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3))  = self

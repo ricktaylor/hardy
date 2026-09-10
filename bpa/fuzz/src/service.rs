@@ -51,7 +51,7 @@ impl PipeService {
         data: hardy_bpa::Bytes,
         lifetime: core::time::Duration,
         options: Option<hardy_bpa::services::SendOptions>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
+    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::BundleId> {
         self.sink
             .get()
             .expect("send called before registration")
@@ -78,7 +78,7 @@ impl hardy_bpa::services::Application for PipeService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
@@ -90,7 +90,7 @@ impl hardy_bpa::services::Application for PipeService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &hardy_bpv7::bundle::BundleId,
         _from: &Eid,
         _kind: hardy_bpa::services::StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,

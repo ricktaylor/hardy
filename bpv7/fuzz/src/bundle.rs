@@ -95,18 +95,18 @@ where
 /// be canonically re-emitted). Blocks that didn't decrypt are skipped.
 fn extract_canonical_rewrites<V: AsRef<[u8]>>(
     data: &[u8],
-    blocks: &HashMap<u64, hardy_bpv7::block::Block>,
+    blocks: &HashMap<u64, hardy_bpv7::bundle::Block>,
     decrypted: &HashMap<u64, V>,
 ) -> Result<Vec<(u64, Vec<u8>)>, hardy_bpv7::Error> {
-    use hardy_bpv7::block::Type;
+    use hardy_bpv7::bundle::BlockType;
     let mut rewrites = Vec::new();
 
-    let candidates: Vec<(u64, Type)> = blocks
+    let candidates: Vec<(u64, BlockType)> = blocks
         .iter()
         .filter_map(|(&n, b)| {
             matches!(
                 b.block_type,
-                Type::PreviousNode | Type::BundleAge | Type::HopCount
+                BlockType::PreviousNode | BlockType::BundleAge | BlockType::HopCount
             )
             .then_some((n, b.block_type))
         })
@@ -126,18 +126,18 @@ fn extract_canonical_rewrites<V: AsRef<[u8]>>(
         let Some(payload) = payload else { continue };
 
         match block_type {
-            Type::PreviousNode => {
+            BlockType::PreviousNode => {
                 let (v, shortest) =
                     parse_exact::<(hardy_bpv7::eid::Eid, bool)>(payload, "Previous Node Block")?;
                 if !shortest && !is_encrypted {
                     rewrites.push((n, hardy_cbor::encode::emit(&v).0));
                 }
             }
-            Type::BundleAge => {
+            BlockType::BundleAge => {
                 let _ =
                     parse_exact::<hardy_bpv7::bundle_age::BundleAge>(payload, "Bundle Age Block")?;
             }
-            Type::HopCount => {
+            BlockType::HopCount => {
                 let (v, shortest) = parse_exact::<(hardy_bpv7::hop_info::HopInfo, bool)>(
                     payload,
                     "Hop Count Block",

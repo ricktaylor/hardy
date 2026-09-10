@@ -4,7 +4,7 @@
 use core::{num::NonZeroU8, time::Duration};
 
 use hardy_bpv7::{
-    Bundle, block,
+    Bundle,
     bpsec::{key, rfc9173::ScopeFlags, signer},
     builder, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
@@ -14,6 +14,7 @@ use std::collections::HashSet;
 
 mod common;
 use self::common::rand_k;
+use hardy_bpv7::bundle::BlockType;
 // Build a bundle, parse it, return (bundle, data) ready for editing.
 fn make_bundle() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -127,7 +128,7 @@ fn change_crc_type() {
 #[test]
 fn add_extension_block() {
     let (bundle, data) = make_bundle();
-    let new_data = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+    let new_data = ok(Editor::new(&bundle, &data).push_block(BlockType::Unrecognised(200)))
         .with_data((&[0xCA, 0xFE][..]).into())
         .rebuild()
         .rebuild()
@@ -143,7 +144,7 @@ fn remove_extension_block() {
     let hop_block = bundle
         .blocks
         .iter()
-        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .find(|(_, b)| matches!(b.block_type, BlockType::HopCount))
         .map(|(n, _)| *n)
         .expect("Should have hop count block");
 
@@ -158,7 +159,7 @@ fn remove_extension_block() {
         !reparsed
             .blocks
             .values()
-            .any(|b| matches!(b.block_type, block::Type::HopCount))
+            .any(|b| matches!(b.block_type, BlockType::HopCount))
     );
 }
 
@@ -179,7 +180,7 @@ fn cannot_remove_primary() {
 #[test]
 fn cannot_add_duplicate_hop_count() {
     let (bundle, data) = make_bundle_with_hop_count();
-    let result = Editor::new(&bundle, &data).push_block(block::Type::HopCount);
+    let result = Editor::new(&bundle, &data).push_block(BlockType::HopCount);
     assert!(matches!(result, Err((_, Error::IllegalDuplicate(_)))));
 }
 
@@ -203,7 +204,7 @@ fn multiple_primary_changes() {
 fn insert_new_block_type() {
     let (bundle, data) = make_bundle();
     // insert_block with a new type should add it
-    let new_data = ok(Editor::new(&bundle, &data).insert_block(block::Type::Unrecognised(200)))
+    let new_data = ok(Editor::new(&bundle, &data).insert_block(BlockType::Unrecognised(200)))
         .with_data((&[0x01, 0x02][..]).into())
         .rebuild()
         .rebuild()
@@ -342,7 +343,7 @@ fn rebuild_bundle_multiple_primary_changes() {
 fn rebuild_bundle_add_block() {
     let (bundle, data) = make_bundle();
     let (new_bundle, new_data) =
-        ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+        ok(Editor::new(&bundle, &data).push_block(BlockType::Unrecognised(200)))
             .with_data((&[0xCA, 0xFE][..]).into())
             .rebuild()
             .rebuild_bundle()
@@ -358,7 +359,7 @@ fn rebuild_bundle_remove_block() {
     let hop_block = bundle
         .blocks
         .iter()
-        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .find(|(_, b)| matches!(b.block_type, BlockType::HopCount))
         .map(|(n, _)| *n)
         .expect("Should have hop count block");
 
@@ -405,14 +406,14 @@ fn flatten_inplace_change_destination() {
 fn flatten_inplace_add_block() {
     let (bundle, data) = make_bundle();
 
-    let flattened = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+    let flattened = ok(Editor::new(&bundle, &data).push_block(BlockType::Unrecognised(200)))
         .with_data((&[0xCA, 0xFE][..]).into())
         .rebuild()
         .rebuild()
         .map(|c| Chunk::flatten(c, &data))
         .unwrap();
 
-    let chunks = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+    let chunks = ok(Editor::new(&bundle, &data).push_block(BlockType::Unrecognised(200)))
         .with_data((&[0xCA, 0xFE][..]).into())
         .rebuild()
         .rebuild()
@@ -428,7 +429,7 @@ fn flatten_inplace_remove_block() {
     let hop_block = bundle
         .blocks
         .iter()
-        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .find(|(_, b)| matches!(b.block_type, BlockType::HopCount))
         .map(|(n, _)| *n)
         .expect("Should have hop count block");
 
@@ -463,7 +464,7 @@ fn flatten_inplace_mixed_shift() {
 
     let flattened = ok(
         ok(Editor::new(&bundle, &data).with_destination(short.clone()))
-            .push_block(block::Type::PreviousNode),
+            .push_block(BlockType::PreviousNode),
     )
     .with_data(vec![0xAA; 64].into())
     .rebuild()
@@ -471,12 +472,13 @@ fn flatten_inplace_mixed_shift() {
     .map(|c| Chunk::flatten(c, &data))
     .unwrap();
 
-    let chunks = ok(ok(Editor::new(&bundle, &data).with_destination(short))
-        .push_block(block::Type::PreviousNode))
-    .with_data(vec![0xAA; 64].into())
-    .rebuild()
-    .rebuild()
-    .unwrap();
+    let chunks =
+        ok(ok(Editor::new(&bundle, &data).with_destination(short))
+            .push_block(BlockType::PreviousNode))
+        .with_data(vec![0xAA; 64].into())
+        .rebuild()
+        .rebuild()
+        .unwrap();
     let mut inplace = data.to_vec();
     Chunk::flatten_inplace(chunks, &mut inplace);
     assert_eq!(&*flattened, &*inplace);
@@ -521,7 +523,7 @@ fn remove_block_rejects_security_block() {
     let bib_num = signed
         .blocks
         .iter()
-        .find(|(_, b)| matches!(b.block_type, block::Type::BlockIntegrity))
+        .find(|(_, b)| matches!(b.block_type, BlockType::BlockIntegrity))
         .map(|(n, _)| *n)
         .expect("Signed bundle should contain a BIB block");
 

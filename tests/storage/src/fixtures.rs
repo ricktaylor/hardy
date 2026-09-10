@@ -6,9 +6,8 @@ use std::{
 
 use hardy_bpa::{bundle::Origin, cla::ClaAddress};
 use hardy_bpv7::{
-    bundle::{Bundle as Bpv7Bundle, FragmentInfo, Id},
+    bundle::{Bundle as Bpv7Bundle, BundleId, FragmentInfo, PrimaryBlock},
     hop_info::HopInfo,
-    primary_block::PrimaryBlock,
 };
 
 use super::*;
@@ -21,7 +20,7 @@ fn next_seq() -> u64 {
 
 /// A minimal valid bpv7 bundle for storage fixtures: explicit identity and
 /// lifetime, defaults for the fields the storage layer never reads.
-fn make_bpv7(id: Id, lifetime: Duration) -> Bpv7Bundle {
+fn make_bpv7(id: BundleId, lifetime: Duration) -> Bpv7Bundle {
     Bpv7Bundle {
         primary: PrimaryBlock {
             id,
@@ -42,7 +41,7 @@ pub fn ingress_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
     let bpv7 = make_bpv7(
-        Id {
+        BundleId {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: None,
@@ -74,7 +73,7 @@ pub fn random_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
     let bpv7 = make_bpv7(
-        Id {
+        BundleId {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: None,
@@ -97,7 +96,7 @@ pub fn bundle_with_status(
     let seq = next_seq();
 
     let bpv7 = make_bpv7(
-        Id {
+        BundleId {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: None,
@@ -127,7 +126,7 @@ pub fn bundle_with_expiry(
         .unwrap_or_else(|_| CreationTimestamp::from_parts(None, seq));
 
     let bpv7 = make_bpv7(
-        Id {
+        BundleId {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: ts,
             fragment_info: None,
@@ -151,7 +150,7 @@ pub fn bundle_with_fragment(
     let seq = next_seq();
 
     let bpv7 = make_bpv7(
-        Id {
+        BundleId {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: Some(FragmentInfo {
