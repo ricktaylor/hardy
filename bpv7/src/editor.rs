@@ -567,6 +567,14 @@ impl<'a> Editor<'a> {
     /// it. Otherwise, the new block will be assigned the next available block
     /// number.
     ///
+    /// Replacing a block that is a security target behaves exactly like
+    /// [`update_block`](Self::update_block): the block is stripped from its
+    /// covering BIB/BCB target lists (the old signature could not survive a
+    /// body change), and the replace is refused with
+    /// [`BibIsEncrypted`](Error::BibIsEncrypted) /
+    /// [`MaybeHasBib`](bpsec::Error::MaybeHasBib) where the coverage cannot
+    /// be safely updated.
+    ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn insert_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
@@ -582,38 +590,36 @@ impl<'a> Editor<'a> {
             _ => {}
         }
 
-        if let Some((block_number, is_new, template)) =
+        if let Some((block_number, staged)) =
             self.blocks
                 .iter()
                 .find_map(|(block_number, template)| match template {
-                    BlockTemplate::Keep(t) if &block_type == t => {
-                        let block = self.original.blocks.get(block_number)?;
-                        Some((
-                            *block_number,
-                            false,
-                            builder::BlockTemplate::new(
-                                *t,
-                                block.flags.clone(),
-                                block.crc_type,
-                                block.payload(self.source_data).map(Cow::Borrowed),
-                            ),
-                        ))
-                    }
+                    // A kept wire block may carry live BIB/BCB coverage; the
+                    // staged templates cannot (update_block already stripped
+                    // it, and a fresh insert was never covered).
+                    BlockTemplate::Keep(t) if &block_type == t => Some((*block_number, None)),
                     BlockTemplate::Insert(template) if template.block.block_type == block_type => {
-                        Some((*block_number, true, template.clone()))
+                        Some((*block_number, Some((true, template.clone()))))
                     }
                     BlockTemplate::Update(template) if template.block.block_type == block_type => {
-                        Some((*block_number, false, template.clone()))
+                        Some((*block_number, Some((false, template.clone()))))
                     }
                     _ => None,
                 })
         {
-            return Ok(BlockBuilder::reuse_template(
-                self,
-                block_number,
-                is_new,
-                template,
-            ));
+            return match staged {
+                // Replace-by-type on a live wire block is an update: the
+                // same coverage stripping and BibIsEncrypted/MaybeHasBib
+                // refusals apply, or the emitted bundle would keep a BIB
+                // over a body its signature can no longer match.
+                None => self.update_block(block_number),
+                Some((is_new, template)) => Ok(BlockBuilder::reuse_template(
+                    self,
+                    block_number,
+                    is_new,
+                    template,
+                )),
+            };
         }
 
         self.alloc_block(block_type)
