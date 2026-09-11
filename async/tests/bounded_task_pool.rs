@@ -1,8 +1,8 @@
 #![cfg(feature = "tokio")]
 
 use core::{
+    num::NonZeroUsize,
     sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
 };
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ async fn concurrency_high_water_mark(pool: &BoundedTaskPool, tasks: usize, group
 
 #[tokio::test]
 async fn test_bounded_pool_limits_concurrency() {
-    let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
+    let pool = BoundedTaskPool::new(NonZeroUsize::new(2).unwrap());
     assert_eq!(concurrency_high_water_mark(&pool, 10, 2).await, 2);
 }
 
@@ -67,7 +67,7 @@ async fn test_bounded_pool_default_uses_available_parallelism() {
 
 #[tokio::test]
 async fn test_bounded_child_token_independent_cancellation() {
-    let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
+    let pool = BoundedTaskPool::new(NonZeroUsize::new(2).unwrap());
     let child = pool.child_token();
 
     // Cancel child without affecting parent
@@ -79,7 +79,7 @@ async fn test_bounded_child_token_independent_cancellation() {
 
 #[tokio::test]
 async fn test_bounded_parent_cancels_child() {
-    let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
+    let pool = BoundedTaskPool::new(NonZeroUsize::new(2).unwrap());
     let child = pool.child_token();
 
     // Cancel parent
@@ -92,7 +92,7 @@ async fn test_bounded_parent_cancels_child() {
 
 #[tokio::test]
 async fn test_bounded_pool_shutdown() {
-    let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
+    let pool = BoundedTaskPool::new(NonZeroUsize::new(4).unwrap());
     let completed = Arc::new(AtomicUsize::new(0));
 
     for _ in 0..4 {
@@ -100,21 +100,15 @@ async fn test_bounded_pool_shutdown() {
         let cancel = pool.cancel_token().clone();
 
         pool.spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
-                    _ = cancel.cancelled() => {
-                        completed.fetch_add(1, Ordering::SeqCst);
-                        break;
-                    }
-                }
-            }
+            cancel.cancelled().await;
+            completed.fetch_add(1, Ordering::SeqCst);
         })
         .await;
     }
 
     pool.shutdown().await;
 
-    // All tasks should have completed
+    // `shutdown` returns once every spawned task has observed cancellation
+    // and run to completion, so the count is exact, not eventual.
     assert_eq!(completed.load(Ordering::SeqCst), 4);
 }

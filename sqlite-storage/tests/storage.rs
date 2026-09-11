@@ -294,9 +294,18 @@ async fn test_waiting_queue_invalidation() {
     store.poll_waiting(&sink).await.unwrap();
     assert_eq!(sink.into_inner().len(), 1, "should poll 1 waiting bundle");
 
-    // Update status to Dispatching
-    bundle.status = BundleStatus::Dispatching;
-    store.replace(&bundle).await.unwrap();
+    // Move it out of Waiting
+    assert!(
+        store
+            .swap_status(
+                bundle.id(),
+                &BundleStatus::Waiting,
+                &BundleStatus::Dispatching
+            )
+            .await
+            .unwrap(),
+        "the bundle is Waiting, so the swap applies"
+    );
 
     // Poll waiting again — should return nothing
     let sink = VecSink::new();

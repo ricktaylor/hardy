@@ -136,10 +136,10 @@ mod spin {
     #[test]
     fn once_debug() {
         let once: Once<i32> = Once::new();
-        assert!(format!("{:?}", once).contains("uninitialized"));
+        assert_eq!(format!("{once:?}"), "Once(<uninitialized>)");
 
         once.call_once(|| 42);
-        assert!(format!("{:?}", once).contains("42"));
+        assert_eq!(format!("{once:?}"), "Once(42)");
     }
 
     #[test]
