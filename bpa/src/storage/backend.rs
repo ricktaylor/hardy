@@ -57,6 +57,15 @@ pub trait MetadataStorage: Send + Sync {
     async fn insert(&self, bundle: &Bundle) -> Result<bool>;
 
     /// Replaces an existing bundle's metadata.
+    ///
+    /// A tombstoned bundle is never resurrected, and a write that matches
+    /// nothing is not an error: this is an unconditional write, so it races
+    /// `tombstone`, the peer-loss sweeps and the expiry reaper, and
+    /// re-installing a deleted bundle would undo them. The caller writes
+    /// back its own snapshot, so a write that loses the race leaves the
+    /// same state as never having taken it. Use
+    /// [`swap_status`](Self::swap_status) when the outcome must be
+    /// observed.
     async fn replace(&self, bundle: &Bundle) -> Result<()>;
 
     /// Updates the status of the bundle with the given `bundle_id` only if
