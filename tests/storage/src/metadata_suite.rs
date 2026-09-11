@@ -1,5 +1,4 @@
 use super::*;
-use fixtures;
 
 // ---------------------------------------------------------------------------
 // Suite A: Basic CRUD Operations
@@ -559,18 +558,36 @@ pub async fn meta_16_reset_service_queue(store: Arc<dyn MetadataStorage>) {
     assert_eq!(store.reset_service_queue(&service_a).await.unwrap(), 0);
 }
 
-/// META-12: Recovery
-pub async fn meta_12_recovery(store: Arc<dyn MetadataStorage>) {
-    store.start_recovery().await;
-    // Should complete without panic or error
-}
-
-/// META-13: Remove Unconfirmed
+/// META-13: Remove Unconfirmed (recovery protocol)
+///
+/// Entries that exist when `start_recovery()` runs and are never confirmed
+/// via `confirm_exists()` must be emitted to the sink and deleted by
+/// `remove_unconfirmed()`. Only applicable to persistent backends.
 pub async fn meta_13_remove_unconfirmed(store: Arc<dyn MetadataStorage>) {
     let bundle = fixtures::random_bundle();
     assert!(store.insert(&bundle).await.unwrap());
 
+    // Start recovery and confirm nothing: the inserted bundle stays unconfirmed
+    store.start_recovery().await;
+
     let sink = super::VecSink::<bundle::Bundle>::new();
     store.remove_unconfirmed(&sink).await.unwrap();
-    // Should complete without error
+    let removed = sink.into_inner();
+
+    assert_eq!(
+        removed.len(),
+        1,
+        "unconfirmed bundle should be emitted to the sink"
+    );
+    assert_eq!(
+        removed[0].id(),
+        bundle.id(),
+        "emitted bundle should be the unconfirmed one"
+    );
+
+    let got = store.get(bundle.id()).await.unwrap();
+    assert!(
+        got.is_none(),
+        "unconfirmed bundle should be removed from the store"
+    );
 }

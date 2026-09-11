@@ -9,20 +9,20 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-The `MetadataStorage` trait contract is verified by the shared storage harness (17 tests, all pass when a PostgreSQL instance is available). Recovery requirements are satisfied by the harness tests exercising `MetadataStorage::start_recovery()` (META-12), `confirm_exists()` (META-05), and `remove_unconfirmed()` (META-13), with the BPA's `storage/recover.rs` orchestrating these trait methods during restart.
+The `MetadataStorage` trait contract is verified by the shared storage harness (16 tests, all pass when a PostgreSQL instance is available). Recovery requirements are satisfied by the harness recovery tests exercising `start_recovery()`, `confirm_exists()` (META-05), and `remove_unconfirmed()` (META-13), with the BPA's `storage/recover.rs` orchestrating these trait methods during restart.
 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
-| 8.1 | Metadata storage | **Pass** | META-01..17 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
-| 8.2 | Recovery after restart | **Pass** | META-05 (confirm_exists) + META-12 (start_recovery) + META-13 (remove_unconfirmed) |
+| 8.1 | Metadata storage | **Pass** | META-01..11, META-13..17 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
+| 8.2 | Recovery after restart | **Pass** | META-05 (confirm_exists) + META-13 (remove_unconfirmed) |
 
 ## 2. Test Inventory
 
 ### Generic harness tests (via `tests/storage/`)
 
-17 integration tests run against PostgreSQL: 16 via `storage_meta_tests_async!(postgres, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. See [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §3.5 for registration details and §4 for test scenarios.
+16 integration tests run against PostgreSQL: 14 via `storage_meta_tests!(postgres, ...)` plus 2 via the recovery suite `storage_meta_recovery_tests!(postgres_recovery, ...)`. See [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §3.5 for registration details and §4 for test scenarios.
 
-Each test creates an isolated database with a random name (`hardy_test_{uuid}`) and drops it on completion. All 17 pass. No failures or skips.
+Each test creates an isolated database with a random name (`hardy_test_{uuid}`) and drops it on completion. All 16 pass. No failures or skips.
 
 ### Backend-specific tests
 
@@ -36,8 +36,8 @@ Coverage is measured against [`PLAN-PG-01`](test_plan.md) and [`PLAN-STORE-01`](
 | :--- | :--- | :--- | :--- | :--- |
 | `PLAN-STORE-01` Suite A (META-01..04, 15, 17) | CRUD & tombstone semantics | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite B (META-06..10, 14) | Polling & ordering | 6 | 6 | Complete |
-| `PLAN-STORE-01` Suite C (META-05, 11..13, 16) | State transitions & bulk ops | 5 | 5 | Complete |
-| **Total** | | **17** | **17** | **100%** |
+| `PLAN-STORE-01` Suite C (META-05, 11, 13, 16) | State transitions & bulk ops | 4 | 4 | Complete |
+| **Total** | | **16** | **16** | **100%** |
 
 ## 4. Line Coverage
 
@@ -45,4 +45,4 @@ Line coverage is not measurable for this crate. All verification runs through th
 
 ## 5. Conclusion
 
-17 integration tests verify the full `MetadataStorage` trait contract through the shared storage harness (100% of planned scenarios). All CRUD, polling, recovery, and state transition operations pass against a real PostgreSQL instance with per-test database isolation. No backend-specific unit tests are planned — see [`PLAN-PG-01` §4](test_plan.md) for rationale.
+16 integration tests verify the full `MetadataStorage` trait contract through the shared storage harness (100% of planned scenarios). All CRUD, polling, recovery, and state transition operations pass against a real PostgreSQL instance with per-test database isolation. No backend-specific unit tests are planned — see [`PLAN-PG-01` §4](test_plan.md) for rationale.

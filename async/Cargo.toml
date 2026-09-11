@@ -41,3 +41,4 @@ flume = { version = "0.12", optional = true }
 
 [dev-dependencies]
 hardy-async = { path = ".", features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }

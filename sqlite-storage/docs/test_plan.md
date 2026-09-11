@@ -25,11 +25,11 @@ Trait-level contract testing (CRUD, polling, ordering, state transitions, recove
 
 ## 3. Generic Harness Coverage
 
-This backend is registered in the storage harness with `storage_meta_tests!(sqlite, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. The following suites run against SQLite:
+This backend is registered in the storage harness with `storage_meta_tests!(sqlite, ...)` plus the recovery suite `storage_meta_recovery_tests!(sqlite_recovery, ...)`. The following suites run against SQLite:
 
 - Suite A: Basic CRUD Operations (META-01..04, META-15, META-17)
 - Suite B: Polling & Ordering (META-06..10, META-14)
-- Suite C: State Transitions & Bulk Ops (META-05, META-11..13, META-16)
+- Suite C: State Transitions & Bulk Ops (META-05, META-11, META-13, META-16)
 
 Persistence across restart (META-05) is explicitly tested — the harness inserts data, triggers recovery, and verifies the entry survives. This is not duplicated here.
 
@@ -42,9 +42,9 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-01** | **Configuration** | `config.rs` | 1. Create storage with custom `db_dir`.<br>2. Verify database file created at path. | File exists at configured location. |
 | **SQL-02** | **Migration logic** | `migrate.rs` | 1. Create storage (empty DB).<br>2. Verify schema tables exist.<br>3. Reopen (simulate upgrade). | Schema created on first run; no-op on reopen. |
 | **SQL-03** | **Migration errors** | `migrate.rs` | 1. Create storage.<br>2. Manually alter `schema_versions` table.<br>3. Reopen. | Error returned (missing/extra/altered migration detected). |
-| **SQL-04** | **Concurrency (SQLITE_BUSY)** | `storage.rs` | 1. Spawn N concurrent async writers.<br>2. All insert different bundles. | No `SQLITE_BUSY` errors; all inserts succeed. |
+| **SQL-04** | **Concurrency (SQLITE_BUSY)** | `storage.rs` | 1. Spawn N writers (different bundles) and N readers on a multi-thread runtime.<br>2. Release them all at once via a barrier. | No `SQLITE_BUSY` errors; all operations succeed. |
 | **SQL-05** | **Corrupt data handling** | `storage.rs` | 1. Insert bundle via trait.<br>2. Manually corrupt row bytes in DB.<br>3. Call `get()`. | Graceful error or tombstone, not panic. |
-| **SQL-06** | **Waiting queue invalidation** | `storage.rs` | 1. Insert bundle (Status=`Waiting`).<br>2. Update status to `Delivered` via `replace()`.<br>3. Call `poll_waiting()`. | Bundle not returned (cache correctly invalidated). |
+| **SQL-06** | **Waiting queue invalidation** | `storage.rs` | 1. Insert bundle (Status=`Waiting`).<br>2. Move it out of `Waiting` via `swap_status()`.<br>3. Call `poll_waiting()`. | Bundle not returned (cache correctly invalidated). |
 
 ## 5. Execution
 

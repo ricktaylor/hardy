@@ -123,13 +123,13 @@ pub fn bundle_with_expiry(
 ) -> bundle::Bundle {
     let seq = next_seq();
 
-    let ts = CreationTimestamp::try_from(creation_time)
+    let timestamp = CreationTimestamp::try_from(creation_time)
         .unwrap_or_else(|_| CreationTimestamp::from_parts(None, seq));
 
     let bpv7 = make_bpv7(
         Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
-            timestamp: ts,
+            timestamp,
             fragment_info: None,
         },
         lifetime,
@@ -169,8 +169,7 @@ pub fn bundle_with_fragment(
     }
 }
 
-/// Generate deterministic payload data of a given size.
-pub fn random_payload(size: usize) -> Bytes {
-    let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
-    Bytes::from(data)
+/// Generate deterministic, patterned payload data of a given size.
+pub fn patterned_payload(size: usize) -> Bytes {
+    Bytes::from_iter((0..size).map(|i| (i % 256) as u8))
 }
