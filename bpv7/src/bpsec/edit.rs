@@ -267,7 +267,7 @@ impl<'a> BPSecEditor for Editor<'a> {
             self = self
                 .update_block_inner(bib_num)?
                 .with_data(plaintext.as_ref().to_vec().into())
-                .rebuild();
+                .build();
         }
 
         // 4. Cascade. HashSet iteration order is non-deterministic but
@@ -396,7 +396,7 @@ where
     {
         block = block.with_crc_type(crc::CrcType::CRC32_CASTAGNOLI);
     }
-    editor = block.rebuild();
+    editor = block.build();
 
     // §3.8 share-target handshake (multi-target contexts only — see the
     // doc comment): strip any BIB in this BCB that also covers the
@@ -435,7 +435,7 @@ where
                 editor = editor
                     .update_block_inner(bib_block_num)?
                     .with_data(plaintext.as_ref().to_vec().into())
-                    .rebuild();
+                    .build();
                 editor = editor.remove_from_bcb_targets(bib_block_num, bcb)?;
                 editor = remove_integrity_inner(editor, block_number, bib_block_num)?;
             }
@@ -618,7 +618,7 @@ where
             panic!("update_block on existing BIB {bib_block_number} cannot fail (logic bug): {e}")
         })
         .with_data(ciphertext.into_vec().into())
-        .rebuild();
+        .build();
 
     // Replace the BCB's per-target entry with the fresh Operation and
     // re-emit the OperationSet for the BCB block. `HashMap::insert`
@@ -635,7 +635,7 @@ where
             panic!("update_block on existing BCB {bcb_block_number} cannot fail (logic bug): {e}")
         })
         .with_data(emit(&new_bcb_opset).0.into())
-        .rebuild();
+        .build();
 
     Ok(editor)
 }
@@ -662,7 +662,7 @@ fn remove_integrity_inner<'a>(
             editor = editor
                 .update_block_inner(block_number)?
                 .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
-                .rebuild();
+                .build();
         }
     }
 

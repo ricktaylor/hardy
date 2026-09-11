@@ -84,7 +84,7 @@ impl Command {
             block_builder = block_builder.with_crc_type(crc_type.into());
         }
 
-        let editor = block_builder.rebuild();
+        let editor = block_builder.build();
 
         let chunks = editor
             .rebuild()

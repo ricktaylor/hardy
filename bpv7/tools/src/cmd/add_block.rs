@@ -145,8 +145,8 @@ impl Command {
             block_builder
         };
 
-        // Set block data and rebuild
-        let editor = block_builder.with_data(block_data.into()).rebuild();
+        // Set block data and build the block back into the editor
+        let editor = block_builder.with_data(block_data.into()).build();
 
         let chunks = editor
             .rebuild()

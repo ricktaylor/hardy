@@ -939,7 +939,7 @@ impl<'a> Editor<'a> {
                     self = self
                         .update_block_inner(bib_block)?
                         .with_data(hardy_cbor::encode::emit(&opset).0.into())
-                        .rebuild();
+                        .build();
                 }
 
                 // The target is no longer covered by this BIB. Clear its
@@ -985,7 +985,7 @@ impl<'a> Editor<'a> {
                     self = self
                         .update_block_inner(bcb_block)?
                         .with_data(hardy_cbor::encode::emit(&opset).0.into())
-                        .rebuild();
+                        .build();
                 }
 
                 // The target is no longer covered by this BCB. Clear its
@@ -1251,7 +1251,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Build the block and return the modified `Editor`.
-    pub fn rebuild(mut self) -> Editor<'a> {
+    pub fn build(mut self) -> Editor<'a> {
         self.editor.blocks.insert(
             self.block_number,
             if self.is_new {

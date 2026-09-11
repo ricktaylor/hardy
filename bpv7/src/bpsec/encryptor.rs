@@ -264,7 +264,7 @@ impl<'a> Encryptor<'a> {
                         .update_block_inner(*target)
                         .map_err(|(_, e)| e)?
                         .with_crc_type(crc::CrcType::None)
-                        .rebuild();
+                        .build();
                 }
             }
 
@@ -279,7 +279,7 @@ impl<'a> Encryptor<'a> {
                 });
 
             let source = b.block_number();
-            editor = b.rebuild();
+            editor = b.build();
 
             let mut editor_bs = editor::EditorBlockSet { editor };
             let mut operations = HashMap::with_capacity(targets.len());
@@ -301,7 +301,7 @@ impl<'a> Encryptor<'a> {
                     .update_block_inner(target)
                     .map_err(|(_, e)| e)?
                     .with_data(data.into_vec().into())
-                    .rebuild();
+                    .build();
 
                 operations.insert(target, op);
             }
@@ -322,7 +322,7 @@ impl<'a> Encryptor<'a> {
                     .0
                     .into(),
                 )
-                .rebuild();
+                .build();
 
             for target in target_blocks {
                 editor.set_bcb_target(target, source);

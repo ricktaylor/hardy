@@ -359,7 +359,7 @@ impl Store {
                 debug!("Missing payload block?: {e}");
                 return None;
             }
-            Ok(b) => match b.with_data(new_data.into()).rebuild().rebuild() {
+            Ok(b) => match b.with_data(new_data.into()).build().rebuild() {
                 Err(e) => {
                     debug!("Failed to rebuild bundle: {e}");
                     return None;
@@ -674,7 +674,7 @@ mod tests {
             .map_err(|(_, e)| e)
             .unwrap()
             .with_data(alloc::borrow::Cow::Borrowed(&b"Hello"[..]))
-            .rebuild()
+            .build()
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();
@@ -691,7 +691,7 @@ mod tests {
             .map_err(|(_, e)| e)
             .unwrap()
             .with_data(alloc::borrow::Cow::Borrowed(&b"World"[..]))
-            .rebuild()
+            .build()
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();

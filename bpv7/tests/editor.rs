@@ -132,7 +132,7 @@ fn add_extension_block() {
     let (bundle, data) = make_bundle();
     let new_data = ok(Editor::new(&bundle, &data).push_block(BlockType::Unrecognised(200)))
         .with_data((&[0xCA, 0xFE][..]).into())
-        .rebuild()
+        .build()
         .rebuild()
         .map(|c| Chunk::flatten(c, &data))
         .unwrap();
@@ -208,7 +208,7 @@ fn insert_new_block_type() {
     // insert_block with a new type should add it
     let new_data = ok(Editor::new(&bundle, &data).insert_block(BlockType::Unrecognised(200)))
         .with_data((&[0x01, 0x02][..]).into())
-        .rebuild()
+        .build()
         .rebuild()
         .map(|c| Chunk::flatten(c, &data))
         .unwrap();
@@ -347,7 +347,7 @@ fn rebuild_bundle_add_block() {
     let (new_bundle, new_data) =
         ok(Editor::new(&bundle, &data).push_block(BlockType::Unrecognised(200)))
             .with_data((&[0xCA, 0xFE][..]).into())
-            .rebuild()
+            .build()
             .rebuild_bundle()
             .map(|(b, c)| (b, Chunk::flatten(c, &data)))
             .unwrap();
@@ -410,14 +410,14 @@ fn flatten_inplace_add_block() {
 
     let flattened = ok(Editor::new(&bundle, &data).push_block(BlockType::Unrecognised(200)))
         .with_data((&[0xCA, 0xFE][..]).into())
-        .rebuild()
+        .build()
         .rebuild()
         .map(|c| Chunk::flatten(c, &data))
         .unwrap();
 
     let chunks = ok(Editor::new(&bundle, &data).push_block(BlockType::Unrecognised(200)))
         .with_data((&[0xCA, 0xFE][..]).into())
-        .rebuild()
+        .build()
         .rebuild()
         .unwrap();
     let mut inplace = data.to_vec();
@@ -469,7 +469,7 @@ fn flatten_inplace_mixed_shift() {
             .push_block(BlockType::PreviousNode),
     )
     .with_data(vec![0xAA; 64].into())
-    .rebuild()
+    .build()
     .rebuild()
     .map(|c| Chunk::flatten(c, &data))
     .unwrap();
@@ -478,7 +478,7 @@ fn flatten_inplace_mixed_shift() {
         ok(ok(Editor::new(&bundle, &data).with_destination(short))
             .push_block(BlockType::PreviousNode))
         .with_data(vec![0xAA; 64].into())
-        .rebuild()
+        .build()
         .rebuild()
         .unwrap();
     let mut inplace = data.to_vec();

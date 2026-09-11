@@ -284,7 +284,7 @@ impl Dispatcher {
                 .0
                 .into(),
             )
-            .rebuild();
+            .build();
 
         // Increment Hop Count
         if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
@@ -304,7 +304,7 @@ impl Dispatcher {
                     .0
                     .into(),
                 )
-                .rebuild();
+                .build();
         }
 
         // Update Bundle Age, if required
@@ -324,7 +324,7 @@ impl Dispatcher {
                     ..Default::default()
                 })
                 .with_data(hardy_cbor::encode::emit(&bundle_age).0.into())
-                .rebuild();
+                .build();
         }
 
         // rebuild_bundle() returns a Bundle whose block extents index the

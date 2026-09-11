@@ -200,7 +200,7 @@ impl<'a> Signer<'a> {
                             .update_block_inner(*target)
                             .map_err(|(_, e)| e)?
                             .with_crc_type(crc::CrcType::None)
-                            .rebuild();
+                            .build();
                     }
                 }
             }
@@ -212,7 +212,7 @@ impl<'a> Signer<'a> {
                 .with_crc_type(crc::CrcType::None);
 
             let source = b.block_number();
-            editor = b.rebuild();
+            editor = b.build();
 
             let editor_bs = editor::EditorBlockSet { editor };
 
@@ -243,7 +243,7 @@ impl<'a> Signer<'a> {
                 .update_block_inner(source)
                 .map_err(|(_, e)| e)?
                 .with_data(emit(&operation_set).0.into())
-                .rebuild();
+                .build();
 
             // Set BIB coverage on target blocks
             for target in operation_set.operations.keys() {

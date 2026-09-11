@@ -81,7 +81,7 @@ pub fn apply_rewrites<'a>(
                 panic!("update_block on an existing block cannot fail (logic bug): {e}")
             })
             .with_data(payload.into())
-            .rebuild();
+            .build();
     }
 
     // Re-serialising a bundle the editor just assembled cannot fail.
