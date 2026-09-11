@@ -10,13 +10,15 @@ use hardy_cbor::{
     encode::{Array, Encoder, Raw, ToCbor},
 };
 
-use super::{ScopeFlags, canonical_primary, rand_array, rand_bytes};
-use crate::bpsec::{iv::Iv, key_wrap::KeyWrap};
+use super::{ScopeFlags, rand_array, rand_bytes};
 use crate::{
     HashMap,
-    bpsec::{ContextId, Error, asb, bcb, key},
+    bpsec::{ContextId, Error, asb, bcb, iv::Iv, key, key_wrap::KeyWrap},
+    bundle,
+    canonical::parse_canonical,
     eid,
 };
+
 /// The RFC 9173 §4.3.2 variant parameter. A foreign wire value is a
 /// legitimate RFC 9172 pass-through state, carried as `Unrecognised`;
 /// the encrypt key checks never produce it, so it cannot reach the
@@ -43,10 +45,10 @@ impl ToCbor for AesVariant {
 }
 
 impl FromCbor for AesVariant {
-    type Error = Error;
+    type Error = super::Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
+        let (value, len) = parse_canonical::<u64, _>(data, super::Error::NotCanonical)?;
         Ok((
             match value {
                 1 => Self::A128GCM,
@@ -68,7 +70,7 @@ pub struct Parameters {
 }
 
 impl Parameters {
-    fn from_cbor(parameters: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
+    fn from_cbor(parameters: HashMap<u64, Range<usize>>, data: &[u8]) -> super::Result<Self> {
         let mut iv = None;
         let mut variant = None;
         let mut key = None;
@@ -79,12 +81,12 @@ impl Parameters {
                 2 => variant = Some(hardy_cbor::decode::parse(asb::bounded_slice(data, range)?)?),
                 3 => key = Some(asb::decode_box(range, data)?),
                 4 => flags = Some(hardy_cbor::decode::parse(asb::bounded_slice(data, range)?)?),
-                _ => return Err(Error::InvalidContextParameter(id)),
+                _ => return Err(super::Error::InvalidContextParameter(id)),
             }
         }
 
         // The RFC 9173 §4.3.1 length bound lives in `Iv::from_bytes`.
-        let iv: Box<[u8]> = iv.ok_or(Error::MissingContextParameter(1))?;
+        let iv: Box<[u8]> = iv.ok_or(super::Error::MissingContextParameter(1))?;
 
         Ok(Self {
             iv: Iv::from_bytes(&iv)?,
@@ -129,12 +131,12 @@ impl ToCbor for Parameters {
 pub struct Results(pub Option<Box<[u8]>>);
 
 impl Results {
-    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
+    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> super::Result<Self> {
         let mut r = None;
         for (id, range) in results {
             match id {
                 1 => r = Some(asb::decode_box(range, data)?),
-                _ => return Err(Error::InvalidContextResult(id)),
+                _ => return Err(super::Error::InvalidContextResult(id)),
             }
         }
 
@@ -171,7 +173,9 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
             .expect("Missing primary block!");
         let raw = raw.as_ref();
         // RFC 9172 §4: AAD requires the canonical (deterministic) form.
-        encoder.emit(&Raw(&canonical_primary(raw)?));
+        encoder.emit(&Raw(
+            &bundle::PrimaryBlock::canonical_bytes(raw).map_err(|_| Error::NotCanonical)?
+        ));
     }
 
     if flags.include_target_header {
@@ -311,7 +315,7 @@ impl Operation {
             Some(
                 key_wrap
                     .wrap_key(kek.expose_secret(), cek)
-                    .map_err(|e| Error::Algorithm(e.to_string()))?
+                    .map_err(Error::KeyWrap)?
                     .into(),
             )
         } else {
@@ -499,8 +503,8 @@ pub fn parse(
         data,
         "RFC9173 AES-GCM parameters",
         "RFC9173 AES-GCM results",
-        Parameters::from_cbor,
-        Results::from_cbor,
+        |r, d| Parameters::from_cbor(r, d).map_err(Error::from),
+        |r, d| Results::from_cbor(r, d).map_err(Error::from),
         |parameters, results| {
             bcb::Operation::AES_GCM(Operation {
                 parameters,
@@ -518,7 +522,7 @@ mod tests {
 
     use super::*;
     use crate::HashMap;
-    use crate::bpsec::Error;
+
     use crate::bpsec::context::ScopeFlags;
 
     // RFC 9173 §4.3.1: decrypt must accept any IV of 8-16 bytes, not only 12.
@@ -574,7 +578,7 @@ mod tests {
         let params: HashMap<u64, Range<usize>> = [(1, 0..data.len())].into_iter().collect();
         assert!(matches!(
             Parameters::from_cbor(params, &data),
-            Err(Error::InvalidIvLength(20))
+            Err(crate::bpsec::context::Error::InvalidIvLength(20))
         ));
 
         // A 7-byte IV (0x47 head + 7 bytes) pins the lower boundary.
@@ -583,7 +587,7 @@ mod tests {
         let params: HashMap<u64, Range<usize>> = [(1, 0..data.len())].into_iter().collect();
         assert!(matches!(
             Parameters::from_cbor(params, &data),
-            Err(Error::InvalidIvLength(7))
+            Err(crate::bpsec::context::Error::InvalidIvLength(7))
         ));
 
         // A 12-byte IV (0x4C head + 12 bytes) is accepted.

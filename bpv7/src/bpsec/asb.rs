@@ -1,14 +1,92 @@
-use super::*;
-
 use alloc::{boxed::Box, sync::Arc};
 use core::ops::Range;
 
 use hardy_cbor::decode::Untagged;
 use smallvec::SmallVec;
+use thiserror::Error;
 
-use crate::{HashMap, canonical::require_canonical, eid};
+use crate::{
+    HashMap,
+    bpsec::ContextId,
+    canonical::{CaptureFieldErr, HasInvalidField, require_canonical},
+    eid,
+};
 
-/// Strict-canonical helper per RFC 9172 §4 — no §4.1 carveout for ASB
+/// Errors from the ASB grammar itself: the RFC 9172 §3.6 abstract
+/// syntax block and the raw parameter/result range plumbing. Policy
+/// errors about what the operations mean live on [`bpsec::Error`],
+/// which wraps this leaf transparently.
+#[derive(Error, Debug)]
+pub enum Error {
+    /// No targets in the BPSec extension block.
+    #[error("No targets in BPSec extension block")]
+    NoTargets,
+
+    /// A block number appears more than once in the target array.
+    #[error("Duplicate block number in BPSec target array")]
+    DuplicateTarget,
+
+    /// The security source is the null or LocalNode endpoint.
+    #[error("Invalid Null or LocalNode security source")]
+    InvalidSecuritySource,
+
+    /// The target and result arrays disagree in length or pairing.
+    #[error("Mismatch Target and Results arrays")]
+    MismatchedTargetResult,
+
+    /// A parameter/result range escapes the source data.
+    #[error(
+        "BPSec parameter/result range {start}..{end} does not fit in source data of {source_len} bytes"
+    )]
+    SourceOutOfRange {
+        start: usize,
+        end: usize,
+        source_len: usize,
+    },
+
+    /// The block violates RFC 9172 canonical CBOR encoding requirements.
+    #[error("BPSec block violates RFC 9172 canonical CBOR encoding requirements")]
+    NotCanonical,
+
+    /// The security source EID failed to parse.
+    #[error(transparent)]
+    InvalidEid(#[from] crate::eid::Error),
+
+    /// A field within the block failed to parse.
+    #[error("Failed to parse {field}: {source}")]
+    InvalidField {
+        field: &'static str,
+        source: Box<Error>,
+    },
+
+    /// An error occurred during CBOR decoding.
+    #[error(transparent)]
+    InvalidCBOR(hardy_cbor::decode::Error),
+}
+
+// Manual rather than `#[from]`: an `UnexpectedTag` is a §4 canonical
+// violation in this domain (see `crate::error` for the rationale).
+impl From<hardy_cbor::decode::Error> for Error {
+    fn from(e: hardy_cbor::decode::Error) -> Self {
+        match e {
+            hardy_cbor::decode::Error::UnexpectedTag => Self::NotCanonical,
+            e => Self::InvalidCBOR(e),
+        }
+    }
+}
+
+impl HasInvalidField for Error {
+    fn invalid_field(field: &'static str, source: Self) -> Self {
+        Error::InvalidField {
+            field,
+            source: Box::new(source),
+        }
+    }
+}
+
+pub type Result<T> = core::result::Result<T, Error>;
+
+/// Strict-canonical helper per RFC 9172 §4: no §4.1 carveout for ASB
 /// content, so every encoding violation (non-shortest, indefinite-
 /// length, unexpected tags) is rejected with `NotCanonical`.
 fn parse_ranges<const D: usize>(
@@ -79,13 +157,13 @@ impl UnknownOperation {
     pub fn parse(
         asb: AbstractSyntaxBlock,
         source_data: &[u8],
-    ) -> Result<(eid::Eid, HashMap<u64, Self>)> {
+    ) -> crate::bpsec::Result<(eid::Eid, HashMap<u64, Self>)> {
         asb.into_operations(
             source_data,
             "security context parameters",
             "security results",
-            slice_map,
-            slice_map,
+            |r, d| slice_map(r, d).map_err(crate::bpsec::Error::from),
+            |r, d| slice_map(r, d).map_err(crate::bpsec::Error::from),
             |parameters, results| Self {
                 parameters,
                 results,
@@ -142,15 +220,18 @@ impl AbstractSyntaxBlock {
         data: &[u8],
         params_field: &'static str,
         results_field: &'static str,
-        parse_params: impl FnOnce(HashMap<u64, Range<usize>>, &[u8]) -> Result<P>,
-        parse_results: impl Fn(HashMap<u64, Range<usize>>, &[u8]) -> Result<R>,
+        parse_params: impl FnOnce(HashMap<u64, Range<usize>>, &[u8]) -> crate::bpsec::Result<P>,
+        parse_results: impl Fn(HashMap<u64, Range<usize>>, &[u8]) -> crate::bpsec::Result<R>,
         make: impl Fn(Arc<P>, R) -> Op,
-    ) -> Result<(eid::Eid, HashMap<u64, Op>)> {
-        let parameters =
-            Arc::new(parse_params(self.parameters, data).map_field_err::<Error>(params_field)?);
+    ) -> crate::bpsec::Result<(eid::Eid, HashMap<u64, Op>)> {
+        let parameters = Arc::new(
+            parse_params(self.parameters, data)
+                .map_field_err::<crate::bpsec::Error>(params_field)?,
+        );
         let mut operations = HashMap::with_capacity(self.results.len());
         for (target, results) in self.results {
-            let results = parse_results(results, data).map_field_err::<Error>(results_field)?;
+            let results =
+                parse_results(results, data).map_field_err::<crate::bpsec::Error>(results_field)?;
             operations.insert(target, make(parameters.clone(), results));
         }
         Ok((self.source, operations))
@@ -187,7 +268,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                         }
                         // Check for duplicates
                         if targets.contains(&block) {
-                            return Err(Error::DuplicateOpTarget);
+                            return Err(Error::DuplicateTarget);
                         }
                         targets.push(block);
                     }
@@ -352,7 +433,7 @@ mod tests {
         else {
             panic!("duplicate target should fail on the security targets field");
         };
-        assert!(matches!(source.as_ref(), Error::DuplicateOpTarget));
+        assert!(matches!(source.as_ref(), Error::DuplicateTarget));
     }
 
     // RFC 9172 §3.6: the security results array must line up one-to-one with

@@ -6,10 +6,10 @@ use smallvec::SmallVec;
 
 #[cfg(feature = "rfc9173")]
 use crate::bpsec::context;
-use crate::bundle::{BibCoverage, BlockType};
 use crate::{
     HashMap,
     bpsec::{BlockSet, ContextId, Error, asb, key},
+    bundle::{BibCoverage, BlockType},
     crc, eid,
 };
 

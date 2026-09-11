@@ -2,7 +2,10 @@ use alloc::{boxed::Box, string::String};
 
 use thiserror::Error;
 
-use crate::bpsec::{ContextId, key};
+use crate::{
+    bpsec::{ContextId, key},
+    canonical::HasInvalidField,
+};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -18,14 +21,8 @@ pub enum Error {
     #[error("Cannot remove BCB {0} without also removing all of its targets")]
     StrandsCiphertext(u64),
 
-    #[error("Mismatch Target and Results arrays")]
-    MismatchedTargetResult,
-
     #[error("The security target block is not in the bundle")]
     MissingSecurityTarget,
-
-    #[error("Invalid Null or LocalNode security source")]
-    InvalidSecuritySource,
 
     #[error("BIBs must not target BIBs or BCBs")]
     InvalidBIBTarget,
@@ -41,26 +38,6 @@ pub enum Error {
 
     #[error("A BCB targeting a BIB must share at least one target with it")]
     BCBMustShareTarget,
-
-    #[error(
-        "Processing failed on an extension block that has 'Delete block on failure' flag set, but is the target of a BCB"
-    )]
-    InvalidTargetFlags,
-
-    #[error("Invalid security context parameter id {0}")]
-    InvalidContextParameter(u64),
-
-    #[error("Invalid AES-GCM IV length {0}, must be 8-16 bytes (RFC 9173 Section 4.3.1)")]
-    InvalidIvLength(usize),
-
-    #[error("Missing security context parameter id {0}")]
-    MissingContextParameter(u64),
-
-    #[error("Invalid security context result id {0}")]
-    InvalidContextResult(u64),
-
-    #[error("Missing security context result id {0}")]
-    MissingContextResult(u64),
 
     #[error(
         "BCBs must have the 'Block must be replicated in every fragment' flag set if one of the targets is the payload block"
@@ -79,9 +56,6 @@ pub enum Error {
         "The same security service must not be applied to a security target more than once in a bundle"
     )]
     DuplicateOpTarget,
-
-    #[error("No targets in BPSec extension block")]
-    NoTargets,
 
     #[error("Invalid context {0:?}")]
     InvalidContext(ContextId),
@@ -118,20 +92,31 @@ pub enum Error {
     #[error("Unsupported operation")]
     UnsupportedOperation,
 
-    #[error(
-        "BPSec parameter/result range {start}..{end} does not fit in source data of {source_len} bytes"
-    )]
-    SourceOutOfRange {
-        start: usize,
-        end: usize,
-        source_len: usize,
-    },
-
     #[error(transparent)]
     InvalidCBOR(hardy_cbor::decode::Error),
 
     #[error("Underlying cryptographic operation failed: {0}")]
     Algorithm(String),
+
+    /// Gathering cryptographic randomness failed. Deliberately detail-free:
+    /// the failure reason is an environment property, not bundle data, and
+    /// the operational errors stay opaque to avoid oracle surfaces.
+    #[error("failed to gather cryptographic randomness")]
+    Rng,
+
+    /// A structural error from the ASB grammar.
+    #[error(transparent)]
+    Asb(#[from] super::asb::Error),
+
+    /// A context parameter/result decode error.
+    #[cfg(feature = "rfc9173")]
+    #[error(transparent)]
+    Context(#[from] super::context::Error),
+
+    /// Wrapping a content-encryption key failed.
+    #[cfg(feature = "rfc9173")]
+    #[error(transparent)]
+    KeyWrap(#[from] super::key_wrap::Error),
 }
 
 // Manual rather than `#[from]`: an `UnexpectedTag` from an `Untagged`
@@ -147,7 +132,7 @@ impl From<hardy_cbor::decode::Error> for Error {
     }
 }
 
-impl crate::canonical::HasInvalidField for Error {
+impl HasInvalidField for Error {
     fn invalid_field(field: &'static str, source: Self) -> Self {
         Error::InvalidField {
             field,

@@ -4,6 +4,13 @@ use hardy_cbor::{
     decode::FromCbor,
     encode::{Encoder, ToCbor},
 };
+
+use crate::{
+    HashMap, bundle,
+    bundle::{Block, Payload},
+    canonical::parse_canonical,
+};
+
 /// Block Confidentiality Block (BCB) types and operations (RFC 9172 Section 3.7).
 pub mod bcb;
 /// Block Integrity Block (BIB) types and operations (RFC 9172 Section 3.6).
@@ -21,7 +28,6 @@ pub mod edit;
 mod asb;
 mod error;
 
-/// RFC 9173 default security contexts (BIB-HMAC-SHA2 and BCB-AES-GCM).
 /// The default security contexts, grouped by context name
 /// (BIB-HMAC-SHA2 from RFC 9173 §3, BCB-AES-GCM from §4).
 #[cfg(feature = "rfc9173")]
@@ -53,9 +59,6 @@ pub use self::encryptor::Encryptor;
 pub use self::error::{Error, Result};
 #[cfg(feature = "bpsec")]
 pub use self::signer::Signer;
-
-use crate::bundle::{Block, Payload};
-use crate::{HashMap, bundle, canonical::CaptureFieldErr};
 
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.
@@ -96,10 +99,10 @@ impl ToCbor for ContextId {
 }
 
 impl FromCbor for ContextId {
-    type Error = Error;
+    type Error = asb::Error;
 
     fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+        let (value, len) = parse_canonical::<u64, _>(data, asb::Error::NotCanonical)?;
         Ok((
             match value {
                 #[cfg(feature = "rfc9173")]

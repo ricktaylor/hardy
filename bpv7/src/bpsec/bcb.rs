@@ -8,10 +8,10 @@ use smallvec::SmallVec;
 
 #[cfg(feature = "rfc9173")]
 use crate::bpsec::context;
-use crate::bundle::BlockType;
 use crate::{
     HashMap,
     bpsec::{BlockSet, ContextId, Error, asb, key},
+    bundle::BlockType,
     crc, eid,
 };
 /// A parsed BCB (Block Confidentiality Block) security operation.

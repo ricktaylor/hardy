@@ -90,7 +90,7 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
         // zero-copy payload ranges and sequential payload spooling possible.
         // The primary block is the opposite case: no §4.3.2-style override
         // applies there, §4.1 governs, and a non-canonical primary is
-        // tolerated (see `bpsec::context::canonical_primary`). Pinned by
+        // tolerated (see `bundle::PrimaryBlock::canonical_bytes`). Pinned by
         // `tests/parse.rs`.
         //
         // Appendix B permits an optional `#6.24` tag (CBOR-embedded

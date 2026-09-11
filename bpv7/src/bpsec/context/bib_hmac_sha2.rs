@@ -7,12 +7,12 @@ use hardy_cbor::{
 };
 use hmac::{KeyInit, Mac};
 
-use super::{ScopeFlags, canonical_primary, rand_bytes};
-use crate::bpsec::{key_wrap::KeyWrap, mac_tag::MacTag};
-use crate::bundle::BlockType;
+use super::{ScopeFlags, rand_bytes};
 use crate::{
     HashMap,
-    bpsec::{ContextId, Error, asb, bib, key},
+    bpsec::{ContextId, Error, asb, bib, key, key_wrap::KeyWrap, mac_tag::MacTag},
+    bundle::{self, BlockType},
+    canonical::parse_canonical,
     eid,
 };
 
@@ -44,10 +44,10 @@ impl ToCbor for ShaVariant {
 }
 
 impl FromCbor for ShaVariant {
-    type Error = Error;
+    type Error = super::Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
+        let (value, len) = parse_canonical::<u64, _>(data, super::Error::NotCanonical)?;
         Ok((
             match value {
                 5 => Self::HMAC_256_256,
@@ -69,14 +69,14 @@ pub struct Parameters {
 }
 
 impl Parameters {
-    fn from_cbor(parameters: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
+    fn from_cbor(parameters: HashMap<u64, Range<usize>>, data: &[u8]) -> super::Result<Self> {
         let mut result = Self::default();
         for (id, range) in parameters {
             match id {
                 1 => result.variant = hardy_cbor::decode::parse(asb::bounded_slice(data, range)?)?,
                 2 => result.key = Some(asb::decode_box(range, data)?),
                 3 => result.flags = hardy_cbor::decode::parse(asb::bounded_slice(data, range)?)?,
-                _ => return Err(Error::InvalidContextParameter(id)),
+                _ => return Err(super::Error::InvalidContextParameter(id)),
             }
         }
         Ok(result)
@@ -116,17 +116,17 @@ impl ToCbor for Parameters {
 pub struct Results(pub MacTag);
 
 impl Results {
-    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
+    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> super::Result<Self> {
         let mut r = None;
         for (id, range) in results {
             match id {
                 1 => r = Some(asb::decode_box(range, data)?),
-                _ => return Err(Error::InvalidContextResult(id)),
+                _ => return Err(super::Error::InvalidContextResult(id)),
             }
         }
 
         Ok(Self(MacTag::from_bytes(
-            r.ok_or(Error::InvalidContextResult(1))?,
+            r.ok_or(super::Error::InvalidContextResult(1))?,
         )))
     }
 }
@@ -176,7 +176,9 @@ where
                 .expect("Missing primary block!");
             let raw = raw.as_ref();
             // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
-            mac.update(&canonical_primary(raw)?);
+            mac.update(
+                &bundle::PrimaryBlock::canonical_bytes(raw).map_err(|_| Error::NotCanonical)?,
+            );
         }
 
         if flags.include_target_header {
@@ -206,7 +208,8 @@ where
     // byte-string-wrapped). For primary block targets, canonicalize before wrapping.
     if matches!(target_block.block_type, BlockType::Primary) {
         // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
-        let bytes = canonical_primary(payload.as_ref())?;
+        let bytes = bundle::PrimaryBlock::canonical_bytes(payload.as_ref())
+            .map_err(|_| Error::NotCanonical)?;
         mac.update(&emit(&hardy_cbor::encode::BytesHeader(bytes.len() as u64)).0);
         mac.update(&bytes);
     } else {
@@ -313,7 +316,7 @@ impl Operation {
             Some(
                 key_wrap
                     .wrap_key(kek.expose_secret(), &cek)
-                    .map_err(|e| Error::Algorithm(e.to_string()))?
+                    .map_err(Error::KeyWrap)?
                     .into(),
             )
         } else {
@@ -433,8 +436,8 @@ pub fn parse(
         data,
         "RFC9173 HMAC-SHA2 parameters",
         "RFC9173 HMAC-SHA2 results",
-        Parameters::from_cbor,
-        Results::from_cbor,
+        |r, d| Parameters::from_cbor(r, d).map_err(Error::from),
+        |r, d| Results::from_cbor(r, d).map_err(Error::from),
         |parameters, results| {
             bib::Operation::HMAC_SHA2(Operation {
                 parameters,

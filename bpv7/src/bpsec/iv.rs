@@ -1,4 +1,4 @@
-use crate::bpsec::Error;
+use crate::bpsec::context::Error;
 
 /// An RFC 9173 §4.3.1 initialization vector: 8-16 bytes by construction.
 #[derive(Clone, Debug, PartialEq, Eq)]

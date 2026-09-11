@@ -7,9 +7,9 @@ decode and emit. Reachable from [`Bundle::primary`](crate::bundle::Bundle).
 [RFC 9171]: https://www.rfc-editor.org/rfc/rfc9171.html
 */
 
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 
-use hardy_cbor::decode::Error as CborError;
+use hardy_cbor::decode::{Error as CborError, parse_exact};
 
 use crate::{
     Error, Result, bundle,
@@ -38,10 +38,22 @@ pub struct PrimaryBlock {
 }
 
 impl PrimaryBlock {
-    /// Emit a primary block as a CBOR-encoded `Vec<u8>`. Method on
-    /// `PrimaryBlock` — callers that have a `Bundle` pass
-    /// `bundle.primary.emit()`; builder constructs a `PrimaryBlock`
-    /// from its fields.
+    /// The canonical encoding of a primary block's raw bytes: borrows
+    /// `raw` when it is already canonical, re-emits when it is not, and
+    /// errors when the bytes do not parse or the re-emit fails. Once
+    /// non-canonical form is confirmed there is no silent fallback to the
+    /// raw bytes: BPSec IPPT/AAD construction over the wrong form would
+    /// produce an unverifiable signature.
+    pub fn canonical_bytes(raw: &[u8]) -> Result<Cow<'_, [u8]>> {
+        match parse_exact::<(PrimaryBlock, bool)>(raw) {
+            Ok((_, true)) => Ok(Cow::Borrowed(raw)),
+            Ok((pb, false)) => pb.emit().map(Cow::Owned).map_err(|_| Error::NotCanonical),
+            Err(_) => Err(Error::NotCanonical),
+        }
+    }
+
+    /// Emit this primary block as a CBOR-encoded `Vec<u8>`, appending the
+    /// CRC value its `crc_type` calls for.
     pub fn emit(&self) -> Result<Vec<u8>> {
         crc::append_crc_value(
             self.crc_type,

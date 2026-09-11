@@ -1,43 +1,33 @@
-use alloc::{borrow::Cow, boxed::Box, string::ToString, vec};
+use alloc::{boxed::Box, vec};
 
 use hardy_cbor::{
-    decode::{FromCbor, parse_exact},
+    decode::FromCbor,
     encode::{Encoder, ToCbor},
 };
 use rand::TryRng;
 
-use crate::{bpsec::Error, bundle};
+use crate::canonical::parse_canonical;
+
 pub mod bcb_aes_gcm;
 pub mod bib_hmac_sha2;
 
-/// Return the bytes to feed into BPSec IPPT/AAD for the primary block.
-///
-/// - Already canonical (`bool = true`): borrows `raw` — zero copy.
-/// - Non-canonical (`bool = false`): re-emits to canonical form (owned).
-///   Errors if re-encoding fails — once non-canonical is confirmed we
-///   cannot silently fall back to raw bytes and produce a wrong IPPT/AAD.
-/// - Parse fails: errors — we cannot verify or produce a canonical form.
-pub(super) fn canonical_primary(raw: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
-    match parse_exact::<(bundle::PrimaryBlock, bool)>(raw) {
-        Ok((_, true)) => Ok(Cow::Borrowed(raw)),
-        Ok((pb, false)) => pb.emit().map(Cow::Owned).map_err(|_| Error::NotCanonical),
-        Err(_) => Err(Error::NotCanonical),
-    }
-}
+mod error;
 
-fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
+pub use self::error::{Error, Result};
+
+fn rand_bytes<const N: usize>() -> super::Result<Box<[u8]>> {
     let mut buf = vec![0u8; N].into_boxed_slice();
     rand::rngs::SysRng
         .try_fill_bytes(&mut buf)
-        .map_err(|e| Error::Algorithm(e.to_string()))?;
+        .map_err(|_| super::Error::Rng)?;
     Ok(buf)
 }
 
-fn rand_array<const N: usize>() -> Result<[u8; N], Error> {
+fn rand_array<const N: usize>() -> super::Result<[u8; N]> {
     let mut buf = [0u8; N];
     rand::rngs::SysRng
         .try_fill_bytes(&mut buf)
-        .map_err(|e| Error::Algorithm(e.to_string()))?;
+        .map_err(|_| super::Error::Rng)?;
     Ok(buf)
 }
 
@@ -81,8 +71,8 @@ impl Default for ScopeFlags {
 impl FromCbor for ScopeFlags {
     type Error = Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+    fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
+        let (value, len) = parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         let mut flags = Self {
             include_primary_block: false,
             include_target_header: false,
