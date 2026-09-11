@@ -74,21 +74,6 @@ impl BpaBuilder {
             )
             .expect("Failed to register bundle validity filter");
 
-        // Auto-register RFC9171 validity filter unless disabled
-        #[cfg(not(feature = "no-rfc9171-autoregister"))]
-        {
-            use crate::filter::rfc9171::Rfc9171ValidityFilter;
-
-            filter_engine
-                .register(
-                    Hook::Ingress,
-                    "rfc9171-validity",
-                    &[],
-                    Filter::Read(Arc::new(Rfc9171ValidityFilter::default())),
-                )
-                .expect("Failed to register RFC9171 validity filter");
-        }
-
         let poll_channel_depth = NonZeroUsize::new(16).unwrap();
         let processing_pool_size =
             NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
@@ -274,6 +259,25 @@ impl BpaBuilder {
 
     /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
+        // Auto-register the RFC 9171 validity filter unless disabled: built
+        // here, from the final flag values, so this seat and the dispatcher's
+        // pre-drain gate enforce the same policy.
+        #[cfg(not(feature = "no-rfc9171-autoregister"))]
+        {
+            use crate::filter::rfc9171::Rfc9171ValidityFilter;
+
+            self.filter_engine.register(
+                Hook::Ingress,
+                "rfc9171-validity",
+                &[],
+                Filter::Read(Arc::new(
+                    Rfc9171ValidityFilter::new()
+                        .primary_block_integrity(self.primary_block_integrity)
+                        .bundle_age_required(self.bundle_age_required),
+                )),
+            )?;
+        }
+
         let metadata_storage = self
             .metadata_storage
             .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(None)));
