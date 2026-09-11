@@ -1,10 +1,10 @@
 use core::num::NonZeroU64;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
     notify::{
-        EventKind, RecursiveMode,
+        Event, EventKind, RecursiveMode,
         event::{CreateKind, ModifyKind, RenameMode},
     },
 };
@@ -121,27 +121,34 @@ async fn watcher_task(
             res = rx.recv_async() => match res {
                 Err(_) => break,
                 Ok(DebouncedEvent{ event, .. }) => {
-                    // Create catches plain writes; rename-into catches the
-                    // atomic write-then-rename spool idiom and an operator
-                    // moving a file back from `refused/` to retry it.
-                    if matches!(
-                        event.kind,
-                        EventKind::Create(CreateKind::File)
-                            | EventKind::Modify(ModifyKind::Name(RenameMode::To | RenameMode::Any))
-                    ) {
-                        for e in event.paths {
-                            if path_tx.send_async(e).await.is_err() {
-                                break;
-                            }
+                    for e in offered_paths(event) {
+                        if path_tx.send_async(e).await.is_err() {
+                            break;
                         }
                     }
-
                 },
             },
             _ = cancel_token.cancelled() => {
                 break;
             }
         }
+    }
+}
+
+// The outbox paths an FS event offers. Create catches plain writes;
+// rename-into catches the atomic write-then-rename spool idiom and an
+// operator moving a file back from `refused/` to retry it. A rename the
+// debouncer matched within the directory (the source outlived the debounce
+// window) arrives as a single `Both` event whose paths are `[from, to]` —
+// only the destination still exists to be offered.
+fn offered_paths(mut event: Event) -> Vec<PathBuf> {
+    match event.kind {
+        EventKind::Create(CreateKind::File)
+        | EventKind::Modify(ModifyKind::Name(RenameMode::To | RenameMode::Any)) => event.paths,
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+            event.paths.pop().into_iter().collect()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -247,8 +254,53 @@ mod tests {
         stream::Receiver,
     };
     use hardy_bpv7::{bundle::Id, eid::NodeId};
+    use notify_debouncer_full::notify::event::DataChange;
 
     use super::*;
+
+    /// A rename the debouncer matched within the outbox
+    /// (`RenameMode::Both`, the write-then-rename idiom when the source
+    /// outlived the debounce window) offers only the destination: the
+    /// source path no longer exists.
+    #[test]
+    fn matched_rename_offers_only_the_destination() {
+        let offered = offered_paths(
+            Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+                .add_path(PathBuf::from("/outbox/.bundle.cbor.tmp"))
+                .add_path(PathBuf::from("/outbox/bundle.cbor")),
+        );
+        assert_eq!(offered, vec![PathBuf::from("/outbox/bundle.cbor")]);
+    }
+
+    #[test]
+    fn create_and_rename_in_offer_the_path() {
+        for kind in [
+            EventKind::Create(CreateKind::File),
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+        ] {
+            let offered =
+                offered_paths(Event::new(kind).add_path(PathBuf::from("/outbox/bundle.cbor")));
+            assert_eq!(
+                offered,
+                vec![PathBuf::from("/outbox/bundle.cbor")],
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// Data-modify chatter and rename-out must not (re-)offer a path.
+    #[test]
+    fn other_events_offer_nothing() {
+        for kind in [
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+        ] {
+            let offered =
+                offered_paths(Event::new(kind).add_path(PathBuf::from("/outbox/bundle.cbor")));
+            assert_eq!(offered, Vec::<PathBuf>::new(), "{kind:?}");
+        }
+    }
 
     /// Signals each dispatch through a channel — the forwarder loop is
     /// sequential, so a received signal proves every earlier-queued path
