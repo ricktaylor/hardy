@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **BREAKING:** the persisted record format changed in `hardy-bpa` (the wire-bundle key rename `bundle` → `bpv7` and the new required `origin` provenance key). Records written by earlier versions no longer deserialize: recovery treats each as corrupt and tombstones it, and the restart re-ingest then discards the orphaned bundle data as duplicates against the permanent `bundles` identity anchor. The schema-checksum validation cannot catch this — the blob inside the schema is unversioned. Wipe the metadata database when upgrading a node with a populated store — restart then re-ingests the bundle store cleanly.
 - **BREAKING:** the serde `Config` struct and the free `new()` function are replaced by `PostgresStorage::builder()`, with the pool defaults owned privately by the builder; config-file schemas belong to the server crates. Timeouts are `Duration`s, `poll_page_size` and `max_connections` are `NonZeroU32` (a zero-connection pool is unrepresentable), and a missing database URL is the dedicated `Error::NoDatabaseUrl`.
 
+### Fixed
+- `replace` no longer fails when the bundle was concurrently tombstoned. Deletion drops the metadata row, so the update matched nothing and returned `RowNotFound`, which `Store::update_metadata` turns into a `trace_expect` panic: any metadata write losing a race against the expiry reaper or a peer sweep took the process down. A lost race is now a silent no-op, the outcome the trait documents and the other backends already gave.
+
 ## [0.2.0]
 
 ### Changed

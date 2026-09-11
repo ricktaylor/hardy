@@ -281,7 +281,11 @@ impl storage::MetadataStorage for PostgresStorage {
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.status)?;
 
-        let rows = sqlx::query(
+        // Deletion drops the metadata row and keeps the bundles row, so a
+        // tombstoned bundle matches nothing here and stays deleted. That is
+        // the defined outcome for a write that lost its race against the
+        // reaper or a peer sweep, not an error the caller can act on.
+        sqlx::query(
             "UPDATE metadata
              SET status      = $2,
                  expiry      = $3,
@@ -305,12 +309,7 @@ impl storage::MetadataStorage for PostgresStorage {
         .bind(sf.service_eid)
         .bind(bundle_bytes)
         .execute(&self.pool)
-        .await?
-        .rows_affected();
-
-        if rows == 0 {
-            return Err(sqlx::Error::RowNotFound.into());
-        }
+        .await?;
 
         Ok(())
     }

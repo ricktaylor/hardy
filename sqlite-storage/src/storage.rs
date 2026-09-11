@@ -305,9 +305,13 @@ impl MetadataStorage for SqliteStorage {
         let bundle = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
         if self
             .write(move |conn| {
-                // Update bundle
+                // `bundle IS NOT NULL` keeps a tombstone a tombstone: the row
+                // survives deletion with its columns nulled, so an unqualified
+                // UPDATE would write the blob and status straight back in and
+                // resurrect the bundle. Matching no row is the defined outcome
+                // for a write that lost its race, not an error.
                 conn.prepare_cached(
-                    "UPDATE bundles SET bundle = ?2, expiry = ?3, received_at = ?4, status_code = ?5, status_param1 = ?6, status_param2 = ?7, status_param3 = ?8 WHERE bundle_id = ?1",
+                    "UPDATE bundles SET bundle = ?2, expiry = ?3, received_at = ?4, status_code = ?5, status_param1 = ?6, status_param2 = ?7, status_param3 = ?8 WHERE bundle_id = ?1 AND bundle IS NOT NULL",
                 )?
                 .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3))
                 .map_err(Into::into)
@@ -315,7 +319,7 @@ impl MetadataStorage for SqliteStorage {
             .await?
             != 1
         {
-            error!("Failed to replace bundle!");
+            debug!("Replace for a missing or tombstoned bundle, ignored");
         }
         Ok(())
     }

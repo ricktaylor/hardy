@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - `confirm_exists` treats a tombstoned row as absent (`Ok(None)`) instead of failing on its NULL columns. Previously a bundle-data blob whose metadata row was tombstoned — a crash between tombstone and data deletion leaves exactly that — made startup recovery panic on every boot, an unrecoverable crash loop cleared only by manual database surgery; the row now matches the same `bundle IS NOT NULL` predicate every other tombstone-aware query uses, recovery re-ingests the blob as an orphan, the insert reports it as a duplicate of the tombstone, and the stranded data is deleted — the store self-heals.
 - A status update or tombstone for a concurrently deleted bundle logs at debug rather than error: delete is terminal and the write quietly loses.
+- `replace` no longer resurrects a tombstoned bundle. A deleted row survives with its columns nulled, so the unqualified `UPDATE ... WHERE bundle_id = ?1` wrote the caller's snapshot straight back in, undoing the expiry reaper or a peer sweep and returning the bundle to the queues. The statement now carries the same `bundle IS NOT NULL` predicate as every other tombstone-aware query, so a metadata write that lost the race matches no row and quietly loses.
 
 ## [0.6.0]
 
