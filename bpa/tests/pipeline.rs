@@ -1855,7 +1855,7 @@ async fn egress_filter_sees_consistent_extents() {
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+    bpa.register_cla("test".to_string(), cla.clone(), None)
         .await
         .unwrap();
 

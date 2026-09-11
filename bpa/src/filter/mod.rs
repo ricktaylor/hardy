@@ -152,24 +152,14 @@ impl<'a> BundleReader<'a> {
         &self,
         block_number: u64,
     ) -> Result<Option<block::Payload<'a>>, hardy_bpv7::Error> {
-        // Residency pre-check: a present block whose extents fall outside
-        // the resident bytes is "not available to me" (`Ok(None)`), the
-        // same answer `Block::extract` gives — without it the extent slice
-        // below surfaces as `Err(Altered)`. Compared in u64: a block past
-        // usize::MAX on a 32-bit target is equally non-resident.
-        if let Some(block) = self.bundle.blocks.get(&block_number)
-            && block.payload_range().end > self.data.len() as u64
+        // `DecryptingReader` supplies the residency pre-check (`Ok(None)`
+        // for extents beyond the resident bytes) and the decrypt; the
+        // reader-level flattening of NoKey/absent to "not available to
+        // me" is this handle's contract.
+        match bpsec::DecryptingReader::new(&self.bundle.blocks, self.data, self.bcb_ops, self.keys)
+            .block_data(block_number)
         {
-            return Ok(None);
-        }
-        match bpsec::block_data(
-            block_number,
-            &self.bundle.blocks,
-            self.data,
-            self.bcb_ops,
-            self.keys,
-        ) {
-            Ok(payload) => Ok(Some(payload)),
+            Ok(payload) => Ok(payload),
             Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
             | Err(hardy_bpv7::Error::MissingBlock(_)) => Ok(None),
             Err(e) => Err(e),
