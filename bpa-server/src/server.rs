@@ -11,10 +11,11 @@ use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
 use hardy_async::TaskPool;
+#[cfg(feature = "ipn-legacy-filter")]
+use hardy_bpa::filter::{Filter, Hook};
 use hardy_bpa::{
     bpa::Bpa,
     cla::Cla,
-    filter::{Filter, Hook, rfc9171::Rfc9171ValidityFilter},
     policy::FlowControllerFactory,
     routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
@@ -150,23 +151,14 @@ impl BpaServer {
         let mut builder = Bpa::builder()
             .node_ids(config.admin_endpoints)
             .metadata_storage(metadata_storage)
-            .bundle_storage(bundle_storage)
-            .filter(
-                Hook::Ingress,
-                "rfc9171-validity",
-                &[],
-                Filter::Read(Arc::new({
-                    let mut filter = Rfc9171ValidityFilter::new();
-                    if let Some(enabled) = config.rfc9171_validity.primary_block_integrity {
-                        filter = filter.primary_block_integrity(enabled);
-                    }
-                    if let Some(enabled) = config.rfc9171_validity.bundle_age_required {
-                        filter = filter.bundle_age_required(enabled);
-                    }
-                    filter
-                })),
-            );
+            .bundle_storage(bundle_storage);
 
+        if let Some(enabled) = config.rfc9171_validity.primary_block_integrity {
+            builder = builder.primary_block_integrity(enabled);
+        }
+        if let Some(enabled) = config.rfc9171_validity.bundle_age_required {
+            builder = builder.bundle_age_required(enabled);
+        }
         if let Some(status_reports) = config.status_reports {
             builder = builder.status_reports(status_reports);
         }

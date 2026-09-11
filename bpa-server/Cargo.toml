@@ -37,7 +37,7 @@ instrument = [
 [dependencies]
 hardy-async = { version = "0.2", path = "../async", features = ["watcher"] }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", features = ["serde"] }
-hardy-bpa = { version = "0.2", path = "../bpa", default-features = false, features = ["serde", "rfc9173", "tokio", "no-rfc9171-autoregister"] }
+hardy-bpa = { version = "0.2", path = "../bpa", default-features = false, features = ["serde", "rfc9173", "tokio"] }
 hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", features = ["serde", "dtn-pat-item"] }
 hardy-proto = { version = "0.2", path = "../proto", features = ["serde"], optional = true }
 hardy-sqlite-storage = { version = "0.6", path = "../sqlite-storage", optional = true }
