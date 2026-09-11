@@ -4,6 +4,7 @@ use std::{collections::HashMap, path::PathBuf};
 use hardy_async::watcher::WatchMode;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::Service;
+use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
@@ -126,7 +127,12 @@ impl From<WatchConfig> for Option<WatchMode> {
 }
 
 // Configuration for built-in application services.
-// The RFC9171 validity checks: absent keys defer to the filter's own
+// EID patterns for next hops requiring legacy 2-element IPN EID encoding,
+// applied by the BPA's built-in per-hop rewrite stage.
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct IpnLegacyNodes(pub Vec<EidPattern>);
+
+// The RFC9171 validity checks: absent keys defer to the BPA builder's own
 // defaults (all checks enabled).
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
@@ -220,10 +226,9 @@ pub struct Config {
     #[serde(default)]
     pub storage: storage::StorageConfig,
 
-    // IPN legacy node patterns for the egress rewriting filter.
-    #[cfg(feature = "ipn-legacy-filter")]
+    // IPN legacy node patterns for the egress per-hop re-encode.
     #[serde(default)]
-    pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
+    pub ipn_legacy_nodes: IpnLegacyNodes,
 
     // RFC9171 bundle validity checks.
     #[serde(default)]

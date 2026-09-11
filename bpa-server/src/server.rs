@@ -11,8 +11,6 @@ use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
 use hardy_async::TaskPool;
-#[cfg(feature = "ipn-legacy-filter")]
-use hardy_bpa::filter::{Filter, Hook};
 use hardy_bpa::{
     bpa::Bpa,
     cla::Cla,
@@ -24,8 +22,6 @@ use hardy_bpa::{
 use hardy_echo_service::EchoService;
 #[cfg(feature = "file-cla")]
 use hardy_file_cla::Cla as FileCla;
-#[cfg(feature = "ipn-legacy-filter")]
-use hardy_ipn_legacy_filter::IpnLegacyFilter;
 #[cfg(feature = "localdisk-storage")]
 use hardy_localdisk_storage::LocalDiskStorage;
 #[cfg(feature = "postgres-storage")]
@@ -201,16 +197,7 @@ impl BpaServer {
             builder = builder.no_cache();
         }
 
-        #[cfg(feature = "ipn-legacy-filter")]
-        if !config.ipn_legacy_nodes.0.is_empty() {
-            let filter = IpnLegacyFilter::new(config.ipn_legacy_nodes.0);
-            builder = builder.filter(
-                Hook::Egress,
-                "ipn-legacy",
-                &[],
-                Filter::Write(Arc::new(filter)),
-            );
-        }
+        builder = builder.ipn_legacy_peers(config.ipn_legacy_nodes.0);
 
         if let Some(sr_config) = config.static_routes {
             let routes_file = sr_config
