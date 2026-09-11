@@ -20,7 +20,6 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-NODE_PORT=4570
 PING_COUNT=3
 
 RED='\033[0;31m'
@@ -33,6 +32,30 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
+
+# Poll until a file contains at least N occurrences of a pattern, with a
+# deadline in seconds. Fails fast when the given process dies first, so a
+# dead server does not burn every remaining deadline in turn.
+wait_for_log() {
+    local file=$1 pattern=$2 count=$3 deadline=$4 pid=${5:-}
+    local waited=0 seen
+    while :; do
+        seen=$(grep -c "$pattern" "$file" 2>/dev/null) || true
+        if [ "${seen:-0}" -ge "$count" ]; then
+            return 0
+        fi
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            log_error "Process $pid exited while waiting for '$pattern'"
+            return 1
+        fi
+        if [ "$waited" -ge $((deadline * 10)) ]; then
+            log_error "Timed out waiting for ${count}x '$pattern' in $file"
+            return 1
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
 
 SKIP_BUILD=false
 while [[ $# -gt 0 ]]; do
@@ -76,14 +99,20 @@ trap cleanup EXIT INT TERM
 TEST_DIR=$(mktemp -d)
 log_info "Test directory: $TEST_DIR"
 
+# Set BUILD_PROFILE=debug for a faster local build.
+BUILD_PROFILE="${BUILD_PROFILE:-release}"
 if [ "$SKIP_BUILD" = false ]; then
-    log_step "Building..."
+    log_step "Building ($BUILD_PROFILE)..."
     cd "$WORKSPACE_DIR"
-    cargo build --release -p hardy-tools -p hardy-bpa-server
+    if [ "$BUILD_PROFILE" = "release" ]; then
+        cargo build --release -p hardy-tools -p hardy-bpa-server
+    else
+        cargo build -p hardy-tools -p hardy-bpa-server
+    fi
 fi
 
-BP_BIN="$WORKSPACE_DIR/target/release/bp"
-BPA_BIN="$WORKSPACE_DIR/target/release/hardy-bpa-server"
+BP_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/bp"
+BPA_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/hardy-bpa-server"
 
 for bin in "$BP_BIN" "$BPA_BIN"; do
     [ -x "$bin" ] || { log_error "Not found: $bin"; exit 1; }
@@ -97,15 +126,17 @@ cat > "$ROUTES_FILE" <<EOF
 ipn:*.*.* drop
 EOF
 
-# Start BPA with echo + static routes + watch
+# Start BPA with echo + static routes + watch. debug logging so route
+# installs/withdrawals ("Adding route"/"Removed route" from the RIB) are
+# observable in the log.
 cat > "$TEST_DIR/bpa.yaml" <<EOF
 node-ids: "ipn:1.0"
-log-level: warn
+log-level: debug
 built-in-services:
   echo: [7]
 static-routes:
   routes-file: "$ROUTES_FILE"
-  watch: true
+  watch: native
 storage:
   metadata:
     type: memory
@@ -114,41 +145,72 @@ storage:
 clas:
   - name: tcp0
     type: tcpclv4
-    address: "[::]:$NODE_PORT"
+    listeners: ["[::]:0"]
 EOF
 
+BPA_LOG="$TEST_DIR/bpa.log"
+
 log_step "Starting BPA server..."
-"$BPA_BIN" --config "$TEST_DIR/bpa" &
+"$BPA_BIN" --config "$TEST_DIR/bpa" > "$BPA_LOG" 2>&1 &
 BPA_PID=$!
-sleep 1
-kill -0 "$BPA_PID" 2>/dev/null || { log_error "BPA failed to start"; exit 1; }
 
-# TEST 1: Startup
+# The CLA is configured with port 0, so the kernel picks the port and the
+# listener reports what it bound. Reading it back is race-free: the socket
+# is bound and accepting by the time the line is logged, so there is no
+# window in which anything else can take the port.
+wait_for_log "$BPA_LOG" "TCP server listening on " 1 20 "$BPA_PID" \
+    || { log_error "BPA failed to start"; cat "$BPA_LOG"; exit 1; }
+NODE_PORT=$(grep -o "TCP server listening on .*:[0-9]\+" "$BPA_LOG" | head -1 | sed 's/.*://')
+[ -n "$NODE_PORT" ] || { log_error "Could not read the bound port"; cat "$BPA_LOG"; exit 1; }
+log_info "BPA TCPCLv4 listening on port $NODE_PORT"
+
+# TEST 1: Startup, and the initial route actually lands in the RIB
 log_step "TEST 1: Startup with routes file"
-log_info "TEST 1: PASSED"
+if wait_for_log "$BPA_LOG" "Adding route .*source 'static_routes'" 1 15 "$BPA_PID"; then
+    log_info "TEST 1: PASSED"
+else
+    log_error "TEST 1: FAILED (initial static route not installed)"
+    FAILURES=$((FAILURES + 1))
+fi
 
-# TEST 2: Hot-reload
+# TEST 2: Hot-reload installs the new route
 log_step "TEST 2: Hot-reload — modify routes file"
 cat > "$ROUTES_FILE" <<EOF
 ipn:*.*.* drop
 ipn:99.*.* drop 3
 EOF
-sleep 2
-kill -0 "$BPA_PID" 2>/dev/null && log_info "TEST 2: PASSED" || { log_error "TEST 2: FAILED"; FAILURES=$((FAILURES + 1)); }
+if wait_for_log "$BPA_LOG" "Reloading static routes" 1 15 "$BPA_PID" \
+    && wait_for_log "$BPA_LOG" "Adding route ipn:99.*source 'static_routes'" 1 15 "$BPA_PID" \
+    && kill -0 "$BPA_PID" 2>/dev/null; then
+    log_info "TEST 2: PASSED"
+else
+    log_error "TEST 2: FAILED (reload did not install the new route)"
+    FAILURES=$((FAILURES + 1))
+fi
 
-# TEST 3: File removal
+# TEST 3: File removal withdraws both routes
 log_step "TEST 3: File removal"
 rm -f "$ROUTES_FILE"
-sleep 2
-kill -0 "$BPA_PID" 2>/dev/null && log_info "TEST 3: PASSED" || { log_error "TEST 3: FAILED"; FAILURES=$((FAILURES + 1)); }
+if wait_for_log "$BPA_LOG" "Removed route .*source 'static_routes'" 2 15 "$BPA_PID" \
+    && kill -0 "$BPA_PID" 2>/dev/null; then
+    log_info "TEST 3: PASSED"
+else
+    log_error "TEST 3: FAILED (routes not withdrawn after file removal)"
+    FAILURES=$((FAILURES + 1))
+fi
 
-# TEST 4: File restore
+# TEST 4: File restore re-installs the route (second add of ipn:*.*.*)
 log_step "TEST 4: File restore"
 cat > "$ROUTES_FILE" <<EOF
 ipn:*.*.* drop
 EOF
-sleep 2
-kill -0 "$BPA_PID" 2>/dev/null && log_info "TEST 4: PASSED" || { log_error "TEST 4: FAILED"; FAILURES=$((FAILURES + 1)); }
+if wait_for_log "$BPA_LOG" "Adding route .*source 'static_routes'" 3 15 "$BPA_PID" \
+    && kill -0 "$BPA_PID" 2>/dev/null; then
+    log_info "TEST 4: PASSED"
+else
+    log_error "TEST 4: FAILED (route not re-installed after restore)"
+    FAILURES=$((FAILURES + 1))
+fi
 
 # TEST 5: Ping echo — BPA still functional
 log_step "TEST 5: Ping echo service"
