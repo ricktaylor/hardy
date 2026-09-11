@@ -153,3 +153,64 @@ impl Cla {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A relative path is joined onto the supplied cwd and the directory chain
+    // is created.
+    #[test]
+    fn test_canonicalize_relative_path_joins_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+
+        let result = canonicalize_path(cwd.path(), &PathBuf::from("nested/dir")).unwrap();
+
+        let expected = cwd.path().join("nested/dir");
+        assert!(expected.is_dir(), "directory chain should be created");
+        assert_eq!(PathBuf::from(result), expected.canonicalize().unwrap());
+    }
+
+    // An absolute path ignores the cwd entirely (Path::join semantics); nothing
+    // is created under the cwd.
+    #[test]
+    fn test_canonicalize_absolute_path_ignores_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("inbox");
+
+        let result = canonicalize_path(cwd.path(), &target).unwrap();
+
+        assert!(target.is_dir());
+        assert_eq!(PathBuf::from(result), target.canonicalize().unwrap());
+        assert_eq!(
+            std::fs::read_dir(cwd.path()).unwrap().count(),
+            0,
+            "an absolute path must not be prefixed with the cwd"
+        );
+    }
+
+    // A regular file already occupying the target path surfaces as CreateDir,
+    // not Canonicalize.
+    #[test]
+    fn test_canonicalize_existing_file_is_create_dir_error() {
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::write(cwd.path().join("occupied"), b"not a directory").unwrap();
+
+        let err = canonicalize_path(cwd.path(), &PathBuf::from("occupied")).unwrap_err();
+        assert!(matches!(err, Error::CreateDir { .. }), "got {err:?}");
+    }
+
+    // A non-UTF-8 path component is rejected up front as InvalidPath.
+    #[cfg(unix)]
+    #[test]
+    fn test_canonicalize_non_utf8_is_invalid_path() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let component = std::ffi::OsString::from_vec(vec![0x66, 0xff, 0xfe]);
+
+        let err = canonicalize_path(cwd.path(), &PathBuf::from(component)).unwrap_err();
+        assert!(matches!(err, Error::InvalidPath(_)), "got {err:?}");
+    }
+}

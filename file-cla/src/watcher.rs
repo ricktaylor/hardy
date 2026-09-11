@@ -1,8 +1,10 @@
-use super::*;
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
     notify::{EventKind, RecursiveMode, event::CreateKind},
 };
+use tokio::fs::{metadata, read_dir};
+
+use super::*;
 
 impl Cla {
     /// Starts the file watcher for the outbox directory.
@@ -63,6 +65,37 @@ async fn watcher_task(
         .trace_expect("Failed to watch file");
 
     info!("Watching '{outbox}' for new files");
+
+    // Dispatch files already queued in the outbox: bundles are routinely
+    // dropped in the directory while the CLA is not running (removable media,
+    // restarts), and the watcher only reports files created after the watch is
+    // installed. The watch is installed before this scan, so a file arriving
+    // mid-scan is seen by at least one of the two paths; the forwarder
+    // tolerates the resulting duplicate.
+    match read_dir(&outbox).await {
+        Ok(mut entries) => loop {
+            match entries.next_entry().await {
+                Ok(Some(entry)) => {
+                    // `metadata` follows symlinks where `DirEntry::file_type`
+                    // does not: inotify reports the creation of a symlink as
+                    // an ordinary file creation, so the scan has to accept one
+                    // too, or the two paths disagree about the same entry.
+                    let path = entry.path();
+                    if metadata(&path).await.is_ok_and(|m| m.is_file())
+                        && path_tx.send_async(path).await.is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    error!("Failed to scan outbox '{outbox}': {e}");
+                    break;
+                }
+            }
+        },
+        Err(e) => error!("Failed to scan outbox '{outbox}': {e}"),
+    }
 
     loop {
         tokio::select! {
