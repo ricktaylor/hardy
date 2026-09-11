@@ -171,7 +171,7 @@ impl Dispatcher {
             }
             Err(e) => {
                 error!("Originate filter execution failed: {e}");
-                return Err(services::Error::Internal(e.into()));
+                return Err(services::Error::Internal(e));
             }
         };
 

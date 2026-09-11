@@ -171,14 +171,13 @@ impl Cla for BibeCla {
         // Dispatch the outer bundle back into the BPA
         match self.dispatch(outer).await {
             Ok(Acceptance::Accepted) => Ok(ForwardBundleResult::Sent),
-            Ok(Acceptance::Refused) => {
-                warn!("BIBE outer bundle refused by the BPA");
-                Ok(ForwardBundleResult::NoNeighbour)
-            }
-            Err(e) => {
-                warn!("BIBE dispatch failed: {e}");
-                Ok(ForwardBundleResult::NoNeighbour)
-            }
+            // The BPA refused this bundle: a per-bundle verdict, reported as
+            // such so the dispatcher parks this bundle alone.
+            Ok(Acceptance::Refused) => Err(ClaError::Internal(Box::new(Error::Refused))),
+            // The sink is genuinely gone — the one link-scoped outcome.
+            Err(Error::Dispatch(ClaError::Disconnected)) => Ok(ForwardBundleResult::NoNeighbour),
+            Err(Error::Dispatch(e)) => Err(e),
+            Err(e) => Err(ClaError::Internal(Box::new(e))),
         }
     }
 }
@@ -193,8 +192,10 @@ mod tests {
 
     use super::*;
 
-    /// Counts the bundles the CLA dispatches back into the BPA.
+    /// Counts the bundles the CLA dispatches back into the BPA, answering
+    /// each with a configured verdict.
     struct MockSink {
+        verdict: Acceptance,
         dispatched: Arc<AtomicUsize>,
     }
 
@@ -207,7 +208,7 @@ mod tests {
             _peer_node: Option<&NodeId>,
             _peer_addr: Option<&ClaAddress>,
             stream: &mut dyn Receiver<Segment>,
-        ) -> ClaResult<()> {
+        ) -> ClaResult<Acceptance> {
             // Drain the stream to completion, as a real dispatcher would.
             while let Ok(segment) = stream.recv().await {
                 if matches!(segment, Segment::Final(_)) {
@@ -215,7 +216,7 @@ mod tests {
                 }
             }
             self.dispatched.fetch_add(1, Ordering::Relaxed);
-            Ok(())
+            Ok(self.verdict)
         }
 
         async fn add_peer(&self, _cla_addr: ClaAddress, _node_ids: &[NodeId]) -> ClaResult<bool> {
@@ -243,13 +244,17 @@ mod tests {
         (bundle.primary.id, Bytes::from(data))
     }
 
-    /// A registered BIBE CLA with the given negotiated cap, plus the
-    /// dispatch counter its sink feeds.
-    async fn registered_cla(cap: Option<NonZeroU64>) -> (BibeCla, Arc<AtomicUsize>) {
+    /// A registered BIBE CLA with the given negotiated cap and dispatch
+    /// verdict, plus the dispatch counter its sink feeds.
+    async fn registered_cla(
+        cap: Option<NonZeroU64>,
+        verdict: Acceptance,
+    ) -> (BibeCla, Arc<AtomicUsize>) {
         let cla = BibeCla::new("ipn:1.0".parse().unwrap());
         let dispatched = Arc::new(AtomicUsize::new(0));
         cla.on_register(
             Box::new(MockSink {
+                verdict,
                 dispatched: dispatched.clone(),
             }),
             &[],
@@ -272,7 +277,7 @@ mod tests {
     async fn over_cap_outer_is_refused_with_payload_too_large() {
         let (bundle_id, inner) = inner_bundle();
         let cap = NonZeroU64::new(inner.len() as u64).unwrap();
-        let (cla, dispatched) = registered_cla(Some(cap)).await;
+        let (cla, dispatched) = registered_cla(Some(cap), Acceptance::Accepted).await;
 
         let total_len = inner.len() as u64;
         let mut stream = inner;
@@ -298,7 +303,7 @@ mod tests {
         let (bundle_id, inner) = inner_bundle();
         // Generous headroom for the encapsulation overhead.
         let cap = NonZeroU64::new(inner.len() as u64 + 1024).unwrap();
-        let (cla, dispatched) = registered_cla(Some(cap)).await;
+        let (cla, dispatched) = registered_cla(Some(cap), Acceptance::Accepted).await;
 
         let total_len = inner.len() as u64;
         let mut stream = inner;
@@ -307,6 +312,22 @@ mod tests {
             .await;
 
         assert!(matches!(result, Ok(ForwardBundleResult::Sent)));
+        assert_eq!(dispatched.load(Ordering::Relaxed), 1);
+    }
+
+    /// A BPA refusal of the outer bundle is this bundle's verdict, surfaced
+    /// as an error the dispatcher parks per-bundle — never `NoNeighbour`.
+    #[tokio::test]
+    async fn bpa_refusal_is_not_no_neighbour() {
+        let (cla, dispatched) = registered_cla(None, Acceptance::Refused).await;
+
+        let (id, mut inner) = inner_bundle();
+        let total_len = inner.len() as u64;
+        let result = cla
+            .forward(None, &tunnel_addr(), &id, total_len, &mut inner)
+            .await;
+
+        assert!(matches!(result, Err(ClaError::Internal(_))));
         assert_eq!(dispatched.load(Ordering::Relaxed), 1);
     }
 }

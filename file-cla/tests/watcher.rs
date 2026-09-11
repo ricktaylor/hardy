@@ -23,7 +23,7 @@ impl hardy_bpa::cla::Sink for StubSink {
         _peer_node: Option<&NodeId>,
         _peer_addr: Option<&ClaAddress>,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<()> {
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         let mut buffer = Vec::new();
         loop {
             match stream
@@ -41,7 +41,8 @@ impl hardy_bpa::cla::Sink for StubSink {
         self.0
             .send_async(buffer)
             .await
-            .map_err(|_| hardy_bpa::cla::Error::Disconnected)
+            .map_err(|_| hardy_bpa::cla::Error::Disconnected)?;
+        Ok(hardy_bpa::cla::Acceptance::Accepted)
     }
 
     async fn add_peer(
