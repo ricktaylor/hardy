@@ -875,9 +875,12 @@ impl MetadataStorage for SqliteStorage {
         for (bundle, row_param3) in bundles {
             match serde_json::from_slice::<StoredBundle>(&bundle) {
                 Ok(stored) => {
+                    // The status key was encoded once above; only the
+                    // row-carried adjacency varies per row.
                     let row_status = if forward_pending {
-                        let (code, p1, p2, _) = from_status(status);
-                        let Some(row_status) = to_status(code, p1, p2, row_param3) else {
+                        let Some(row_status) =
+                            to_status(status_code, status_param1, status_param2, row_param3)
+                        else {
                             warn!("Garbage ForwardPending adjacency dropped from poll");
                             continue;
                         };
