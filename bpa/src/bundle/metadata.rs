@@ -1,8 +1,8 @@
 use core::time::Duration;
 
 use hardy_bpv7::{
+    HopInfo,
     eid::{Eid, NodeId},
-    hop_info::HopInfo,
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

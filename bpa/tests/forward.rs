@@ -251,7 +251,7 @@ fn build_bundle(
 ) -> (hardy_bpv7::bundle::Bundle, Bytes) {
     let (bundle, data) = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
         .with_payload(std::borrow::Cow::Borrowed(payload))
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .build(hardy_bpv7::CreationTimestamp::now())
         .expect("Failed to build bundle");
     (bundle, Bytes::from(data))
 }
@@ -344,7 +344,7 @@ async fn streaming_cla_receives_single_final_segment() {
     };
     assert_eq!(total_len, data.len() as u64);
 
-    let parsed = hardy_bpv7::parse(data.clone()).expect("Failed to parse forwarded bundle");
+    let parsed = hardy_bpv7::parser::parse(data.clone()).expect("Failed to parse forwarded bundle");
     assert_eq!(parsed.bundle.primary.id.source, source_eid);
     assert_eq!(parsed.bundle.primary.destination, dest);
 
@@ -383,7 +383,7 @@ async fn buffered_cla_receives_whole_bundle() {
     let Event::Forward(data) = recv_event(&events_rx, 5).await else {
         panic!("Expected the buffering CLA to assemble the bundle");
     };
-    let parsed = hardy_bpv7::parse(data.clone()).expect("Failed to parse forwarded bundle");
+    let parsed = hardy_bpv7::parser::parse(data.clone()).expect("Failed to parse forwarded bundle");
     assert_eq!(parsed.bundle.primary.id.source, source_eid);
     assert_eq!(parsed.bundle.primary.destination, dest);
 

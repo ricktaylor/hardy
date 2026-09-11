@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpv7::bundle::{BlockFlags, BlockType};
-use hardy_bpv7::{builder::Builder, crc::CrcType, hop_info::HopInfo};
+use hardy_bpv7::{HopInfo, builder::Builder, crc::CrcType};
 use hardy_cbor::{decode, encode};
 
 // The echo-service draft defines no payload wire format — the echo reflects the

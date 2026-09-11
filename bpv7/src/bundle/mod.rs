@@ -1,7 +1,7 @@
 /*!
 This module defines the core bundle data model: the [`Bundle`] structure
 (primary block + blocks map) together with its identifying types
-([`BundleId`], [`Flags`], [`FragmentInfo`]). The wire parser lives in
+([`BundleId`], [`BundleFlags`], [`FragmentInfo`]). The wire parser lives in
 [`crate::parser`]; the BPSec validation/transform primitives in
 [`crate::checks`] and [`crate::rewrite`]. Semantic bundle comparison
 ([`Bundle::semantic_eq`]) lives in the private `compare` submodule.

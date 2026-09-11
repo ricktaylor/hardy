@@ -1,4 +1,4 @@
-//! Integration tests for the structural parser — `hardy_bpv7::parse`'s
+//! Integration tests for the structural parser — `hardy_bpv7::parser::parse`'s
 //! public-API acceptance and rejection decisions on wire bytes. Keyed
 //! BPSec pipeline composition lives in `tests/checks.rs`; the streaming
 //! push-parser in `tests/streaming.rs`.
@@ -6,7 +6,7 @@
 use core::{iter::repeat_n, num::NonZeroU8};
 
 use bytes::Bytes;
-use hardy_bpv7::{Error, builder, bundle::BlockType, crc, creation_timestamp, hop_info, parser};
+use hardy_bpv7::{CreationTimestamp, Error, HopInfo, builder, bundle::BlockType, crc, parser};
 // Aliased: collides with the bpv7 `Error` imported above.
 use hardy_cbor::decode::Error as CborError;
 use hex_literal::hex;
@@ -17,7 +17,7 @@ mod common;
 fn build_minimal_bundle() -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload("Hello".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap()
         .1
 }
@@ -86,14 +86,14 @@ fn invalid_flags() {
 // Requirement: LLR 1.1.34
 #[test]
 fn hop_count_extraction() {
-    let hop = hop_info::HopInfo {
+    let hop = HopInfo {
         limit: NonZeroU8::new(30).unwrap(),
         count: 0,
     };
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_hop_count(&hop)
         .with_payload("Hello".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
 
     let parsed = parser::parse(Bytes::copy_from_slice(&data)).unwrap();
@@ -107,7 +107,7 @@ fn hop_count_extraction() {
     let body = hc_block
         .payload(&parsed.data)
         .expect("HopCount body in bundle");
-    let hop_count = hardy_cbor::decode::parse::<hop_info::HopInfo>(body).unwrap();
+    let hop_count = hardy_cbor::decode::parse::<HopInfo>(body).unwrap();
     assert_eq!(hop_count.limit.get(), 30);
     assert_eq!(hop_count.count, 0);
 }
@@ -116,14 +116,14 @@ fn hop_count_extraction() {
 #[test]
 fn extension_block_parsing() {
     // Build a bundle with hop count — verifies HopCount extension is parsed
-    let hop = hop_info::HopInfo {
+    let hop = HopInfo {
         limit: NonZeroU8::new(10).unwrap(),
         count: 3,
     };
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_hop_count(&hop)
         .with_payload("Test".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
 
     let parsed = parser::parse(Bytes::copy_from_slice(&data)).unwrap();
@@ -172,7 +172,7 @@ fn truncated_large_payload() {
     let (_, full_data) =
         builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
             .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
-            .build(creation_timestamp::CreationTimestamp::now())
+            .build(CreationTimestamp::now())
             .unwrap();
 
     // Confirm the complete bundle parses successfully.
@@ -201,7 +201,7 @@ fn truncated_large_payload() {
 fn crafted_max_extent_payload() {
     let (_, good) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload("Hi".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
 
     // Locate the payload block start by parsing — the primary block's size
@@ -485,7 +485,7 @@ fn crc16_bundle() {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_crc_type(crc::CrcType::CRC16_X25)
         .with_payload("CRC16 test".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
 
     // Parse and verify CRC type via parse (primary block field).
@@ -536,7 +536,7 @@ fn encoded_len_is_the_wire_length() {
     let (bundle, data) =
         builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
             .with_payload("Hello".as_bytes().into())
-            .build(creation_timestamp::CreationTimestamp::now())
+            .build(CreationTimestamp::now())
             .unwrap();
     assert_eq!(bundle.encoded_len(), data.len() as u64);
 
@@ -781,7 +781,7 @@ mod bpsec_rules {
 // Relocated from the in-crate parser module: exercises only public API.
 mod parser_regressions {
     use bytes::Bytes;
-    use hardy_bpv7::parse;
+    use hardy_bpv7::parser::parse;
 
     // A block whose byte-string body header claims a length far larger than
     // the bytes present must not drive an unbounded `BytesMut::reserve` on the
@@ -799,7 +799,7 @@ mod parser_regressions {
         let (bundle, full) =
             crate::builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
                 .with_payload(b"hi".as_slice().into())
-                .build(crate::creation_timestamp::CreationTimestamp::now())
+                .build(crate::CreationTimestamp::now())
                 .unwrap();
 
         // Keep `0x9f` + the valid canonical primary block (so the input stays

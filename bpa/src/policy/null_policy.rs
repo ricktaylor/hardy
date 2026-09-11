@@ -102,9 +102,9 @@ mod tests {
             "ipn:0.2.1".parse().unwrap(),
         )
         .with_payload(b"x".as_slice().into())
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .build(hardy_bpv7::CreationTimestamp::now())
         .unwrap();
-        let parsed = hardy_bpv7::parse(crate::Bytes::from(data)).unwrap();
+        let parsed = hardy_bpv7::parser::parse(crate::Bytes::from(data)).unwrap();
         let record = bundle::Bundle {
             bpv7: parsed.bundle,
             metadata: bundle::BundleMetadata::originated(),

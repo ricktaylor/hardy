@@ -43,12 +43,12 @@ impl RandomBundle {
         }
 
         if let Some((limit, count)) = self.hop_limit {
-            builder = builder.with_hop_count(&hardy_bpv7::hop_info::HopInfo { limit, count });
+            builder = builder.with_hop_count(&hardy_bpv7::HopInfo { limit, count });
         }
 
         builder
             .with_payload(self.payload.into())
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+            .build(hardy_bpv7::CreationTimestamp::now())
             .map(|b| b.1.into())
     }
 }

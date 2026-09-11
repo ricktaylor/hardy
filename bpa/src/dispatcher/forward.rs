@@ -245,7 +245,7 @@ impl Dispatcher {
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
-    ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
+    ) -> Result<(hardy_bpv7::bundle::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
         // bumped values back: `forward_bundle` deletes the bundle on a successful
@@ -258,7 +258,7 @@ impl Dispatcher {
             data: source_data,
             bundle: raw,
             ..
-        } = hardy_bpv7::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
+        } = hardy_bpv7::parser::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
 
         // RFC 9171 §4.2.3-4/-5: report_on_failure MUST NOT be set on any block
         // of an admin-record or anonymous bundle — the receiver has nowhere
@@ -297,7 +297,7 @@ impl Dispatcher {
                     ..Default::default()
                 })
                 .with_data(
-                    hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
+                    hardy_cbor::encode::emit(&hardy_bpv7::HopInfo {
                         limit: hop_count.limit,
                         count: hop_count.count.saturating_add(1),
                     })
@@ -427,8 +427,8 @@ mod tests {
         // Seed the record exactly as the egress queue holds it: data
         // stored, metadata parked in ForwardPending, expired at build.
         let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
-        let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
-            Some(hardy_bpv7::dtn_time::DtnTime::saturating_from(past)),
+        let timestamp = hardy_bpv7::CreationTimestamp::from_parts(
+            Some(hardy_bpv7::DtnTime::saturating_from(past)),
             1,
         );
         let (_, data) = hardy_bpv7::builder::Builder::new(

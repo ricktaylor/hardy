@@ -12,10 +12,10 @@ use alloc::{borrow::Cow, vec::Vec};
 use hardy_cbor::decode::{Error as CborError, parse_exact};
 
 use crate::{
-    Error, Result, bundle,
+    CreationTimestamp, Error, Result, bundle,
     bundle::{Block, BlockFlags, BlockType, BundleFlags, BundleId},
     canonical::{CaptureFieldErr, require_canonical},
-    crc, creation_timestamp, eid,
+    crc, eid,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,9 +135,8 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                 crate::canonical::parse_item::<eid::Eid>(block, "source endpoint id")?;
             let (report_to, rpt_s) =
                 crate::canonical::parse_item::<eid::Eid>(block, "report-to endpoint id")?;
-            let (timestamp, ts_s) = crate::canonical::parse_item::<
-                creation_timestamp::CreationTimestamp,
-            >(block, "timestamp")?;
+            let (timestamp, ts_s) =
+                crate::canonical::parse_item::<CreationTimestamp>(block, "timestamp")?;
             canonical &= dest_s & src_s & rpt_s & ts_s;
 
             let lifetime = core::time::Duration::from_millis(require_canonical(

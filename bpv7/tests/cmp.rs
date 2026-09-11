@@ -1,4 +1,4 @@
-//! Tests for [`hardy_bpv7::Bundle::semantic_eq`] — parse two bundles the
+//! Tests for [`hardy_bpv7::bundle::Bundle::semantic_eq`] — parse two bundles the
 //! way a consumer would, then compare them for RFC-tolerant equivalence.
 
 use bytes::Bytes;

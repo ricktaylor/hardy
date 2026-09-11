@@ -2,14 +2,12 @@ use crate::{flags, io, keys};
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
 use hardy_bpv7::{
-    Bundle, CaptureFieldErr,
+    BundleAge, CaptureFieldErr, HopInfo,
     bpsec::{bib, key::KeySet},
-    bundle::{Block, BlockType},
-    bundle_age::BundleAge,
+    bundle::{Block, BlockType, Bundle},
     checks,
     editor::Chunk,
     eid::Eid,
-    hop_info::HopInfo,
     parser,
 };
 use hardy_cbor::{decode::FromCbor, encode::emit};

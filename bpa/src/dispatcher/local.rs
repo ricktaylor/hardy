@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::{creation_timestamp::CreationTimestamp, status_report::ReasonCode};
+use hardy_bpv7::{CreationTimestamp, status_report::ReasonCode};
 
 impl Dispatcher {
     /// Run Originate filter on an in-memory bundle (not yet stored).
@@ -310,7 +310,7 @@ impl Dispatcher {
                 // path concatenates pushes), converting the payload to an
                 // owned `Bytes` (zero-copy for the unencrypted case via
                 // `slice_ref`) before the arm ends.
-                let payload_result = match hardy_bpv7::parse(data) {
+                let payload_result = match hardy_bpv7::parser::parse(data) {
                     Ok(hardy_bpv7::parser::Parsed {
                         data: buf,
                         bundle: raw,

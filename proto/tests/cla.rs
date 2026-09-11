@@ -166,7 +166,7 @@ async fn cla_cli_03_forward_bundle() {
     let total_len = bundle.len() as u64;
     let bundle_id = hardy_bpv7::bundle::BundleId {
         source: "ipn:0.9.1".parse().unwrap(),
-        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+        timestamp: hardy_bpv7::CreationTimestamp::now(),
         fragment_info: None,
     };
     let result = server_cla
@@ -276,7 +276,7 @@ async fn cla_cli_06_deferred_outcome() {
     let total_len = bundle.len() as u64;
     let bundle_id = hardy_bpv7::bundle::BundleId {
         source: "ipn:0.9.2".parse().unwrap(),
-        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+        timestamp: hardy_bpv7::CreationTimestamp::now(),
         fragment_info: None,
     };
     let result = server_cla

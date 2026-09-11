@@ -7,12 +7,11 @@
 #![cfg(all(feature = "rfc9173", feature = "serde"))]
 
 use hardy_bpv7::{
-    Bundle,
+    CreationTimestamp,
     bpsec::{self, context::ScopeFlags, edit::BPSecEditor, key, signer},
     builder::Builder,
-    bundle::BlockType,
+    bundle::{BlockType, Bundle},
     checks, crc,
-    creation_timestamp::CreationTimestamp,
     editor::Editor,
     parser,
 };

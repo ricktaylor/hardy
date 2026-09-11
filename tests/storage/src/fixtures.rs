@@ -6,8 +6,8 @@ use std::{
 
 use hardy_bpa::{bundle::Origin, cla::ClaAddress};
 use hardy_bpv7::{
+    HopInfo,
     bundle::{Bundle as Bpv7Bundle, BundleId, FragmentInfo, PrimaryBlock},
-    hop_info::HopInfo,
 };
 
 use super::*;

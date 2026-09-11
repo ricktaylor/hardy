@@ -36,7 +36,7 @@ The echo service implements `Service` (low-level) rather than `Application` (hig
 
 ### Editor-Based Bundle Modification
 
-Rather than constructing a new bundle from scratch, the service uses `hardy_bpv7::Editor` to modify the existing bundle in place. This:
+Rather than constructing a new bundle from scratch, the service uses `hardy_bpv7::editor::Editor` to modify the existing bundle in place. This:
 
 - Preserves all extension blocks and flags
 - Maintains bundle integrity

@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 
 use super::*;
 use crate::{
-    bundle::{BibCoverage, Block, BlockFlags, BlockType, PrimaryBlock},
+    bundle::{BibCoverage, Block, BlockFlags, BlockType, Bundle, PrimaryBlock},
     canonical::CaptureFieldErr,
 };
 

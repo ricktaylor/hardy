@@ -273,7 +273,7 @@ mod tests {
             expiry: OffsetDateTime::now_utc() + time::Duration::seconds(secs_from_now),
             id: BundleId {
                 source: format!("ipn:0.{node}.1").parse().unwrap(),
-                timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                timestamp: hardy_bpv7::CreationTimestamp::now(),
                 fragment_info: None,
             },
             destination: format!("ipn:0.{node}.99").parse().unwrap(),

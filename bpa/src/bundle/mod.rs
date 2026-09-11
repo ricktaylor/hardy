@@ -184,7 +184,7 @@ pub(crate) fn expiry(
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use hardy_bpv7::creation_timestamp::CreationTimestamp;
+    use hardy_bpv7::CreationTimestamp;
 
     // `core::time::Duration` stays qualified here too: `super::*` brings in
     // the `time::Duration` the expiry arithmetic uses.

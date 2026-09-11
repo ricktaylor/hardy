@@ -15,10 +15,10 @@ use alloc::{
 use hardy_cbor::decode::{self, FromCbor};
 
 use crate::{
-    HashMap,
+    BundleAge, HashMap, HopInfo,
     bpsec::{bcb, bib},
     bundle::{Block, BlockType, Bundle},
-    bundle_age, eid, hop_info,
+    eid,
 };
 
 impl Bundle {
@@ -144,8 +144,8 @@ fn known_extension_eq(
     };
     match bt {
         BlockType::PreviousNode => decoded_eq::<eid::Eid>(a_body, b_body),
-        BlockType::BundleAge => decoded_eq::<bundle_age::BundleAge>(a_body, b_body),
-        BlockType::HopCount => decoded_eq::<hop_info::HopInfo>(a_body, b_body),
+        BlockType::BundleAge => decoded_eq::<BundleAge>(a_body, b_body),
+        BlockType::HopCount => decoded_eq::<HopInfo>(a_body, b_body),
         _ => block_data_eq(blk_a, data_a, blk_b, data_b),
     }
 }

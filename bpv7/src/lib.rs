@@ -5,8 +5,8 @@ This crate provides the building blocks for working with BPv7 bundles, including
 
 # Key Modules
 
-- [`bundle`]: Contains the structural [`Bundle`] (primary block + blocks map) and its identifying types, including [`Bundle::semantic_eq`](bundle::Bundle::semantic_eq) for RFC-tolerant equivalence.
-- [`parse`]: The streaming wire parser ([`parse`](parser::parse) / [`BundleParser`](parser::BundleParser)).
+- [`bundle`]: Contains the structural [`Bundle`](bundle::Bundle) (primary block + blocks map) and its identifying types, including [`Bundle::semantic_eq`](bundle::Bundle::semantic_eq) for RFC-tolerant equivalence.
+- [`parser`]: The streaming wire parser ([`parse`](parser::parse) / [`BundleParser`](parser::BundleParser)).
 - [`checks`] / [`rewrite`]: Composable BPSec validation and rewrite primitives.
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.
 - [`editor`]: Offers an [`Editor`](editor::Editor) for modifying existing bundles.
@@ -17,9 +17,7 @@ This crate provides the building blocks for working with BPv7 bundles, including
 The following example demonstrates how to create a new BPv7 bundle with a payload.
 
 ```rust,cfg(feature = "std")
-use hardy_bpv7::builder::Builder;
-use hardy_bpv7::creation_timestamp::CreationTimestamp;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{CreationTimestamp, builder::Builder, eid::Eid};
 
 // EIDs can be created from strings.
 let source: Eid = "ipn:1.0".parse().unwrap();
@@ -41,10 +39,7 @@ assert!(!cbor.is_empty());
 The following example demonstrates how to parse a BPv7 bundle from its CBOR representation.
 
 ```rust,cfg(feature = "std")
-use hardy_bpv7::builder::Builder;
-use hardy_bpv7::parser;
-use hardy_bpv7::creation_timestamp::CreationTimestamp;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{CreationTimestamp, builder::Builder, eid::Eid, parser::parse};
 
 // First, create a bundle to have something to parse.
 let source: Eid = "ipn:1.0".parse().unwrap();
@@ -60,7 +55,7 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
 // BPSec validation on top by composing the primitives in
 // `hardy_bpv7::checks` (`classify_*`, `decrypt_and_validate_covered_bibs`,
 // `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
-let parsed = parser::parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
+let parsed = parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
 
 assert_eq!(parsed.bundle.primary.id, original_bundle.primary.id);
 assert_eq!(parsed.bundle.primary.destination, original_bundle.primary.destination);
@@ -101,25 +96,28 @@ use hashbrown::{HashMap, HashSet};
 pub mod bpsec;
 pub mod builder;
 pub mod bundle;
-pub mod bundle_age;
 pub mod checks;
 pub mod crc;
-pub mod creation_timestamp;
-pub mod dtn_time;
 pub mod editor;
 pub mod eid;
-pub mod hop_info;
 pub mod parser;
 pub mod rewrite;
 pub mod status_report;
 
+mod bundle_age;
 mod canonical;
+mod creation_timestamp;
+mod dtn_time;
 mod error;
+mod hop_info;
 
-pub use self::canonical::CaptureFieldErr;
-pub use self::error::{Error, Result};
-pub use self::parser::{Parsed, parse};
-
-/// The structural bpv7 bundle type (primary block + blocks map),
-/// re-exported so consumers can use the short path `hardy_bpv7::Bundle`.
-pub use self::bundle::Bundle;
+/// The types whose module holds nothing else, re-exported here with that
+/// module kept private, so the crate root is their only path.
+pub use self::{
+    bundle_age::BundleAge,
+    canonical::CaptureFieldErr,
+    creation_timestamp::CreationTimestamp,
+    dtn_time::DtnTime,
+    error::{Error, Result},
+    hop_info::HopInfo,
+};

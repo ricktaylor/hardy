@@ -12,13 +12,11 @@ exercises it directly.
 
 use core::fmt::Display;
 use hardy_bpv7::{
-    Bundle, Error,
+    BundleAge, Error, HopInfo,
     bpsec::{bcb, bib},
-    bundle::{Block, BlockType},
-    bundle_age::BundleAge,
+    bundle::{Block, BlockType, Bundle},
     crc::CrcType,
     eid::Eid,
-    hop_info::HopInfo,
     parser,
 };
 use hardy_cbor::decode::{self, FromCbor};

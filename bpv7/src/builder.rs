@@ -5,9 +5,9 @@ use hardy_cbor::encode::{Array, Raw, emit, emit_array};
 use thiserror::Error;
 
 use crate::{
-    HashMap,
+    CreationTimestamp, HashMap, HopInfo,
     bundle::{Block, BlockFlags, BlockType, Bundle, BundleFlags, BundleId, PrimaryBlock},
-    crc, creation_timestamp, eid, error, hop_info,
+    crc, eid, error,
 };
 
 #[derive(Debug, Error)]
@@ -26,7 +26,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 /// A builder for creating a new bundle.
 ///
-/// [`Builder::build`] returns the parsed [`bundle::Bundle`]
+/// [`Builder::build`] returns the parsed [`Bundle`]
 /// view alongside the encoded wire bytes.
 ///
 /// See [`Builder::new()`] for more information.
@@ -46,7 +46,7 @@ impl<'a> Builder<'a> {
     ///
     /// # Examples
     /// ```
-    /// use hardy_bpv7::{builder::Builder, bundle::BlockType, creation_timestamp::CreationTimestamp};
+    /// use hardy_bpv7::{builder::Builder, bundle::BlockType, CreationTimestamp};
     ///
     /// let (bundle, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
     ///     .with_report_to("ipn:3.0".parse().unwrap())
@@ -123,7 +123,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Adds the HopCount block to this [`Builder`].
-    pub fn with_hop_count(self, hop_info: &hop_info::HopInfo) -> Self {
+    pub fn with_hop_count(self, hop_info: &HopInfo) -> Self {
         self.add_extension_block(BlockType::HopCount)
             .expect("Failed to add HopCount block")
             .with_flags(BlockFlags {
@@ -137,10 +137,7 @@ impl<'a> Builder<'a> {
     /// Builds the bundle with the given timestamp, returning the parsed
     /// [`Bundle`] view (primary block + blocks map) alongside
     /// the encoded wire bytes.
-    pub fn build(
-        self,
-        timestamp: creation_timestamp::CreationTimestamp,
-    ) -> Result<(Bundle, Box<[u8]>)> {
+    pub fn build(self, timestamp: CreationTimestamp) -> Result<(Bundle, Box<[u8]>)> {
         let primary = PrimaryBlock {
             flags: self.bundle_flags,
             id: BundleId {
@@ -331,7 +328,7 @@ impl From<BundleTemplate> for Builder<'_> {
         }
 
         if let Some(hop_limit) = value.hop_limit {
-            builder = builder.with_hop_count(&hop_info::HopInfo {
+            builder = builder.with_hop_count(&HopInfo {
                 limit: hop_limit,
                 count: 0,
             });
@@ -347,7 +344,7 @@ fn test_builder() {
     Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_report_to("ipn:3.0".parse().unwrap())
         .with_payload("Hello".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
 }
 
@@ -364,7 +361,7 @@ fn test_builder_block_map_keys() {
         .unwrap()
         .build(emit(&0u64).0.into())
         .with_payload("Hello".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
 
     assert_eq!(bundle.blocks.len(), 4);
@@ -387,6 +384,6 @@ fn test_template() {
     .into();
 
     b.with_payload("Hello".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
 }

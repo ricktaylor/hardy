@@ -12,8 +12,9 @@ BCB-encrypted BIBs) lives in [`crate::editor`] / `bpsec::edit`.
 use alloc::vec::Vec;
 
 use crate::{
-    Bundle, Error, HashMap, HashSet,
+    Error, HashMap, HashSet,
     bpsec::{self, edit::BPSecEditor},
+    bundle::Bundle,
     editor::{Chunk, Editor},
 };
 /// Apply queued rewrites. Bulk-removes via

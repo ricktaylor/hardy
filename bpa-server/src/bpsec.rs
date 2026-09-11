@@ -261,7 +261,7 @@ impl Default for PatternKeyProvider {
 }
 
 impl KeyProvider for PatternKeyProvider {
-    fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+    fn key_source(&self, _bundle: &hardy_bpv7::bundle::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
         Box::new(CurrentKeys(self.source.load_full()))
     }
 }
@@ -321,7 +321,10 @@ mod tests {
         checks,
     };
 
-    use hardy_bpv7::{bpsec::block_data, parse, parser::Parsed};
+    use hardy_bpv7::{
+        bpsec::block_data,
+        parser::{Parsed, parse},
+    };
 
     use rand::{TryRng, rngs::SysRng};
 
@@ -653,7 +656,7 @@ mod tests {
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
     );
 
-    fn count_bcbs(bundle: &hardy_bpv7::Bundle) -> usize {
+    fn count_bcbs(bundle: &hardy_bpv7::bundle::Bundle) -> usize {
         bundle
             .blocks
             .values()
@@ -670,7 +673,7 @@ mod tests {
         source: &PatternKeySource,
     ) -> (
         hardy_bpa::Bytes,
-        hardy_bpv7::Bundle,
+        hardy_bpv7::bundle::Bundle,
         HashMap<u64, hardy_bpv7::bpsec::bcb::OperationSet>,
     ) {
         let Parsed {
@@ -753,7 +756,7 @@ mod tests {
     }
 
     // `key_source` ignores the bundle for this provider; any parsed bundle do.
-    fn any_bundle() -> hardy_bpv7::Bundle {
+    fn any_bundle() -> hardy_bpv7::bundle::Bundle {
         parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE))
             .expect("parse failed")
             .bundle

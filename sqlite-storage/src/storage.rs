@@ -202,12 +202,10 @@ fn to_status(
             let source: hardy_bpv7::eid::Eid = param3?.parse().ok()?;
             let creation_time = param1
                 .filter(|&ms| ms != 0)
-                .map(|ms| hardy_bpv7::dtn_time::DtnTime::new(ms as u64));
+                .map(|ms| hardy_bpv7::DtnTime::new(ms as u64));
             let sequence_number = param2? as u64;
-            let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
-                creation_time,
-                sequence_number,
-            );
+            let timestamp =
+                hardy_bpv7::CreationTimestamp::from_parts(creation_time, sequence_number);
             Some(BundleStatus::AduFragment { source, timestamp })
         }
         4 => Some(BundleStatus::Dispatching),
@@ -879,7 +877,7 @@ mod tests {
     }
 
     fn make_bundle(dest_service: u64) -> hardy_bpa::bundle::Bundle {
-        use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, eid::Eid};
+        use hardy_bpv7::{CreationTimestamp, builder::Builder, eid::Eid};
 
         let source: Eid = "ipn:1.0".parse().unwrap();
         let dest: Eid = format!("ipn:2.{dest_service}").parse().unwrap();
@@ -1308,10 +1306,8 @@ mod tests {
     fn status_codec_numbering_is_frozen() {
         let service: hardy_bpv7::eid::Eid = "ipn:60.3".parse().unwrap();
         let source: hardy_bpv7::eid::Eid = "ipn:60.4".parse().unwrap();
-        let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
-            Some(hardy_bpv7::dtn_time::DtnTime::new(1234)),
-            5,
-        );
+        let timestamp =
+            hardy_bpv7::CreationTimestamp::from_parts(Some(hardy_bpv7::DtnTime::new(1234)), 5);
 
         let frozen = [
             (BundleStatus::New, (0, None, None, None)),

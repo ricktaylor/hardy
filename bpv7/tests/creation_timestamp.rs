@@ -3,7 +3,7 @@
 
 use std::{collections::BTreeSet, thread};
 
-use hardy_bpv7::creation_timestamp::CreationTimestamp;
+use hardy_bpv7::CreationTimestamp;
 
 // Every pair `now()` issues is strictly greater than the one before —
 // same-millisecond calls take ascending sequence numbers — so ids built from

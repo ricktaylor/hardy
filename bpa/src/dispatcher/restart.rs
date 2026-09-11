@@ -315,7 +315,7 @@ mod tests {
             "ipn:0.2.99".parse().unwrap(),
         )
         .with_payload(b"restart-replay".to_vec().into())
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .build(hardy_bpv7::CreationTimestamp::now())
         .unwrap();
         let data = Bytes::from(data);
         let storage_name = data_store.save(data.clone()).await.unwrap();
@@ -412,7 +412,7 @@ mod tests {
             "ipn:0.2.99".parse().unwrap(),
         )
         .with_payload(b"restart-requeue".to_vec().into())
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .build(hardy_bpv7::CreationTimestamp::now())
         .unwrap();
         let data = Bytes::from(data);
         let storage_name = data_store.save(data.clone()).await.unwrap();
@@ -556,7 +556,7 @@ mod tests {
                 "ipn:0.1.7".parse().unwrap(),
             )
             .with_payload(b"restart-redeliver".to_vec().into())
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+            .build(hardy_bpv7::CreationTimestamp::now())
             .unwrap();
             let data = Bytes::from(data);
             let storage_name = data_store.save(data.clone()).await.unwrap();

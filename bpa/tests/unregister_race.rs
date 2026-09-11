@@ -25,9 +25,9 @@ use hardy_bpa::{
     stream::{Receiver, Segment, Sender},
 };
 use hardy_bpv7::{
+    CreationTimestamp,
     builder::Builder,
     bundle::BundleId,
-    creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId},
 };
 

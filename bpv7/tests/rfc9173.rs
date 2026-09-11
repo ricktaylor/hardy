@@ -1,11 +1,10 @@
 use core::time::Duration;
 use hardy_bpv7::{
-    Bundle,
+    CreationTimestamp,
     bpsec::{self, context::ScopeFlags, edit::BPSecEditor, encryptor, key, signer},
     builder::Builder,
-    bundle::{Block, BlockType},
+    bundle::{Block, BlockType, Bundle},
     checks,
-    creation_timestamp::CreationTimestamp,
     editor::{Chunk, Editor},
     parser,
 };

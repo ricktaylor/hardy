@@ -13,11 +13,11 @@ use hardy_bpa::{
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
+    CreationTimestamp,
     builder::Builder,
     bundle::{BundleFlags, BundleId},
-    creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId, Service},
-    parse,
+    parser::parse,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
 use std::{

@@ -156,7 +156,7 @@ impl Dispatcher {
                 ..Default::default()
             })
             .with_payload(payload.into())
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+            .build(hardy_bpv7::CreationTimestamp::now())
             .trace_expect("Failed to create new bundle");
 
             let data = Bytes::from(data);

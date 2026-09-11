@@ -54,11 +54,7 @@ pub mod encryptor;
 pub mod signer;
 
 pub use self::asb::UnknownOperation;
-#[cfg(feature = "bpsec")]
-pub use self::encryptor::Encryptor;
 pub use self::error::{Error, Result};
-#[cfg(feature = "bpsec")]
-pub use self::signer::Signer;
 
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.

@@ -1,10 +1,9 @@
 use super::*;
 use hardy_bpv7::{
+    BundleAge, HopInfo,
     bpsec::key::KeySet,
     bundle::{Block, BlockType},
-    bundle_age::BundleAge,
     eid::Eid,
-    hop_info::HopInfo,
 };
 use std::collections::HashMap;
 #[derive(Parser, Debug)]

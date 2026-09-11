@@ -14,9 +14,9 @@ use hardy_cbor::{
 use thiserror::Error;
 
 use crate::{
+    DtnTime,
     bundle::{BundleId, FragmentInfo},
     canonical::{CaptureFieldErr, HasInvalidField, require_canonical},
-    dtn_time,
 };
 /// Errors that can occur when working with status reports.
 #[derive(Error, Debug)]
@@ -212,7 +212,7 @@ fn emit_status_assertion(a: &mut Array, sa: &Option<StatusAssertion>) {
         None => a.emit(&[false]),
         Some(StatusAssertion(None)) => a.emit(&[true]),
         Some(StatusAssertion(Some(timestamp))) => {
-            a.emit(&(true, dtn_time::DtnTime::saturating_from(*timestamp)))
+            a.emit(&(true, DtnTime::saturating_from(*timestamp)))
         }
     }
 }
@@ -235,7 +235,7 @@ fn parse_status_assertion(
         let status: bool = require_canonical(a, "status", Error::NotCanonical)?;
         if status {
             if let Some(timestamp) = a
-                .try_parse::<dtn_time::DtnTime>()
+                .try_parse::<DtnTime>()
                 .map_field_err::<Error>("timestamp")?
             {
                 if timestamp.millisecs() == 0 {

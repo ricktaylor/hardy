@@ -313,7 +313,7 @@ This is where `status` and `next_hop` die as fields: *which item type the bundle
 
 ```rust
 pub struct Bundle {
-    pub bundle: hardy_bpv7::Bundle,   // structural: primary + block index
+    pub bundle: hardy_bpv7::bundle::Bundle,   // structural: primary + block index
     pub metadata: BundleMetadata,
 }
 
@@ -415,7 +415,7 @@ impl MetadataDelta {
 
 ### Block data — no view type; the source bytes and the existing accessors
 
-`&Bundle` gives a filter the block *index* (`hardy_bpv7::Bundle.blocks` — types, flags, numbers, extents), and bpv7's accessors already take the source bytes as an argument: `Block::payload(source) -> Option<&[u8]>` (bundle-absolute offsets, bounds-checked) and `Block::extract::<T>(source)` (CBOR decode with smuggling check), both of which return `None`/`Ok(None)` when the block's bytes are not resident in `source` — the headers-only buffer case is already in their contract. So the invocation passes the resident source bytes and nothing new:
+`&Bundle` gives a filter the block *index* (`hardy_bpv7::bundle::Bundle.blocks` — types, flags, numbers, extents), and bpv7's accessors already take the source bytes as an argument: `Block::payload(source) -> Option<&[u8]>` (bundle-absolute offsets, bounds-checked) and `Block::extract::<T>(source)` (CBOR decode with smuggling check), both of which return `None`/`Ok(None)` when the block's bytes are not resident in `source` — the headers-only buffer case is already in their contract. So the invocation passes the resident source bytes and nothing new:
 
 ```rust
 // Verifier:   fn check(&self, bundle: &Bundle, data: &[u8], keys: &dyn KeySource) -> Verdict

@@ -74,12 +74,10 @@ impl StatusFields {
                     .adu_ts_ms
                     .filter(|&ms| ms != 0)
                     .and_then(|ms| u64::try_from(ms).ok())
-                    .map(hardy_bpv7::dtn_time::DtnTime::new);
+                    .map(hardy_bpv7::DtnTime::new);
                 let sequence_number = u64::try_from(self.adu_ts_seq?).ok()?;
-                let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
-                    creation_time,
-                    sequence_number,
-                );
+                let timestamp =
+                    hardy_bpv7::CreationTimestamp::from_parts(creation_time, sequence_number);
                 Some(BundleStatus::AduFragment { source, timestamp })
             }
             BundleStatusKind::WaitingForService => Some(BundleStatus::WaitingForService {

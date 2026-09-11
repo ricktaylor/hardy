@@ -13,12 +13,12 @@ This is a living document: the sections below mix shipped behaviour with design 
 
 **Landed**
 
-- Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready, Partial}`, one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. `Partial { consumed, tail: PayloadTail }` is the deferred-payload signal: `push` returns it at the payload boundary and the caller drains the remaining payload through `PayloadTail` (CRC + termination + anti-smuggling checks) without re-buffering headers. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check`.
+- Streaming parser — `bpv7::parser::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready, Partial}`, one-shot sugar `bpv7::parser::parse(Bytes) -> Parsed`. `Partial { consumed, tail: PayloadTail }` is the deferred-payload signal: `push` returns it at the payload boundary and the caller drains the remaining payload through `PayloadTail` (CRC + termination + anti-smuggling checks) without re-buffering headers. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check`.
 - CLA segment delivery — `cla::Segment::{Next, Final}` and the streamed-only `Sink::dispatch(&mut dyn Receiver<Segment>)` (the buffered/streamed trait pairs were collapsed; no `Bytes` variant remains). Stream traits `Sender<T>` / `Receiver<T>` live in `bpa::stream` with adapters over `hardy_async::channel`.
 - Streamed ingress drain — `dispatcher::ingress` drives the parser per `Segment` and drains the payload tail via `PayloadTail` (the whole-buffer `concat_stream` path is gone). The tail still accumulates in memory before `save` — that accumulator is the one seam to swap for streaming storage.
 - Pre-drain gate — `bundle::parse::parse_headers` + `HeaderVerify::gate_reason`: lifetime/hop/expiry rejection runs on the accumulation buffer before the payload drain (§5.4's early reject in interim form; link-layer reach-back per §1.3 rides the CLA's streaming dispatch path).
 - Parse-mode collapse (§9.3) — the three `parse_{preserve,canonicalize,full}_with_provider` pipelines are gone; call sites compose the primitives (`bpa::bundle::parse`).
-- Decoded extension fields — pre-parsed at ingress into `BundleMetadata` (§2.3's open choice is resolved; the filter redesign partitions them as the **wire cache** group). The rich `bpa::Bpv7Bundle` view is replaced by structural `hardy_bpv7::Bundle` + metadata.
+- Decoded extension fields — pre-parsed at ingress into `BundleMetadata` (§2.3's open choice is resolved; the filter redesign partitions them as the **wire cache** group). The rich `bpa::Bpv7Bundle` view is replaced by structural `hardy_bpv7::bundle::Bundle` + metadata.
 - `RewrittenBundle` and the `Checked` / `Rewritten` / `Parsed` taxonomy removed from `bpv7`.
 
 **Interim (works, not yet the target shape)**
@@ -921,7 +921,7 @@ The crate boundary follows a single principle: **`bpv7` owns wire-format truth; 
 pub use parse::{BundleParser, ParserProgress, Parsed};
 
 // One-shot sugar over the streaming primitives (tools, tests, round-trips)
-pub fn parse(data: Bytes) -> Result<Parsed, Error>;   // bpv7::parse::parse
+pub fn parse(data: Bytes) -> Result<Parsed, Error>;   // bpv7::parser::parse
 ```
 
 Two entry points, each with a one-sentence purpose. `Parsed` is structural (decoded `PrimaryBlock` + extension-block index + decoded BPSec OperationSets); the rich decoded view — extension-block field values — is assembled at the call site (today: `bpa::Bpv7Bundle`), not returned by `bpv7`. The reason-code mapping, the filter implementations, and the operational policy that wraps these primitives all live in `bpa`.

@@ -17,18 +17,15 @@ use hardy_bpa::{
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
+    CreationTimestamp, DtnTime, HopInfo,
     builder::Builder,
     bundle::BlockType,
     bundle::{BundleFlags, BundleId},
-    creation_timestamp::CreationTimestamp,
-    dtn_time::DtnTime,
     editor::{Chunk, Editor},
     eid::{
         Service, {Eid, IpnNodeId, NodeId},
     },
-    hop_info::HopInfo,
-    parse,
-    parser::Parsed,
+    parser::{Parsed, parse},
     status_report::ReasonCode,
 };
 use hardy_cbor::{

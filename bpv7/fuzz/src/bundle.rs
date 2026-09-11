@@ -134,14 +134,11 @@ fn extract_canonical_rewrites<V: AsRef<[u8]>>(
                 }
             }
             BlockType::BundleAge => {
-                let _ =
-                    parse_exact::<hardy_bpv7::bundle_age::BundleAge>(payload, "Bundle Age Block")?;
+                let _ = parse_exact::<hardy_bpv7::BundleAge>(payload, "Bundle Age Block")?;
             }
             BlockType::HopCount => {
-                let (v, shortest) = parse_exact::<(hardy_bpv7::hop_info::HopInfo, bool)>(
-                    payload,
-                    "Hop Count Block",
-                )?;
+                let (v, shortest) =
+                    parse_exact::<(hardy_bpv7::HopInfo, bool)>(payload, "Hop Count Block")?;
                 if !shortest && !is_encrypted {
                     rewrites.push((n, hardy_cbor::encode::emit(&v).0));
                 }

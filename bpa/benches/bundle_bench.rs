@@ -167,7 +167,7 @@ fn throughput_benchmark(c: &mut Criterion) {
         b.iter(|| {
             let (_, data) = hardy_bpv7::builder::Builder::new(src.clone(), dst.clone())
                 .with_payload(std::borrow::Cow::Borrowed(&payload))
-                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+                .build(hardy_bpv7::CreationTimestamp::now())
                 .unwrap();
 
             rt.block_on(async {

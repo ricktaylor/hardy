@@ -16,6 +16,8 @@ use crate::{Error, Result, crc};
 /// block-level and outer `0xFF` breaks, verifies the CRC, and reports when the
 /// bundle is complete. It performs no I/O and owns no storage — persisting the
 /// drained bytes is the caller's job.
+///
+/// [`ParserProgress::Partial`]: crate::parser::ParserProgress::Partial
 pub struct PayloadTail {
     /// `None` when the payload block declared no CRC; otherwise pre-fed the
     /// block header + body prefix, and consumed by `verify_crc`.

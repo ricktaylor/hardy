@@ -11,7 +11,14 @@ that `HopInfo` exploits does not apply here — any non-shortest
 encoding is an unambiguous canonical-CBOR violation and is rejected.
 */
 
-use super::*;
+use core::time::Duration;
+
+use hardy_cbor::{
+    decode::FromCbor,
+    encode::{Encoder, ToCbor},
+};
+
+use crate::{Error, canonical::parse_canonical};
 
 /// Bundle age in milliseconds (RFC 9171 §4.4.2).
 ///
@@ -34,27 +41,27 @@ impl From<BundleAge> for u64 {
     }
 }
 
-impl From<BundleAge> for core::time::Duration {
+impl From<BundleAge> for Duration {
     fn from(age: BundleAge) -> Self {
-        core::time::Duration::from_millis(age.0)
+        Duration::from_millis(age.0)
     }
 }
 
-impl From<core::time::Duration> for BundleAge {
-    fn from(d: core::time::Duration) -> Self {
+impl From<Duration> for BundleAge {
+    fn from(d: Duration) -> Self {
         Self(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
     }
 }
 
-impl hardy_cbor::encode::ToCbor for BundleAge {
+impl ToCbor for BundleAge {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&self.0)
     }
 }
 
-impl hardy_cbor::decode::FromCbor for BundleAge {
+impl FromCbor for BundleAge {
     type Error = Error;
 
     /// Strict-canonical decode per RFC 9171 §4.1 + §4.4.2:
@@ -66,7 +73,7 @@ impl hardy_cbor::decode::FromCbor for BundleAge {
     ///   * Returns `shortest = true` on success (no encoder discretion
     ///     left to surface), so callers can drop the flag check.
     fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
-        let (v, len) = crate::canonical::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+        let (v, len) = parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         Ok((Self(v), true, len))
     }
 }

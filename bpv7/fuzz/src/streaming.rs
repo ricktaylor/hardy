@@ -116,7 +116,7 @@ mod test {
             "ipn:2.0".parse().unwrap(),
         )
         .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .build(hardy_bpv7::CreationTimestamp::now())
         .unwrap()
         .1;
 

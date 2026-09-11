@@ -28,9 +28,9 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    Bundle as Bpv7Bundle, bpsec,
-    bundle::{Block, BlockType},
-    bundle_age, checks,
+    BundleAge, bpsec,
+    bundle::{Block, BlockType, Bundle as Bpv7Bundle},
+    checks,
     editor::Chunk,
     parser, rewrite,
     status_report::ReasonCode,
@@ -616,8 +616,7 @@ fn extract_extension_block_fields<V: AsRef<[u8]>>(
                 out.previous_node = decode_field(target_block, data, decrypted)?;
             }
             BlockType::BundleAge => {
-                out.age = decode_field::<bundle_age::BundleAge>(target_block, data, decrypted)?
-                    .map(Into::into);
+                out.age = decode_field::<BundleAge>(target_block, data, decrypted)?.map(Into::into);
             }
             BlockType::HopCount => {
                 out.hop_count = decode_field(target_block, data, decrypted)?;
@@ -723,14 +722,13 @@ mod tests {
         use core::num::NonZeroU8;
 
         use hardy_bpv7::{
+            CreationTimestamp, HopInfo,
             bpsec::{
                 encryptor::{Context, Encryptor},
                 key::{EncAlgorithm, Key, Operation, Type},
                 no_keys,
             },
             builder::Builder,
-            creation_timestamp::CreationTimestamp,
-            hop_info::HopInfo,
         };
         use rand::{TryRng, rngs::SysRng};
 
@@ -831,9 +829,9 @@ mod tests {
     #[cfg(feature = "rfc9173")]
     fn signed_oversized_bundle() -> Bytes {
         use hardy_bpv7::{
+            CreationTimestamp,
             bpsec::signer::{Context, Signer},
             builder::Builder,
-            creation_timestamp::CreationTimestamp,
         };
 
         let (_, base) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())

@@ -187,7 +187,7 @@ async fn svc_cli_04_status_notify() {
 
     let bundle_id = hardy_bpv7::bundle::BundleId {
         source: "ipn:1.42".parse().unwrap(),
-        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::new_sequential(),
+        timestamp: hardy_bpv7::CreationTimestamp::new_sequential(),
         fragment_info: None,
     };
     let from: Eid = "ipn:2.0".parse().unwrap();

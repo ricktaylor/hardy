@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    Error, builder, bundle, bundle::PrimaryBlock, crc, creation_timestamp, dtn_time, eid, parser,
+    CreationTimestamp, DtnTime, Error, builder, bundle, bundle::PrimaryBlock, crc, eid, parser,
 };
 // Aliased: `decode::Error` collides with the bpv7 `Error` and
 // `encode::Bytes` with `bytes::Bytes` imported above.
@@ -16,7 +16,7 @@ fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_crc_type(crc_type)
         .with_payload("Test".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap()
         .1
 }
@@ -132,8 +132,8 @@ fn emit_primary(flags: u64, fragment_fields: Option<bundle::FragmentInfo>) -> Ve
         a.emit(&"ipn:2.0".parse::<eid::Eid>().unwrap()); // destination
         a.emit(&"ipn:1.0".parse::<eid::Eid>().unwrap()); // source
         a.emit(&"ipn:1.0".parse::<eid::Eid>().unwrap()); // report-to
-        a.emit(&creation_timestamp::CreationTimestamp::from_parts(
-            Some(dtn_time::DtnTime::new(820_000_000_000)),
+        a.emit(&CreationTimestamp::from_parts(
+            Some(DtnTime::new(820_000_000_000)),
             1,
         ));
         a.emit(&86_400_000u64); // lifetime (ms)

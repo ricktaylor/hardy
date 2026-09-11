@@ -13,7 +13,7 @@ use alloc::{boxed::Box, string::String};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use thiserror::Error;
 
-use crate::{creation_timestamp::CreationTimestamp, eid};
+use crate::{CreationTimestamp, eid};
 
 /// Errors that can occur when parsing a bundle [`BundleId`] from a key.
 #[derive(Error, Debug)]

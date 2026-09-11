@@ -4,11 +4,13 @@
 use core::{num::NonZeroU8, time::Duration};
 
 use hardy_bpv7::{
-    Bundle,
+    CreationTimestamp, HopInfo,
     bpsec::{context::ScopeFlags, key, signer},
-    builder, crc, creation_timestamp,
+    builder,
+    bundle::Bundle,
+    crc,
     editor::{Chunk, Editor, Error},
-    eid, hop_info, parser,
+    eid, parser,
 };
 use std::collections::HashSet;
 
@@ -20,7 +22,7 @@ fn make_bundle() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_report_to("ipn:3.0".parse().unwrap())
         .with_payload("Hello".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
     let bundle = reparse(&data);
     (bundle, data)
@@ -30,12 +32,12 @@ fn make_bundle() -> (Bundle, Box<[u8]>) {
 // Bundle with real wire extents.
 fn make_bundle_with_hop_count() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
-        .with_hop_count(&hop_info::HopInfo {
+        .with_hop_count(&HopInfo {
             limit: NonZeroU8::new(30).unwrap(),
             count: 0,
         })
         .with_payload("Hello".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
     let bundle = reparse(&data);
     (bundle, data)
@@ -452,12 +454,12 @@ fn flatten_inplace_mixed_shift() {
         .parse()
         .unwrap();
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), long)
-        .with_hop_count(&hop_info::HopInfo {
+        .with_hop_count(&HopInfo {
             limit: NonZeroU8::new(30).unwrap(),
             count: 1,
         })
         .with_payload("payload-bytes-here".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
     let bundle = reparse(&data);
     let short: eid::Eid = "ipn:2.0".parse().unwrap();
@@ -494,7 +496,7 @@ fn remove_block_rejects_security_block() {
     let (_, bundle_bytes) =
         builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_payload(b"remove-bib test".as_slice().into())
-            .build(creation_timestamp::CreationTimestamp::now())
+            .build(CreationTimestamp::now())
             .unwrap();
     let bundle = reparse(&bundle_bytes);
 

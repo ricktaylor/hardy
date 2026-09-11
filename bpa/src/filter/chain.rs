@@ -239,7 +239,7 @@ impl Level {
         key_provider: &F,
     ) -> Result<ControlFlow<Option<ReasonCode>>, crate::Error>
     where
-        F: Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn KeySource>,
+        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn KeySource>,
     {
         for filter in &self.writers {
             match filter.filter(bundle, data).await? {
@@ -299,7 +299,7 @@ impl FilterChain {
         key_provider: F,
     ) -> Result<ExecResult, crate::Error>
     where
-        F: Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
+        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
         let mut mutation = Mutation::default();
 

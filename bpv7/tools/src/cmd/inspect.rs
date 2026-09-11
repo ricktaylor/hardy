@@ -2,7 +2,7 @@ use super::*;
 use core::time::Duration;
 use hardy_bpv7::bundle::BundleId;
 use hardy_bpv7::bundle::{BlockFlags, BundleFlags};
-use hardy_bpv7::{bpsec, bundle_age, crc, eid, hop_info};
+use hardy_bpv7::{BundleAge, HopInfo, bpsec, crc, eid};
 use hardy_cbor::decode::{parse_exact, parse_value};
 use std::collections::HashMap;
 #[derive(Parser, Debug)]
@@ -116,7 +116,7 @@ struct BlockSecurity {
 struct ExtFields {
     previous_node: Option<eid::Eid>,
     age: Option<Duration>,
-    hop_count: Option<hop_info::HopInfo>,
+    hop_count: Option<HopInfo>,
     non_canonical: bool,
 }
 
@@ -139,15 +139,13 @@ fn extension_fields(
                 }
             }
             BlockType::BundleAge => {
-                if let Some(v) =
-                    extract_known::<bundle_age::BundleAge>(b, data, "Bundle Age Block")?
-                {
+                if let Some(v) = extract_known::<BundleAge>(b, data, "Bundle Age Block")? {
                     out.age = Some(v.into());
                 }
             }
             BlockType::HopCount => {
                 if let Some((v, shortest)) =
-                    extract_known::<(hop_info::HopInfo, bool)>(b, data, "Hop Count Block")?
+                    extract_known::<(HopInfo, bool)>(b, data, "Hop Count Block")?
                 {
                     out.non_canonical |= !shortest;
                     out.hop_count = Some(v);
@@ -177,7 +175,7 @@ struct JsonBundle<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     age: Option<Duration>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    hop_count: Option<&'a hop_info::HopInfo>,
+    hop_count: Option<&'a HopInfo>,
     blocks: &'a HashMap<u64, Block>,
 }
 

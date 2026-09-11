@@ -1,7 +1,7 @@
 use super::*;
 use hardy_bpv7::{
+    CreationTimestamp,
     bpsec::key::KeySet,
-    creation_timestamp::CreationTimestamp,
     editor::{Chunk, Editor},
     eid::Eid,
 };

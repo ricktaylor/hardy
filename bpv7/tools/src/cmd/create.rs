@@ -1,7 +1,7 @@
 use core::num::NonZeroU8;
 
 use super::*;
-use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, eid::Eid};
+use hardy_bpv7::{CreationTimestamp, builder::Builder, eid::Eid};
 #[derive(Parser, Debug)]
 #[command(
     about = "Create a new bundle with payload",

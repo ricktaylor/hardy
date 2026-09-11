@@ -63,9 +63,7 @@ Enabled by default via the `rfc9173` feature flag:
 ## Usage
 
 ```rust
-use hardy_bpv7::builder::Builder;
-use hardy_bpv7::eid::Eid;
-use hardy_bpv7::creation_timestamp::CreationTimestamp;
+use hardy_bpv7::{CreationTimestamp, builder::Builder, eid::Eid, parser::parse};
 
 let source: Eid = "ipn:1.0".parse().unwrap();
 let destination: Eid = "ipn:2.0".parse().unwrap();
@@ -76,11 +74,10 @@ let (bundle, cbor) = Builder::new(source, destination)
     .build(CreationTimestamp::now())
     .unwrap();
 
-// Parse it back. `parse::parse` is the structural entry point; layer
+// Parse it back. `parser::parse` is the structural entry point; layer
 // keyed BPSec validation on top with the primitives in `hardy_bpv7::checks`
 // (`classify_*`, `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
-use hardy_bpv7::parse;
-let parsed = parse::parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
+let parsed = parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
 assert_eq!(parsed.bundle.primary.id, bundle.primary.id);
 ```
 

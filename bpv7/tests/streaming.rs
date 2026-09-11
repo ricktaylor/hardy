@@ -6,9 +6,9 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    Error, builder,
+    CreationTimestamp, Error, builder,
     crc::{self, CrcType},
-    creation_timestamp, parser,
+    parser,
     parser::{BundleParser, ParserProgress, PayloadTail},
 };
 use hex_literal::hex;
@@ -17,7 +17,7 @@ use hex_literal::hex;
 fn large_payload_bundle() -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap()
         .1
 }
@@ -181,7 +181,7 @@ fn craft_bundle(crc_type: CrcType, indefinite: bool, body: &[u8]) -> Vec<u8> {
     // block start by parsing rather than hardcoding an offset.
     let minimal = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload(b"x".as_slice().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap()
         .1;
     let prefix_len = parser::parse(Bytes::copy_from_slice(&minimal))
@@ -305,7 +305,7 @@ fn hostile_claimed_block_length_bounds_reserve() {
     // A real, complete bundle — take its primary block verbatim as a prefix.
     let full = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload(b"x".as_slice().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap()
         .1;
     let parsed = {
@@ -340,7 +340,7 @@ fn hostile_claimed_block_length_bounds_reserve() {
 fn byte_by_byte_push_reaches_ready() {
     let full = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload(b"tiny".as_slice().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap()
         .1;
 

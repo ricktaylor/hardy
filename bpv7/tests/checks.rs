@@ -5,9 +5,9 @@
 use bytes::Bytes;
 use hardy_bpv7::parser::Parsed;
 use hardy_bpv7::{
-    Bundle, Error, bpsec, builder,
-    bundle::{BibCoverage, BlockType},
-    checks, creation_timestamp, editor, eid, parser, rewrite,
+    CreationTimestamp, Error, bpsec, builder,
+    bundle::{BibCoverage, BlockType, Bundle},
+    checks, editor, eid, parser, rewrite,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -118,7 +118,7 @@ fn parse_full_for_test(
 fn build_minimal_bundle() -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload("Hello".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap()
         .1
 }
@@ -130,7 +130,7 @@ fn build_parse_roundtrip() {
     let dst: eid::Eid = "ipn:2.0".parse().unwrap();
     let (original, data) = builder::Builder::new(src.clone(), dst.clone())
         .with_payload("Roundtrip".as_bytes().into())
-        .build(creation_timestamp::CreationTimestamp::now())
+        .build(CreationTimestamp::now())
         .unwrap();
 
     // Verify canonicalization-mode invariants by composing primitives
@@ -323,7 +323,7 @@ mod cascade_reencryption_tests {
         let (_, base) =
             builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
                 .with_payload(b"payload data".as_slice().into())
-                .build(creation_timestamp::CreationTimestamp::now())
+                .build(CreationTimestamp::now())
                 .unwrap();
         // delete_block_on_failure (0x10)
         let unknown = make_block(999, 2, 0x10, &[0xDE, 0xAD]);
@@ -545,7 +545,7 @@ mod cascade_reencryption_tests {
         let (_, base) =
             builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
                 .with_payload(b"payload data".as_slice().into())
-                .build(creation_timestamp::CreationTimestamp::now())
+                .build(CreationTimestamp::now())
                 .unwrap();
         let signed = sign(&base, &[1], &sign_k);
         let encrypted = encrypt(&signed, 1, &enc_k);
@@ -882,7 +882,7 @@ mod cascade_reencryption_tests {
         let (_, base) =
             builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
                 .with_payload(b"payload data".as_slice().into())
-                .build(creation_timestamp::CreationTimestamp::now())
+                .build(CreationTimestamp::now())
                 .unwrap();
         let encrypted = encrypt(&base, 1, &enc_k);
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
@@ -912,7 +912,7 @@ mod cascade_reencryption_tests {
         let (_, base) =
             builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
                 .with_payload(b"payload data".as_slice().into())
-                .build(creation_timestamp::CreationTimestamp::now())
+                .build(CreationTimestamp::now())
                 .unwrap();
 
         // Signer output -> bib::OperationSet::check (plaintext BIB) inside parse.
@@ -956,7 +956,7 @@ mod deferred_payload_bib_tests {
         let (_, base) =
             builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
                 .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
-                .build(creation_timestamp::CreationTimestamp::now())
+                .build(CreationTimestamp::now())
                 .unwrap();
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).expect("parse");
         bpsec::signer::Signer::new(&raw, &bytes)

@@ -1,4 +1,4 @@
-use hardy_bpv7::{Error, hop_info::HopInfo};
+use hardy_bpv7::{Error, HopInfo};
 use hardy_cbor::decode::FromCbor;
 use hex_literal::hex;
 

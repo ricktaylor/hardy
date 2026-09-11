@@ -426,7 +426,7 @@ impl<'a> Editor<'a> {
     #[allow(clippy::result_large_err)]
     pub fn with_timestamp(
         mut self,
-        timestamp: creation_timestamp::CreationTimestamp,
+        timestamp: CreationTimestamp,
     ) -> core::result::Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {

@@ -124,7 +124,7 @@ impl FilterEngine {
         key_provider: F,
     ) -> Result<ExecResult, crate::Error>
     where
-        F: Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
+        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
         let hook_label = hook.label();
         let filters = self.filters.load();

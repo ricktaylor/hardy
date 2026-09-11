@@ -73,7 +73,7 @@ impl WriteFilter for IpnLegacyFilter {
         // Editor needs a `&Bundle`, so re-parse structurally.
         let hardy_bpv7::parser::Parsed {
             data, bundle: raw, ..
-        } = hardy_bpv7::parse(hardy_bpa::Bytes::copy_from_slice(data))
+        } = hardy_bpv7::parser::parse(hardy_bpa::Bytes::copy_from_slice(data))
             .map_err(hardy_bpv7::editor::Error::from)?;
         let mut editor = Editor::new(&raw, &data);
 
@@ -113,8 +113,8 @@ impl WriteFilter for IpnLegacyFilter {
 mod tests {
     use super::*;
     use hardy_bpa::bundle::BundleMetadata;
+    use hardy_bpv7::CreationTimestamp;
     use hardy_bpv7::builder::Builder;
-    use hardy_bpv7::creation_timestamp::CreationTimestamp;
     use hardy_bpv7::parser;
 
     fn make_config(patterns: &[&str]) -> Config {

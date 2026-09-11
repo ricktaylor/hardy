@@ -20,12 +20,11 @@ use hardy_bpa::{
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
+    CreationTimestamp,
     builder::Builder,
     bundle::{BundleFlags, BundleId},
-    creation_timestamp::CreationTimestamp,
     eid::Eid,
-    parse,
-    parser::Parsed,
+    parser::{Parsed, parse},
     status_report::ReasonCode,
 };
 use tracing::{debug, warn};

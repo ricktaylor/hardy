@@ -4,10 +4,19 @@ As per RFC 9171, it combines a timestamp with a sequence number to ensure that e
 given source node can be uniquely identified, even if created at the same time.
 */
 
-use portable_atomic::{AtomicU64, Ordering};
+use core::fmt::{self, Display, Formatter};
 
-use super::*;
-use crate::canonical::{CaptureFieldErr, require_canonical};
+use hardy_cbor::{
+    decode::{FromCbor, parse_array},
+    encode::{Encoder, ToCbor},
+};
+use portable_atomic::{AtomicU64, Ordering};
+use time::{Duration, OffsetDateTime};
+
+use crate::{
+    DtnTime, Error,
+    canonical::{CaptureFieldErr, require_canonical},
+};
 
 static GLOBAL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -44,7 +53,7 @@ pub struct CreationTimestamp {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    creation_time: Option<dtn_time::DtnTime>,
+    creation_time: Option<DtnTime>,
     /// A sequence number that is unique for the source node.
     sequence_number: u64,
 }
@@ -73,8 +82,8 @@ impl CreationTimestamp {
     /// This function is only available when the `std` feature is enabled.
     #[cfg(feature = "std")]
     pub fn now() -> Self {
-        let now = time::OffsetDateTime::now_utc();
-        let candidate = (dtn_time::DtnTime::saturating_from(now)
+        let now = OffsetDateTime::now_utc();
+        let candidate = (DtnTime::saturating_from(now)
             .millisecs()
             .min(u64::MAX >> SEQ_BITS)
             << SEQ_BITS)
@@ -93,7 +102,7 @@ impl CreationTimestamp {
             }
         };
         Self {
-            creation_time: Some(dtn_time::DtnTime::new(issued >> SEQ_BITS)),
+            creation_time: Some(DtnTime::new(issued >> SEQ_BITS)),
             sequence_number: issued & ((1 << SEQ_BITS) - 1),
         }
     }
@@ -113,7 +122,7 @@ impl CreationTimestamp {
 
     /// Create a new `CreationTimestamp` with the given time and sequence
     /// number values.
-    pub fn from_parts(creation_time: Option<dtn_time::DtnTime>, sequence_number: u64) -> Self {
+    pub fn from_parts(creation_time: Option<DtnTime>, sequence_number: u64) -> Self {
         Self {
             creation_time,
             sequence_number,
@@ -122,7 +131,7 @@ impl CreationTimestamp {
 
     /// Disassembles the `CreationTimestamp` into its parts, the time value
     /// and the sequence number.
-    pub fn into_parts(self) -> (Option<dtn_time::DtnTime>, u64) {
+    pub fn into_parts(self) -> (Option<DtnTime>, u64) {
         let Self {
             creation_time,
             sequence_number,
@@ -131,7 +140,7 @@ impl CreationTimestamp {
     }
 
     /// Access the creation_time value of this timestamp.
-    pub fn creation_time(&self) -> Option<&dtn_time::DtnTime> {
+    pub fn creation_time(&self) -> Option<&DtnTime> {
         self.creation_time.as_ref()
     }
 
@@ -147,7 +156,7 @@ impl CreationTimestamp {
         self.creation_time.is_some()
     }
 
-    /// Converts the `CreationTimestamp` to a `time::OffsetDateTime`, if possible.
+    /// Converts the `CreationTimestamp` to a `OffsetDateTime`, if possible.
     ///
     /// Returns `Some(OffsetDateTime)` if the `creation_time` is present, nudged
     /// forward by the sequence number for sub-millisecond ordering. Returns
@@ -157,18 +166,18 @@ impl CreationTimestamp {
     /// be nanoseconds — [`CreationTimestamp::now`] issues a per-millisecond
     /// counter, and other implementations vary. The nudge is therefore
     /// clamped below the millisecond resolution of
-    /// [`DtnTime`](dtn_time::DtnTime), so a sender-chosen sequence number
+    /// [`DtnTime`](DtnTime), so a sender-chosen sequence number
     /// cannot shift the result outside the creation millisecond.
-    pub fn as_datetime(&self) -> Option<time::OffsetDateTime> {
-        let t: time::OffsetDateTime = self.creation_time?.into();
-        Some(t.saturating_add(time::Duration::nanoseconds(
-            self.sequence_number.min(999_999) as i64,
+    pub fn as_datetime(&self) -> Option<OffsetDateTime> {
+        let t: OffsetDateTime = self.creation_time?.into();
+        Some(t.saturating_add(Duration::nanoseconds(
+            self.sequence_number.min(999_999) as i64
         )))
     }
 }
 
-impl core::fmt::Display for CreationTimestamp {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for CreationTimestamp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if let Some(ct) = self.creation_time {
             write!(f, "{} seq {}", ct, self.sequence_number)
         } else {
@@ -177,10 +186,10 @@ impl core::fmt::Display for CreationTimestamp {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for CreationTimestamp {
+impl ToCbor for CreationTimestamp {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&(
             &self.creation_time.unwrap_or_default(),
             &self.sequence_number,
@@ -188,7 +197,7 @@ impl hardy_cbor::encode::ToCbor for CreationTimestamp {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for CreationTimestamp {
+impl FromCbor for CreationTimestamp {
     type Error = Error;
 
     /// Strict-canonical decode per RFC 9171 §4.1: non-shortest array
@@ -198,13 +207,13 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
     /// array encoding is accepted (§4.1 carveout) and reflected in the
     /// returned `shortest` flag as `false`.
     fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
+        parse_array(data, |a, shortest, tags| {
             if !shortest || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }
             // `DtnTime` self-enforces canonical form, so delegate to it
             // rather than re-checking via `require_canonical`.
-            let creation_time: dtn_time::DtnTime =
+            let creation_time: DtnTime =
                 a.parse().map_field_err::<Error>("bundle creation time")?;
             let sequence_number = require_canonical(a, "sequence number", Error::NotCanonical)?;
             Ok((
@@ -224,10 +233,10 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
     }
 }
 
-impl TryFrom<time::OffsetDateTime> for CreationTimestamp {
-    type Error = <dtn_time::DtnTime as TryFrom<time::OffsetDateTime>>::Error;
+impl TryFrom<OffsetDateTime> for CreationTimestamp {
+    type Error = <DtnTime as TryFrom<OffsetDateTime>>::Error;
 
-    fn try_from(value: time::OffsetDateTime) -> core::result::Result<Self, Self::Error> {
+    fn try_from(value: OffsetDateTime) -> core::result::Result<Self, Self::Error> {
         Ok(Self {
             creation_time: Some(value.try_into()?),
             sequence_number: (value.nanosecond() % 1_000_000) as u64,
@@ -241,7 +250,7 @@ mod tests {
 
     fn clocked(sequence_number: u64) -> CreationTimestamp {
         CreationTimestamp {
-            creation_time: Some(dtn_time::DtnTime::new(820_000_000_000)),
+            creation_time: Some(DtnTime::new(820_000_000_000)),
             sequence_number,
         }
     }
@@ -250,7 +259,7 @@ mod tests {
     fn as_datetime_applies_sub_millisecond_nudge() {
         let base = clocked(0).as_datetime().unwrap();
         let nudged = clocked(500).as_datetime().unwrap();
-        assert_eq!(nudged - base, time::Duration::nanoseconds(500));
+        assert_eq!(nudged - base, Duration::nanoseconds(500));
     }
 
     // Wire sequence numbers are unrestricted u64: values at or above 2^63
@@ -264,7 +273,7 @@ mod tests {
             let nudged = clocked(seq).as_datetime().unwrap();
             let delta = nudged - base;
             assert!(
-                delta >= time::Duration::ZERO && delta < time::Duration::MILLISECOND,
+                delta >= Duration::ZERO && delta < Duration::MILLISECOND,
                 "sequence {seq} produced out-of-millisecond delta {delta}"
             );
         }

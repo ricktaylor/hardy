@@ -6,7 +6,7 @@ use hardy_bpa::{
     storage::{BundleStorage, MetadataStorage},
     stream::{SendError, Sender},
 };
-use hardy_bpv7::creation_timestamp::CreationTimestamp;
+use hardy_bpv7::CreationTimestamp;
 
 pub mod bundle_suite;
 pub mod fixtures;
