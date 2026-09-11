@@ -33,52 +33,20 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
-# Probe a TCP port with bash's /dev/tcp; success means something is listening.
-port_open() {
-    (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null
-}
-
-# Pick a TCP port nothing is listening on.
-find_free_port() {
-    local port
-    while :; do
-        port=$(( (RANDOM % 20000) + 20000 ))
-        if ! port_open 127.0.0.1 "$port" && ! port_open ::1 "$port"; then
-            echo "$port"
-            return 0
-        fi
-    done
-}
-
-# Poll until a TCP port accepts connections, with a deadline in seconds.
-# Fails fast when the given process dies first.
-wait_for_port() {
-    local host=$1 port=$2 deadline=$3 label=$4 pid=$5
-    local waited=0
-    while ! port_open "$host" "$port"; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            log_error "$label exited before listening on $host:$port"
-            return 1
-        fi
-        if [ "$waited" -ge $((deadline * 10)) ]; then
-            log_error "Timed out waiting for $label on $host:$port"
-            return 1
-        fi
-        sleep 0.1
-        waited=$((waited + 1))
-    done
-    return 0
-}
-
 # Poll until a file contains at least N occurrences of a pattern, with a
-# deadline in seconds.
+# deadline in seconds. Fails fast when the given process dies first, so a
+# dead server does not burn every remaining deadline in turn.
 wait_for_log() {
-    local file=$1 pattern=$2 count=$3 deadline=$4
+    local file=$1 pattern=$2 count=$3 deadline=$4 pid=${5:-}
     local waited=0 seen
     while :; do
         seen=$(grep -c "$pattern" "$file" 2>/dev/null) || true
         if [ "${seen:-0}" -ge "$count" ]; then
             return 0
+        fi
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            log_error "Process $pid exited while waiting for '$pattern'"
+            return 1
         fi
         if [ "$waited" -ge $((deadline * 10)) ]; then
             log_error "Timed out waiting for ${count}x '$pattern' in $file"
@@ -88,8 +56,6 @@ wait_for_log() {
         waited=$((waited + 1))
     done
 }
-
-NODE_PORT=$(find_free_port)
 
 SKIP_BUILD=false
 while [[ $# -gt 0 ]]; do
@@ -179,7 +145,7 @@ storage:
 clas:
   - name: tcp0
     type: tcpclv4
-    listeners: ["[::]:$NODE_PORT"]
+    listeners: ["[::]:0"]
 EOF
 
 BPA_LOG="$TEST_DIR/bpa.log"
@@ -187,12 +153,20 @@ BPA_LOG="$TEST_DIR/bpa.log"
 log_step "Starting BPA server..."
 "$BPA_BIN" --config "$TEST_DIR/bpa" > "$BPA_LOG" 2>&1 &
 BPA_PID=$!
-wait_for_port 127.0.0.1 "$NODE_PORT" 20 "BPA TCPCLv4" "$BPA_PID" \
+
+# The CLA is configured with port 0, so the kernel picks the port and the
+# listener reports what it bound. Reading it back is race-free: the socket
+# is bound and accepting by the time the line is logged, so there is no
+# window in which anything else can take the port.
+wait_for_log "$BPA_LOG" "TCP server listening on " 1 20 "$BPA_PID" \
     || { log_error "BPA failed to start"; cat "$BPA_LOG"; exit 1; }
+NODE_PORT=$(grep -o "TCP server listening on .*:[0-9]\+" "$BPA_LOG" | head -1 | sed 's/.*://')
+[ -n "$NODE_PORT" ] || { log_error "Could not read the bound port"; cat "$BPA_LOG"; exit 1; }
+log_info "BPA TCPCLv4 listening on port $NODE_PORT"
 
 # TEST 1: Startup, and the initial route actually lands in the RIB
 log_step "TEST 1: Startup with routes file"
-if wait_for_log "$BPA_LOG" "Adding route .*source 'static_routes'" 1 15; then
+if wait_for_log "$BPA_LOG" "Adding route .*source 'static_routes'" 1 15 "$BPA_PID"; then
     log_info "TEST 1: PASSED"
 else
     log_error "TEST 1: FAILED (initial static route not installed)"
@@ -205,8 +179,8 @@ cat > "$ROUTES_FILE" <<EOF
 ipn:*.*.* drop
 ipn:99.*.* drop 3
 EOF
-if wait_for_log "$BPA_LOG" "Reloading static routes" 1 15 \
-    && wait_for_log "$BPA_LOG" "Adding route ipn:99.*source 'static_routes'" 1 15 \
+if wait_for_log "$BPA_LOG" "Reloading static routes" 1 15 "$BPA_PID" \
+    && wait_for_log "$BPA_LOG" "Adding route ipn:99.*source 'static_routes'" 1 15 "$BPA_PID" \
     && kill -0 "$BPA_PID" 2>/dev/null; then
     log_info "TEST 2: PASSED"
 else
@@ -217,7 +191,7 @@ fi
 # TEST 3: File removal withdraws both routes
 log_step "TEST 3: File removal"
 rm -f "$ROUTES_FILE"
-if wait_for_log "$BPA_LOG" "Removed route .*source 'static_routes'" 2 15 \
+if wait_for_log "$BPA_LOG" "Removed route .*source 'static_routes'" 2 15 "$BPA_PID" \
     && kill -0 "$BPA_PID" 2>/dev/null; then
     log_info "TEST 3: PASSED"
 else
@@ -230,7 +204,7 @@ log_step "TEST 4: File restore"
 cat > "$ROUTES_FILE" <<EOF
 ipn:*.*.* drop
 EOF
-if wait_for_log "$BPA_LOG" "Adding route .*source 'static_routes'" 3 15 \
+if wait_for_log "$BPA_LOG" "Adding route .*source 'static_routes'" 3 15 "$BPA_PID" \
     && kill -0 "$BPA_PID" 2>/dev/null; then
     log_info "TEST 4: PASSED"
 else
