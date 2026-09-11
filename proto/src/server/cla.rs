@@ -51,11 +51,20 @@ impl Cla {
             request.peer_addr.map(|a| a.try_into()).transpose()?;
 
         // The unary wire message already delivered the whole bundle, so it
-        // enters the BPA as a one-segment stream.
+        // enters the BPA as a one-segment stream. The verdict rides the
+        // response; only sink faults become gRPC errors.
         self.sink()?
             .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut request.bundle)
             .await
-            .map(|_| bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
+            .map(|verdict| {
+                bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {
+                    verdict: match verdict {
+                        hardy_bpa::cla::Acceptance::Accepted => DispatchVerdict::Accepted,
+                        hardy_bpa::cla::Acceptance::Refused => DispatchVerdict::Refused,
+                    }
+                    .into(),
+                })
+            })
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 

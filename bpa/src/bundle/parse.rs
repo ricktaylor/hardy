@@ -232,7 +232,7 @@ pub struct HeaderVerify {
     /// (block 1) — re-verified against the full bundle by
     /// [`finalize_with_provider`]. Empty when the payload was resident. A block-1
     /// *BCB* (payload confidentiality) needs no deferral — it's decrypted at
-    /// delivery via [`hardy_bpv7::bpsec::block_data`].
+    /// delivery via [`hardy_bpv7::bpsec::DecryptingReader`].
     pub deferred_bibs: HashMap<u64, bpsec::bib::OperationSet>,
 }
 
