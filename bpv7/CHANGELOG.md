@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - `bpsec::DecryptingReader`: a `reader::Reader` that decrypts BCB-covered blocks on demand and memoises each block's outcome — plaintext, no-key, or decrypt-failure — for the reader's lifetime, so a chain of consumers sharing one reader costs one decrypt attempt per covered block. The trait impl lends (cache borrows, zeroized when the reader drops); the inherent `block_data()` gives (owned plaintext, typed errors carrying the diagnostic cause, and `Ok(None)` for non-resident extents), preserving the free `bpsec::block_data` contract.
 
+- `extension_editor::ExtensionEditor`: scoped extension-block editing over a parsed bundle — insert/replace/remove of extension blocks only, with every owner privilege (primary fields, payload replacement, BIB/BCB management, coverage stripping) absent from the type rather than refused at runtime. Target gates return a typed error for the reserved/covered cases (unprovable coverage refuses conservatively); blocks inserted through the editor are valid targets for its own replace/remove; `finish()` materialises the accumulated edits, or `None` when untouched.
 - `reader::ReaderExt`, blanket-implemented for every `Reader` (trait objects included): `extract<T>()` CBOR-decodes a block's payload, with `Ok(None)` for absent-or-unavailable and `Err` only for decode failures.
 
 ### Removed
