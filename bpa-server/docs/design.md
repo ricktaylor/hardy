@@ -82,7 +82,6 @@ Cargo features control which components are compiled:
 - **tcpclv4** - Inline TCPCLv4 CLA (no separate process needed)
 - **file-cla** - File-based CLA for testing and air-gapped transfers
 - **echo** - Built-in echo service for testing
-- **ipn-legacy-filter** - Filter for legacy two-element IPN encoding
 - **otel** - OpenTelemetry observability integration
 - **packaged-installation** - Adjusts default configuration paths for system package installations (e.g., `/etc/hardy-bpa-server/` instead of `/etc/opt/hardy-bpa-server/` on Linux)
 
@@ -124,9 +123,9 @@ rfc9171-validity:
 
 Both options default to `true`, enforcing RFC 9171 recommendations. Disable `primary-block-integrity` for interoperability with implementations that omit primary block CRCs (e.g., dtn7-rs).
 
-### IPN Legacy Filter
+### IPN Legacy Re-encode
 
-When the `ipn-legacy-filter` feature is enabled and `ipn-legacy-nodes` is configured, the IPN legacy filter rewrites bundle EIDs at the Egress hook to use legacy two-element IPN encoding for specified nodes:
+When `ipn-legacy-nodes` is configured, the BPA's built-in per-hop rewrite stage re-encodes IPN EIDs on the transmitted wire form to the legacy two-element encoding for bundles whose next hop matches a listed pattern:
 
 ```yaml
 ipn-legacy-nodes:
