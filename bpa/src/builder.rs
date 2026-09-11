@@ -1,9 +1,9 @@
-use core::num::NonZeroUsize;
+use core::num::{NonZeroU64, NonZeroUsize};
 
 use crate::{
     Arc,
     bpa::Bpa,
-    cla::{Cla, registry::ClaRegistryBuilder},
+    cla::{Cla, ClaInit, registry::ClaRegistryBuilder},
     dispatcher::Dispatcher,
     filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
     keys::KeyProvider,
@@ -33,7 +33,7 @@ pub struct BpaBuilder {
     processing_pool_size: NonZeroUsize,
     lru_capacity: Option<NonZeroUsize>,
     max_cached_bundle_size: Option<NonZeroUsize>,
-    max_bundle_size: Option<NonZeroUsize>,
+    max_bundle_size: Option<NonZeroU64>,
     cache_disabled: bool,
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
@@ -140,21 +140,24 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets the largest bundle size eligible for caching, in bytes; unset
-    /// applies the cache's own default. Has no effect when no bundle
-    /// storage is configured: the default memory store is never cached.
     /// Sets the maximum size of a single reassembled bundle at ingress.
     ///
     /// Streamed dispatch and streamed service origination accumulate
     /// segments until the bundle is complete; this bound stops a runaway or
     /// hostile producer growing BPA memory without limit. Streams exceeding
     /// it are rejected with an error to the producer. Defaults privately at
-    /// the point of use.
-    pub fn max_bundle_size(mut self, v: NonZeroUsize) -> Self {
+    /// the point of use. A cap beyond the target's addressable bound
+    /// (`isize::MAX`, relevant on 32-bit targets) is clamped to it — the
+    /// clamped value is both enforced and advertised to CLAs at
+    /// registration.
+    pub fn max_bundle_size(mut self, v: NonZeroU64) -> Self {
         self.max_bundle_size = Some(v);
         self
     }
 
+    /// Sets the largest bundle size eligible for caching, in bytes; unset
+    /// applies the cache's own default. Has no effect when no bundle
+    /// storage is configured: the default memory store is never cached.
     pub fn max_cached_bundle_size(mut self, v: NonZeroUsize) -> Self {
         self.max_cached_bundle_size = Some(v);
         self
@@ -177,14 +180,21 @@ impl BpaBuilder {
     }
 
     /// Register a CLA to be initialized when the BPA is built.
+    ///
+    /// `init` carries the CLA's set-once declarations
+    /// ([`ClaInit`](crate::cla::ClaInit)), snapshotted at registration;
+    /// its `max_bundle_size` is the CLA's declared receive limit, folded
+    /// with the BPA's configured cap into the effective value delivered to
+    /// [`Cla::on_register`](crate::cla::Cla).
     pub fn cla(
         mut self,
         name: impl Into<String>,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn FlowControllerFactory>>,
+        init: ClaInit,
     ) -> Self {
         self.cla_registry_builder
-            .insert(name.into(), cla, policy)
+            .insert(name.into(), cla, policy, init)
             .expect("Failed to insert CLA");
         self
     }

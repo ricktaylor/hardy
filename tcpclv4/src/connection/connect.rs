@@ -293,7 +293,11 @@ impl Connector {
             peer_addr,
             keepalive_duration,
             context::negotiate_segment_mtu(segment_mtu, peer_init.segment_mru),
-            usize::try_from(self.ctx.transfer_mru.get()).unwrap_or(usize::MAX),
+            // Clamped in the u64 domain to the allocator's addressable
+            // bound, not usize::MAX, so the session's accumulation guard
+            // stays satisfiable.
+            usize::try_from(self.ctx.transfer_mru.get().min(isize::MAX as u64))
+                .expect("clamped into the addressable range"),
             rx,
             cancel_token,
         );

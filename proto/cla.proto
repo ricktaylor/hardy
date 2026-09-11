@@ -91,17 +91,39 @@ message ClaAddress {
 // A request to register a CLA with the BPA.
 message RegisterClaRequest {
   // The name of the CLA. This should be unique among all registered CLAs.
-  string                  name         = 1;
+  string                  name            = 1;
   // The address type of the CLA. This is used to identify the protocol
   // associated with the CLA. If not provided, the CLA will not be registered as
   // a handler for any address type.
-  optional ClaAddressType address_type = 2;
+  optional ClaAddressType address_type    = 2;
+  // The CLA's declared receive limit, in bytes, if it has an inherent or
+  // configured one. The declaration only shrinks the effective
+  // max_bundle_size echoed in the response: the BPA does NOT enforce it at
+  // egress, and may still offer this CLA larger bundles — the CLA must
+  // refuse each such offer itself, per bundle (an Err from forward, never
+  // a link-scoped NoNeighbour, which would sweep the whole peer queue).
+  // Absent means no CLA-side limit; an explicit 0 is invalid and the
+  // registration is rejected.
+  optional uint64         max_bundle_size = 3;
+  // The CLA's lane count: its honest parallelism, the number of transfers
+  // it can usefully carry in flight at once. Absent means no limit (a
+  // datagram CL: every forward arrives with a fresh lane from the
+  // infinite pool); a value declares that many explicit lanes, indexed
+  // from 0. An explicit 0 is invalid and the registration is rejected.
+  optional uint32         lane_count      = 4;
 }
 
 // A response to a register CLA request.
 message RegisterClaResponse {
   // The NodeIds of the BPA.
   repeated string node_ids = 1;
+  // The effective size cap, in bytes: the BPA's dispatch-enforced cap (a
+  // larger bundle is rejected) folded with the CLA's declared limit from
+  // the request. The CLA should fold it into its own transfer limits
+  // (e.g. an advertised transfer MRU) so an over-cap transfer is never
+  // offered. Absent means no negotiated cap: the BPA predates this field,
+  // or neither side declared a limit.
+  optional uint64 max_bundle_size = 2;
 }
 
 // A request to dispatch a bundle from the CLA to the BPA.

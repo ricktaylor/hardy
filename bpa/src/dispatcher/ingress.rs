@@ -138,7 +138,7 @@ impl Dispatcher {
         // structural / truncation drop carries no recoverable bundle.
         let (mut hv, headers, tail) = match parse::parse_headers(
             stream,
-            self.max_bundle_size,
+            self.max_bundle_size_mem(),
             self.key_provider(),
         )
         .await
@@ -196,21 +196,23 @@ impl Dispatcher {
         // Gate passed — drain the payload (oversized case), then finalize.
         let whole = match tail {
             None => headers,
-            Some(tail) => match drain_payload(stream, headers, tail, self.max_bundle_size).await {
-                Ok(whole) => whole,
-                Err(DrainFailure::Cancelled) => return Err(cla::Error::StreamCancelled),
-                Err(DrainFailure::TooLarge { size, max }) => {
-                    debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
-                    return Err(cla::Error::PayloadTooLarge {
-                        size: size as u64,
-                        max: max as u64,
-                    });
+            Some(tail) => {
+                match drain_payload(stream, headers, tail, self.max_bundle_size_mem()).await {
+                    Ok(whole) => whole,
+                    Err(DrainFailure::Cancelled) => return Err(cla::Error::StreamCancelled),
+                    Err(DrainFailure::TooLarge { size, max }) => {
+                        debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
+                        return Err(cla::Error::PayloadTooLarge {
+                            size: size as u64,
+                            max: max as u64,
+                        });
+                    }
+                    Err(DrainFailure::Rejected) => {
+                        metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                        return Ok(None);
+                    }
                 }
-                Err(DrainFailure::Rejected) => {
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                    return Ok(None);
-                }
-            },
+            }
         };
 
         // Post-drain finalize: verify the deferred block-1 BIB targets and apply

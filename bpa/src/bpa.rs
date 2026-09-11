@@ -6,7 +6,7 @@ use tracing::instrument;
 use crate::{
     Arc,
     builder::BpaBuilder,
-    cla::{self, Cla, registry::ClaRegistry},
+    cla::{self, Cla, ClaInit, registry::ClaRegistry},
     dispatcher::Dispatcher,
     filter::{self, Filter, FilterEngine, Hook},
     otel_metrics,
@@ -131,11 +131,22 @@ pub trait BpaRegistration: Send + Sync {
     /// The CLA will receive a [`cla::Sink`] via [`cla::Cla::on_register`]
     /// for communicating back to the BPA.
     ///
+    /// Implementations must drive [`cla::Cla::on_register`] to completion
+    /// before returning: once this method resolves, callers may rely on
+    /// everything `on_register` delivers (the sink, the effective cap)
+    /// having reached the CLA.
+    ///
     /// # Arguments
     ///
     /// * `name` - Unique name for this CLA instance
     /// * `cla` - The CLA implementation
     /// * `policy` - Optional egress policy for traffic shaping
+    /// * `init` - The CLA's set-once declarations ([`cla::ClaInit`]),
+    ///   snapshotted at registration. Its `max_bundle_size` is the CLA's
+    ///   declared receive limit; the BPA folds it with its own configured
+    ///   cap into the effective value delivered to
+    ///   [`cla::Cla::on_register`] — dispatch enforces the BPA's
+    ///   configured cap, not the folded per-CLA value.
     ///
     /// # Returns
     ///
@@ -145,6 +156,7 @@ pub trait BpaRegistration: Send + Sync {
         name: String,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn FlowControllerFactory>>,
+        init: ClaInit,
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
@@ -353,9 +365,10 @@ impl BpaRegistration for Bpa {
         name: String,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn FlowControllerFactory>>,
+        init: ClaInit,
     ) -> cla::Result<Vec<NodeId>> {
         self.cla_registry
-            .register(name, cla, &self.dispatcher, policy)
+            .register(name, cla, &self.dispatcher, policy, init)
             .await
     }
 

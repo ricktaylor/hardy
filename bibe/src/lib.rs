@@ -17,7 +17,7 @@ extern crate alloc;
 
 use alloc::{sync::Arc, vec::Vec};
 
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit};
 use hardy_bpv7::eid::{Eid, NodeId, Service};
 use thiserror::Error as ThisError;
 use tracing::debug;
@@ -80,8 +80,10 @@ impl Bibe {
     /// bibe.register(&bpa).await?;
     /// ```
     pub async fn register(self: &Arc<Self>, bpa: &dyn BpaRegistration) -> Result<(), Error> {
-        // Register CLA (uses Private address type)
-        bpa.register_cla("bibe".into(), self.cla.clone(), None)
+        // Register CLA (uses Private address type). No declared size limit:
+        // the encapsulation overhead is per-bundle, so the outer-vs-cap
+        // check happens per forward instead.
+        bpa.register_cla("bibe".into(), self.cla.clone(), None, ClaInit::default())
             .await?;
 
         // Register decapsulation service

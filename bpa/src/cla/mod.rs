@@ -1,3 +1,5 @@
+use core::num::{NonZeroU32, NonZeroU64};
+
 use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
@@ -215,6 +217,44 @@ pub enum TransferOutcome {
     Failed,
 }
 
+/// A CLA's set-once registration declarations.
+///
+/// Passed to [`BpaRegistration::register_cla`](crate::bpa::BpaRegistration::register_cla)
+/// alongside the CLA and sampled exactly once: the BPA snapshots every
+/// field at registration, so none of them can change — or be re-read —
+/// for the lifetime of the registration. A CLA with nothing to declare
+/// registers with `ClaInit::default()`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClaInit {
+    /// The address type this CLA handles, if any: the BPA registers the
+    /// CLA as the handler for addresses of this type.
+    pub address_type: Option<ClaAddressType>,
+
+    /// The CLA's lane count: its honest parallelism, the number of
+    /// transfers it can usefully carry in flight at once.
+    ///
+    /// `None` declares no limit: the CLA is effectively unconstrained (a
+    /// datagram CL), and every forward arrives with lane `None`, each
+    /// transfer travelling on a new lane from the infinite pool. `Some(n)`
+    /// declares `n` explicit lanes, indexed `0..n`; a zero count is
+    /// unrepresentable by construction.
+    ///
+    /// Lanes are parallel transport channels — QUIC streams, DSCP classes,
+    /// separate TCP connections — carrying in-flight transfers with no
+    /// explicit priority among them. Scheduling and prioritisation live in
+    /// the BPA's egress policy, which decides what is forwarded onto each
+    /// lane; the CLA simply transmits what arrives on a lane, and one
+    /// lane's in-flight transfer must not head-of-line block another's.
+    pub lane_count: Option<NonZeroU32>,
+
+    /// The CLA's declared receive limit (`None` = no CLA-side limit).
+    ///
+    /// The BPA folds it with its own configured cap into the effective
+    /// value delivered to [`Cla::on_register`]; dispatch enforces the
+    /// BPA's configured cap, not the folded per-CLA value.
+    pub max_bundle_size: Option<NonZeroU64>,
+}
+
 /// The primary trait for a Convergence Layer Adapter (CLA).
 ///
 /// A CLA is responsible for adapting the Bundle Protocol to a specific underlying
@@ -249,7 +289,7 @@ pub enum TransferOutcome {
 /// }
 ///
 /// impl Cla for MyCla {
-///     async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]) {
+///     async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId], max_bundle_size: Option<NonZeroU64>) {
 ///         self.inner.call_once(|| ClaInner { sink: sink.into() });
 ///     }
 ///     // ...
@@ -269,7 +309,21 @@ pub trait Cla: Send + Sync {
     /// # Arguments
     /// * `sink` - Communication channel back to the BPA. Must be stored.
     /// * `node_ids` - The BPA's own node identifiers.
-    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[hardy_bpv7::eid::NodeId]);
+    /// * `max_bundle_size` - The *effective* size-cap policy: the minimum
+    ///   of the BPA's configured cap (which the BPA enforces at dispatch)
+    ///   and the limit this CLA declared at registration; `None` means no
+    ///   cap was negotiated (neither side declared one, or a remote proxy
+    ///   could not learn the far BPA's cap). The CLA should propagate a
+    ///   `Some` cap into its transfer limits (e.g. an advertised transfer
+    ///   MRU) so an over-cap transfer is never offered — rejection is
+    ///   deterministic, so a peer that keeps offering the same bundle loops
+    ///   forever.
+    async fn on_register(
+        &self,
+        sink: Box<dyn Sink>,
+        node_ids: &[hardy_bpv7::eid::NodeId],
+        max_bundle_size: Option<NonZeroU64>,
+    );
 
     /// Called when the CLA is being unregistered.
     ///
@@ -280,29 +334,6 @@ pub trait Cla: Send + Sync {
     /// The CLA should perform cleanup: close connections, stop background tasks,
     /// and release resources. After this returns, the Sink is no longer functional.
     async fn on_unregister(&self);
-
-    /// Returns the address type this CLA handles, if any.
-    fn address_type(&self) -> Option<ClaAddressType> {
-        None
-    }
-
-    /// Returns this CLA's lane count: its honest parallelism, the number
-    /// of transfers it can usefully carry in flight at once.
-    ///
-    /// `None` declares no limit: the CLA is effectively unconstrained (a
-    /// datagram CL), and every forward arrives with lane `None`, each
-    /// transfer travelling on a new lane from the infinite pool. `Some(n)`
-    /// declares `n` explicit lanes, indexed `0..n`; a zero count is
-    /// unrepresentable by construction. There is deliberately no default:
-    /// parallelism is a property every CLA must state for itself.
-    ///
-    /// Lanes are parallel transport channels — QUIC streams, DSCP classes,
-    /// separate TCP connections — carrying in-flight transfers with no
-    /// explicit priority among them. Scheduling and prioritisation live in
-    /// the BPA's egress policy, which decides what is forwarded onto each
-    /// lane; the CLA simply transmits what arrives on a lane, and one
-    /// lane's in-flight transfer must not head-of-line block another's.
-    fn lane_count(&self) -> Option<core::num::NonZeroU32>;
 
     /// Forwards a bundle, delivered as a stream of segments, to a specific CLA
     /// address over a given lane.

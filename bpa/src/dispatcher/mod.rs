@@ -1,3 +1,5 @@
+use core::num::{NonZeroU64, NonZeroUsize};
+
 use futures::join;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 
@@ -15,9 +17,17 @@ mod restart;
 // The default bound on a single reassembled bundle. Streaming producers
 // dissolved the transport-level caps that used to bound ingress implicitly,
 // so the concat chokepoint enforces one; sized generously above the old
-// 16 MiB wire cap to leave room for large ADUs.
-const DEFAULT_MAX_BUNDLE_SIZE: core::num::NonZeroUsize =
-    core::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+// 16 MiB wire cap to leave room for large ADUs. The cap is admission
+// policy, and the end-state default is "no policy" (`None`) — this default
+// exists only while ingress accumulates whole bundles in memory.
+const DEFAULT_MAX_BUNDLE_SIZE: NonZeroU64 = NonZeroU64::new(64 * 1024 * 1024).unwrap();
+
+// The allocator's per-allocation limit (`isize::MAX` bytes) is the largest
+// bound a single in-memory accumulation can reach, so any configured cap is
+// clamped to it once, at construction. The clamp buys two invariants: the
+// advertised and enforced values are the same number by construction, and
+// narrowing the cap into the `usize` domain cannot fail.
+const ADDRESSABLE_CAP: NonZeroU64 = NonZeroU64::new(isize::MAX as u64).unwrap();
 
 /// The resolution of a hand-off offer: every exit of `offer_to_cla` and
 /// `offer_to_service` is one of these variants, consumed exactly once by
@@ -69,7 +79,7 @@ pub(crate) struct Dispatcher {
     status_reports: bool,
     node_ids: Arc<node_ids::NodeIds>,
     poll_channel_depth: usize,
-    max_bundle_size: usize,
+    max_bundle_size: Option<NonZeroU64>,
 }
 
 impl Dispatcher {
@@ -84,9 +94,9 @@ impl Dispatcher {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         status_reports: bool,
-        poll_channel_depth: core::num::NonZeroUsize,
-        processing_pool_size: core::num::NonZeroUsize,
-        max_bundle_size: Option<core::num::NonZeroUsize>,
+        poll_channel_depth: NonZeroUsize,
+        processing_pool_size: NonZeroUsize,
+        max_bundle_size: Option<NonZeroU64>,
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::store::Store>,
         rib: Arc<routing::Rib>,
@@ -120,7 +130,13 @@ impl Dispatcher {
             status_reports,
             node_ids,
             poll_channel_depth: poll_channel_depth_usize,
-            max_bundle_size: max_bundle_size.unwrap_or(DEFAULT_MAX_BUNDLE_SIZE).get(),
+            // Interim: an unset cap takes the private default while ingress
+            // buffers in memory; streaming makes "no policy" the default.
+            max_bundle_size: Some(
+                max_bundle_size
+                    .unwrap_or(DEFAULT_MAX_BUNDLE_SIZE)
+                    .min(ADDRESSABLE_CAP),
+            ),
         });
 
         let d = dispatcher.clone();
@@ -131,6 +147,23 @@ impl Dispatcher {
                 dispatcher.run_dispatch_queue(dispatch_rx).await
             });
         })
+    }
+
+    // The dispatch size-cap policy, folded into the effective value
+    // advertised to CLAs at registration; `None` = no policy.
+    pub(crate) fn max_bundle_size(&self) -> Option<NonZeroU64> {
+        self.max_bundle_size
+    }
+
+    // The cap as an in-memory accumulation bound: no policy leaves only the
+    // allocator's addressable bound, and any configured cap was clamped to
+    // it at construction, so the narrowing cannot fail.
+    // TODO: interim seam — the streaming pipeline derives the whole-bundle
+    // length in the u64 domain and spools payloads to storage, removing this
+    // usize-domain bound entirely (see docs/streaming_pipeline_design.md).
+    fn max_bundle_size_mem(&self) -> usize {
+        usize::try_from(self.max_bundle_size.unwrap_or(ADDRESSABLE_CAP).get())
+            .trace_expect("cap clamped to the addressable bound at construction")
     }
 
     fn cla_registry(&self) -> &Arc<cla::registry::ClaRegistry> {

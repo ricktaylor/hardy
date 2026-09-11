@@ -6,7 +6,7 @@
 //! back to `Waiting` by its caller) — never stranded in `ForwardPending`
 //! on a dead peer.
 
-use core::num::{NonZeroU32, NonZeroUsize};
+use core::num::{NonZeroU64, NonZeroUsize};
 use std::{
     borrow::Cow,
     sync::{
@@ -253,15 +253,16 @@ impl StallCla {
 
 #[async_trait]
 impl cla::Cla for StallCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -292,15 +293,16 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -357,9 +359,14 @@ async fn racing_forward_is_not_stranded_by_unregister() {
     bpa.start(false).await;
 
     let (cla, forward_entered_rx, forward_release_tx) = StallCla::new();
-    bpa.register_cla("stall".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "stall".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink
         .get()
         .unwrap()
@@ -374,9 +381,14 @@ async fn racing_forward_is_not_stranded_by_unregister() {
         .unwrap();
 
     let ingress = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), ingress.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        ingress.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     // Bundle A occupies the egress consumer: it is claimed out of the queue
     // and parked inside the CLA's forward.

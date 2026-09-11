@@ -1,3 +1,5 @@
+use core::num::{NonZeroU32, NonZeroU64};
+
 use super::*;
 use proto::cla::*;
 
@@ -211,6 +213,7 @@ pub async fn register_cla(
     grpc_addr: String,
     name: String,
     cla: Arc<dyn hardy_bpa::cla::Cla>,
+    init: hardy_bpa::cla::ClaInit,
 ) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
     let mut cla_client = cla_client::ClaClient::connect(grpc_addr.clone())
         .await
@@ -240,13 +243,15 @@ pub async fn register_cla(
         &mut channel_receiver,
         cla_to_bpa::Msg::Register(RegisterClaRequest {
             name: name.clone(),
-            address_type: cla.address_type().map(|a| {
+            address_type: init.address_type.map(|a| {
                 match a {
                     hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp,
                     hardy_bpa::cla::ClaAddressType::Private => ClaAddressType::Private,
                 }
                 .into()
             }),
+            max_bundle_size: init.max_bundle_size.map(NonZeroU64::get),
+            lane_count: init.lane_count.map(NonZeroU32::get),
         }),
     )
     .await
@@ -284,9 +289,16 @@ pub async fn register_cla(
     // Start the proxy
     let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
 
-    // Call on_register()
-    cla.on_register(Box::new(Sink { proxy }), node_ids.as_slice())
-        .await;
+    // Call on_register(). An absent cap means none was negotiated — a far
+    // BPA that predates the field (its cap is unknowable) or one with no
+    // size policy — so the CLA falls back to its own configured limits.
+    // A nonsensical explicit 0 is tolerated as absent.
+    cla.on_register(
+        Box::new(Sink { proxy }),
+        node_ids.as_slice(),
+        response.max_bundle_size.and_then(NonZeroU64::new),
+    )
+    .await;
 
     info!("Proxy CLA {name} started");
     Ok(node_ids)

@@ -6,9 +6,10 @@
 mod common;
 
 use common::MockBpa;
+use core::num::{NonZeroU32, NonZeroU64};
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::cla::{self, ClaAddress, ForwardBundleResult};
+use hardy_bpa::cla::{self, ClaAddress, ClaInit, ForwardBundleResult};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -18,6 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 struct MockCla {
     registered: AtomicBool,
     sink: hardy_async::sync::spin::Mutex<Option<Box<dyn cla::Sink>>>,
+    // The effective cap on_register delivered (outer None = not called).
+    max_bundle_size: hardy_async::sync::spin::Mutex<Option<Option<NonZeroU64>>>,
     forwarded: AtomicBool,
     // Answer Accepted (deferring the outcome) instead of Sent.
     defer: bool,
@@ -28,6 +31,7 @@ impl MockCla {
         Self {
             registered: AtomicBool::new(false),
             sink: hardy_async::sync::spin::Mutex::new(None),
+            max_bundle_size: hardy_async::sync::spin::Mutex::new(None),
             forwarded: AtomicBool::new(false),
             defer: false,
         }
@@ -51,12 +55,14 @@ impl MockCla {
 
 #[async_trait]
 impl cla::Cla for MockCla {
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
-    }
-
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        max_bundle_size: Option<NonZeroU64>,
+    ) {
         *self.sink.lock() = Some(sink);
+        *self.max_bundle_size.lock() = Some(max_bundle_size);
         self.registered.store(true, Ordering::Relaxed);
     }
 
@@ -89,7 +95,12 @@ async fn cla_cli_01_registration() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla(
+            "test-cla".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
         .await
         .expect("registration should succeed");
 
@@ -105,7 +116,6 @@ async fn cla_cli_01_registration() {
 
     // Clean up
     drop(cla.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     server_tasks.shutdown().await;
 }
 
@@ -119,7 +129,12 @@ async fn cla_cli_02_dispatch_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla(
+            "test-cla".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
         .await
         .expect("registration should succeed");
 
@@ -148,7 +163,12 @@ async fn cla_cli_03_forward_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla(
+            "test-cla".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
         .await
         .expect("registration should succeed");
 
@@ -185,7 +205,6 @@ async fn cla_cli_03_forward_bundle() {
 
     // Clean up
     drop(cla.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     server_tasks.shutdown().await;
 }
 
@@ -199,7 +218,12 @@ async fn cla_cli_04_add_peer() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla(
+            "test-cla".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
         .await
         .expect("registration should succeed");
 
@@ -229,7 +253,12 @@ async fn cla_cli_05_remove_peer() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla(
+            "test-cla".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
         .await
         .expect("registration should succeed");
 
@@ -260,7 +289,12 @@ async fn cla_cli_06_deferred_outcome() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla(
+            "test-cla".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
         .await
         .expect("registration should succeed");
 
@@ -314,6 +348,81 @@ async fn cla_cli_06_deferred_outcome() {
 
     // Clean up
     drop(client_sink);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    server_tasks.shutdown().await;
+}
+
+// CLA-CLI-07: the registration declarations round-trip the wire: the whole
+// `ClaInit` — address type, lane count, and declared limit — reaches the
+// BPA's register_cla, and the effective cap the BPA hands to on_register
+// comes back in the response and reaches the CLA's on_register. Declared
+// and effective caps are distinct values, so a relay that echoes the wrong
+// side cannot pass.
+#[tokio::test]
+async fn cla_cli_07_cla_init_round_trip() {
+    let declared = ClaInit {
+        address_type: Some(hardy_bpa::cla::ClaAddressType::Tcp),
+        lane_count: Some(NonZeroU32::new(4).unwrap()),
+        max_bundle_size: Some(NonZeroU64::new(1024 * 1024).unwrap()),
+    };
+    let effective = NonZeroU64::new(512 * 1024).unwrap();
+
+    let bpa = Arc::new(MockBpa::with_effective_max_bundle_size(effective));
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
+
+    let cla = Arc::new(MockCla::new());
+    RemoteBpa::new(grpc_addr)
+        .register_cla("test-cla".to_string(), cla.clone(), None, declared)
+        .await
+        .expect("registration should succeed");
+
+    assert_eq!(
+        *bpa.declared_init.lock(),
+        Some(declared),
+        "The BPA should receive the CLA's declarations intact"
+    );
+    assert_eq!(
+        *cla.max_bundle_size.lock(),
+        Some(Some(effective)),
+        "The CLA should receive the BPA's effective cap"
+    );
+
+    // Clean up
+    drop(cla.take_sink());
+    server_tasks.shutdown().await;
+}
+
+// CLA-CLI-08: an empty `ClaInit` round-trips as absent in both directions —
+// every declaration reaches the BPA as None, and a BPA with no negotiated
+// cap reaches the CLA as None (the same decode an old, pre-field BPA's
+// response produces).
+#[tokio::test]
+async fn cla_cli_08_absent_declarations_round_trip_as_none() {
+    let bpa = Arc::new(MockBpa::new());
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
+
+    let cla = Arc::new(MockCla::new());
+    RemoteBpa::new(grpc_addr)
+        .register_cla(
+            "test-cla".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
+        .await
+        .expect("registration should succeed");
+
+    assert_eq!(
+        *bpa.declared_init.lock(),
+        Some(ClaInit::default()),
+        "The BPA should see no declarations"
+    );
+    assert_eq!(
+        *cla.max_bundle_size.lock(),
+        Some(None),
+        "The CLA should see no negotiated cap"
+    );
+
+    // Clean up
+    drop(cla.take_sink());
     server_tasks.shutdown().await;
 }

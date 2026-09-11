@@ -58,12 +58,13 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
         _name: String,
         cla: Arc<dyn cla::Cla>,
         _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
+        _init: cla::ClaInit,
     ) -> cla::Result<Vec<NodeId>> {
         let node_ids = vec![NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
             allocator_id: 0,
             node_number: 1,
         })];
-        cla.on_register(Box::new(MockSink), &node_ids).await;
+        cla.on_register(Box::new(MockSink), &node_ids, None).await;
         Ok(node_ids)
     }
 
@@ -145,7 +146,12 @@ pub async fn setup_listener() -> Arc<hardy_tcpclv4::Tcpclv4> {
     );
 
     MockBpa
-        .register_cla("fuzz-tcpclv4".to_string(), cla.clone(), None)
+        .register_cla(
+            "fuzz-tcpclv4".to_string(),
+            cla.clone(),
+            None,
+            cla::ClaInit::default(),
+        )
         .await
         .expect("CLA registration should not fail");
 
@@ -162,7 +168,12 @@ pub async fn setup_connector() -> Arc<hardy_tcpclv4::Tcpclv4> {
     );
 
     MockBpa
-        .register_cla("fuzz-tcpclv4-active".to_string(), cla.clone(), None)
+        .register_cla(
+            "fuzz-tcpclv4-active".to_string(),
+            cla.clone(),
+            None,
+            cla::ClaInit::default(),
+        )
         .await
         .expect("CLA registration should not fail");
 

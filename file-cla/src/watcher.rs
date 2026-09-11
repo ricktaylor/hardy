@@ -1,3 +1,5 @@
+use core::num::NonZeroU64;
+
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
     notify::{EventKind, RecursiveMode, event::CreateKind},
@@ -19,7 +21,15 @@ impl Cla {
     ///
     /// * `sink` - The sink to dispatch bundles to the BPA.
     /// * `outbox` - The path to the directory to watch for outgoing bundles.
-    pub async fn start_watcher(&self, sink: Arc<dyn hardy_bpa::cla::Sink>, outbox: String) {
+    /// * `max_bundle_size` - The negotiated dispatch size cap, if any;
+    ///   files larger than it are skipped rather than offered to a certain
+    ///   rejection.
+    pub async fn start_watcher(
+        &self,
+        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        outbox: String,
+        max_bundle_size: Option<NonZeroU64>,
+    ) {
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
 
         let cancel_token = self.tasks.cancel_token().clone();
@@ -29,7 +39,7 @@ impl Cla {
 
         let cancel_token = self.tasks.cancel_token().clone();
         hardy_async::spawn!(self.tasks, "forwarder_task", async move {
-            forwarder_task(sink, path_rx, cancel_token).await
+            forwarder_task(sink, path_rx, max_bundle_size, cancel_token).await
         });
     }
 }
@@ -122,6 +132,7 @@ async fn watcher_task(
 async fn forwarder_task(
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     rx: flume::Receiver<PathBuf>,
+    max_bundle_size: Option<NonZeroU64>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
     loop {
@@ -129,6 +140,18 @@ async fn forwarder_task(
             res = rx.recv_async() => match res {
                 Err(_) => break,
                 Ok(path) => {
+                    // Pre-check against the BPA's dispatch size cap: an
+                    // over-cap file would be rejected deterministically, so
+                    // don't even read it. Skipped (not deleted) — the
+                    // operator's file, the operator's cleanup.
+                    if let Some(cap) = max_bundle_size
+                        && let Ok(meta) = tokio::fs::metadata(&path).await
+                        && meta.len() > cap.get()
+                    {
+                        warn!("'{}' exceeds the negotiated max bundle size ({} > {cap}), skipped", path.display(), meta.len());
+                        continue;
+                    }
+
                     // INTERIM BUFFERING: the whole file is read into memory and
                     // dispatched as a one-segment stream (`Bytes` is a `stream::Receiver`). This
                     // is a deliberate stepping stone toward the full streaming
@@ -142,6 +165,13 @@ async fn forwarder_task(
                     }
 
                     // TODO:  We could implement a "Sent Items" folder instead of deleting, but not sure...
+                    // TODO: the file is also deleted when dispatch returned
+                    // Err (StreamCancelled during unregistration/shutdown),
+                    // losing the only copy of a bundle the BPA refused —
+                    // inconsistent with the over-cap skip above, which
+                    // deliberately preserves the operator's file. Removal
+                    // must stay unconditional on Ok: invalid-but-complete
+                    // bundles return Ok and would otherwise strand junk.
                     tokio::fs::remove_file(&path).await.unwrap_or_else(|e| {
                         warn!("Failed to remove file '{}': {e}", path.display());
                     });
@@ -151,5 +181,116 @@ async fn forwarder_task(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use hardy_bpa::{
+        async_trait,
+        cla::{ClaAddress, Segment, Sink, TransferOutcome},
+        stream::Receiver,
+    };
+    use hardy_bpv7::{bundle::Id, eid::NodeId};
+
+    use super::*;
+
+    /// Signals each dispatch through a channel; the forwarder loop is
+    /// sequential, so a received signal proves every earlier-queued path
+    /// was already fully handled.
+    struct MockSink {
+        dispatched: flume::Sender<()>,
+    }
+
+    #[async_trait]
+    impl Sink for MockSink {
+        async fn unregister(&self) {}
+
+        async fn dispatch(
+            &self,
+            _peer_node: Option<&NodeId>,
+            _peer_addr: Option<&ClaAddress>,
+            stream: &mut dyn Receiver<Segment>,
+        ) -> hardy_bpa::cla::Result<()> {
+            while let Ok(segment) = stream.recv().await {
+                if matches!(segment, Segment::Final(_)) {
+                    break;
+                }
+            }
+            let _ = self.dispatched.send(());
+            Ok(())
+        }
+
+        async fn add_peer(
+            &self,
+            _cla_addr: ClaAddress,
+            _node_ids: &[NodeId],
+        ) -> hardy_bpa::cla::Result<bool> {
+            Ok(true)
+        }
+
+        async fn remove_peer(&self, _cla_addr: &ClaAddress) -> hardy_bpa::cla::Result<bool> {
+            Ok(true)
+        }
+
+        async fn transfer_outcome(
+            &self,
+            _bundle_id: &Id,
+            _outcome: TransferOutcome,
+        ) -> hardy_bpa::cla::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// An over-cap outbox file is skipped unread — never dispatched, never
+    /// deleted — while a later under-cap file dispatches. The dispatch
+    /// channel is FIFO and the forwarder sequential, so the single received
+    /// signal is the under-cap file's: an over-cap dispatch would have
+    /// queued a signal ahead of it.
+    #[tokio::test]
+    async fn over_cap_file_is_skipped_unread_and_preserved() {
+        let dir = std::env::temp_dir().join(format!("hardy-file-cla-skip-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let over = dir.join("over.bundle");
+        let under = dir.join("under.bundle");
+        // Contents are immaterial: the over-cap file must be skipped on
+        // metadata alone, and the mock sink accepts anything.
+        tokio::fs::write(&over, [0u8; 64]).await.unwrap();
+        tokio::fs::write(&under, [0u8; 8]).await.unwrap();
+
+        let cap = NonZeroU64::new(32).unwrap();
+        let (path_tx, path_rx) = flume::unbounded();
+        let (event_tx, event_rx) = flume::unbounded();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let forwarder = tokio::spawn(forwarder_task(
+            Arc::new(MockSink {
+                dispatched: event_tx,
+            }),
+            path_rx,
+            Some(cap),
+            cancel_token.clone(),
+        ));
+
+        path_tx.send(over.clone()).unwrap();
+        path_tx.send(under.clone()).unwrap();
+
+        event_rx
+            .recv_async()
+            .await
+            .expect("The under-cap file should dispatch");
+        assert!(
+            event_rx.is_empty(),
+            "Only the under-cap file may dispatch; an over-cap dispatch would have signalled first"
+        );
+        assert!(
+            tokio::fs::try_exists(&over).await.unwrap(),
+            "The over-cap file is the operator's to clean up"
+        );
+
+        cancel_token.cancel();
+        forwarder.await.unwrap();
+        tokio::fs::remove_dir_all(&dir).await.unwrap();
     }
 }

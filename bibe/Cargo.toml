@@ -26,3 +26,6 @@ hardy-cbor = { version = "2", path = "../cbor" }
 thiserror = "2"
 tracing = { version = "0.1", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

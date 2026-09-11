@@ -154,6 +154,7 @@ mod tests {
     use super::*;
     use crate::{
         bpa::{Bpa, BpaRegistration},
+        cla::ClaInit,
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
@@ -168,11 +169,12 @@ mod tests {
 
     #[async_trait]
     impl cla::Cla for RecordingCla {
-        fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-            None
-        }
-
-        async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+        async fn on_register(
+            &self,
+            sink: Box<dyn cla::Sink>,
+            _node_ids: &[NodeId],
+            _max_bundle_size: Option<NonZeroU64>,
+        ) {
             self.sink.call_once(|| sink);
         }
 
@@ -368,9 +370,14 @@ mod tests {
             sink: hardy_async::sync::spin::Once::new(),
             offers_tx,
         });
-        bpa.register_cla("recording-2".to_string(), cla.clone(), None)
-            .await
-            .unwrap();
+        bpa.register_cla(
+            "recording-2".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
+        .await
+        .unwrap();
         cla.sink
             .get()
             .unwrap()
@@ -454,9 +461,14 @@ mod tests {
             sink: hardy_async::sync::spin::Once::new(),
             offers_tx,
         });
-        bpa.register_cla("recording-3".to_string(), cla.clone(), None)
-            .await
-            .unwrap();
+        bpa.register_cla(
+            "recording-3".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
+        .await
+        .unwrap();
         cla.sink
             .get()
             .unwrap()

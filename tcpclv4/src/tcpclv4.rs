@@ -1,11 +1,14 @@
 //! [`Tcpclv4`]: the TCPCL entity — the CLA that registers with a BPA.
 
+use core::num::{NonZeroU32, NonZeroUsize};
 use std::net::TcpListener;
 use std::sync::Mutex;
 
 use hardy_bpa::{
     async_trait,
-    cla::{self, Cla, ClaAddress, ClaAddressType, ForwardBundleResult, Sink, TransferOutcome},
+    cla::{
+        self, Cla, ClaAddress, ClaAddressType, ClaInit, ForwardBundleResult, Sink, TransferOutcome,
+    },
 };
 use hardy_bpv7::bundle::Id;
 
@@ -17,6 +20,14 @@ use crate::error::Error;
 struct Inner {
     sink: Arc<dyn Sink>,
     node_ids: Arc<[NodeId]>,
+    // The advertised transfer MRU: the configured value clamped to the
+    // BPA's dispatch size cap, so a peer is never invited to send a
+    // transfer the BPA would deterministically refuse.
+    transfer_mru: NonZeroU64,
+    // The advertised segment MRU, clamped to the transfer MRU above: a
+    // single segment larger than any completable transfer would be an
+    // invitation the session could only answer with XFER_REFUSE.
+    segment_mru: NonZeroU64,
 }
 
 /// TCPCLv4 Convergence Layer Adapter (RFC 9174).
@@ -63,7 +74,7 @@ impl Tcpclv4 {
         segment_mru: NonZeroU64,
         transfer_mru: NonZeroU64,
         max_idle_connections: usize,
-        max_outstanding_transfers: core::num::NonZeroUsize,
+        max_outstanding_transfers: NonZeroUsize,
         tls: Option<Arc<tls::Tls>>,
     ) -> Self {
         Self {
@@ -81,6 +92,21 @@ impl Tcpclv4 {
             session_cancel_token: tokio_util::sync::CancellationToken::new(),
             inner: Once::new(),
             tasks: Arc::new(hardy_async::TaskPool::new()),
+        }
+    }
+
+    /// The entity's set-once registration declarations, for the embedder
+    /// to pass to `register_cla`: a TCP address type and the configured
+    /// transfer MRU as the declared receive limit, which the BPA folds
+    /// into the effective `max_bundle_size` reported back at
+    /// registration. The MRU here is the pre-registration declaration:
+    /// once registered, sessions advertise the effective (possibly
+    /// smaller) clamped MRU.
+    pub fn cla_init(&self) -> ClaInit {
+        ClaInit {
+            address_type: Some(ClaAddressType::Tcp),
+            lane_count: None,
+            max_bundle_size: Some(self.transfer_mru),
         }
     }
 
@@ -125,8 +151,8 @@ impl Tcpclv4 {
         Some(connection::context::ConnectionContext {
             contact_timeout: self.contact_timeout,
             keepalive_interval: self.keepalive_interval,
-            segment_mru: self.segment_mru,
-            transfer_mru: self.transfer_mru,
+            segment_mru: inner.segment_mru,
+            transfer_mru: inner.transfer_mru,
             node_ids: inner.node_ids.clone(),
             sink: inner.sink.clone(),
             registry: self.registry.clone(),
@@ -162,12 +188,30 @@ impl Tcpclv4 {
 
 #[async_trait]
 impl Cla for Tcpclv4 {
-    fn address_type(&self) -> Option<ClaAddressType> {
-        Some(ClaAddressType::Tcp)
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink)))]
-    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn Sink>,
+        node_ids: &[NodeId],
+        max_bundle_size: Option<NonZeroU64>,
+    ) {
+        // The effective cap already folds this entity's declared transfer
+        // MRU (`Tcpclv4::cla_init`) with the BPA's own; the min is kept
+        // as a cheap guard against a registrar that ignored the declaration.
+        // No negotiated cap leaves the configured MRU alone.
+        let transfer_mru =
+            max_bundle_size.map_or(self.transfer_mru, |cap| self.transfer_mru.min(cap));
+        if transfer_mru < self.transfer_mru {
+            info!(
+                "Transfer MRU clamped from {} to the BPA's max bundle size {transfer_mru}",
+                self.transfer_mru
+            );
+        }
+
+        // A single segment can never usefully exceed the transfer it
+        // belongs to, so the advertised segment MRU folds the same way.
+        let segment_mru = self.segment_mru.min(transfer_mru);
+
         // Registration consumes the entity's sink slot and its bound
         // listener sockets, so it succeeds exactly once
         let mut first_registration = false;
@@ -176,6 +220,8 @@ impl Cla for Tcpclv4 {
             Inner {
                 sink: sink.into(),
                 node_ids: node_ids.into(),
+                transfer_mru,
+                segment_mru,
             }
         });
         if !first_registration {
@@ -196,10 +242,6 @@ impl Cla for Tcpclv4 {
 
         // Wait for all session tasks to complete
         self.tasks.shutdown().await;
-    }
-
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
     }
 
     // INTERIM BUFFERING: the transfer is resolved out-of-band by a spawned
@@ -344,6 +386,93 @@ async fn transmit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockSink;
+
+    #[async_trait]
+    impl Sink for MockSink {
+        async fn unregister(&self) {}
+
+        async fn dispatch(
+            &self,
+            _peer_node: Option<&NodeId>,
+            _peer_addr: Option<&ClaAddress>,
+            _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
+        ) -> cla::Result<()> {
+            Ok(())
+        }
+
+        async fn add_peer(&self, _cla_addr: ClaAddress, _node_ids: &[NodeId]) -> cla::Result<bool> {
+            Ok(true)
+        }
+
+        async fn remove_peer(&self, _cla_addr: &ClaAddress) -> cla::Result<bool> {
+            Ok(true)
+        }
+
+        async fn transfer_outcome(
+            &self,
+            _bundle_id: &Id,
+            _outcome: TransferOutcome,
+        ) -> cla::Result<()> {
+            Ok(())
+        }
+    }
+
+    // The transfer MRU sessions advertise is the configured value folded
+    // with the cap negotiated at registration: a smaller negotiated cap
+    // clamps it, a larger or absent one leaves it alone.
+    #[tokio::test]
+    async fn registration_folds_transfer_mru_with_negotiated_cap() {
+        let configured = NonZeroU64::new(1024 * 1024).unwrap();
+        let smaller = NonZeroU64::new(configured.get() / 2).unwrap();
+        let larger = NonZeroU64::new(configured.get() * 2).unwrap();
+
+        let cla = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
+        cla.on_register(Box::new(MockSink), &[], Some(smaller))
+            .await;
+        assert_eq!(cla.inner.get().unwrap().transfer_mru, smaller);
+
+        let cla = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
+        cla.on_register(Box::new(MockSink), &[], Some(larger)).await;
+        assert_eq!(cla.inner.get().unwrap().transfer_mru, configured);
+
+        let cla = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
+        cla.on_register(Box::new(MockSink), &[], None).await;
+        assert_eq!(cla.inner.get().unwrap().transfer_mru, configured);
+    }
+
+    // The segment MRU sessions advertise is clamped to the folded transfer
+    // MRU: a SESS_INIT never invites a single segment larger than any
+    // completable transfer.
+    #[tokio::test]
+    async fn registration_clamps_segment_mru_to_folded_transfer_mru() {
+        let segment = NonZeroU64::new(16 * 1024).unwrap();
+        let transfer = NonZeroU64::new(1024 * 1024).unwrap();
+        let below_segment = NonZeroU64::new(segment.get() / 2).unwrap();
+
+        // A negotiated cap below the segment MRU drags the segment MRU
+        // down along with the transfer MRU.
+        let cla = Tcpclv4::builder()
+            .segment_mru(segment)
+            .transfer_mru(transfer)
+            .build()
+            .unwrap();
+        cla.on_register(Box::new(MockSink), &[], Some(below_segment))
+            .await;
+        let inner = cla.inner.get().unwrap();
+        assert_eq!(inner.transfer_mru, below_segment);
+        assert_eq!(inner.segment_mru, below_segment);
+
+        // A transfer MRU above the segment MRU leaves it alone.
+        let cla = Tcpclv4::builder()
+            .segment_mru(segment)
+            .transfer_mru(transfer)
+            .build()
+            .unwrap();
+        cla.on_register(Box::new(MockSink), &[], None).await;
+        assert_eq!(cla.inner.get().unwrap().segment_mru, segment);
+    }
 
     // RFC 9174 Section 2.1: an entity may support zero or more passive
     // listening elements, each bound during build().

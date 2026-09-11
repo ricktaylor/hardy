@@ -1,4 +1,4 @@
-use core::num::NonZeroU32;
+use core::num::NonZeroU64;
 use std::{path::PathBuf, slice, sync::Arc};
 
 use hardy_bpa::{
@@ -11,7 +11,12 @@ use tracing::{error, warn};
 use crate::Cla;
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn hardy_bpa::cla::Sink>,
+        _node_ids: &[NodeId],
+        max_bundle_size: Option<NonZeroU64>,
+    ) {
         // Register all peers with the BPA
         for (eid, path) in &self.inboxes {
             if let Err(e) = sink
@@ -33,16 +38,13 @@ impl hardy_bpa::cla::Cla for Cla {
 
         // Start the file watcher if outbox is configured
         if let Some(outbox) = &self.outbox {
-            self.start_watcher(sink.clone(), outbox.clone()).await;
+            self.start_watcher(sink.clone(), outbox.clone(), max_bundle_size)
+                .await;
         }
     }
 
     async fn on_unregister(&self) {
         self.tasks.shutdown().await;
-    }
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
     }
 
     // INTERIM BUFFERING: the bundle is written to the inbox file in one go,

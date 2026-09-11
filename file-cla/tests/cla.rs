@@ -58,7 +58,7 @@ async fn registered_cla(inbox: &Path) -> (Cla, ClaAddress) {
     .unwrap();
 
     let peers = Arc::new(Mutex::new(Vec::new()));
-    cla.on_register(Box::new(StubSink(peers.clone())), &[])
+    cla.on_register(Box::new(StubSink(peers.clone())), &[], None)
         .await;
 
     let addr = peers

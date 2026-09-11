@@ -2,7 +2,7 @@
 //! door — and `stream::buffer_stream`, the whole-buffer convenience used by
 //! services that need a contiguous bundle.
 
-use core::{num::NonZeroU32, time::Duration};
+use core::{num::NonZeroU64, time::Duration};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
@@ -264,15 +264,16 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -349,9 +350,14 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
     );
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink
         .get()
         .unwrap()
@@ -387,9 +393,14 @@ async fn streaming_service_receives_single_final_segment() {
         .unwrap();
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink
         .get()
         .unwrap()
@@ -573,9 +584,14 @@ async fn expiry_mid_delivery_rig(
         .expect("Failed to build bundle");
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink
         .get()
         .unwrap()

@@ -3,6 +3,7 @@
 //! Uses criterion to measure bundle forwarding throughput through the
 //! full BPA pipeline with in-memory storage.
 
+use core::num::NonZeroU64;
 use criterion::*;
 use hardy_bpa::bpa::{Bpa, BpaRegistration};
 use hardy_bpa::cla;
@@ -32,13 +33,15 @@ impl BenchCla {
 
 #[async_trait]
 impl cla::Cla for BenchCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
     async fn on_unregister(&self) {}
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -89,9 +92,14 @@ fn get_state() -> &'static BenchState {
             bpa.start(false).await;
 
             let (cla, arrival_rx) = BenchCla::new();
-            bpa.register_cla("bench".to_string(), cla.clone(), None)
-                .await
-                .unwrap();
+            bpa.register_cla(
+                "bench".to_string(),
+                cla.clone(),
+                None,
+                cla::ClaInit::default(),
+            )
+            .await
+            .unwrap();
 
             let remote_node = NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,

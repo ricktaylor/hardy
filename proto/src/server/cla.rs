@@ -1,3 +1,5 @@
+use core::num::{NonZeroU32, NonZeroU64};
+
 use super::*;
 use proto::cla::*;
 
@@ -6,7 +8,9 @@ type ClaSink = Arc<dyn hardy_bpa::cla::Sink>;
 struct Cla {
     sink: Mutex<Option<ClaSink>>,
     proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
-    address_type: std::sync::OnceLock<Option<hardy_bpa::cla::ClaAddressType>>,
+    // The effective cap from the BPA at on_register, relayed to the remote
+    // CLA in the RegisterClaResponse.
+    max_bundle_size: std::sync::OnceLock<Option<NonZeroU64>>,
 }
 
 impl Cla {
@@ -132,7 +136,9 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
         _node_ids: &[hardy_bpv7::eid::NodeId],
+        max_bundle_size: Option<NonZeroU64>,
     ) {
+        let _ = self.max_bundle_size.set(max_bundle_size);
         *self.sink.lock() = Some(Arc::from(sink));
     }
 
@@ -144,14 +150,6 @@ impl hardy_bpa::cla::Cla for Cla {
         if let Some(proxy) = self.proxy.get() {
             proxy.shutdown().await;
         }
-    }
-
-    fn address_type(&self) -> Option<hardy_bpa::cla::ClaAddressType> {
-        self.address_type.get().copied().flatten()
-    }
-
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
     }
 
     // INTERIM BUFFERING: the wire protocol has no segmented bundle messages
@@ -275,7 +273,7 @@ async fn run_cla_session(
     let cla = Arc::new(Cla {
         sink: Mutex::new(None),
         proxy: Once::new(),
-        address_type: std::sync::OnceLock::new(),
+        max_bundle_size: std::sync::OnceLock::new(),
     });
 
     // Wait for the client's registration message and process it
@@ -291,16 +289,55 @@ async fn run_cla_session(
                                 hardy_bpa::cla::ClaAddressType::Private
                             }
                         });
-                let _ = cla.address_type.set(address_type);
+                // Absent = no CLA-side limit declared; an explicit 0 is
+                // invalid (omit the field to declare no limit).
+                let max_bundle_size = match request.max_bundle_size {
+                    Some(0) => {
+                        return Err(tonic::Status::invalid_argument(
+                            "max_bundle_size 0 is invalid; omit the field to declare no limit",
+                        ));
+                    }
+                    declared => declared.and_then(NonZeroU64::new),
+                };
+                // Same shape for the lane declaration: absent = no limit.
+                let lane_count = match request.lane_count {
+                    Some(0) => {
+                        return Err(tonic::Status::invalid_argument(
+                            "lane_count 0 is invalid; omit the field to declare no limit",
+                        ));
+                    }
+                    declared => declared.and_then(NonZeroU32::new),
+                };
                 let node_ids = bpa
-                    .register_cla(request.name, cla.clone(), None)
+                    .register_cla(
+                        request.name,
+                        cla.clone(),
+                        None,
+                        hardy_bpa::cla::ClaInit {
+                            address_type,
+                            lane_count,
+                            max_bundle_size,
+                        },
+                    )
                     .await
                     .map_err(|e| tonic::Status::from_error(e.into()))?
                     .into_iter()
                     .map(|node_id| node_id.to_string())
                     .collect();
 
-                Ok(bpa_to_cla::Msg::Register(RegisterClaResponse { node_ids }))
+                Ok(bpa_to_cla::Msg::Register(RegisterClaResponse {
+                    node_ids,
+                    // Set by on_register, which `register_cla` drives to
+                    // completion before returning — that is a documented
+                    // contract on `BpaRegistration::register_cla`, so the
+                    // expect fires only on a non-conforming implementation.
+                    // Absent on the wire = no negotiated cap.
+                    max_bundle_size: cla
+                        .max_bundle_size
+                        .get()
+                        .expect("register_cla returned without driving on_register")
+                        .map(NonZeroU64::get),
+                }))
             }
             _ => {
                 warn!("CLA sent incorrect message: {msg:?}");
