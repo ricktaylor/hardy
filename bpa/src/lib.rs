@@ -6,7 +6,7 @@ routing infrastructure, and service/CLA registries for a DTN node.
 
 # `no_std` Support
 
-This crate is `no_std` compatible with a heap allocator. Feature flags control functionality:
+`no_std` support is aspirational: the code is written for `no_std` + alloc, but the default build requires Tokio (and therefore `std`). Feature flags control functionality:
 
 - **`std`**: Enables standard library support and propagates to dependencies.
 - **`tokio`** (default): Enables Tokio runtime support. Implies `std`.

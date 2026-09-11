@@ -1,4 +1,4 @@
-use hardy_bpv7::eid::NodeId;
+use hardy_bpv7::eid::{Eid, NodeId};
 
 use super::*;
 
@@ -9,8 +9,10 @@ use super::*;
 // 4. Avoids OS mutex overhead on CLA lifecycle operations
 
 pub struct Cla {
-    pub(super) cla: Arc<dyn cla::Cla>,
-    pub(super) policy: Arc<dyn policy::FlowControllerFactory>,
+    pub cla: Arc<dyn cla::Cla>,
+    pub policy: Arc<dyn policy::FlowControllerFactory>,
+    // Snapshotted at registration.
+    pub address_type: Option<ClaAddressType>,
 
     name: Arc<str>,
     // Cancelled at unregistration; every in-flight stream of this
@@ -87,7 +89,7 @@ impl cla::Sink for Sink {
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
         stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<()> {
+    ) -> Result<cla::Acceptance> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
 
         // A CLA that unregisters mid-stream must not land its bundle: the
@@ -99,9 +101,18 @@ impl cla::Sink for Sink {
             inner: stream,
             token: cla.cancel.clone(),
         };
-        self.dispatcher
+        let verdict = self
+            .dispatcher
             .receive_bundle(cla.name.clone(), peer_node, peer_addr, &mut stream)
-            .await
+            .await;
+
+        // A refusal caused by that teardown is not a verdict on the bundle
+        // — the registration died. Report the dead sink instead, so the CLA
+        // does not mistake its own unregistration for a per-bundle refusal.
+        if matches!(verdict, cla::Acceptance::Refused) && cla.cancel.is_cancelled() {
+            return Err(cla::Error::Disconnected);
+        }
+        Ok(verdict)
     }
 
     async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
@@ -146,9 +157,15 @@ impl Drop for Sink {
     }
 }
 
+// A CLA awaiting registration, held by the building-phase registry.
+struct PendingCla {
+    cla: Arc<dyn cla::Cla>,
+    policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+}
+
 // CLA registry in the building phase — only insert() is available.
 pub struct ClaRegistryBuilder {
-    clas: ClaMap,
+    clas: HashMap<String, PendingCla>,
 }
 
 impl ClaRegistryBuilder {
@@ -168,14 +185,7 @@ impl ClaRegistryBuilder {
             return Err(cla::Error::AlreadyExists(name));
         };
         info!("Inserted CLA: {name}");
-        e.insert(Arc::new(Cla {
-            cancel: hardy_async::CancellationToken::new(),
-            cla,
-            peers: Default::default(),
-            name: Arc::from(name.as_str()),
-            policy: policy
-                .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
-        }));
+        e.insert(PendingCla { cla, policy });
         Ok(())
     }
 
@@ -194,7 +204,7 @@ impl ClaRegistryBuilder {
         Arc::new(ClaRegistry {
             node_ids: node_ids.clone(),
             clas: hardy_async::sync::spin::Mutex::new(Default::default()),
-            pending: hardy_async::sync::spin::Mutex::new(self.clas.into_values().collect()),
+            pending: hardy_async::sync::spin::Mutex::new(self.clas.into_iter().collect()),
             rib: rib.clone(),
             store: store.clone(),
             peers,
@@ -210,7 +220,7 @@ pub struct ClaRegistry {
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
     // Builder-configured CLAs, parked until `start` activates them after
     // storage recovery.
-    pending: hardy_async::sync::spin::Mutex<Vec<Arc<Cla>>>,
+    pending: hardy_async::sync::spin::Mutex<Vec<(String, PendingCla)>>,
     rib: Arc<routing::Rib>,
     store: Arc<storage::store::Store>,
     peers: Arc<peers::PeerTable>,
@@ -224,19 +234,14 @@ impl ClaRegistry {
     /// going live earlier would race the consistency check.
     pub async fn start(self: &Arc<Self>, dispatcher: &Arc<dispatcher::Dispatcher>) {
         let pending = core::mem::take(&mut *self.pending.lock());
-        for cla in pending {
+        for (name, pending) in pending {
             // The builder pre-checked duplicate names; a failure here is a
             // bug, not a config error.
             if let Err(e) = self
-                .register(
-                    cla.name.to_string(),
-                    cla.cla.clone(),
-                    dispatcher,
-                    Some(cla.policy.clone()),
-                )
+                .register(name.clone(), pending.cla, dispatcher, pending.policy)
                 .await
             {
-                error!("Failed to activate configured CLA {}: {e}", cla.name);
+                error!("Failed to activate configured CLA {name}: {e}");
             }
         }
     }
@@ -247,9 +252,10 @@ impl ClaRegistry {
     pub async fn forward(
         &self,
         peer_id: u32,
+        next_hop: Eid,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        self.peers.forward(peer_id, bundle).await
+        self.peers.forward(peer_id, next_hop, bundle).await
     }
 
     pub async fn shutdown(&self) {
@@ -283,6 +289,7 @@ impl ClaRegistry {
             e.insert(Arc::new(Cla {
                 cancel: hardy_async::CancellationToken::new(),
                 cla,
+                address_type,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
                 policy: policy
@@ -292,11 +299,12 @@ impl ClaRegistry {
         };
 
         // Register that the CLA is a handler for the address type
-        if let Some(address_type) = address_type {
+        if let Some(address_type) = entry.address_type {
             self.rib.add_address_type(address_type, entry.clone());
         }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
+
         entry
             .cla
             .on_register(
@@ -330,7 +338,7 @@ impl ClaRegistry {
 
         cla.cla.on_unregister().await;
 
-        if let Some(address_type) = cla.cla.address_type() {
+        if let Some(address_type) = cla.address_type {
             self.rib.remove_address_type(&address_type);
         }
 

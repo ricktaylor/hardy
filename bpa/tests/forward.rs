@@ -607,3 +607,120 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
     ));
     assert!(events_rx.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Legacy IPN re-encode built-in (the per-hop rewrite stage)
+// ---------------------------------------------------------------------------
+
+/// Builds a BPA on an allocator-1 node — its 3-element IPN EIDs change bytes
+/// under the legacy re-encode — with the given legacy-peer patterns, wired
+/// to a buffering CLA and a send-only application.
+async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Receiver<Event>, Eid) {
+    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 1,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .ipn_legacy_peers(patterns.iter().map(|p| p.parse().unwrap()).collect())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, events_rx) = BufferedCla::new();
+    bpa.register_cla("buffer".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 1,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+
+    let app = SendOnlyApp::new();
+    let source_eid = bpa
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    (bpa, app, events_rx, source_eid)
+}
+
+/// A next hop matching a configured legacy-peer pattern receives the bundle
+/// with `Ipn` source and destination re-encoded as `LegacyIpn` on the wire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_peer_receives_two_element_encoding() {
+    let (bpa, app, events_rx, _) = legacy_fixture(&["ipn:1.2.*"]).await;
+
+    let dest: Eid = "ipn:1.2.99".parse().unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            dest,
+            Bytes::from_static(b"legacy"),
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let Event::Forward(data) = recv_event(&events_rx, 5).await else {
+        panic!("Expected a forwarded bundle");
+    };
+    let parsed = hardy_bpv7::parse::parse(data).expect("Failed to parse forwarded bundle");
+    assert!(
+        matches!(parsed.bundle.primary.id.source, Eid::LegacyIpn { .. }),
+        "source must be re-encoded 2-element, got {:?}",
+        parsed.bundle.primary.id.source
+    );
+    assert!(
+        matches!(parsed.bundle.primary.destination, Eid::LegacyIpn { .. }),
+        "destination must be re-encoded 2-element, got {:?}",
+        parsed.bundle.primary.destination
+    );
+
+    assert!(events_rx.is_empty());
+    bpa.shutdown().await;
+}
+
+/// A next hop matching no configured pattern receives the canonical
+/// 3-element encoding untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_legacy_peer_keeps_canonical_encoding() {
+    let (bpa, app, events_rx, source_eid) = legacy_fixture(&["ipn:9.9.*"]).await;
+
+    let dest: Eid = "ipn:1.2.99".parse().unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            dest.clone(),
+            Bytes::from_static(b"canonical"),
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let Event::Forward(data) = recv_event(&events_rx, 5).await else {
+        panic!("Expected a forwarded bundle");
+    };
+    let parsed = hardy_bpv7::parse::parse(data).expect("Failed to parse forwarded bundle");
+    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.destination, dest);
+
+    assert!(events_rx.is_empty());
+    bpa.shutdown().await;
+}
