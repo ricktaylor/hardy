@@ -94,6 +94,20 @@ pub async fn meta_05_confirm_exists(store: Arc<dyn MetadataStorage>) {
         "confirm_exists should return None for missing bundle"
     );
 
+    // A tombstoned bundle is the orphan answer, not an error: a crash
+    // between tombstone and data deletion leaves a stranded blob whose
+    // recovery calls confirm_exists on the tombstoned id — Ok(None) lets
+    // restart re-ingress it as an orphan and self-heal, where an Err would
+    // abort recovery on every start.
+    let tombstoned = fixtures::random_bundle();
+    assert!(store.insert(&tombstoned).await.unwrap());
+    store.tombstone(tombstoned.id()).await.unwrap();
+    let confirmed = store.confirm_exists(tombstoned.id()).await.unwrap();
+    assert!(
+        confirmed.is_none(),
+        "confirm_exists should return None for a tombstoned bundle"
+    );
+
     // The confirmed bundle should survive remove_unconfirmed
     let sink = super::VecSink::<bundle::Bundle>::new();
     store.remove_unconfirmed(&sink).await.unwrap();

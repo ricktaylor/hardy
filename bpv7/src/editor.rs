@@ -509,6 +509,9 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn push_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
+        // Canonicalized so an `Unrecognised` alias of a reserved code cannot
+        // bypass the variant-matched refusals and singleton rules below.
+        let block_type = block_type.canonicalize();
         match block_type {
             block::Type::Primary => {
                 return Err((self, Error::PrimaryBlock));
@@ -566,6 +569,10 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn insert_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
+        // Canonicalized so an `Unrecognised` alias of a reserved code cannot
+        // bypass the refusals below, and the replace-by-type match compares
+        // canonical types.
+        let block_type = block_type.canonicalize();
         match block_type {
             block::Type::Primary => return Err((self, Error::PrimaryBlock)),
             block::Type::BlockIntegrity | block::Type::BlockSecurity => {

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Migration `02_poll_pending_index`: the covering index `idx_bundles_status_received (status_code, status_param1, status_param2, received_at, status_param3)` serves the `poll_pending` page query in index order — previously every drain page top-K-sorted the entire matching backlog through a temp B-tree, an O(B²) drain under sustained overload, on the node-wide dispatch queue and every per-service delivery queue. The superseded `idx_bundles_status` and `idx_bundles_status_peer` (both strict prefixes of the new index) are dropped, and a plan pin test asserts the poll shape never sorts out of index.
+- `forward_ack_pending` status encoding (code 6), the `reset_peer_ack_pending` sweep, and the status-conditioned `swap_status`/`tombstone_if`, for the deferred CLA transfer-outcome extension.
+- `dispatch_pending` (code 7), `deliver_pending` (code 8), and `delivery_ack_pending` (code 9) status encodings and the `reset_service_queue` sweep, for the BPA's dispatch/delivery queue rationalisation.
+
 ### Changed
 - Records (de)serialize through `hardy-bpa`'s `StoredBundle`/`StoredBundleRef` — the on-disk format is unchanged, and the status is re-imposed from the typed columns by construction.
 - `MetadataStorage::update_status` is gone (removed from the `hardy-bpa` trait): every persisted status transition after first dispatch is a conditional compare-and-swap.
@@ -14,11 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **BREAKING:** the serde `Config` struct and the free `new()` function are replaced by `SqliteStorage::new(db_dir, db_name, upgrade)` taking `Option` knobs, with the defaults owned privately by the backend; config-file schemas belong to the server crates. The connection pool moves into its own module.
 - Run all connections at `PRAGMA synchronous = NORMAL` (previously the SQLite default, `FULL`). Under WAL this stops fsyncing the log on every commit — a significant win on fsync-expensive storage, since the metadata store commits on each bundle status transition. Consistency across a crash is unaffected; at most the un-checkpointed tail of commits is lost, which restart recovery already tolerates (bundle data storage is ground truth, and data whose metadata is missing is re-ingested at startup).
 
-### Added
-- `forward_ack_pending` status encoding (code 6), the `reset_peer_ack_pending` sweep, and the status-conditioned `swap_status`/`tombstone_if`, for the deferred CLA transfer-outcome extension.
-- `dispatch_pending` (code 7), `deliver_pending` (code 8), and `delivery_ack_pending` (code 9) status encodings and the `reset_service_queue` sweep, for the BPA's dispatch/delivery queue rationalisation.
-
 ### Fixed
+- `confirm_exists` treats a tombstoned row as absent (`Ok(None)`) instead of failing on its NULL columns. Previously a bundle-data blob whose metadata row was tombstoned — a crash between tombstone and data deletion leaves exactly that — made startup recovery panic on every boot, an unrecoverable crash loop cleared only by manual database surgery; the row now matches the same `bundle IS NOT NULL` predicate every other tombstone-aware query uses, recovery re-ingests the blob as an orphan, the insert reports it as a duplicate of the tombstone, and the stranded data is deleted — the store self-heals.
 - A status update or tombstone for a concurrently deleted bundle logs at debug rather than error: delete is terminal and the write quietly loses.
 
 ## [0.6.0]

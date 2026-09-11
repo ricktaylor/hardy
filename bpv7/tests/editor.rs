@@ -531,3 +531,117 @@ fn remove_block_rejects_security_block() {
         "remove_block must reject a BIB block with Error::SecurityBlock"
     );
 }
+
+// `Type::canonicalize` folds an `Unrecognised` alias of a known code back
+// to the named variant it encodes as, and leaves everything else alone.
+#[test]
+fn canonicalize_folds_reserved_aliases() {
+    assert_eq!(
+        block::Type::Unrecognised(0).canonicalize(),
+        block::Type::Primary
+    );
+    assert_eq!(
+        block::Type::Unrecognised(11).canonicalize(),
+        block::Type::BlockIntegrity
+    );
+    assert_eq!(
+        block::Type::Unrecognised(12).canonicalize(),
+        block::Type::BlockSecurity
+    );
+    assert_eq!(
+        block::Type::Unrecognised(192).canonicalize(),
+        block::Type::Unrecognised(192)
+    );
+    assert_eq!(block::Type::Payload.canonicalize(), block::Type::Payload);
+}
+
+// Reserved wire codes must be refused whatever `Type` variant carries them:
+// `Unrecognised(v)` encodes as the raw code `v`, so a hand-built
+// `Unrecognised(11)` would otherwise emit a block the next node parses as a
+// real BIB.
+#[test]
+fn push_block_rejects_reserved_wire_codes() {
+    let (bundle, data) = make_bundle();
+
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(0));
+    assert!(matches!(result, Err((_, Error::PrimaryBlock))));
+
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(11));
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(12));
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+}
+
+// The singleton rules see the canonicalized type too: `Unrecognised(1)` is
+// a second payload block, whatever the variant says (and the refusal names
+// the canonical type).
+#[test]
+fn push_block_rejects_singleton_duplicates_by_wire_code() {
+    let (bundle, data) = make_bundle();
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(1));
+    assert!(matches!(
+        result,
+        Err((_, Error::IllegalDuplicate(block::Type::Payload)))
+    ));
+
+    let (bundle, data) = make_bundle_with_hop_count();
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(10));
+    assert!(matches!(
+        result,
+        Err((_, Error::IllegalDuplicate(block::Type::HopCount)))
+    ));
+}
+
+// `insert_block` is the third caller-supplied-type door: reserved aliases
+// must be refused there too, and the replace-by-type match must compare
+// canonical types (an alias must replace the block it aliases, never
+// allocate a duplicate the receiving parser rejects).
+#[test]
+fn insert_block_rejects_reserved_wire_codes() {
+    let (bundle, data) = make_bundle();
+
+    let result = Editor::new(&bundle, &data).insert_block(block::Type::Unrecognised(0));
+    assert!(matches!(result, Err((_, Error::PrimaryBlock))));
+
+    let result = Editor::new(&bundle, &data).insert_block(block::Type::Unrecognised(11));
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+
+    let result = Editor::new(&bundle, &data).insert_block(block::Type::Unrecognised(12));
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+}
+
+#[test]
+fn insert_block_replaces_via_alias_not_duplicates() {
+    let (bundle, data) = make_bundle_with_hop_count();
+
+    let editor = Editor::new(&bundle, &data)
+        .insert_block(block::Type::Unrecognised(10))
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .with_data(b"\x82\x18\x1e\x01".as_slice().into())
+        .rebuild();
+    let new_data = editor.rebuild().map(|c| Chunk::flatten(c, &data)).unwrap();
+
+    let reparsed = reparse(&new_data);
+    let hop_blocks = reparsed
+        .blocks
+        .values()
+        .filter(|b| matches!(b.block_type, block::Type::HopCount))
+        .count();
+    assert_eq!(
+        hop_blocks, 1,
+        "an alias insert must replace the aliased singleton, not duplicate it"
+    );
+}
+
+// The primary-block refusal at the Builder door compares canonically too:
+// `Unrecognised(0)` encodes as type code 0 and must not bypass the variant
+// it aliases. (The builder deliberately permits security blocks and
+// duplicates — it is the test-crafting door — so only code 0 is refused.)
+#[test]
+fn add_extension_block_rejects_wire_code_zero() {
+    let r = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .add_extension_block(block::Type::Unrecognised(0));
+    assert!(matches!(r, Err(builder::Error::PrimaryBlock)));
+}

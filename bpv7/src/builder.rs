@@ -97,6 +97,9 @@ impl<'a> Builder<'a> {
 
     /// Adds an extension block to this [`Builder`].
     pub fn add_extension_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
+        // Canonicalized so an `Unrecognised(0)` alias cannot bypass the
+        // primary-block refusal.
+        let block_type = block_type.canonicalize();
         if let block::Type::Primary = block_type {
             Err(Error::PrimaryBlock)
         } else {
@@ -240,7 +243,12 @@ impl<'a> BlockTemplate<'a> {
     ) -> Self {
         Self {
             block: block::Block {
-                block_type,
+                // Canonicalized here as the invariant every door funnels
+                // through: a stored template never holds an `Unrecognised`
+                // alias of a known code, so type-keyed policy and
+                // replace-by-type matches over templates are sound even if
+                // a future door forgets its own canonicalize.
+                block_type: block_type.canonicalize(),
                 flags,
                 crc_type,
                 ..Default::default()

@@ -154,6 +154,21 @@ pub enum Type {
     Unrecognised(u64),
 }
 
+impl Type {
+    /// Folds an [`Unrecognised`](Type::Unrecognised) alias of a known type
+    /// code back to its named variant; named variants and genuinely
+    /// unrecognised codes are returned unchanged.
+    ///
+    /// A hand-built `Unrecognised(v)` encodes as the raw code `v` on the
+    /// wire, so `Unrecognised(11)` *is* a Block Integrity Block to the next
+    /// parser. Policy that matches on named variants must canonicalize
+    /// first, or the alias walks straight past it.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        Self::from(u64::from(self))
+    }
+}
+
 impl From<Type> for u64 {
     fn from(value: Type) -> Self {
         match value {
