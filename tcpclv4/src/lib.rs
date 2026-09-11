@@ -163,3 +163,23 @@ impl<'de> serde::Deserialize<'de> for KeepaliveInterval {
         Ok(KeepaliveInterval::new(u16::deserialize(deserializer)?))
     }
 }
+
+#[cfg(test)]
+pub mod tests {
+    // An ephemeral-port loopback address for test listeners: IPv6 when
+    // available, IPv4 as a fallback (some sandboxes have no ::1). Probed
+    // once per process. Shared by the other unit-test modules.
+    pub fn loopback() -> std::net::SocketAddr {
+        static IP: std::sync::OnceLock<std::net::IpAddr> = std::sync::OnceLock::new();
+        std::net::SocketAddr::new(
+            *IP.get_or_init(|| {
+                if std::net::TcpListener::bind(("::1", 0)).is_ok() {
+                    std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+                } else {
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+                }
+            }),
+            0,
+        )
+    }
+}

@@ -421,53 +421,13 @@ impl ConnectionRegistry {
 
 #[cfg(test)]
 mod tests {
-    use hardy_bpa::async_trait;
-
     use super::*;
+    use crate::session::tests::MockSink;
 
     type ConnectionRx = tokio::sync::mpsc::Receiver<(
         hardy_bpa::Bytes,
         tokio::sync::oneshot::Sender<hardy_bpa::cla::TransferOutcome>,
     )>;
-
-    struct MockSink;
-
-    #[async_trait]
-    impl hardy_bpa::cla::Sink for MockSink {
-        async fn unregister(&self) {}
-
-        async fn dispatch(
-            &self,
-            _peer_node: Option<&NodeId>,
-            _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
-            _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-        ) -> hardy_bpa::cla::Result<()> {
-            Ok(())
-        }
-
-        async fn add_peer(
-            &self,
-            _cla_addr: hardy_bpa::cla::ClaAddress,
-            _node_ids: &[NodeId],
-        ) -> hardy_bpa::cla::Result<bool> {
-            Ok(true)
-        }
-
-        async fn remove_peer(
-            &self,
-            _cla_addr: &hardy_bpa::cla::ClaAddress,
-        ) -> hardy_bpa::cla::Result<bool> {
-            Ok(true)
-        }
-
-        async fn transfer_outcome(
-            &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
-            _outcome: hardy_bpa::cla::TransferOutcome,
-        ) -> hardy_bpa::cla::Result<()> {
-            Ok(())
-        }
-    }
 
     fn addr(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
@@ -503,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn dials_when_under_capacity_and_all_sessions_busy() {
         let (conn, _rx) = conn(1);
-        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        let pool = ConnectionPool::new(conn, MockSink::new(false, None), addr(4556), 6);
         make_busy(&pool);
 
         // Must signal a dial without blocking on the busy session
@@ -518,6 +478,31 @@ mod tests {
 
     #[tokio::test]
     async fn queues_on_busy_session_at_capacity() {
+        // Exactly max_idle busy connections: the pool is at its bound (not
+        // over it), so the forward queues rather than dialling. This pins
+        // the capacity comparison at its boundary — an inclusive comparison
+        // would keep signalling dials and breach the connection bound.
+        let (conn1, rx1) = conn(1);
+        let (conn2, rx2) = conn(2);
+        serve_completed(rx1);
+        serve_completed(rx2);
+
+        let pool = ConnectionPool::new(conn1, MockSink::new(false, None), addr(4556), 2);
+        make_busy(&pool);
+        pool.inner
+            .lock()
+            .unwrap()
+            .active
+            .insert(conn2.local_addr, conn2.tx);
+
+        let r = pool
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
+            .await;
+        assert!(matches!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed)));
+    }
+
+    #[tokio::test]
+    async fn queues_on_busy_session_over_capacity() {
         let (conn1, rx1) = conn(1);
         let (conn2, rx2) = conn(2);
         serve_completed(rx1);
@@ -525,7 +510,7 @@ mod tests {
 
         // A max_idle of 1 with two busy connections puts the pool over
         // capacity, so the forward queues rather than dialling
-        let pool = ConnectionPool::new(conn1, Arc::new(MockSink), addr(4556), 1);
+        let pool = ConnectionPool::new(conn1, MockSink::new(false, None), addr(4556), 1);
         make_busy(&pool);
         pool.inner
             .lock()
@@ -544,7 +529,7 @@ mod tests {
         let (conn, rx) = conn(1);
         serve_completed(rx);
 
-        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        let pool = ConnectionPool::new(conn, MockSink::new(false, None), addr(4556), 6);
         make_busy(&pool);
 
         // With dialling ruled out, the forward queues despite spare capacity
@@ -559,7 +544,7 @@ mod tests {
         let (conn, rx) = conn(1);
         serve_completed(rx);
 
-        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        let pool = ConnectionPool::new(conn, MockSink::new(false, None), addr(4556), 6);
         let r = pool
             .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
             .await;
@@ -568,5 +553,55 @@ mod tests {
         let inner = pool.inner.lock().unwrap();
         assert_eq!(inner.idle.len(), 1);
         assert!(inner.active.is_empty());
+    }
+
+    #[tokio::test]
+    async fn excess_connection_is_shed_on_return() {
+        let (conn1, rx1) = conn(1);
+        let (conn2, _rx2) = conn(2);
+        serve_completed(rx1);
+
+        // Concurrent dials can briefly overshoot max_idle; the overshoot is
+        // reclaimed here: with another connection still active, returning
+        // the completed one would exceed the bound, so it is shed instead
+        // of re-idled.
+        let pool = ConnectionPool::new(conn1, MockSink::new(false, None), addr(4556), 1);
+        pool.inner
+            .lock()
+            .unwrap()
+            .active
+            .insert(conn2.local_addr, conn2.tx);
+
+        let r = pool
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
+            .await;
+        assert!(matches!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed)));
+
+        let inner = pool.inner.lock().unwrap();
+        assert!(
+            inner.idle.is_empty(),
+            "the excess connection must be shed, not returned to idle"
+        );
+        assert_eq!(inner.active.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn try_send_gives_up_after_bounded_retries() {
+        let (conn, _rx) = conn(1);
+        let pool = ConnectionPool::new(conn, MockSink::new(false, None), addr(4556), 6);
+        // Empty the pool: nothing idle and nothing active can take the
+        // bundle, and OnBusy::Queue rules out signalling a dial.
+        pool.inner.lock().unwrap().idle.clear();
+
+        // The retry loop is bounded: the bundle comes back promptly instead
+        // of the forward spinning forever. The timeout is a hang guard, not
+        // synchronization.
+        let r = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            pool.try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Queue),
+        )
+        .await
+        .expect("try_send must give up after bounded retries");
+        assert!(r.is_err(), "the unsendable bundle must be handed back");
     }
 }

@@ -994,25 +994,24 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
-
+pub mod tests {
     use super::*;
 
-    // ---- Ingest task ----
-
-    struct MockSink {
+    // A recording `hardy_bpa::cla::Sink`: `dispatch` optionally delays,
+    // optionally fails, and records each completed bundle. Shared with the
+    // connection unit tests.
+    pub struct MockSink {
         fail: bool,
         delay: Option<tokio::time::Duration>,
-        dispatched: Mutex<Vec<hardy_bpa::Bytes>>,
+        pub dispatched: std::sync::Mutex<Vec<hardy_bpa::Bytes>>,
     }
 
     impl MockSink {
-        fn new(fail: bool, delay: Option<tokio::time::Duration>) -> Arc<Self> {
-            Arc::new(Self {
+        pub fn new(fail: bool, delay: Option<tokio::time::Duration>) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
                 fail,
                 delay,
-                dispatched: Mutex::new(Vec::new()),
+                dispatched: std::sync::Mutex::new(Vec::new()),
             })
         }
     }
@@ -1054,6 +1053,7 @@ mod tests {
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }
+
         async fn transfer_outcome(
             &self,
             _bundle_id: &hardy_bpv7::bundle::Id,
@@ -1063,6 +1063,80 @@ mod tests {
         }
     }
 
+    // A Session over the given reader and writer channel, with keepalives
+    // disabled and a recording sink. The outbound bundle channel is owned
+    // (and closed) by the helper: these tests drive the receive side
+    // directly and never pull from the sink.
+    fn test_session<R>(
+        reader: R,
+        writer_tx: tokio::sync::mpsc::Sender<writer::WriteCommand<codec::Error>>,
+        segment_mtu: usize,
+        transfer_mru: usize,
+    ) -> (Session<R>, tokio::sync::mpsc::Receiver<Ingest>)
+    where
+        R: futures::Stream<Item = Result<codec::Message, codec::Error>> + core::marker::Unpin,
+    {
+        let (_sink_tx, from_sink) = tokio::sync::mpsc::channel(1);
+        Session::new(
+            reader,
+            writer::WriterHandle::new(writer_tx),
+            MockSink::new(false, None),
+            None,
+            None,
+            None,
+            segment_mtu,
+            transfer_mru,
+            from_sink,
+            tokio_util::sync::CancellationToken::new(),
+        )
+    }
+
+    // A stand-in writer task: acknowledges every Send command as written
+    // and exposes the messages it received, so session paths that await a
+    // write result can run against a plain channel.
+    fn stub_writer() -> (
+        tokio::sync::mpsc::Sender<writer::WriteCommand<codec::Error>>,
+        tokio::sync::mpsc::UnboundedReceiver<codec::Message>,
+    ) {
+        let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel(16);
+        let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(cmd) = writer_rx.recv().await {
+                match cmd {
+                    writer::WriteCommand::Send { msg, result } => {
+                        _ = msg_tx.send(msg);
+                        _ = result.send(Ok(()));
+                    }
+                    writer::WriteCommand::Feed { msg } => {
+                        _ = msg_tx.send(msg);
+                    }
+                    writer::WriteCommand::Close => break,
+                }
+            }
+        });
+        (writer_tx, msg_rx)
+    }
+
+    fn seg(
+        transfer_id: u64,
+        start: bool,
+        end: bool,
+        data: &'static [u8],
+    ) -> codec::TransferSegmentMessage {
+        codec::TransferSegmentMessage {
+            message_flags: codec::TransferSegmentMessageFlags {
+                start,
+                end,
+                reserved: 0,
+            },
+            transfer_id,
+            transfer_extensions: vec![],
+            data: Bytes::from_static(data),
+        }
+    }
+
+    // ---- Ingest task ----
+
     // A mid-transfer XFER_REFUSE clears every outstanding acknowledgment
     // expectation for the refused transfer (RFC 9174 Section 5.2.2: no
     // further XFER_ACK messages follow for it), leaving later transfers'
@@ -1071,18 +1145,11 @@ mod tests {
     #[tokio::test]
     async fn refuse_clears_all_expectations_for_refused_transfer() {
         let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel(16);
-        let (_sink_tx, from_sink) = tokio::sync::mpsc::channel(1);
-        let (mut session, _ingest_rx) = Session::new(
+        let (mut session, _ingest_rx) = test_session(
             futures::stream::empty::<Result<codec::Message, codec::Error>>(),
-            writer::WriterHandle::new(writer_tx),
-            MockSink::new(false, None),
-            None,
-            None,
-            None,
+            writer_tx,
             1024,
             1 << 20,
-            from_sink,
-            tokio_util::sync::CancellationToken::new(),
         );
 
         for (transfer_id, end) in [(7, false), (7, true), (8, false)] {
@@ -1186,14 +1253,17 @@ mod tests {
         );
     }
 
-    // A failed dispatch leaves the transfer unacknowledged and closes the
-    // ingest queue, which the session observes as a send error
+    // A failed dispatch leaves the transfer unacknowledged, closes the
+    // ingest queue (which the session observes as a send error), and cancels
+    // the session token so teardown happens promptly instead of waiting on a
+    // quiet peer
     #[tokio::test]
     async fn ingest_stops_unacknowledged_on_dispatch_failure() {
         let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel(16);
         let writer = writer::WriterHandle::<codec::Error>::new(writer_tx);
         let sink = MockSink::new(true, None);
         let permits = Arc::new(tokio::sync::Semaphore::new(INGEST_MAX_PENDING_DISPATCH));
+        let cancel_token = tokio_util::sync::CancellationToken::new();
 
         let (tx, rx) = tokio::sync::mpsc::channel(INGEST_QUEUE_DEPTH);
         let task = tokio::spawn(run_ingest(
@@ -1202,7 +1272,7 @@ mod tests {
             None,
             None,
             writer,
-            tokio_util::sync::CancellationToken::new(),
+            cancel_token.clone(),
         ));
 
         tx.send(Ingest::Dispatch {
@@ -1215,11 +1285,40 @@ mod tests {
 
         task.await.unwrap();
 
+        // The anti-hang contract: the failure cancels the session token
+        assert!(cancel_token.is_cancelled());
+
         // The session observes the failure as a closed queue
         assert!(tx.send(Ingest::Ack(ack(1, true, false, 1))).await.is_err());
 
         // No acknowledgment was emitted for the failed transfer
         assert!(writer_rx.recv().await.is_none());
+    }
+
+    // A closed writer stops the ingest task and cancels the session token,
+    // the same anti-hang contract as the dispatch-failure branch
+    #[tokio::test]
+    async fn ingest_stops_and_cancels_on_writer_close() {
+        let (writer_tx, writer_rx) = tokio::sync::mpsc::channel(16);
+        drop(writer_rx);
+        let writer = writer::WriterHandle::<codec::Error>::new(writer_tx);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(INGEST_QUEUE_DEPTH);
+        let task = tokio::spawn(run_ingest(
+            rx,
+            MockSink::new(false, None),
+            None,
+            None,
+            writer,
+            cancel_token.clone(),
+        ));
+
+        tx.send(Ingest::Ack(ack(0, true, false, 1))).await.unwrap();
+        task.await.unwrap();
+
+        assert!(cancel_token.is_cancelled());
+        assert!(tx.send(Ingest::Ack(ack(1, false, true, 2))).await.is_err());
     }
 
     // ---- Error taxonomy ----
@@ -1266,18 +1365,11 @@ mod tests {
     async fn reject_msg_reports_writer_closed() {
         let (writer_tx, writer_rx) = tokio::sync::mpsc::channel(16);
         drop(writer_rx);
-        let (_sink_tx, from_sink) = tokio::sync::mpsc::channel(1);
-        let (session, _ingest_rx) = Session::new(
+        let (session, _ingest_rx) = test_session(
             futures::stream::empty::<Result<codec::Message, codec::Error>>(),
-            writer::WriterHandle::new(writer_tx),
-            MockSink::new(false, None),
-            None,
-            None,
-            None,
+            writer_tx,
             1024,
             1 << 20,
-            from_sink,
-            tokio_util::sync::CancellationToken::new(),
         );
 
         assert!(matches!(
@@ -1297,19 +1389,20 @@ mod tests {
     // the test cannot drift from the production framing.
     async fn run_send_once(bundle_len: usize, mtu: usize) -> Vec<(usize, bool, bool)> {
         let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel(16);
-        let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<codec::Message>(16);
-        let segments = Arc::new(Mutex::new(Vec::new()));
+        let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel::<codec::Message>(16);
 
-        let pump_segments = segments.clone();
+        // The pump owns the segment log while it runs and returns it when
+        // it joins.
         let pump = tokio::spawn(async move {
             let mut cumulative = 0u64;
+            let mut segments = Vec::new();
             while let Some(cmd) = writer_rx.recv().await {
                 match cmd {
                     writer::WriteCommand::Feed {
                         msg: codec::Message::TransferSegment(seg),
                     } => {
                         cumulative += seg.data.len() as u64;
-                        pump_segments.lock().unwrap().push((
+                        segments.push((
                             seg.data.len(),
                             seg.message_flags.start,
                             seg.message_flags.end,
@@ -1330,25 +1423,12 @@ mod tests {
                     _ => {}
                 }
             }
+            segments
         });
 
-        let reader = Box::pin(futures::stream::unfold(ack_rx, |mut rx| async move {
-            rx.recv().await.map(|m| (Ok(m), rx))
-        }));
+        let reader = futures::stream::poll_fn(move |cx| ack_rx.poll_recv(cx)).map(Ok);
 
-        let (_sink_tx, from_sink) = tokio::sync::mpsc::channel(1);
-        let (mut session, _ingest_rx) = Session::new(
-            reader,
-            writer::WriterHandle::new(writer_tx),
-            MockSink::new(false, None),
-            None,
-            None,
-            None,
-            mtu,
-            1 << 20,
-            from_sink,
-            tokio_util::sync::CancellationToken::new(),
-        );
+        let (mut session, _ingest_rx) = test_session(reader, writer_tx, mtu, 1 << 20);
 
         let refused = tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
@@ -1364,8 +1444,7 @@ mod tests {
         );
 
         drop(session);
-        _ = pump.await;
-        core::mem::take(&mut *segments.lock().unwrap())
+        pump.await.unwrap()
     }
 
     // A bundle at or under the MTU ships as one START+END segment.
@@ -1400,5 +1479,217 @@ mod tests {
             (false, true),
             "last segment is END"
         );
+    }
+
+    // ---- Receive-side transfer state machine (on_transfer) ----
+
+    // A transfer growing beyond the negotiated MRU is refused with
+    // NotAcceptable (RFC 9174 Section 5.2.2) and its remaining in-flight
+    // segments are swallowed rather than rejected one by one; the END
+    // segment clears the refusal.
+    #[tokio::test]
+    async fn on_transfer_refuses_over_mru_and_swallows_remainder() {
+        let (writer_tx, mut written) = stub_writer();
+        let (mut session, mut ingest_rx) = test_session(
+            futures::stream::empty::<Result<codec::Message, codec::Error>>(),
+            writer_tx,
+            1024,
+            8,
+        );
+
+        // Within the MRU: acknowledged.
+        session
+            .on_transfer(seg(7, true, false, b"123456"))
+            .await
+            .unwrap();
+        let Ok(Ingest::Ack(ack)) = ingest_rx.try_recv() else {
+            panic!("the first segment must be acknowledged")
+        };
+        assert_eq!(ack.acknowledged_length, 6);
+
+        // Beyond the MRU: refused, reassembly dropped.
+        session
+            .on_transfer(seg(7, false, false, b"789"))
+            .await
+            .unwrap();
+        let Ok(codec::Message::TransferRefuse(refuse)) = written.try_recv() else {
+            panic!("the over-MRU segment must be refused")
+        };
+        assert_eq!(refuse.transfer_id, 7);
+        assert_eq!(
+            refuse.reason_code,
+            codec::TransferRefuseReasonCode::NotAcceptable
+        );
+        assert_eq!(session.refusing, Some(7));
+        assert!(session.ingress_bundle.is_none());
+
+        // Remaining segments of the refused transfer are swallowed silently.
+        session
+            .on_transfer(seg(7, false, false, b"abc"))
+            .await
+            .unwrap();
+        assert!(written.try_recv().is_err());
+        assert!(ingest_rx.try_recv().is_err());
+
+        // The END segment clears the refusal.
+        session.on_transfer(seg(7, false, true, b"")).await.unwrap();
+        assert!(session.refusing.is_none());
+        assert!(written.try_recv().is_err());
+        assert!(ingest_rx.try_recv().is_err());
+    }
+
+    // A transfer totalling exactly the MRU is accepted: the bound is
+    // inclusive.
+    #[tokio::test]
+    async fn on_transfer_accepts_exactly_mru_sized_transfer() {
+        let (writer_tx, mut written) = stub_writer();
+        let (mut session, mut ingest_rx) = test_session(
+            futures::stream::empty::<Result<codec::Message, codec::Error>>(),
+            writer_tx,
+            1024,
+            8,
+        );
+
+        session
+            .on_transfer(seg(1, true, true, b"12345678"))
+            .await
+            .unwrap();
+        let Ok(Ingest::Dispatch { bundle, ack, .. }) = ingest_rx.try_recv() else {
+            panic!("an exactly-MRU transfer must dispatch")
+        };
+        assert_eq!(bundle.as_ref(), b"12345678".as_slice());
+        assert_eq!(ack.acknowledged_length, 8);
+        assert!(ack.message_flags.end);
+        assert!(written.try_recv().is_err());
+    }
+
+    // A second START mid-reassembly drops the in-progress buffer (appending
+    // would dispatch a cross-transfer amalgam to the BPA), answers with
+    // MSG_REJECT (Unexpected), and swallows the new transfer's remaining
+    // segments.
+    #[tokio::test]
+    async fn on_transfer_second_start_drops_reassembly() {
+        let (writer_tx, mut written) = stub_writer();
+        let (mut session, mut ingest_rx) = test_session(
+            futures::stream::empty::<Result<codec::Message, codec::Error>>(),
+            writer_tx,
+            1024,
+            1 << 20,
+        );
+
+        session
+            .on_transfer(seg(1, true, false, b"abc"))
+            .await
+            .unwrap();
+        assert!(matches!(ingest_rx.try_recv(), Ok(Ingest::Ack(_))));
+
+        // Out-of-order START of a different transfer.
+        session
+            .on_transfer(seg(2, true, false, b"def"))
+            .await
+            .unwrap();
+        let Ok(codec::Message::Reject(reject)) = written.try_recv() else {
+            panic!("the out-of-order START must be rejected")
+        };
+        assert_eq!(
+            reject.reason_code,
+            codec::MessageRejectionReasonCode::Unexpected
+        );
+        assert_eq!(
+            reject.rejected_message,
+            codec::MessageType::XFER_SEGMENT as u8
+        );
+        assert!(session.ingress_bundle.is_none());
+        assert_eq!(session.refusing, Some(2));
+
+        // The new transfer's remaining segments are swallowed: nothing is
+        // acknowledged and nothing reaches the BPA.
+        session
+            .on_transfer(seg(2, false, true, b"ghi"))
+            .await
+            .unwrap();
+        assert!(session.refusing.is_none());
+        assert!(written.try_recv().is_err());
+        assert!(ingest_rx.try_recv().is_err());
+    }
+
+    // A new START ends any refusal in progress: a retransmission reusing
+    // the refused transfer id must be reassembled, not swallowed.
+    #[tokio::test]
+    async fn on_transfer_new_start_clears_refusal_of_same_id() {
+        let (writer_tx, mut written) = stub_writer();
+        let (mut session, mut ingest_rx) = test_session(
+            futures::stream::empty::<Result<codec::Message, codec::Error>>(),
+            writer_tx,
+            1024,
+            8,
+        );
+
+        // Drive transfer 7 into refusal with more segments outstanding.
+        session
+            .on_transfer(seg(7, true, false, b"123456"))
+            .await
+            .unwrap();
+        session
+            .on_transfer(seg(7, false, false, b"789"))
+            .await
+            .unwrap();
+        assert!(matches!(ingest_rx.try_recv(), Ok(Ingest::Ack(_))));
+        assert!(matches!(
+            written.try_recv(),
+            Ok(codec::Message::TransferRefuse(_))
+        ));
+        assert_eq!(session.refusing, Some(7));
+
+        // A fresh START with the same id supersedes the refusal.
+        session
+            .on_transfer(seg(7, true, false, b"ab"))
+            .await
+            .unwrap();
+        assert!(matches!(ingest_rx.try_recv(), Ok(Ingest::Ack(_))));
+
+        session
+            .on_transfer(seg(7, false, true, b"cd"))
+            .await
+            .unwrap();
+        let Ok(Ingest::Dispatch { bundle, .. }) = ingest_rx.try_recv() else {
+            panic!("the retransmitted transfer must dispatch")
+        };
+        assert_eq!(bundle.as_ref(), b"abcd".as_slice());
+        assert!(written.try_recv().is_err());
+    }
+
+    // ---- next_msg ----
+
+    // Keepalives are filtered out of the protocol stream (each one restarts
+    // the idle window) and a silent peer is declared dead only after twice
+    // the negotiated keepalive interval (RFC 9174 Section 5.1.1), so a
+    // healthy peer whose keepalive is due at exactly one interval never
+    // trips the timeout.
+    #[tokio::test(start_paused = true)]
+    async fn next_msg_filters_keepalives_and_times_out_at_twice_the_interval() {
+        let mut reader = futures::stream::iter([Ok::<_, codec::Error>(codec::Message::Keepalive)])
+            .chain(futures::stream::pending());
+        let interval = tokio::time::Duration::from_secs(5);
+        let start = tokio::time::Instant::now();
+
+        let fut = next_msg(&mut reader, Some(interval));
+        tokio::pin!(fut);
+
+        // Still waiting just before twice the interval: the keepalive was
+        // filtered (not returned) and restarted the window.
+        tokio::select! {
+            r = &mut fut => panic!("next_msg resolved before twice the interval: {r:?}"),
+            _ = tokio::time::sleep(interval * 2 - tokio::time::Duration::from_millis(1)) => {}
+        }
+
+        let r = fut.await;
+        assert_eq!(start.elapsed(), interval * 2);
+        assert!(matches!(
+            r,
+            Err(Error::LocalShutdown(
+                codec::SessionTermReasonCode::IdleTimeout
+            ))
+        ));
     }
 }

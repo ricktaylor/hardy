@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::*,
+    sync::mpsc::channel,
 };
 
 use super::*;
@@ -132,7 +132,7 @@ impl ConnectionContext {
 
             // Terminate session
             return transport::terminate(
-                codec::MessageCodec::new_framed(stream),
+                codec::MessageCodec::new_framed(stream, self.segment_mru.get()),
                 codec::SessionTermReasonCode::VersionMismatch,
                 self.contact_timeout.get(),
                 &self.task_cancel_token,
@@ -160,7 +160,7 @@ impl ConnectionContext {
         } else if self.tls.as_ref().is_some_and(|tls| tls.is_required()) {
             warn!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             return transport::terminate(
-                codec::MessageCodec::new_framed(stream),
+                codec::MessageCodec::new_framed(stream, self.segment_mru.get()),
                 codec::SessionTermReasonCode::ContactFailure,
                 self.contact_timeout.get(),
                 &self.task_cancel_token,
@@ -169,11 +169,12 @@ impl ConnectionContext {
         }
 
         debug!(%local_addr, %remote_addr, "New TCP (NO-TLS) connection accepted");
+        let segment_mru = self.segment_mru.get();
         self.new_passive(
             local_addr,
             remote_addr,
             None,
-            codec::MessageCodec::new_framed(stream),
+            codec::MessageCodec::new_framed(stream, segment_mru),
         )
         .await
     }
@@ -362,11 +363,12 @@ impl ConnectionContext {
                 // the certificate), so a verified peer is the node it
                 // claims to be, not merely a member of the PKI.
                 debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
+                let segment_mru = self.segment_mru.get();
                 self.new_passive(
                     local_addr,
                     remote_addr,
                     None,
-                    codec::MessageCodec::new_framed(tls_stream),
+                    codec::MessageCodec::new_framed(tls_stream, segment_mru),
                 )
                 .await;
             }
@@ -390,8 +392,30 @@ pub fn negotiate_segment_mtu(local_mtu: Option<usize>, peer_segment_mru: u64) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
+    use crate::{session::tests::MockSink, tests::loopback};
+
+    // A ConnectionContext for handshake tests: builder defaults with a
+    // short contact timeout, keepalives disabled, and a recording sink.
+    // Shared with the connect unit tests.
+    pub fn test_context(tls: Option<std::sync::Arc<crate::tls::Tls>>) -> ConnectionContext {
+        ConnectionContext {
+            contact_timeout: crate::ContactTimeout::new(5).unwrap(),
+            keepalive_interval: crate::KeepaliveInterval::DISABLED,
+            segment_mru: core::num::NonZeroU64::new(16384).unwrap(),
+            transfer_mru: core::num::NonZeroU64::new(0x4000_0000).unwrap(),
+            node_ids: Vec::new().into(),
+            sink: MockSink::new(false, None),
+            registry: std::sync::Arc::new(crate::connection::ConnectionRegistry::new(
+                6,
+                core::num::NonZeroUsize::new(16).unwrap(),
+            )),
+            tls,
+            session_cancel_token: tokio_util::sync::CancellationToken::new(),
+            task_cancel_token: hardy_async::CancellationToken::new(),
+        }
+    }
 
     // UT-TCP-03: segment MTU negotiation, including the 32-bit clamp.
     #[test]
@@ -400,5 +424,135 @@ mod tests {
         assert_eq!(negotiate_segment_mtu(None, 16384), 16384);
         assert_eq!(negotiate_segment_mtu(None, u64::MAX), usize::MAX);
         assert_eq!(negotiate_segment_mtu(Some(8192), u64::MAX), 8192);
+    }
+
+    // RFC 9174 Section 4.2: CAN_TLS must be honest per role. The dialing
+    // side can always play the TLS client when material is configured, but
+    // the accepting side can only serve TLS with an identity; advertising
+    // otherwise commits the session to a handshake this side cannot
+    // complete.
+    #[test]
+    fn contact_header_flags_are_role_honest() {
+        let ctx = test_context(None);
+        assert_eq!(ctx.dialing_contact_header(), *b"dtn!\x04\x00");
+        assert_eq!(ctx.accepting_contact_header(), *b"dtn!\x04\x00");
+
+        // Verify-only material (no identity): dial TLS, but never offer to
+        // serve it.
+        let tls = Arc::new(
+            tls::Tls::builder()
+                .dangerous()
+                .insecure_skip_verify()
+                .build()
+                .unwrap(),
+        );
+        let ctx = test_context(Some(tls));
+        assert_eq!(ctx.dialing_contact_header(), *b"dtn!\x04\x01");
+        assert_eq!(ctx.accepting_contact_header(), *b"dtn!\x04\x00");
+
+        // With an identity, both roles advertise TLS.
+        let dir = tempfile::tempdir().unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let cert_path = dir.path().join("node.crt");
+        let key_path = dir.path().join("node.key");
+        std::fs::write(&cert_path, cert.pem()).unwrap();
+        std::fs::write(&key_path, key.serialize_pem()).unwrap();
+        let tls = Arc::new(
+            tls::Tls::builder()
+                .dangerous()
+                .insecure_skip_verify()
+                .identity(cert_path, key_path)
+                .build()
+                .unwrap(),
+        );
+        let ctx = test_context(Some(tls));
+        assert_eq!(ctx.dialing_contact_header(), *b"dtn!\x04\x01");
+        assert_eq!(ctx.accepting_contact_header(), *b"dtn!\x04\x01");
+    }
+
+    // A connected socket pair on the loopback, with the acceptor's view of
+    // the client's address.
+    async fn socket_pair() -> (TcpStream, TcpStream, SocketAddr) {
+        let listener = tokio::net::TcpListener::bind(loopback()).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, (server, peer_addr)) = tokio::join!(TcpStream::connect(addr), async {
+            listener.accept().await.unwrap()
+        });
+        (client.unwrap(), server, peer_addr)
+    }
+
+    // A contact header without the magic is not TCPCLv4: the connection is
+    // dropped without a reply (RFC 9174 Section 4.1's failed negotiation),
+    // never answered with our own header.
+    #[tokio::test]
+    async fn passive_rejects_bad_magic_without_a_reply() {
+        let (mut client, server, peer_addr) = socket_pair().await;
+        let contact = tokio::spawn(test_context(None).new_contact(server, peer_addr));
+
+        client.write_all(b"xxx!\x04\x00").await.unwrap();
+        let mut reply = Vec::new();
+        let n = client.read_to_end(&mut reply).await.unwrap();
+        assert_eq!(n, 0, "a bad magic must be dropped without a reply");
+        contact.await.unwrap();
+    }
+
+    // An unsupported protocol version gets our contact header (sent before
+    // the version is judged) followed by SESS_TERM with reason Version
+    // Mismatch (RFC 9174 Section 4.3).
+    #[tokio::test]
+    async fn passive_version_mismatch_terminates() {
+        let (mut client, server, peer_addr) = socket_pair().await;
+        let contact = tokio::spawn(test_context(None).new_contact(server, peer_addr));
+
+        client.write_all(b"dtn!\x05\x00").await.unwrap();
+
+        let mut reply = [0u8; 6];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply, *b"dtn!\x04\x00");
+
+        // SESS_TERM: header, flags (not a reply), reason VersionMismatch
+        let mut term = [0u8; 3];
+        client.read_exact(&mut term).await.unwrap();
+        assert_eq!(term, [0x05, 0x00, 0x02]);
+
+        // Acknowledge the termination so the contact finishes cleanly
+        client.write_all(&[0x05, 0x01, 0x02]).await.unwrap();
+        contact.await.unwrap();
+    }
+
+    // With TLS required by configuration, a plaintext peer is terminated
+    // with reason Contact Failure (RFC 9174 Section 4.3) instead of being
+    // silently downgraded.
+    #[tokio::test]
+    async fn passive_required_tls_terminates_plaintext_peer() {
+        let (mut client, server, peer_addr) = socket_pair().await;
+        let tls = Arc::new(
+            tls::Tls::builder()
+                .dangerous()
+                .insecure_skip_verify()
+                .required(true)
+                .build()
+                .unwrap(),
+        );
+        let contact = tokio::spawn(test_context(Some(tls)).new_contact(server, peer_addr));
+
+        // A valid v4 header with CAN_TLS clear
+        client.write_all(b"dtn!\x04\x00").await.unwrap();
+
+        let mut reply = [0u8; 6];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply, *b"dtn!\x04\x00");
+
+        // SESS_TERM: header, flags (not a reply), reason ContactFailure
+        let mut term = [0u8; 3];
+        client.read_exact(&mut term).await.unwrap();
+        assert_eq!(term, [0x05, 0x00, 0x04]);
+
+        client.write_all(&[0x05, 0x01, 0x04]).await.unwrap();
+        contact.await.unwrap();
     }
 }

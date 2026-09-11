@@ -307,6 +307,27 @@ mod tests {
         Config::load(Some(path)).unwrap()
     }
 
+    // Sets env vars for its lifetime and removes them on drop, so a
+    // panicking assertion cannot leak them into the other #[serial] tests.
+    struct EnvGuard(Vec<&'static str>);
+
+    impl EnvGuard {
+        fn set<V: AsRef<std::ffi::OsStr>>(vars: &[(&'static str, V)]) -> Self {
+            for (name, value) in vars {
+                unsafe { std::env::set_var(name, value) };
+            }
+            Self(vars.iter().map(|(name, _)| *name).collect())
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for name in &self.0 {
+                unsafe { std::env::remove_var(name) };
+            }
+        }
+    }
+
     // Empty config file produces sensible defaults.
     #[test]
     #[serial]
@@ -408,11 +429,11 @@ log-level = "warn"
         )
         .unwrap();
 
-        unsafe { std::env::set_var("HARDY_TCPCLV4_BPA_ADDRESS", "http://env-value:50051") };
-        unsafe { std::env::set_var("HARDY_TCPCLV4_LOG_LEVEL", "error") };
+        let _env = EnvGuard::set(&[
+            ("HARDY_TCPCLV4_BPA_ADDRESS", "http://env-value:50051"),
+            ("HARDY_TCPCLV4_LOG_LEVEL", "error"),
+        ]);
         let config = Config::load(Some(path)).unwrap();
-        unsafe { std::env::remove_var("HARDY_TCPCLV4_BPA_ADDRESS") };
-        unsafe { std::env::remove_var("HARDY_TCPCLV4_LOG_LEVEL") };
 
         assert_eq!(
             config.bpa_address, "http://env-value:50051",
@@ -437,9 +458,8 @@ log-level = "warn"
         let path = dir.path().join("test.toml");
         std::fs::write(&path, "").unwrap();
 
-        unsafe { std::env::set_var("HARDY_TCPCLV4_SEGMENT_MRU", "32768") };
+        let _env = EnvGuard::set(&[("HARDY_TCPCLV4_SEGMENT_MRU", "32768")]);
         let config = Config::load(Some(path)).unwrap();
-        unsafe { std::env::remove_var("HARDY_TCPCLV4_SEGMENT_MRU") };
 
         assert_eq!(config.segment_mru, Some(NonZeroU64::new(32768).unwrap()));
     }
@@ -454,9 +474,8 @@ log-level = "warn"
         let path = dir.path().join("via-env.toml");
         std::fs::write(&path, "log-level = \"warn\"\n").unwrap();
 
-        unsafe { std::env::set_var("HARDY_TCPCLV4_CONFIG_FILE", &path) };
+        let _env = EnvGuard::set(&[("HARDY_TCPCLV4_CONFIG_FILE", &path)]);
         let result = Config::load(None);
-        unsafe { std::env::remove_var("HARDY_TCPCLV4_CONFIG_FILE") };
 
         let config = result.expect("the loader's own env var must not be a schema error");
         assert_eq!(config.log_level, Level::WARN);

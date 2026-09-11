@@ -29,6 +29,13 @@ pub enum Error {
     /// A session extension item claims more bytes than its message holds.
     #[error("Extension item exceeds remaining length")]
     InvalidExtensionLength,
+
+    /// An XFER_SEGMENT declares a data length beyond the local segment MRU
+    /// (RFC 9174 Section 5.2.2), or beyond what this target can address.
+    /// The bound is enforced before any buffering: an unbounded declared
+    /// length would otherwise grow the frame buffer without limit.
+    #[error("XFER_SEGMENT data length {data_length} exceeds the segment MRU {segment_mru}")]
+    SegmentTooLarge { data_length: u64, segment_mru: u64 },
 }
 
 #[repr(u8)]
@@ -155,8 +162,15 @@ impl SessionInitMessage {
         let mut session_extensions = Vec::new();
         // RFC 9174 Section 4.6: parse by remaining byte length, not by count
         let mut ext_remaining = session_extensions_byte_length;
-        while ext_remaining >= 5 {
-            // Minimum extension item: flags(1) + type(2) + length(2) = 5
+        while ext_remaining > 0 {
+            // Minimum extension item: flags(1) + type(2) + length(2) = 5.
+            // A residue too short for an item header means the list content
+            // disagrees with the declared length, which fails the message
+            // (RFC 9174 Section 4.6); skipping it silently would leave the
+            // residue in the buffer to desynchronise framing.
+            if ext_remaining < 5 {
+                return Err(Error::InvalidExtensionLength);
+            }
             if src_cloned.len() < 5 {
                 return Ok(None);
             }
@@ -232,6 +246,8 @@ impl From<u8> for SessionInitExtensionFlags {
 
 impl From<SessionInitExtensionFlags> for u8 {
     fn from(value: SessionInitExtensionFlags) -> u8 {
+        // Reserved flag bits are receive-side information only: the sender
+        // SHALL transmit them as 0 (RFC 9174 Section 4.8).
         let mut flags = 0;
         if value.critical {
             flags |= 1;
@@ -303,7 +319,9 @@ impl From<u8> for SessionTermMessageFlags {
 
 impl From<SessionTermMessageFlags> for u8 {
     fn from(value: SessionTermMessageFlags) -> u8 {
-        let mut flags = value.reserved;
+        // Reserved flag bits are receive-side information only: the sender
+        // SHALL transmit them as 0 (RFC 9174 Section 6.1).
+        let mut flags = 0;
         if value.reply {
             flags |= 1;
         }
@@ -397,7 +415,7 @@ impl MessageRejectMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageRejectionReasonCode {
     UnknownType,
     Unsupported,
@@ -472,7 +490,7 @@ impl TransferRefuseMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TransferRefuseReasonCode {
     Unknown,
     Completed,
@@ -644,7 +662,7 @@ impl TransferSegmentMessage {
         Ok(())
     }
 
-    fn decode(src: &mut BytesMut) -> Result<Option<Message>, Error> {
+    fn decode(src: &mut BytesMut, segment_mru: u64) -> Result<Option<Message>, Error> {
         // header (1) + flags (1) + transfer_id (8) = 10 minimum
         if src.len() < 10 {
             return Ok(None);
@@ -665,8 +683,16 @@ impl TransferSegmentMessage {
             consumed += 4;
             // RFC 9174 Section 5.2.2: parse by remaining byte length, not by count
             let mut ext_remaining = transfer_extensions_byte_length;
-            while ext_remaining >= 5 {
-                // Minimum extension item: flags(1) + type(2) + length(2) = 5
+            while ext_remaining > 0 {
+                // Minimum extension item: flags(1) + type(2) + length(2) = 5.
+                // A residue too short for an item header means the list
+                // content disagrees with the declared length, which fails
+                // the message (RFC 9174 Section 5.2.2); skipping it silently
+                // would leave the residue in the buffer to desynchronise
+                // framing.
+                if ext_remaining < 5 {
+                    return Err(Error::InvalidExtensionLength);
+                }
                 if src_cloned.len() < 5 {
                     return Ok(None);
                 }
@@ -693,7 +719,24 @@ impl TransferSegmentMessage {
             return Ok(None);
         }
         let data_length = src_cloned.get_u64();
-        if src_cloned.len() < data_length as usize {
+        // Bound the declared length before any buffering decision: a peer
+        // never sends a segment beyond our advertised segment MRU (RFC 9174
+        // Section 5.2.2), and waiting for an unbounded declared length would
+        // grow the frame buffer without limit. The comparison stays in u64,
+        // and the conversion below rejects lengths this target cannot
+        // address, so a 32-bit build cannot truncate the length and
+        // desynchronise framing.
+        if data_length > segment_mru {
+            return Err(Error::SegmentTooLarge {
+                data_length,
+                segment_mru,
+            });
+        }
+        let data_length = usize::try_from(data_length).map_err(|_| Error::SegmentTooLarge {
+            data_length,
+            segment_mru,
+        })?;
+        if src_cloned.len() < data_length {
             return Ok(None);
         }
         // Skip the header bytes (message type, flags, transfer_id, extensions, data_length)
@@ -702,7 +745,7 @@ impl TransferSegmentMessage {
             message_flags,
             transfer_id,
             transfer_extensions,
-            data: src.split_to(data_length as usize).into(),
+            data: src.split_to(data_length).into(),
         })))
     }
 }
@@ -737,7 +780,9 @@ impl From<u8> for TransferSegmentMessageFlags {
 
 impl From<TransferSegmentMessageFlags> for u8 {
     fn from(value: TransferSegmentMessageFlags) -> u8 {
-        let mut flags = value.reserved;
+        // Reserved flag bits are receive-side information only: the sender
+        // SHALL transmit them as 0 (RFC 9174 Section 5.2.2).
+        let mut flags = 0;
         if value.end {
             flags |= 1;
         }
@@ -791,7 +836,9 @@ impl From<u8> for TransferSegmentExtensionFlags {
 
 impl From<TransferSegmentExtensionFlags> for u8 {
     fn from(value: TransferSegmentExtensionFlags) -> u8 {
-        let mut flags = value.reserved;
+        // Reserved flag bits are receive-side information only: the sender
+        // SHALL transmit them as 0 (RFC 9174 Section 5.2.5).
+        let mut flags = 0;
         if value.critical {
             flags |= 1;
         }
@@ -799,13 +846,20 @@ impl From<TransferSegmentExtensionFlags> for u8 {
     }
 }
 
-pub struct MessageCodec {}
+pub struct MessageCodec {
+    // The local segment MRU: the largest data length an inbound
+    // XFER_SEGMENT may declare (RFC 9174 Section 5.2.2). Enforced in the
+    // decoder so a hostile declared length is rejected before the framed
+    // buffer commits to it.
+    segment_mru: u64,
+}
 
 impl MessageCodec {
     pub fn new_framed<T: AsyncRead + AsyncWrite + Sized>(
         io: T,
+        segment_mru: u64,
     ) -> tokio_util::codec::Framed<T, Self> {
-        Self {}.framed(io)
+        Self { segment_mru }.framed(io)
     }
 }
 
@@ -824,7 +878,7 @@ impl tokio_util::codec::Decoder for MessageCodec {
         // Peek at message type without consuming it - sub-decoders will handle
         // consuming the header byte only when the full message is available
         let result = match src[0].try_into()? {
-            MessageType::XFER_SEGMENT => TransferSegmentMessage::decode(src),
+            MessageType::XFER_SEGMENT => TransferSegmentMessage::decode(src, self.segment_mru),
             MessageType::XFER_ACK => TransferAckMessage::decode(src),
             MessageType::XFER_REFUSE => TransferRefuseMessage::decode(src),
             MessageType::KEEPALIVE => {
@@ -875,17 +929,38 @@ mod tests {
     use super::*;
     use tokio_util::codec::{Decoder, Encoder};
 
+    // Large enough that no serdes payload trips the inbound segment bound,
+    // small enough that a test can exceed it without allocating.
+    const TEST_SEGMENT_MRU: u64 = 1 << 20;
+
+    fn test_codec() -> MessageCodec {
+        MessageCodec {
+            segment_mru: TEST_SEGMENT_MRU,
+        }
+    }
+
     fn encode_msg(msg: Message) -> BytesMut {
-        let mut codec = MessageCodec {};
+        let mut codec = test_codec();
         let mut buf = BytesMut::new();
         codec.encode(msg, &mut buf).unwrap();
         buf
     }
 
     fn decode_msg(buf: &[u8]) -> Option<Message> {
-        let mut codec = MessageCodec {};
+        let mut codec = test_codec();
         let mut src = BytesMut::from(buf);
-        codec.decode(&mut src).unwrap()
+        let msg = codec.decode(&mut src).unwrap();
+        if msg.is_some() {
+            // A decoded message must consume exactly its encoded bytes:
+            // leftover or over-consumed bytes desynchronise framing of the
+            // next message on a real stream.
+            assert!(
+                src.is_empty(),
+                "decoder left {} unconsumed bytes",
+                src.len()
+            );
+        }
+        msg
     }
 
     // ---- UT-TCP-01: Message SerDes ----
@@ -915,14 +990,11 @@ mod tests {
         assert_eq!(buf[0], MessageType::SESS_TERM as u8);
         assert_eq!(buf.len(), 3); // header + flags + reason
 
-        let msg = decode_msg(&buf).unwrap();
-        match msg {
-            Message::SessionTerm(decoded) => {
-                assert!(decoded.message_flags.reply);
-                assert_eq!(decoded.reason_code, SessionTermReasonCode::IdleTimeout);
-            }
-            _ => panic!("expected SessionTerm"),
-        }
+        let Message::SessionTerm(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected SessionTerm")
+        };
+        assert!(decoded.message_flags.reply);
+        assert_eq!(decoded.reason_code, SessionTermReasonCode::IdleTimeout);
     }
 
     // UT-TCP-01: SESS_INIT round-trip with node ID and no extensions.
@@ -939,17 +1011,14 @@ mod tests {
         let buf = encode_msg(Message::SessionInit(original));
         assert_eq!(buf[0], MessageType::SESS_INIT as u8);
 
-        let msg = decode_msg(&buf).unwrap();
-        match msg {
-            Message::SessionInit(decoded) => {
-                assert_eq!(decoded.keepalive_interval, 60);
-                assert_eq!(decoded.segment_mru, 16384);
-                assert_eq!(decoded.transfer_mru, 0x4000_0000);
-                assert_eq!(decoded.node_id.unwrap().to_string(), "ipn:1.0");
-                assert!(decoded.session_extensions.is_empty());
-            }
-            _ => panic!("expected SessionInit"),
-        }
+        let Message::SessionInit(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected SessionInit")
+        };
+        assert_eq!(decoded.keepalive_interval, 60);
+        assert_eq!(decoded.segment_mru, 16384);
+        assert_eq!(decoded.transfer_mru, 0x4000_0000);
+        assert_eq!(decoded.node_id.unwrap().to_string(), "ipn:1.0");
+        assert!(decoded.session_extensions.is_empty());
     }
 
     // UT-TCP-01: SESS_INIT round-trip with no node ID.
@@ -964,14 +1033,11 @@ mod tests {
         };
 
         let buf = encode_msg(Message::SessionInit(original));
-        let msg = decode_msg(&buf).unwrap();
-        match msg {
-            Message::SessionInit(decoded) => {
-                assert!(decoded.node_id.is_none());
-                assert_eq!(decoded.keepalive_interval, 0);
-            }
-            _ => panic!("expected SessionInit"),
-        }
+        let Message::SessionInit(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected SessionInit")
+        };
+        assert!(decoded.node_id.is_none());
+        assert_eq!(decoded.keepalive_interval, 0);
     }
 
     // UT-TCP-01: SESS_INIT round-trip with a session extension item.
@@ -995,18 +1061,15 @@ mod tests {
         };
 
         let buf = encode_msg(Message::SessionInit(original));
-        let msg = decode_msg(&buf).unwrap();
-        match msg {
-            Message::SessionInit(decoded) => {
-                assert_eq!(decoded.session_extensions.len(), 1);
-                let ext = &decoded.session_extensions[0];
-                assert!(ext.flags.critical);
-                assert_eq!(ext.item_type, 0x00FF);
-                assert_eq!(ext.item_length, 4);
-                assert_eq!(&ext.item_value[..], &ext_data[..]);
-            }
-            _ => panic!("expected SessionInit"),
-        }
+        let Message::SessionInit(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected SessionInit")
+        };
+        assert_eq!(decoded.session_extensions.len(), 1);
+        let ext = &decoded.session_extensions[0];
+        assert!(ext.flags.critical);
+        assert_eq!(ext.item_type, 0x00FF);
+        assert_eq!(ext.item_length, 4);
+        assert_eq!(&ext.item_value[..], &ext_data[..]);
     }
 
     // UT-TCP-01: XFER_SEGMENT round-trip (START+END, single segment).
@@ -1027,16 +1090,13 @@ mod tests {
         let buf = encode_msg(Message::TransferSegment(original));
         assert_eq!(buf[0], MessageType::XFER_SEGMENT as u8);
 
-        let msg = decode_msg(&buf).unwrap();
-        match msg {
-            Message::TransferSegment(decoded) => {
-                assert!(decoded.message_flags.start);
-                assert!(decoded.message_flags.end);
-                assert_eq!(decoded.transfer_id, 42);
-                assert_eq!(&decoded.data[..], b"hello bundle");
-            }
-            _ => panic!("expected TransferSegment"),
-        }
+        let Message::TransferSegment(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected TransferSegment")
+        };
+        assert!(decoded.message_flags.start);
+        assert!(decoded.message_flags.end);
+        assert_eq!(decoded.transfer_id, 42);
+        assert_eq!(&decoded.data[..], b"hello bundle");
     }
 
     // UT-TCP-01: XFER_ACK round-trip.
@@ -1053,15 +1113,12 @@ mod tests {
         }));
         assert_eq!(buf.len(), 18); // header(1) + flags(1) + id(8) + length(8)
 
-        let msg = decode_msg(&buf).unwrap();
-        match msg {
-            Message::TransferAck(decoded) => {
-                assert_eq!(decoded.transfer_id, 99);
-                assert_eq!(decoded.acknowledged_length, 1000);
-                assert!(decoded.message_flags.end);
-            }
-            _ => panic!("expected TransferAck"),
-        }
+        let Message::TransferAck(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected TransferAck")
+        };
+        assert_eq!(decoded.transfer_id, 99);
+        assert_eq!(decoded.acknowledged_length, 1000);
+        assert!(decoded.message_flags.end);
     }
 
     // UT-TCP-01: XFER_REFUSE round-trip.
@@ -1073,26 +1130,80 @@ mod tests {
         }));
         assert_eq!(buf.len(), 10); // header(1) + reason(1) + id(8)
 
-        let msg = decode_msg(&buf).unwrap();
-        match msg {
-            Message::TransferRefuse(decoded) => {
-                assert_eq!(decoded.transfer_id, 7);
-                assert!(matches!(
-                    decoded.reason_code,
-                    TransferRefuseReasonCode::NoResources
-                ));
-            }
-            _ => panic!("expected TransferRefuse"),
-        }
+        let Message::TransferRefuse(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected TransferRefuse")
+        };
+        assert_eq!(decoded.transfer_id, 7);
+        assert_eq!(decoded.reason_code, TransferRefuseReasonCode::NoResources);
     }
 
     // UT-TCP-01: Invalid message type byte returns error.
     #[test]
     fn serdes_invalid_message_type() {
-        let mut codec = MessageCodec {};
+        let mut codec = test_codec();
         let mut src = BytesMut::from(&[0xFF_u8][..]);
         let result = codec.decode(&mut src);
         assert!(result.is_err());
+    }
+
+    // UT-TCP-01: Messages encoded back-to-back into one buffer decode in
+    // sequence, pinning the hand-computed consumed counts of the
+    // variable-length decoders: an off-by-N there corrupts the framing of
+    // the next message on the stream.
+    #[test]
+    fn serdes_back_to_back_messages() {
+        let mut codec = test_codec();
+        let mut buf = BytesMut::new();
+        codec
+            .encode(
+                Message::SessionInit(SessionInitMessage {
+                    keepalive_interval: 15,
+                    segment_mru: 4096,
+                    transfer_mru: 8192,
+                    node_id: Some("ipn:3.0".parse().unwrap()),
+                    session_extensions: vec![SessionInitExtension {
+                        flags: SessionInitExtensionFlags::default(),
+                        item_type: 0x0001,
+                        item_length: 2,
+                        item_value: Bytes::from_static(b"\xAA\xBB"),
+                    }],
+                }),
+                &mut buf,
+            )
+            .unwrap();
+        codec
+            .encode(
+                Message::TransferSegment(TransferSegmentMessage {
+                    message_flags: TransferSegmentMessageFlags {
+                        start: true,
+                        end: true,
+                        reserved: 0,
+                    },
+                    transfer_id: 11,
+                    transfer_extensions: vec![],
+                    data: Bytes::from_static(b"payload"),
+                }),
+                &mut buf,
+            )
+            .unwrap();
+        codec.encode(Message::Keepalive, &mut buf).unwrap();
+
+        let Some(Message::SessionInit(first)) = codec.decode(&mut buf).unwrap() else {
+            panic!("expected SessionInit")
+        };
+        assert_eq!(first.node_id.unwrap().to_string(), "ipn:3.0");
+        assert_eq!(first.session_extensions.len(), 1);
+
+        let Some(Message::TransferSegment(second)) = codec.decode(&mut buf).unwrap() else {
+            panic!("expected TransferSegment")
+        };
+        assert_eq!(second.transfer_id, 11);
+        assert_eq!(&second.data[..], b"payload");
+
+        let Some(Message::Keepalive) = codec.decode(&mut buf).unwrap() else {
+            panic!("expected Keepalive")
+        };
+        assert!(buf.is_empty());
     }
 
     // UT-TCP-01: Incomplete message returns None (needs more data).
@@ -1101,6 +1212,350 @@ mod tests {
         // SESS_TERM needs 3 bytes, give it 2
         let msg = decode_msg(&[MessageType::SESS_TERM as u8, 0x00]);
         assert!(msg.is_none());
+    }
+
+    // UT-TCP-01: Every proper prefix of every message decodes to None
+    // without consuming bytes. A fragmented TCP read routinely delivers such
+    // prefixes, so an off-by-one in any decoder's fixed-size length guard
+    // panics the buffer reads on a short frame; this pins each guard at its
+    // exact boundary.
+    #[test]
+    fn every_prefix_of_each_message_returns_none() {
+        let corpus = [
+            Message::SessionInit(SessionInitMessage {
+                keepalive_interval: 15,
+                segment_mru: 4096,
+                transfer_mru: 8192,
+                node_id: Some("ipn:3.0".parse().unwrap()),
+                session_extensions: vec![SessionInitExtension {
+                    flags: SessionInitExtensionFlags::default(),
+                    item_type: 0x0001,
+                    item_length: 2,
+                    item_value: Bytes::from_static(b"\xAA\xBB"),
+                }],
+            }),
+            Message::SessionTerm(SessionTermMessage::default()),
+            Message::TransferSegment(TransferSegmentMessage {
+                message_flags: TransferSegmentMessageFlags {
+                    start: true,
+                    end: true,
+                    reserved: 0,
+                },
+                transfer_id: 11,
+                transfer_extensions: vec![TransferSegmentExtension {
+                    flags: TransferSegmentExtensionFlags::default(),
+                    item_type: 0x0001,
+                    item_length: 8,
+                    item_value: Bytes::from_static(&[0; 8]),
+                }],
+                data: Bytes::from_static(b"payload"),
+            }),
+            Message::TransferAck(TransferAckMessage {
+                message_flags: TransferSegmentMessageFlags::default(),
+                transfer_id: 99,
+                acknowledged_length: 1000,
+            }),
+            Message::TransferRefuse(TransferRefuseMessage {
+                reason_code: TransferRefuseReasonCode::NoResources,
+                transfer_id: 7,
+            }),
+            Message::Reject(MessageRejectMessage {
+                reason_code: MessageRejectionReasonCode::Unexpected,
+                rejected_message: MessageType::KEEPALIVE as u8,
+            }),
+        ];
+
+        for msg in corpus {
+            let name = format!("{:?}", msg.message_type());
+            let buf = encode_msg(msg);
+            for prefix_len in 0..buf.len() {
+                let mut src = BytesMut::from(&buf[..prefix_len]);
+                let decoded = test_codec().decode(&mut src).unwrap_or_else(|e| {
+                    panic!("{name}: prefix of {prefix_len} bytes errored: {e}")
+                });
+                assert!(
+                    decoded.is_none(),
+                    "{name}: prefix of {prefix_len} bytes decoded to a message"
+                );
+                assert_eq!(
+                    src.len(),
+                    prefix_len,
+                    "{name}: prefix of {prefix_len} bytes was partially consumed"
+                );
+            }
+        }
+    }
+
+    // ---- Malformed extension lists ----
+
+    // The SESS_INIT prelude: header, MRUs, and an empty node ID; the caller
+    // appends the extension list length and items.
+    fn sess_init_prelude() -> BytesMut {
+        let mut buf = BytesMut::new();
+        buf.put_u8(MessageType::SESS_INIT as u8);
+        buf.put_u16(0); // keepalive interval
+        buf.put_u64(1024); // segment MRU
+        buf.put_u64(1024); // transfer MRU
+        buf.put_u16(0); // node ID length
+        buf
+    }
+
+    // An item claiming more octets than the declared list length holds
+    // fails the message (RFC 9174 Section 4.6) rather than silently
+    // over-consuming past the declared list.
+    #[test]
+    fn sess_init_extension_overrunning_declared_length_errors() {
+        let mut buf = sess_init_prelude();
+        buf.put_u32(5); // declared list length: one header-only item
+        buf.put_u8(0); // item flags
+        buf.put_u16(0x00FF); // item type
+        buf.put_u16(200); // item length overruns the declared list
+        buf.put_bytes(0, 200);
+
+        assert!(matches!(
+            test_codec().decode(&mut buf),
+            Err(Error::InvalidExtensionLength)
+        ));
+    }
+
+    // A declared list length too short for even one item header fails the
+    // message; consuming the message without the residue would leave the
+    // residue bytes to be misparsed as the next message header.
+    #[test]
+    fn sess_init_trailing_extension_residue_is_rejected() {
+        let mut buf = sess_init_prelude();
+        buf.put_u32(3); // declared list length below the 5-byte item header
+        buf.put_bytes(0xAA, 3);
+        buf.put_u8(MessageType::KEEPALIVE as u8); // next message on the stream
+
+        assert!(matches!(
+            test_codec().decode(&mut buf),
+            Err(Error::InvalidExtensionLength)
+        ));
+    }
+
+    // A zero-length item value is legal (RFC 9174 Section 4.8): the item is
+    // exactly its 5-byte header, and the list length of exactly 5 pins the
+    // loop's boundary.
+    #[test]
+    fn sess_init_zero_length_extension_round_trips() {
+        let buf = encode_msg(Message::SessionInit(SessionInitMessage {
+            keepalive_interval: 0,
+            segment_mru: 1024,
+            transfer_mru: 1024,
+            node_id: None,
+            session_extensions: vec![SessionInitExtension {
+                flags: SessionInitExtensionFlags::default(),
+                item_type: 0x00AB,
+                item_length: 0,
+                item_value: Bytes::new(),
+            }],
+        }));
+
+        let Message::SessionInit(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected SessionInit")
+        };
+        assert_eq!(decoded.session_extensions.len(), 1);
+        assert_eq!(decoded.session_extensions[0].item_type, 0x00AB);
+        assert_eq!(decoded.session_extensions[0].item_length, 0);
+        assert!(decoded.session_extensions[0].item_value.is_empty());
+    }
+
+    // A node ID that is not UTF-8 fails the message.
+    #[test]
+    fn sess_init_non_utf8_node_id_errors() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(MessageType::SESS_INIT as u8);
+        buf.put_u16(0); // keepalive interval
+        buf.put_u64(1024); // segment MRU
+        buf.put_u64(1024); // transfer MRU
+        buf.put_u16(2); // node ID length
+        buf.put_slice(&[0xFF, 0xFE]); // not UTF-8
+        buf.put_u32(0); // extension list length
+
+        assert!(matches!(
+            test_codec().decode(&mut buf),
+            Err(Error::InvalidNodeIdUtf8(_))
+        ));
+    }
+
+    // ---- Transfer extensions ----
+
+    // UT-TCP-01: XFER_SEGMENT round-trip carrying a transfer extension item
+    // (the shape of RFC 9174 Section 5.2.5's TRANSFER_LENGTH on a START
+    // segment), then back-to-back with a KEEPALIVE to pin the extension
+    // path's consumed accounting: an off-by-N there desynchronises framing
+    // against interoperating peers.
+    #[test]
+    fn serdes_xfer_segment_with_transfer_extension() {
+        let ext_value = Bytes::from_static(&[0, 0, 0, 0, 0, 0, 0x30, 0x39]);
+        let segment = || TransferSegmentMessage {
+            message_flags: TransferSegmentMessageFlags {
+                start: true,
+                end: true,
+                reserved: 0,
+            },
+            transfer_id: 42,
+            transfer_extensions: vec![TransferSegmentExtension {
+                flags: TransferSegmentExtensionFlags {
+                    critical: false,
+                    reserved: 0,
+                },
+                item_type: 0x0001,
+                item_length: 8,
+                item_value: ext_value.clone(),
+            }],
+            data: Bytes::from_static(b"hello bundle"),
+        };
+
+        let buf = encode_msg(Message::TransferSegment(segment()));
+        let Message::TransferSegment(decoded) = decode_msg(&buf).unwrap() else {
+            panic!("expected TransferSegment")
+        };
+        assert_eq!(decoded.transfer_id, 42);
+        assert_eq!(&decoded.data[..], b"hello bundle");
+        assert_eq!(decoded.transfer_extensions.len(), 1);
+        let ext = &decoded.transfer_extensions[0];
+        assert!(!ext.flags.critical);
+        assert_eq!(ext.item_type, 0x0001);
+        assert_eq!(ext.item_length, 8);
+        assert_eq!(&ext.item_value[..], &ext_value[..]);
+
+        let mut codec = test_codec();
+        let mut buf = BytesMut::new();
+        codec
+            .encode(Message::TransferSegment(segment()), &mut buf)
+            .unwrap();
+        codec.encode(Message::Keepalive, &mut buf).unwrap();
+
+        let Some(Message::TransferSegment(first)) = codec.decode(&mut buf).unwrap() else {
+            panic!("expected TransferSegment")
+        };
+        assert_eq!(first.transfer_extensions.len(), 1);
+        assert_eq!(&first.data[..], b"hello bundle");
+        let Some(Message::Keepalive) = codec.decode(&mut buf).unwrap() else {
+            panic!("expected Keepalive")
+        };
+        assert!(buf.is_empty());
+    }
+
+    // ---- Inbound segment bound ----
+
+    // The 18-byte XFER_SEGMENT header declaring `data_length`, no data.
+    fn xfer_segment_header(data_length: u64) -> BytesMut {
+        let mut buf = BytesMut::new();
+        buf.put_u8(MessageType::XFER_SEGMENT as u8);
+        buf.put_u8(0x01); // END, so no extension list follows the header
+        buf.put_u64(1); // transfer id
+        buf.put_u64(data_length);
+        buf
+    }
+
+    // A declared data length beyond the local segment MRU is rejected at
+    // decode, before the framed buffer commits to it: waiting for the
+    // declared bytes would otherwise buffer the peer's stream without limit,
+    // and a 32-bit `as usize` of the length would truncate it and
+    // desynchronise framing.
+    #[test]
+    fn xfer_segment_huge_data_length_is_rejected() {
+        for data_length in [u64::MAX, TEST_SEGMENT_MRU + 1] {
+            let mut buf = xfer_segment_header(data_length);
+            assert!(
+                matches!(
+                    test_codec().decode(&mut buf),
+                    Err(Error::SegmentTooLarge {
+                        data_length: got,
+                        segment_mru: TEST_SEGMENT_MRU,
+                    }) if got == data_length
+                ),
+                "data length {data_length} must be rejected"
+            );
+        }
+
+        // The bound is the MRU itself: a maximum-size segment still decodes.
+        let mut buf = xfer_segment_header(TEST_SEGMENT_MRU);
+        buf.put_bytes(0x42, usize::try_from(TEST_SEGMENT_MRU).unwrap());
+        let Some(Message::TransferSegment(decoded)) = test_codec().decode(&mut buf).unwrap() else {
+            panic!("expected TransferSegment")
+        };
+        assert_eq!(decoded.data.len() as u64, TEST_SEGMENT_MRU);
+        assert!(buf.is_empty());
+    }
+
+    // ---- MSG_REJECT ----
+
+    // UT-TCP-01: MSG_REJECT round-trip for every defined reason code plus
+    // unassigned and private values, and rejection of a rejected-message
+    // octet that is not a message type we could have sent.
+    #[test]
+    fn serdes_msg_reject() {
+        let cases = [
+            (1u8, MessageRejectionReasonCode::UnknownType),
+            (2, MessageRejectionReasonCode::Unsupported),
+            (3, MessageRejectionReasonCode::Unexpected),
+            (0, MessageRejectionReasonCode::Unassigned(0)),
+            (42, MessageRejectionReasonCode::Unassigned(42)),
+            (0xF5, MessageRejectionReasonCode::Private(0xF5)),
+        ];
+
+        for (byte, expected) in cases {
+            let decoded: MessageRejectionReasonCode = byte.into();
+            assert_eq!(decoded, expected, "wrong variant for byte {byte}");
+            assert_eq!(
+                u8::from(decoded.clone()),
+                byte,
+                "round-trip failed for {expected:?}"
+            );
+
+            let buf = encode_msg(Message::Reject(MessageRejectMessage {
+                reason_code: decoded,
+                rejected_message: MessageType::KEEPALIVE as u8,
+            }));
+            assert_eq!(buf.len(), 3); // header + reason + rejected message
+
+            let Message::Reject(msg) = decode_msg(&buf).unwrap() else {
+                panic!("expected Reject")
+            };
+            assert_eq!(msg.reason_code, expected);
+            assert_eq!(msg.rejected_message, MessageType::KEEPALIVE as u8);
+        }
+
+        // The rejected-message octet must itself be a defined message type.
+        let mut buf = BytesMut::from(&[MessageType::MSG_REJECT as u8, 1, 0xFF][..]);
+        assert!(matches!(
+            test_codec().decode(&mut buf),
+            Err(Error::InvalidMessageType(0xFF))
+        ));
+    }
+
+    // ---- Reserved flag bits ----
+
+    // Each flag type captures every reserved bit on decode (receive-side
+    // information) and strips them on encode: reserved header flag bits
+    // SHALL be 0 from the sender (RFC 9174 Sections 4.8, 5.2.2, 5.2.5,
+    // and 6.1).
+    #[test]
+    fn flags_capture_reserved_bits_and_encode_them_as_zero() {
+        let flags = SessionInitExtensionFlags::from(0xFF);
+        assert!(flags.critical);
+        assert_eq!(flags.reserved, 0xFE);
+        assert_eq!(u8::from(flags), 0x01);
+
+        let flags = SessionTermMessageFlags::from(0xFF);
+        assert!(flags.reply);
+        assert_eq!(flags.reserved, 0xFE);
+        assert_eq!(u8::from(flags), 0x01);
+
+        let flags = TransferSegmentMessageFlags::from(0xFF);
+        assert!(flags.start);
+        assert!(flags.end);
+        assert_eq!(flags.reserved, 0xFC);
+        assert_eq!(u8::from(flags), 0x03);
+
+        let flags = TransferSegmentExtensionFlags::from(0xFF);
+        assert!(flags.critical);
+        assert_eq!(flags.reserved, 0xFE);
+        assert_eq!(u8::from(flags), 0x01);
     }
 
     // ---- UT-TCP-05: Reason Codes ----
@@ -1119,6 +1574,7 @@ mod tests {
 
         for (byte, expected) in &cases {
             let decoded: SessionTermReasonCode = (*byte).into();
+            assert_eq!(decoded, *expected, "wrong variant for byte {byte}");
             let re_encoded: u8 = decoded.into();
             assert_eq!(re_encoded, *byte, "round-trip failed for {expected:?}");
         }
@@ -1137,10 +1593,11 @@ mod tests {
             (6, TransferRefuseReasonCode::SessionTerminating),
         ];
 
-        for (byte, _expected) in &cases {
+        for (byte, expected) in &cases {
             let decoded: TransferRefuseReasonCode = (*byte).into();
+            assert_eq!(decoded, *expected, "wrong variant for byte {byte}");
             let re_encoded: u8 = decoded.into();
-            assert_eq!(re_encoded, *byte);
+            assert_eq!(re_encoded, *byte, "round-trip failed for {expected:?}");
         }
     }
 
