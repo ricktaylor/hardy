@@ -58,6 +58,10 @@ The CLA uses the `notify` crate with `notify-debouncer-full` for filesystem moni
 
 Only `Create(File)` events trigger bundle dispatch. This avoids reacting to modifications or deletions.
 
+On startup the watcher first scans the outbox and dispatches any files already present: bundles are routinely queued while the CLA is not running (removable media, restarts), and filesystem notifications only cover files created after the watch is installed.
+
+The scan resolves symlinks, so a linked file is dispatched exactly as a regular one is: the notification path reports a symlink's creation as an ordinary file creation, and the two paths must agree about the same directory entry.
+
 ### Bundle ID-Based File Naming
 
 When writing bundles for egress, files are named using the bundle's source EID and creation timestamp:

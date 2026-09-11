@@ -2101,6 +2101,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "serde",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",

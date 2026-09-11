@@ -33,3 +33,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 notify-debouncer-full = "0.7"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
 flume = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "fs", "rt-multi-thread", "time"] }
