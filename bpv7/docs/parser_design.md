@@ -14,7 +14,7 @@ The pipeline turns untrusted wire bytes into a validated bundle while keeping th
 
 A bundle moves through three layers, lowest to highest. The lower two are pure bpv7 mechanism; policy sits above them in the consumer, primarily the BPA's keyed parse pipelines (`bpa/src/bundle/parse.rs`).
 
-1. **Structural parse** (`parse::parse`) — keyless. Decodes the CBOR into a `Bundle` (primary block plus a map of canonical blocks) and the BPSec OperationSets. Having no keys, it cannot read the target list of a BCB-encrypted BIB, so it conservatively marks every block such a BIB *might* cover as "maybe covered" (see *Coverage stamping*).
+1. **Structural parse** (`parser::parse`) — keyless. Decodes the CBOR into a `Bundle` (primary block plus a map of canonical blocks) and the BPSec OperationSets. Having no keys, it cannot read the target list of a BCB-encrypted BIB, so it conservatively marks every block such a BIB *might* cover as "maybe covered" (see *Coverage stamping*).
 2. **Keyed validation** (`checks`) — the §A–§C steps: keyless classification (§A) plus the keyed decrypt/verify steps (§B, §C8, §C7), composed by `checks::verify`.
 3. **Rewrite application** (`checks::apply_rewrites`) — §E: applies block removals and canonical re-emits through the BPSec-aware editor cascade, returning the new wire bytes.
 

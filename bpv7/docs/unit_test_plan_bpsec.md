@@ -86,13 +86,12 @@ The following scenarios are verified by the unit tests located in `hardy-bpv7/sr
 | Test Scenario | Description | Source File | Input | Expected Output |
  | ----- | ----- | ----- | ----- | ----- |
 | **HMAC-SHA256 (ID 1)** | Verify BIB Context ID 1 with 32-byte key. (LLR 2.2.1) | TODO | Ciphersuite: `1`, Key: 32B | Result: `Ok` (Valid SHA256 MAC) |
-| **HMAC-SHA384 (ID 2)** | TODO: Verify BIB Context ID 2 with 48-byte key. (LLR 2.2.2) | `src/bpsec/rfc9173/bib_hmac.rs` | Ciphersuite: `2`, Key: 48B | Result: `Ok` |
 | **HMAC-SHA384 (ID 2)** | Verify BIB Context ID 2 with 48-byte key. (LLR 2.2.2) | TODO | Ciphersuite: `2`, Key: 48B | Result: `Ok` |
 | **AES-GCM-128 (ID 1)** | Verify BCB Context ID 1 with 16-byte key. (LLR 2.2.5) | TODO | Ciphersuite: `1`, Key: 16B | Result: `Ok` (Valid AES-GCM Encrypt) |
 | **AES-GCM-256 (ID 3)** | Verify BCB Context ID 3 with 32-byte key. (LLR 2.2.6) | TODO | Ciphersuite: `3`, Key: 32B | Result: `Ok` (Valid AES-GCM Encrypt) |
 | **IV Randomness** | Verify IVs are unique/random for AES-GCM encryption. | TODO | 2 Sequential Encryptions | `IV1 != IV2` |
-| **Wrapped Key Unwrap** | Verify unwrapping of a session key using a KEK. (LLR 2.2.4, 2.2.7) | TODO | Wrapped Key Material | Result: `Ok(UnwrappedKey)` |
-| **Wrapped Key Fail** | Verify failure when unwrapping a corrupted key blob. | TODO | Corrupted Wrapped Key | Error: `KeyUnwrapFailed` |
+| **Wrapped Key Unwrap** | Verify unwrapping of a session key using a KEK. (LLR 2.2.4, 2.2.7) | `tests/rfc9173.rs` (`wrapped_key_sign_and_verify`) | Wrapped Key Material | Result: `Ok(UnwrappedKey)` |
+| **Wrapped Key Fail** | Verify failure when unwrapping with the wrong KEK. | `tests/rfc9173.rs` (`wrapped_key_wrong_kek`) | Correct wrapped key, wrong KEK | Error: `IntegrityCheckFailed` (deliberately indistinguishable from a bad MAC: no oracle) |
 
 ### 3.5 Security Factories (Signer & Encryptor)
 
@@ -100,16 +99,16 @@ The following scenarios are verified by the unit tests located in `hardy-bpv7/sr
 
 | Test Scenario | Description | Source File | Input | Expected Output |
  | ----- | ----- | ----- | ----- | ----- |
-| **Signer - Add BIB** | Use `Signer` to add a BIB to a payload block. | TODO | `Signer::new(HMAC_SHA256, key).sign(bundle, Target::Payload)` | Bundle contains new BIB (Type 11) targeting Payload. |
-| **Signer - Invalid Target** | Attempt to sign a non-existent block. | TODO | Target: `BlockIndex(99)` | Error: `TargetNotFound` |
+| **Signer - Add BIB** | Use `Signer` to add a BIB to a payload block. | `tests/signer.rs` (`sign_primary_removes_crc_and_verifies`), `tests/rfc9173.rs` (`sign_primary_block_with_crc`) | `Signer::new(HMAC_SHA256, key).sign(bundle, Target::Payload)` | Bundle contains new BIB (Type 11) targeting Payload. |
+| **Signer - Invalid Target** | Attempt to sign an encrypted block. | `tests/rfc9173.rs` (`encrypt_then_sign_fails`) | Target: `BlockIndex(99)` | Error: `TargetNotFound` |
 | **Encryptor - Apply BCB** | Use `Encryptor` to encrypt a payload. | TODO | `Encryptor::new(AES_GCM, key).encrypt(bundle, Target::Payload)` | Bundle contains new BCB (Type 12); Payload block replaced with Ciphertext. |
-| **Encryptor - Re-encrypt** | Attempt to encrypt an already encrypted target (if unsupported). | TODO | Target: Block already listed in another BCB | Error: `TargetAlreadyEncrypted` (Profile Dependent) |
+| **Encryptor - Re-encrypt** | Attempt to encrypt a BIB directly. | `tests/rfc9173.rs` (`encrypt_bib_directly_fails`) | Target: Block already listed in another BCB | Error: `TargetAlreadyEncrypted` (Profile Dependent) |
 
 ### 3.6 Edge Cases & Constraints (LLR 2.1.2, 2.1.3)
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Target Removal** | Verify BPSec info is removed when target block is deleted. (LLR 2.1.2) | TODO | Bundle with BIB targeting deleted block | BIB removed/updated |
+| **Target Removal** | Verify BPSec info is removed when target block is deleted. (LLR 2.1.2) | `tests/signer.rs` (`remove_integrity_clears_target_coverage`), `tests/checks.rs` (`removing_bib_outright_clears_target_coverage`) | Bundle with BIB targeting deleted block | BIB removed/updated |
 | **Fragmentation Check** | Verify fragmented bundles cannot contain BPSec blocks. (LLR 2.1.3) | TODO | Fragmented Bundle + BIB | Error: `InvalidFlags` |
 
 ### 3.7 RFC 9173 Appendix A Compliance (Standard Vectors)
@@ -118,14 +117,14 @@ The following scenarios are verified by the unit tests located in `hardy-bpv7/sr
 
 | Test Scenario | Description | Source File | RFC Ref | Expected Output |
  | ----- | ----- | ----- | ----- | ----- |
-| **Appendix A.1 (BIB)** | **BIB-HMAC-SHA2 Example 1**<br>Verify generation of signature matches RFC hex dump. | `src/bpsec/rfc9173/mod.rs` | Appx A.1 | Generated MAC matches `0x5d...` |
-| **Appendix A.2 (BCB)** | **BCB-AES-GCM Example 1**<br>Verify encryption of payload matches RFC hex dump. | `src/bpsec/rfc9173/mod.rs` | Appx A.2 | Ciphertext matches `0x5468...`<br>Auth Tag matches `0x...` |
-| **Appendix A.3 (BCB)** | **BCB-AES-GCM Example 2**<br>Verify encryption using 256-bit key. | `src/bpsec/rfc9173/mod.rs` | Appx A.3 | Ciphertext matches `0x...` |
-| **Appendix A.4 (BCB)** | **BCB-AES-GCM Example 3**<br>Verify encryption with Additional Authenticated Data (AAD) or variant. | TODO | Appx A.4 | Ciphertext/Tag match RFC vectors. |
+| **Appendix A.1 (BIB)** | **BIB-HMAC-SHA2 Example 1**<br>Verify generation of signature matches RFC hex dump. | `tests/rfc9173.rs` (`rfc9173_appendix_a_1`) | Appx A.1 | Generated MAC matches `0x5d...` |
+| **Appendix A.2 (BCB)** | **BCB-AES-GCM Example 1**<br>Verify encryption of payload matches RFC hex dump. | `tests/rfc9173.rs` (`rfc9173_appendix_a_2`) | Appx A.2 | Ciphertext matches `0x5468...`<br>Auth Tag matches `0x...` |
+| **Appendix A.3 (BCB)** | **BCB-AES-GCM Example 2**<br>Verify encryption using 256-bit key. | `tests/rfc9173.rs` (`rfc9173_appendix_a_3`) | Appx A.3 | Ciphertext matches `0x...` |
+| **Appendix A.4 (BCB)** | **BCB-AES-GCM Example 3**<br>Verify encryption with Additional Authenticated Data (AAD) or variant. | `tests/rfc9173.rs` (`rfc9173_appendix_a_4`) | Appx A.4 | Ciphertext/Tag match RFC vectors. |
 
 ## 4. Execution & Pass Criteria
 
-* **Command:** `cargo test -p hardy-bpv7 --lib`
+* **Command:** `cargo test -p hardy-bpv7 --all-features`
 
 * **Pass Criteria:** All tests listed above must return `ok`.
 

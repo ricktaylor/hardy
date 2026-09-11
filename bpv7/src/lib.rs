@@ -14,9 +14,9 @@ This crate provides the building blocks for working with BPv7 bundles, including
 
 # Usage Example
 
-The following example demonstrates how to create a new BPv7 bundle with a payload.
+The following example demonstrates how to create a new BPv7 bundle with a payload. It calls [`CreationTimestamp::now`], so it requires the `std` feature.
 
-```rust,cfg(feature = "std")
+```rust
 use hardy_bpv7::{CreationTimestamp, builder::Builder, eid::Eid};
 
 // EIDs can be created from strings.
@@ -36,9 +36,9 @@ assert!(!cbor.is_empty());
 
 # Parsing Example
 
-The following example demonstrates how to parse a BPv7 bundle from its CBOR representation.
+The following example demonstrates how to parse a BPv7 bundle from its CBOR representation. It too requires the `std` feature, for [`CreationTimestamp::now`].
 
-```rust,cfg(feature = "std")
+```rust
 use hardy_bpv7::{CreationTimestamp, builder::Builder, eid::Eid, parser::parse};
 
 // First, create a bundle to have something to parse.
@@ -49,7 +49,7 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
     .build(CreationTimestamp::now())
     .unwrap();
 
-// Structural parse — the cheapest entry point. Returns the authoritative
+// Structural parse: the cheapest entry point. Returns the authoritative
 // byte buffer, the primary block + blocks map, and the decoded BPSec
 // OperationSets. Slice with `&buf[block.payload_range()]`. Layer keyed
 // BPSec validation on top by composing the primitives in

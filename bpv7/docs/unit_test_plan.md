@@ -46,7 +46,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 ## 3. Unit Test Cases
 
-The following scenarios are verified by the unit tests located in `bpv7/src/`.
+The following scenarios are verified by the tests in `bpv7/tests/` (public-API behaviour) and the inline `#[cfg(test)]` modules under `bpv7/src/` (private internals).
 
 ### 3.1 Primary Block & Structure (LLR 1.1.1, 1.1.15, 1.1.25)
 
@@ -54,20 +54,20 @@ The following scenarios are verified by the unit tests located in `bpv7/src/`.
 
 | Test Scenario | Description | Source File | Input | Expected Output |
  | ----- | ----- | ----- | ----- | ----- |
-| **IPN Legacy Parsing** | Parse standard 2-element IPN EID. | `src/eid/cbor_tests.rs` | CBOR `[1, 2]` | `ipn:1.2` |
-| **IPN Modern Parsing** | Parse RFC 9758 3-element IPN EID. | `src/eid/cbor_tests.rs` | CBOR `[1, 2, 3]` | `ipn:1.2.3` |
-| **DTN Scheme Parsing** | Parse standard URI string. | `src/eid/cbor_tests.rs` | CBOR `dtn://node/svc` | `dtn://node/svc` |
-| **Null Endpoint Parsing** | Parse the Null EID. | `src/eid/cbor_tests.rs` | CBOR `dtn:none` / `ipn:0.0` | `Eid::Null` |
-| **Invalid EID Rejection** | Verify rejection of malformed EIDs. | `src/eid/cbor_tests.rs` | Malformed CBOR | Error: `InvalidCBOR` / `IpnInvalid...` |
-| **String Parsing (IPN)** | Parse IPN string formats. | `src/eid/str_tests.rs` | `ipn:1.2`, `ipn:1.2.3` | Valid `Eid` |
-| **String Parsing (DTN)** | Parse DTN string formats. | `src/eid/str_tests.rs` | `dtn://node/svc` | Valid `Eid` |
-| **String Parsing (Errors)** | Reject invalid EID strings. | `src/eid/str_tests.rs` | `ipn:`, `dtn:` | Error |
-| **EID Roundtrip** | Verify EID serialization roundtrip. | `src/eid/roundtrip_tests.rs` | Various EIDs | Output matches input. |
-| **Invalid Flag Combination** | Verify rejection of bundles with invalid flag combinations. | `src/bundle/parse.rs` | Hex Stream | `RewrittenBundle::Invalid` / `Error::InvalidFlags` |
-| **CCSDS Compliance** | Verify full compliance with CCSDS profile (e.g. no floats). (LLR 1.1.1) | TODO | Various | Success/Error |
-| **Primary Block Validation** | Verify Primary Block validation logic. (LLR 1.1.15) | TODO | Valid/Invalid PB | Success/Error |
-| **CRC Validation** | Verify CRC validation (Valid/Invalid). (LLR 1.1.21) | TODO | Bundles with CRCs | Success/Error |
-| **CRC Types** | Verify support for 16/32-bit CRCs. (LLR 1.1.22) | TODO | Bundles with various CRCs | Success |
+| **IPN Legacy Parsing** | Parse standard 2-element IPN EID. | `tests/eid.rs` (`cbor_ipn`) | CBOR `[1, 2]` | `ipn:1.2` |
+| **IPN Modern Parsing** | Parse RFC 9758 3-element IPN EID. | `tests/eid.rs` (`cbor_ipn`) | CBOR `[1, 2, 3]` | `ipn:1.2.3` |
+| **DTN Scheme Parsing** | Parse standard URI string. | `tests/eid.rs` (`cbor_dtn`) | CBOR `dtn://node/svc` | `dtn://node/svc` |
+| **Null Endpoint Parsing** | Parse the Null EID. | `tests/eid.rs` (`cbor_null`) | CBOR `dtn:none` / `ipn:0.0` | `Eid::Null` |
+| **Invalid EID Rejection** | Verify rejection of malformed EIDs. | `tests/eid.rs` (`cbor_truncated_rejected`, `cbor_ipn_overflow_rejected`, `cbor_ipn_bad_arity_rejected`) | Malformed CBOR | Error: `InvalidCBOR` / `IpnInvalid...` |
+| **String Parsing (IPN)** | Parse IPN string formats. | `tests/eid.rs` (`str_ipn`, `str_local_node`) | `ipn:1.2`, `ipn:1.2.3` | Valid `Eid` |
+| **String Parsing (DTN)** | Parse DTN string formats. | `tests/eid.rs` (`str_dtn`, `str_dtn_percent_encoding`) | `dtn://node/svc` | Valid `Eid` |
+| **String Parsing (Errors)** | Reject invalid EID strings. | `tests/eid.rs` (`str_malformed_rejected`, `str_ipn_zero_node_rejected`, `str_ipn_overflow_rejected`) | `ipn:`, `dtn:` | Error |
+| **EID Roundtrip** | Verify EID serialization roundtrip. | `tests/eid.rs` (`str_cbor_display_roundtrip`, `normalising_roundtrip`) | Various EIDs | Output matches input. |
+| **Invalid Flag Combination** | Verify rejection of bundles with invalid flag combinations. | `tests/parse.rs` (`invalid_flags`) | Hex Stream | `Error::InvalidFlags` |
+| **CCSDS Compliance** | Verify full compliance with CCSDS profile (e.g. no floats). (LLR 1.1.1) | `tests/parse.rs` (`ccsds_compliance`) | Various | Success/Error |
+| **Primary Block Validation** | Verify Primary Block validation logic. (LLR 1.1.15) | `tests/primary_block.rs` (`primary_block_validation`, `non_fragment_with_fragment_fields_rejected`) | Valid/Invalid PB | Success/Error |
+| **CRC Validation** | Verify CRC validation (Valid/Invalid). (LLR 1.1.21) | `tests/primary_block.rs` (`valid_crc`, `invalid_crc`) | Bundles with CRCs | Success/Error |
+| **CRC Types** | Verify support for 16/32-bit CRCs. (LLR 1.1.22) | `tests/primary_block.rs` (`valid_crc`), `tests/parse.rs` (`crc16_bundle`, `unrecognised_crc_type_rejected`) | Bundles with various CRCs | Success |
 
 ### 3.2 Bundle Factories (Builder & Editor) (LLR 1.1.25)
 
@@ -75,8 +75,8 @@ The following scenarios are verified by the unit tests located in `bpv7/src/`.
 
 | Test Scenario | Description | Source File | Input | Expected Output |
  | ----- | ----- | ----- | ----- | ----- |
-| **Builder Minimal** | Create a basic bundle (Source, Dest, Payload). | `src/builder.rs` | `Builder::new(...)` | Valid `Bundle` struct; `build()` succeeds. |
-| **Builder from Template** | Create a builder from a JSON template (Serde). | `src/builder.rs` | JSON Template | Valid `Builder`; `build()` succeeds. |
+| **Builder Minimal** | Create a basic bundle (Source, Dest, Payload). | `tests/builder.rs` (`builder`, `builder_block_map_keys`) | `Builder::new(...)` | Valid `Bundle` struct; `build()` succeeds. |
+| **Builder from Template** | Create a builder from a JSON template (Serde). | `tests/builder.rs` (`template`) | JSON Template | Valid `Builder`; `build()` succeeds. |
 
 ### 3.3 Extension Blocks & Processing (LLR 1.1.14, 1.1.19, 1.1.30, 1.1.33, 1.1.34)
 
@@ -85,10 +85,10 @@ The following scenarios are verified by the unit tests located in `bpv7/src/`.
 | Test Scenario | Description | Source File | Input | Expected Output |
  | ----- | ----- | ----- | ----- | ----- |
 | **Bundle Age Expiry** | Verify rejection if Creation Time is zero and Bundle Age missing. (LLR 1.1.33) | TODO | Bundle (Time=0, No Age) | Error: `MissingBundleAge` |
-| **Hop Count** | Verify Hop Count parsing and limit checks. (LLR 1.1.34) | TODO | Bundle with HopCount | Parsed/Error if exceeded |
-| **Bundle Rewriting** | Verify successful bundle rewriting (e.g. reordering). (LLR 1.1.14) | TODO | Non-canonical Bundle | `RewrittenBundle::Rewritten` |
-| **Extension Parsing** | Verify parsing of PreviousNode, BundleAge, HopCount. (LLR 1.1.19) | TODO | Bundle with Ext Blocks | Valid `Bundle` fields |
-| **Rewrite Rules** | Verify rewriting rules when discarding blocks. (LLR 1.1.30) | TODO | Bundle with Unknown Block | Rewritten Bundle |
+| **Hop Count** | Verify Hop Count parsing and limit checks. (LLR 1.1.34) | `tests/parse.rs` (`hop_count_extraction`), `tests/hop_info.rs` | Bundle with HopCount | Parsed/Error if exceeded |
+| **Bundle Rewriting** | Verify that `checks::apply_rewrites` re-emits the bundle after a caller-requested block update. (LLR 1.1.14) | `tests/checks.rs` (`cascade_reencrypts_surviving_bib`) | Bundle + update set | New wire bytes + updated `Bundle` |
+| **Extension Parsing** | Verify parsing of PreviousNode, BundleAge, HopCount. (LLR 1.1.19) | `tests/parse.rs` (`extension_block_parsing`) | Bundle with Ext Blocks | Valid `Bundle` fields |
+| **Rewrite Rules** | Verify rewriting rules when discarding blocks. (LLR 1.1.30) | `tests/checks.rs` (`unknown_block_discard`, `removing_bib_outright_clears_target_coverage`) | Bundle with Unknown Block | Rewritten Bundle |
 
 ### 3.4 Error Handling & Edge Cases (LLR 1.1.12)
 
@@ -96,8 +96,8 @@ The following scenarios are verified by the unit tests located in `bpv7/src/`.
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Truncated Bundle** | Verify handling of incomplete bundle data. (LLR 1.1.12) | TODO | Truncated Bytes | Error: `NeedMoreData` |
-| **Trailing Data** | Verify rejection of bundles with trailing bytes. | TODO | Bundle + Extra Bytes | Error: `AdditionalData` |
+| **Truncated Bundle** | Verify handling of incomplete bundle data. (LLR 1.1.12) | `tests/parse.rs` (`truncated_bundle`, `truncated_large_payload`) | Truncated Bytes | Error: `NeedMoreData` |
+| **Trailing Data** | Verify rejection of bundles with trailing bytes. | `tests/parse.rs` (`trailing_data`) | Bundle + Extra Bytes | Error: `AdditionalData` |
 
 ## 4. Execution & Pass Criteria
 
@@ -105,4 +105,4 @@ The following scenarios are verified by the unit tests located in `bpv7/src/`.
 
 * **Pass Criteria:** All tests listed above must return `ok`.
 
-* **Coverage Target:** > 85% line coverage for `src/lib.rs`, `src/bundle/`, `src/block/`, `src/eid/`, `src/builder.rs`, and `src/editor.rs`.
+* **Coverage Target:** > 85% line coverage for `src/lib.rs`, `src/bundle/`, `src/parser/`, `src/checks/`, `src/eid/`, `src/builder.rs`, and `src/editor.rs`.

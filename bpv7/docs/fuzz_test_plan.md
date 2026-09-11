@@ -69,7 +69,7 @@ The strategy utilizes three distinct fuzz targets located in `bpv7/fuzz/fuzz_tar
 
   * **BPSec Processing:** Robustness of BIB/BCB parsing and decryption attempts (REQ-2).
 
-  * **Rewriting Logic:** Handling of non-canonical blocks triggering `RewrittenBundle` (LLR 1.1.30).
+  * **Rewriting Logic:** `checks::apply_rewrites` on a validated bundle, including the rewrite-convergence assertion (a rewritten bundle re-parses and rewrites to itself) (LLR 1.1.30).
 
   * CRC Validation logic (ensure CRC checks don't panic on buffer boundaries).
 

@@ -4,7 +4,7 @@ use hardy_cbor::{
     decode::FromCbor,
     encode::{Encoder, ToCbor},
 };
-use rand::TryRng;
+use rand::{TryRng, rngs::SysRng};
 
 use crate::canonical::parse_canonical;
 
@@ -17,7 +17,7 @@ pub use self::error::{Error, Result};
 
 fn rand_bytes<const N: usize>() -> super::Result<Box<[u8]>> {
     let mut buf = vec![0u8; N].into_boxed_slice();
-    rand::rngs::SysRng
+    SysRng
         .try_fill_bytes(&mut buf)
         .map_err(|_| super::Error::Rng)?;
     Ok(buf)
@@ -25,15 +25,15 @@ fn rand_bytes<const N: usize>() -> super::Result<Box<[u8]>> {
 
 fn rand_array<const N: usize>() -> super::Result<[u8; N]> {
     let mut buf = [0u8; N];
-    rand::rngs::SysRng
+    SysRng
         .try_fill_bytes(&mut buf)
         .map_err(|_| super::Error::Rng)?;
     Ok(buf)
 }
 
-// Tests live in `bpv7/tests/context.rs` (integration tests using the
-// public API — keys, Signer/Encryptor/Editor — per the
-// inline-tests-vs-tests/ split convention).
+// Context behaviour is exercised through the public API in
+// `bpv7/tests/rfc9173.rs` and `bpv7/tests/signer.rs`; only genuinely private
+// details (parameter decoding, IV bounds) carry inline `#[cfg(test)]` modules.
 
 /// Scope flags controlling which bundle fields are included in the IPPT (RFC 9173 Section 3.3/4.3).
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
