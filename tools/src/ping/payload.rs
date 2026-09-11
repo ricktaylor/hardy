@@ -186,3 +186,88 @@ pub fn build_payload(args: &Command, seq_no: u32) -> anyhow::Result<BuiltPing> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    fn base_command() -> Command {
+        Command::try_parse_from(["bp-ping", "-S", "ipn:1.1", "ipn:2.7"]).unwrap()
+    }
+
+    // The wire format is a CBOR sequence number followed by raw 0xAA padding.
+    #[test]
+    fn test_payload_round_trip() {
+        for padding in [0usize, 1, 1000] {
+            let bytes = Payload::new(u32::MAX).with_padding(padding).to_bytes();
+
+            // u32::MAX encodes as a 5-byte CBOR unsigned integer.
+            assert_eq!(bytes.len(), 5 + padding);
+            assert!(bytes[5..].iter().all(|b| *b == PADDING_BYTE));
+
+            let parsed = Payload::parse(&bytes).unwrap();
+            assert_eq!(parsed.seqno, u32::MAX);
+            assert_eq!(parsed.padding_len, padding);
+        }
+
+        assert!(Payload::parse(&[]).is_err());
+    }
+
+    // Sweep every target size across a window that includes the CBOR
+    // byte-string length-field boundaries (payload 23->24 and 255->256 bytes):
+    // each target must yield either a bundle of exactly that size or a clean
+    // error for the sizes the length-field jumps make unreachable — never a
+    // wrong-sized Ok.
+    fn run_size_sweep() {
+        let mut args = base_command();
+
+        let base_len = build_payload(&args, 0).unwrap().0.len();
+
+        // Below the minimum: a clean error.
+        args.size = Some(base_len - 1);
+        assert!(build_payload(&args, 0).is_err());
+
+        let mut unreachable_targets = 0;
+        for target in base_len..base_len + 300 {
+            args.size = Some(target);
+            match build_payload(&args, 0) {
+                Ok((bundle, payload)) => {
+                    assert_eq!(
+                        bundle.len(),
+                        target,
+                        "build_payload returned a wrong-sized bundle for target {target}"
+                    );
+                    // The reflected-payload comparison depends on the returned
+                    // payload bytes matching what was actually built in.
+                    let parsed = Payload::parse(&payload).unwrap();
+                    assert_eq!(parsed.seqno, 0);
+                }
+                Err(_) => unreachable_targets += 1,
+            }
+        }
+
+        // The payload byte-string length field widens twice in this window,
+        // each jump skipping exactly one target size.
+        assert!(
+            (1..=4).contains(&unreachable_targets),
+            "unexpected number of unreachable target sizes: {unreachable_targets}"
+        );
+    }
+
+    #[test]
+    fn test_build_payload_exact_sizes() {
+        // Watchdog, not synchronization: the sweep is pure computation and
+        // finishes in well under a second. The generous bound only converts a
+        // non-terminating binary-search regression into a test failure instead
+        // of a hung test run.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            run_size_sweep();
+            tx.send(()).ok();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(120))
+            .expect("build_payload size sweep did not terminate");
+    }
+}
