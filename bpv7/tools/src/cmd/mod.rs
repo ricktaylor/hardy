@@ -265,7 +265,7 @@ pub(crate) fn full_rewrite(
 
     // §E — apply rewrites; discard the post-rewrite Bundle (tool only
     // needs the chunks for the wire-form output).
-    hardy_bpv7::rewrite::apply_rewrites(&data, &bundle, keys, to_update, to_remove)
+    checks::apply_rewrites(&data, &bundle, keys, to_update, to_remove)
         .map(|opt| opt.map(|(_b, chunks)| chunks))
 }
 

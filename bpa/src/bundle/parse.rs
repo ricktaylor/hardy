@@ -1,5 +1,5 @@
 //! BPA-local keyed Bundle parse pipelines. Each composes the per-section
-//! [`hardy_bpv7::checks`] helpers (and [`rewrite::apply_rewrites`]) and returns
+//! [`hardy_bpv7::checks`] helpers (and [`checks::apply_rewrites`]) and returns
 //! the structurally-parsed `Bundle` together with the §D-decoded extension
 //! fields the BPA records in metadata.
 //!
@@ -32,7 +32,7 @@ use hardy_bpv7::{
     bundle::{Block, BlockType, Bundle as Bpv7Bundle},
     checks,
     editor::Chunk,
-    parser, rewrite,
+    parser,
     status_report::ReasonCode,
 };
 use time::OffsetDateTime;
@@ -549,7 +549,7 @@ where
         let key_source = key_source
             .as_deref()
             .expect("built when a BPSec branch runs");
-        match rewrite::apply_rewrites(whole, &hv.bundle, key_source, HashMap::new(), hv.to_remove) {
+        match checks::apply_rewrites(whole, &hv.bundle, key_source, HashMap::new(), hv.to_remove) {
             Ok(rewritten) => rewritten.map(|(new_bundle, chunks)| {
                 hv.bundle = new_bundle;
                 chunks

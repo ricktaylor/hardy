@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use hardy_bpv7::{bpsec::key, checks, parser, rewrite};
+use hardy_bpv7::{bpsec::key, checks, parser};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 /// Local parse pipeline for the fuzz harness, exercising the bpv7 parser:
@@ -71,7 +71,7 @@ fn parse_and_rewrite(
 
     // §E — apply rewrites; discard the post-rewrite Bundle (fuzz only
     // needs the chunks for its convergence replay).
-    rewrite::apply_rewrites(&data, &bundle, keys, to_update, to_remove)
+    checks::apply_rewrites(&data, &bundle, keys, to_update, to_remove)
         .map(|opt| opt.map(|(_b, chunks)| chunks))
 }
 

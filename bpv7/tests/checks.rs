@@ -7,7 +7,7 @@ use hardy_bpv7::parser::Parsed;
 use hardy_bpv7::{
     CreationTimestamp, Error, bpsec, builder,
     bundle::{BibCoverage, BlockType, Bundle},
-    checks, editor, eid, parser, rewrite,
+    checks, editor, eid, parser,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -103,12 +103,10 @@ fn parse_full_for_test(
     let chunks = if to_update.is_empty() && to_remove.is_empty() {
         None
     } else {
-        rewrite::apply_rewrites(&data, &raw, keys, to_update, to_remove)?.map(
-            |(new_raw, chunks)| {
-                raw = new_raw;
-                chunks
-            },
-        )
+        checks::apply_rewrites(&data, &raw, keys, to_update, to_remove)?.map(|(new_raw, chunks)| {
+            raw = new_raw;
+            chunks
+        })
     };
 
     Ok((raw, chunks))
@@ -277,7 +275,7 @@ fn unsupported_security_delete_bundle_errors() {
 }
 
 // End-to-end tests for the BCB-covered BIB re-encryption cascade through
-// `parse_full_for_test` → `rewrite::apply_rewrites` →
+// `parse_full_for_test` → `checks::apply_rewrites` →
 // `bpsec::edit::BPSecEditor::remove_blocks` (which internally calls the
 // private `reencrypt_covered_bib`). Requires rfc9173 (for BCB-AES-GCM +
 // BIB-HMAC-SHA2) and serde (for JWK deserialisation).
@@ -703,7 +701,7 @@ mod cascade_reencryption_tests {
         // (was a hard error before this fix); all four blocks are removed.
         let to_remove: HashSet<u64> = [2, bib_num, bcb_over_2, bcb_over_bib].into_iter().collect();
         let (bundle, _chunks) =
-            rewrite::apply_rewrites(&enc_bytes, &raw, &wrong_keys, HashMap::new(), to_remove)
+            checks::apply_rewrites(&enc_bytes, &raw, &wrong_keys, HashMap::new(), to_remove)
                 .expect("apply_rewrites")
                 .expect("at least one block was removed");
 
@@ -831,7 +829,7 @@ mod cascade_reencryption_tests {
 
         // And apply_rewrites maps the all-pulled-back request to "no
         // rewrite" (was: Rewritten with a byte-identical bundle).
-        let result = rewrite::apply_rewrites(
+        let result = checks::apply_rewrites(
             &bytes,
             &raw,
             &empty_keys(),
@@ -858,7 +856,7 @@ mod cascade_reencryption_tests {
             .unwrap();
         assert!(removed.is_empty());
 
-        let result = rewrite::apply_rewrites(
+        let result = checks::apply_rewrites(
             &bytes,
             &raw,
             &empty_keys(),

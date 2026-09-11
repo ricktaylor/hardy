@@ -24,7 +24,7 @@ The capability is opt-in: callers that want it pull
 `use hardy_bpv7::bpsec::edit::BPSecEditor;` into scope; callers that
 don't, don't see the methods.
 
-Both the BPA ingress pipeline (via `rewrite::apply_rewrites`) and external
+Both the BPA ingress pipeline (via `checks::apply_rewrites`) and external
 tools / third-party callers go through this trait for anything that
 needs a [`key::KeySource`].
 */
@@ -75,7 +75,7 @@ pub trait BPSecEditor: Sized {
     /// removed: never phantom numbers the bundle doesn't hold, and not the
     /// blocks the leniency rules above pulled back — so an entirely
     /// pulled-back request reports an empty set, which
-    /// [`rewrite::apply_rewrites`](crate::rewrite::apply_rewrites) maps to
+    /// [`apply_rewrites`](crate::checks::apply_rewrites) maps to
     /// "no rewrite".
     ///
     /// All-dead shrinks (every target of a covering BIB is in `blocks`)

@@ -4,7 +4,7 @@ structurally-parsed bundle, returning a fresh [`Bundle`]
 and the chunk plan describing the new wire bytes.
 
 This is the apply step that consumers reach for after composing the
-classification / decrypt / verify primitives in [`crate::checks`] to decide
+classification / decrypt / verify primitives of the parent module to decide
 *what* to rewrite. The heavy lifting (the BPSec cascade through
 BCB-encrypted BIBs) lives in [`crate::editor`] / `bpsec::edit`.
 */
@@ -17,6 +17,7 @@ use crate::{
     bundle::Bundle,
     editor::{Chunk, Editor},
 };
+
 /// Apply queued rewrites. Bulk-removes via
 /// [`BPSecEditor::remove_blocks`] (which handles cascading
 /// through BCB-encrypted BIBs internally), then applies non-canonical
@@ -31,7 +32,7 @@ use crate::{
 /// empty `to_update` + empty `to_remove`: don't call this in that case.
 ///
 /// **Precondition:** the bundle's BCB/BIB OperationSets must already have
-/// been validated — every in-tree caller runs [`crate::checks::verify`]
+/// been validated — every in-tree caller runs [`verify`](super::verify)
 /// first, which parses and accepts those OperationSets and decrypts every
 /// covered BIB. The editor operations below only re-parse those same
 /// (already-accepted) OperationSets and re-decrypt those same BIBs with the

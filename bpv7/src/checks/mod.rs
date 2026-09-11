@@ -1,12 +1,14 @@
 /*!
-Composable BPSec validation primitives over a structurally-parsed bundle.
+Composable BPSec validation primitives over a structurally-parsed bundle,
+and the [`apply_rewrites`] step that commits the decisions they inform.
 
 Each helper is policy-free: it produces facts (classifications,
 decrypt/verify outcomes, coverage stamps) and applies no policy of its
 own. Consumers — the BPA ingress pipeline, the bpv7 CLI tools — compose
-the helpers they need (or call [`verify`] for the whole keyed pass) and
-layer their own policy on top. The structural parser lives in
-[`crate::parser`]; rewrite application in [`crate::rewrite`].
+the helpers they need (or call [`verify`] for the whole keyed pass),
+layer their own policy on top, and hand the resulting removals and
+re-emits to [`apply_rewrites`]. The structural parser lives in
+[`crate::parser`].
 
 The §A–§E pipeline these helpers implement — what each `A1` / `A2` /
 `A3` / `B` / `B6` / `C7` / `C8` / `D` / `E` label means — is documented
@@ -18,8 +20,16 @@ use alloc::{boxed::Box, vec::Vec};
 use hardy_cbor::decode::FromCbor;
 use smallvec::SmallVec;
 
-use crate::bundle::{BibCoverage, Block, BlockType, Payload};
-use crate::{Error, HashMap, bpsec, canonical::CaptureFieldErr};
+use crate::{
+    Error, HashMap, bpsec,
+    bundle::{BibCoverage, Block, BlockType, Payload},
+    canonical::CaptureFieldErr,
+};
+
+mod rewrite;
+
+pub use self::rewrite::apply_rewrites;
+
 /// View into a partially-processed bundle for BPSec operations.
 ///
 /// Returns the current best payload for each block: a decrypted body if a

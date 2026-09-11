@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **BREAKING:** the `lifetime` module and its `Lifetime` newtype. It had no consumers: `PrimaryBlock::lifetime` is a `core::time::Duration` and no other code referenced the type.
 - **BREAKING:** the `eid::IpnServiceNumber` and `eid::DtnServiceName` type aliases. They were transparent spellings of `u32` and `Box<str>`; the underlying types now appear directly in the `Service` and `Eid` signatures (same types, so only code naming the aliases breaks).
 - **BREAKING:** `PrimaryBlock::as_block` is crate-internal. It fabricates the block-0 index entry for the parser and editor, which are its only callers.
+- **BREAKING:** the top-level `rewrite` module. Its single function is `checks::apply_rewrites` (was `rewrite::apply_rewrites`): the §E apply step belongs beside the §A–§D primitives whose decisions it commits, and a module holding one function is not a boundary worth naming.
 
 ### Fixed
 - The parser's block-offset conversions no longer use bare `as usize` casts on wire-derived `u64` lengths: on a 32-bit target an offset beyond the address space (excluded today by the staged-buffer invariant) now fails loudly via `try_from` + a stated invariant instead of silently truncating. No behavior change on any supported configuration.

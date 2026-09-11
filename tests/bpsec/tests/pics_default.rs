@@ -10,7 +10,7 @@ use hardy_bpv7::{
     checks,
     editor::{Chunk, Editor},
     eid::Eid,
-    parser, rewrite,
+    parser,
 };
 use std::collections::{HashMap, HashSet};
 #[derive(Debug, PartialEq, Eq)]
@@ -1034,7 +1034,7 @@ fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
     assert!(!to_remove.is_empty(), "the wrong key should fail a decrypt");
 
     let (bundle, _chunks) =
-        rewrite::apply_rewrites(&data, &raw, &wrong_keys, HashMap::new(), to_remove)
+        checks::apply_rewrites(&data, &raw, &wrong_keys, HashMap::new(), to_remove)
             .expect("apply_rewrites")
             .expect("at least one block was removed");
 

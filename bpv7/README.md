@@ -76,7 +76,7 @@ let (bundle, cbor) = Builder::new(source, destination)
 
 // Parse it back. `parser::parse` is the structural entry point; layer
 // keyed BPSec validation on top with the primitives in `hardy_bpv7::checks`
-// (`classify_*`, `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
+// (`classify_*`, `verify_all_bibs`, `apply_rewrites`, …).
 let parsed = parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
 assert_eq!(parsed.bundle.primary.id, bundle.primary.id);
 ```

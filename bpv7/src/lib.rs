@@ -7,7 +7,7 @@ This crate provides the building blocks for working with BPv7 bundles, including
 
 - [`bundle`]: Contains the structural [`Bundle`](bundle::Bundle) (primary block + blocks map) and its identifying types, including [`Bundle::semantic_eq`](bundle::Bundle::semantic_eq) for RFC-tolerant equivalence.
 - [`parser`]: The streaming wire parser ([`parse`](parser::parse) / [`BundleParser`](parser::BundleParser)).
-- [`checks`] / [`rewrite`]: Composable BPSec validation and rewrite primitives.
+- [`checks`]: Composable BPSec validation primitives and the rewrite application step ([`apply_rewrites`](checks::apply_rewrites)).
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.
 - [`editor`]: Offers an [`Editor`](editor::Editor) for modifying existing bundles.
 - [`eid`]: Implements Endpoint Identifiers (EIDs) as defined in BPv7.
@@ -54,7 +54,7 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
 // OperationSets. Slice with `&buf[block.payload_range()]`. Layer keyed
 // BPSec validation on top by composing the primitives in
 // `hardy_bpv7::checks` (`classify_*`, `decrypt_and_validate_covered_bibs`,
-// `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
+// `verify_all_bibs`, `apply_rewrites`, …).
 let parsed = parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
 
 assert_eq!(parsed.bundle.primary.id, original_bundle.primary.id);
@@ -101,7 +101,6 @@ pub mod crc;
 pub mod editor;
 pub mod eid;
 pub mod parser;
-pub mod rewrite;
 pub mod status_report;
 
 mod bundle_age;

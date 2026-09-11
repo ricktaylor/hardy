@@ -4,7 +4,7 @@ drives the structural decode incrementally; [`parse()`] is the one-shot
 convenience over it. Both yield a [`Parsed`] — the authoritative byte
 buffer, the structural [`Bundle`], and the decoded
 BPSec OperationSets. Keyed BPSec validation is layered on top by composing
-[`crate::checks`] and [`crate::rewrite`].
+the primitives in [`crate::checks`].
 
 [RFC 9171]: https://www.rfc-editor.org/rfc/rfc9171.html
 */
@@ -13,10 +13,11 @@ use bytes::{Bytes, BytesMut};
 use hardy_cbor::decode::{Error as CborError, Untagged};
 use smallvec::SmallVec;
 
-use super::*;
 use crate::{
+    Error, HashMap, HashSet, Result, bpsec,
     bundle::{BibCoverage, Block, BlockFlags, BlockType, Bundle, PrimaryBlock},
     canonical::CaptureFieldErr,
+    crc, eid,
 };
 
 use self::block_header::BlockHeader;
