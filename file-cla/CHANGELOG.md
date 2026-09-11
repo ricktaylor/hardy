@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - Files already sitting in the outbox when the CLA starts are dispatched instead of ignored until something touches them again. Filesystem notifications only cover files created after the watch is installed, so a bundle queued while the CLA was down (removable media, a restart) stayed there indefinitely. The watcher now scans the outbox once, after installing the watch so nothing arriving mid-scan is missed, and resolves symlinks so the scan and the notification path agree about the same directory entry.
 - An outbox file is consumed only when the BPA accepts the bundle (`Acceptance::Accepted`): a refused or failed dispatch now leaves the file in place for a later scan, where previously it was deleted regardless — destroying the bundle on a transient failure.
+- The "later scan" above is the startup scan of the previous bullet, and dispositions now match their failure class: a refusal is deterministic (re-offering the same bytes would refuse forever), so the file is quarantined to the `outbox/refused/` subdirectory (outside the non-recursive watch and scan) for the operator to inspect or move back to retry, while a dispatch failure is transient, so the file stays in place for the next startup scan to re-offer. The watcher also matches rename-into events, so the atomic write-then-rename spool idiom triggers dispatch.
 
 ## [0.2.0]
 
