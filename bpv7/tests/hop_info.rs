@@ -2,10 +2,10 @@ use hardy_bpv7::{Error, HopInfo};
 use hardy_cbor::decode::FromCbor;
 use hex_literal::hex;
 
-/// RFC 9171 §4.4.3: "The hop limit MUST be in the range 1 through 255."
-/// Reported via the issue tracker — a real-world bundle from a
-/// third-party conformance tool encoding `HopCount` with `limit=0`.
-/// The HopCount block body is `82 00 00` — array of two zeros.
+// RFC 9171 §4.4.3: "The hop limit MUST be in the range 1 through 255."
+// Reported via the issue tracker — a real-world bundle from a
+// third-party conformance tool encoding `HopCount` with `limit=0`.
+// The HopCount block body is `82 00 00` — array of two zeros.
 #[test]
 fn rejects_hop_limit_zero_body() {
     // Direct HopInfo body: array [limit=0, count=0]
@@ -16,7 +16,7 @@ fn rejects_hop_limit_zero_body() {
     ));
 }
 
-/// `limit = 256` is one above the §4.4.3 range.
+// `limit = 256` is one above the §4.4.3 range.
 #[test]
 fn rejects_hop_limit_256() {
     // [256, 0] — uint 256 encoded as `0x19 0x01 0x00`
@@ -27,7 +27,7 @@ fn rejects_hop_limit_256() {
     ));
 }
 
-/// Boundary: `limit = 1` is the lowest legal value.
+// Boundary: `limit = 1` is the lowest legal value.
 #[test]
 fn accepts_hop_limit_1() {
     let body = hex!("820100");
@@ -36,7 +36,7 @@ fn accepts_hop_limit_1() {
     assert_eq!(v.count, 0);
 }
 
-/// Boundary: `limit = 255` is the highest legal value.
+// Boundary: `limit = 255` is the highest legal value.
 #[test]
 fn accepts_hop_limit_255() {
     // [255, 0] — uint 255 encoded as `0x18 0xFF`

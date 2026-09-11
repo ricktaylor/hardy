@@ -1,17 +1,21 @@
 use core::time::Duration;
-use hardy_bpv7::{
-    CreationTimestamp,
-    bpsec::{self, context::ScopeFlags, edit::BPSecEditor, encryptor, key, signer},
-    builder::Builder,
-    bundle::{Block, BlockType, Bundle},
-    checks,
-    editor::{Chunk, Editor},
-    parser,
-};
 use std::collections::HashMap;
 
+use hardy_bpv7::{
+    CreationTimestamp, Error as Bpv7Error,
+    bpsec::{self, context::ScopeFlags, edit::BPSecEditor, encryptor, key, signer},
+    builder::{self, Builder},
+    bundle::{BibCoverage, Block, BlockType, Bundle, Payload},
+    checks,
+    crc::CrcType,
+    editor::{self, Chunk, Editor},
+    parser,
+};
+
 mod common;
+
 use self::common::rand_k;
+
 // Helper function to count blocks of a specific type
 fn count_blocks_of_type(bundle: &Bundle, block_type: BlockType) -> usize {
     bundle
@@ -30,15 +34,25 @@ fn raw_of(bytes: &[u8]) -> Bundle {
         .bundle
 }
 
+// The editor reports a BPSec failure three layers deep
+// (`Builder` -> `InternalError` -> `InvalidBPSec`). Unwrap to the leaf so a
+// test can assert the `bpsec::Error` variant it actually means.
+fn bpsec_error(e: editor::Error) -> bpsec::Error {
+    match e {
+        editor::Error::Builder(builder::Error::InternalError(Bpv7Error::InvalidBPSec(e))) => e,
+        other => panic!("expected a BPSec error, got: {other}"),
+    }
+}
+
 // === Local keyed-validation helpers =================================
 //
 // An explicit composition of the per-section bpv7 helpers — same shape as
 // bpv7-tools' `cmd::parse_with_keys` / `block_data` / `verify_block`, kept
 // local to this test.
 
-/// Structural parse + keyed BPSec validation (Sections A, B, C7).
-/// Returns the parser-owned `Bytes` plus the bundle and decoded
-/// BPSec OperationSets. NoKey is soft inside Section B / C7.
+// Structural parse + keyed BPSec validation (Sections A, B, C7).
+// Returns the parser-owned `Bytes` plus the bundle and decoded
+// BPSec OperationSets. NoKey is soft inside Section B / C7.
 #[allow(clippy::type_complexity)]
 fn validate_with_keys(
     data: &[u8],
@@ -50,7 +64,7 @@ fn validate_with_keys(
         HashMap<u64, bpsec::bcb::OperationSet>,
         HashMap<u64, bpsec::bib::OperationSet>,
     ),
-    hardy_bpv7::Error,
+    Bpv7Error,
 > {
     let parser::Parsed {
         data,
@@ -76,7 +90,7 @@ fn validate_with_keys(
         &no_updates,
     )?;
     if !failed_bibs.is_empty() {
-        return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
+        return Err(bpsec::Error::DecryptionFailed.into());
     }
 
     // §C7 — verify every BIB with the supplied keys (NoKey is soft).
@@ -95,37 +109,32 @@ fn validate_with_keys(
     Ok((data, bundle, bcb_ops, bib_ops))
 }
 
-/// A `BlockSet` over `(blocks, bytes)` that decrypts on demand: if a
-/// queried block is BCB-protected, it's decrypted on the fly so BIB
-/// verification over BCB-encrypted targets sees the plaintext the BIB
-/// actually signed (RFC 9172 §3.10 — sign before encrypt). Distinct from
-/// the canonical [`bpsec::PlainBlockSet`], which returns raw wire bytes;
-/// this recursion is why the per-block `verify_block` helper below can't
-/// just use the plain one.
+// A `BlockSet` over `(blocks, bytes)` that decrypts on demand: if a
+// queried block is BCB-protected, it's decrypted on the fly so BIB
+// verification over BCB-encrypted targets sees the plaintext the BIB
+// actually signed (RFC 9172 §3.10 — sign before encrypt). Distinct from
+// the canonical [`bpsec::PlainBlockSet`], which returns raw wire bytes;
+// this recursion is why the per-block `verify_block` helper below can't
+// just use the plain one.
 struct DecryptingBlockSet<'a> {
     blocks: &'a HashMap<u64, Block>,
     source_data: &'a [u8],
     bcb_ops: &'a HashMap<u64, bpsec::bcb::OperationSet>,
     keys: &'a key::KeySet,
-    /// Block number currently being verified — skip BCB-decryption for
-    /// it to avoid infinite recursion when the target is itself the
-    /// BCB-protected block we're trying to verify.
+    // Block number currently being verified — skip BCB-decryption for
+    // it to avoid infinite recursion when the target is itself the
+    // BCB-protected block we're trying to verify.
     skip_decrypt: Option<u64>,
 }
 
 impl<'a> bpsec::BlockSet<'a> for DecryptingBlockSet<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a Block, Option<hardy_bpv7::bundle::Payload<'a>>)> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<Payload<'a>>)> {
         let block = self.blocks.get(&block_number)?;
         let payload = if let Some(bcb_num) = block.bcb {
             if Some(block_number) == self.skip_decrypt {
                 // Caller (e.g. block_data for a BCB target) wants the
                 // raw ciphertext bytes — don't recurse into decrypt.
-                block
-                    .payload(self.source_data)
-                    .map(hardy_bpv7::bundle::Payload::Borrowed)
+                block.payload(self.source_data).map(Payload::Borrowed)
             } else {
                 let opset = self.bcb_ops.get(&bcb_num)?;
                 let op = opset.operations().get(&block_number)?;
@@ -146,22 +155,20 @@ impl<'a> bpsec::BlockSet<'a> for DecryptingBlockSet<'a> {
                     },
                 )
                 .ok()
-                .map(hardy_bpv7::bundle::Payload::Decrypted)
+                .map(Payload::Decrypted)
             }
         } else {
-            block
-                .payload(self.source_data)
-                .map(hardy_bpv7::bundle::Payload::Borrowed)
+            block.payload(self.source_data).map(Payload::Borrowed)
         };
         Some((block, payload))
     }
 }
 
-/// Per-block BIB verify. Returns `Ok(true)` when the block was
-/// BIB-covered and verified, `Ok(false)` when it had no BIB, and
-/// `Err(_)` for any verify failure (including `NoKey`). Handles
-/// BCB-encrypted targets transparently via `DecryptingBlockSet`'s
-/// on-demand decryption — RFC 9172 §3.10 sign-before-encrypt.
+// Per-block BIB verify. Returns `Ok(true)` when the block was
+// BIB-covered and verified, `Ok(false)` when it had no BIB, and
+// `Err(_)` for any verify failure (including `NoKey`). Handles
+// BCB-encrypted targets transparently via `DecryptingBlockSet`'s
+// on-demand decryption — RFC 9172 §3.10 sign-before-encrypt.
 fn verify_block(
     block_number: u64,
     blocks: &HashMap<u64, Block>,
@@ -169,26 +176,24 @@ fn verify_block(
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     keys: &key::KeySet,
-) -> Result<bool, hardy_bpv7::Error> {
+) -> Result<bool, Bpv7Error> {
     let target = blocks
         .get(&block_number)
-        .ok_or(hardy_bpv7::Error::MissingBlock(block_number))?;
+        .ok_or(Bpv7Error::MissingBlock(block_number))?;
     let bib_block_number = match target.bib {
-        hardy_bpv7::bundle::BibCoverage::Some(n) => n,
-        hardy_bpv7::bundle::BibCoverage::None => return Ok(false),
-        hardy_bpv7::bundle::BibCoverage::Maybe => {
-            return Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::MaybeHasBib(
+        BibCoverage::Some(n) => n,
+        BibCoverage::None => return Ok(false),
+        BibCoverage::Maybe => {
+            return Err(Bpv7Error::InvalidBPSec(bpsec::Error::MaybeHasBib(
                 block_number,
             )));
         }
     };
-    let opset = bib_ops
-        .get(&bib_block_number)
-        .ok_or(hardy_bpv7::Error::Altered)?;
+    let opset = bib_ops.get(&bib_block_number).ok_or(Bpv7Error::Altered)?;
     let op = opset
         .operations()
         .get(&block_number)
-        .ok_or(hardy_bpv7::Error::Altered)?;
+        .ok_or(Bpv7Error::Altered)?;
     let block_set = DecryptingBlockSet {
         blocks,
         source_data: data,
@@ -206,26 +211,26 @@ fn verify_block(
         },
     )
     .map(|_| true)
-    .map_err(hardy_bpv7::Error::InvalidBPSec)
+    .map_err(Bpv7Error::InvalidBPSec)
 }
 
-/// Per-block plaintext: slice when unencrypted, BCB-decrypt when not.
+// Per-block plaintext: slice when unencrypted, BCB-decrypt when not.
 fn block_data<'a>(
     block_number: u64,
     blocks: &'a HashMap<u64, Block>,
     data: &'a [u8],
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     keys: &key::KeySet,
-) -> Result<hardy_bpv7::bundle::Payload<'a>, hardy_bpv7::Error> {
+) -> Result<Payload<'a>, Bpv7Error> {
     let target = blocks
         .get(&block_number)
-        .ok_or(hardy_bpv7::Error::MissingBlock(block_number))?;
+        .ok_or(Bpv7Error::MissingBlock(block_number))?;
     if let Some(bcb_num) = target.bcb {
-        let opset = bcb_ops.get(&bcb_num).ok_or(hardy_bpv7::Error::Altered)?;
+        let opset = bcb_ops.get(&bcb_num).ok_or(Bpv7Error::Altered)?;
         let op = opset
             .operations()
             .get(&block_number)
-            .ok_or(hardy_bpv7::Error::Altered)?;
+            .ok_or(Bpv7Error::Altered)?;
         let block_set = DecryptingBlockSet {
             blocks,
             source_data: data,
@@ -244,13 +249,13 @@ fn block_data<'a>(
                 blocks: &block_set,
             },
         )
-        .map(hardy_bpv7::bundle::Payload::Decrypted)
-        .map_err(hardy_bpv7::Error::InvalidBPSec)
+        .map(Payload::Decrypted)
+        .map_err(Bpv7Error::InvalidBPSec)
     } else {
         target
             .payload(data)
-            .map(hardy_bpv7::bundle::Payload::Borrowed)
-            .ok_or(hardy_bpv7::Error::Altered)
+            .map(Payload::Borrowed)
+            .ok_or(Bpv7Error::Altered)
     }
 }
 
@@ -386,7 +391,7 @@ fn rfc9173_appendix_a_4() {
 
 // LLR 2.2.4, 2.2.7: Wrapped Key Unwrap
 #[test]
-fn test_wrapped_key_sign_and_verify() {
+fn wrapped_key_sign_and_verify() {
     // Use A128KW key-wrapping with HS256 HMAC — the sign operation generates
     // a random CEK, wraps it with the KEK, and includes the wrapped CEK in
     // the BIB parameters. Verification unwraps the CEK and uses it to verify.
@@ -430,7 +435,7 @@ fn test_wrapped_key_sign_and_verify() {
 
 // LLR 2.2.4, 2.2.7: Wrapped Key Unwrap Failure
 #[test]
-fn test_wrapped_key_wrong_kek() {
+fn wrapped_key_wrong_kek() {
     // Sign with one KEK, attempt to verify with a different KEK — unwrap should fail
 
     let (_bundle, bundle_bytes) =
@@ -481,12 +486,23 @@ fn test_wrapped_key_wrong_kek() {
     let wrong_keys = key::KeySet::new(vec![wrong_kek]);
 
     // Parsing with wrong KEK should fail during BIB verification
-    let result = validate_with_keys(&signed_bytes, &wrong_keys);
-    assert!(result.is_err(), "Verification with wrong KEK should fail");
+    let e = validate_with_keys(&signed_bytes, &wrong_keys)
+        .map(|_| ())
+        .expect_err("verification with the wrong KEK must fail");
+    // A failed key unwrap is deliberately reported as `IntegrityCheckFailed`,
+    // not as a distinct key-wrap error: the verifier gives no oracle telling a
+    // bad KEK apart from a bad MAC.
+    assert!(
+        matches!(
+            e,
+            Bpv7Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed)
+        ),
+        "got: {e}"
+    );
 }
 
 #[test]
-fn test_sign_then_encrypt() {
+fn sign_then_encrypt() {
     // 1. Create a bundle
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
@@ -530,7 +546,6 @@ fn test_sign_then_encrypt() {
         .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
-    // println!("Bundle bytes: {:02x?}", signed_bytes);
 
     validate_with_keys(&signed_bytes, &sign_keys).expect("Failed to parse signed bundle");
 
@@ -554,19 +569,16 @@ fn test_sign_then_encrypt() {
     let encrypted_bytes = encryptor
         .rebuild()
         .expect("Failed to rebuild encrypted bundle");
-    // println!("Bundle bytes: {:02x?}", encrypted_bytes);
 
     // 4. Decrypt and Verify
     let (encrypted_bytes, parsed_enc, bcb_ops, bib_ops) =
         validate_with_keys(&encrypted_bytes, &enc_keys).expect("Failed to parse encrypted bundle");
-    // println!("{:#?}", parsed_enc);
 
     // Attempt to decrypt the BIB first to isolate decryption issues from verification issues
     if let Some(bib_num) = parsed_enc.blocks.get(&1).and_then(|b| match b.bib {
-        hardy_bpv7::bundle::BibCoverage::Some(n) => Some(n),
+        BibCoverage::Some(n) => Some(n),
         _ => None,
     }) {
-        // println!("Found BIB at block {bib_num}");
         block_data(
             bib_num,
             &parsed_enc.blocks,
@@ -595,7 +607,7 @@ fn test_sign_then_encrypt() {
 }
 
 #[test]
-fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
+fn rfc9173_decrypt_payload_leaves_bib_encrypted() {
     // RFC 9173 BCB-AES-GCM behavior:
     // Due to the IV uniqueness requirement (RFC 9173 Section 4.3.1), BCB-AES-GCM
     // cannot have multiple targets in a single BCB. Each encryption operation
@@ -732,13 +744,13 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
 
     // 8. Verify payload does NOT have CRC (BIB provides integrity protection)
     assert!(
-        matches!(payload_block.crc_type, hardy_bpv7::crc::CrcType::None),
+        matches!(payload_block.crc_type, CrcType::None),
         "Payload should not have CRC when BIB exists"
     );
 }
 
 #[test]
-fn test_bib_removal_and_readd() {
+fn bib_removal_and_readd() {
     // 1. Create a bundle
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
@@ -852,7 +864,7 @@ fn test_bib_removal_and_readd() {
 }
 
 #[test]
-fn test_encrypt_then_sign_fails() {
+fn encrypt_then_sign_fails() {
     // This test demonstrates that you cannot sign an encrypted block
     // because the signer needs access to plaintext data
 
@@ -916,14 +928,14 @@ fn test_encrypt_then_sign_fails() {
     );
 
     // Should fail because block 1 is encrypted
-    assert!(
-        sign_result.is_err(),
-        "Signing an encrypted block should fail"
-    );
+    let (_, e) = sign_result
+        .map(|_| ())
+        .expect_err("signing an encrypted block must fail");
+    assert!(matches!(e, signer::Error::EncryptedTarget(1)), "got: {e}");
 }
 
 #[test]
-fn test_signature_tamper_detection() {
+fn signature_tamper_detection() {
     // 1. Create and sign bundle
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
@@ -983,9 +995,7 @@ fn test_signature_tamper_detection() {
     assert!(
         matches!(
             parse_result,
-            Err(hardy_bpv7::Error::InvalidBPSec(
-                hardy_bpv7::bpsec::Error::IntegrityCheckFailed
-            ))
+            Err(Bpv7Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed))
         ),
         "Tampered bundle should fail to parse with IntegrityCheckFailed, got error: {:?}",
         parse_result.as_ref().err()
@@ -993,7 +1003,7 @@ fn test_signature_tamper_detection() {
 }
 
 #[test]
-fn test_bcb_without_bib_removal() {
+fn bcb_without_bib_removal() {
     // 1. Create bundle
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
@@ -1073,7 +1083,7 @@ fn test_bcb_without_bib_removal() {
 }
 
 #[test]
-fn test_remove_encryption_fails_on_unencrypted_block() {
+fn remove_encryption_fails_on_unencrypted_block() {
     // Test that remove_encryption returns NotEncrypted error when called on a block
     // that is not the target of a BCB
 
@@ -1110,15 +1120,12 @@ fn test_remove_encryption_fails_on_unencrypted_block() {
     let Err((_, e)) = result else {
         panic!("Expected remove_encryption to fail on unencrypted block");
     };
-    assert!(
-        e.to_string().contains("not the target of a BCB"),
-        "Expected NotEncrypted error, got: {}",
-        e
-    );
+    let e = bpsec_error(e);
+    assert!(matches!(e, bpsec::Error::NotEncrypted), "got: {e}");
 }
 
 #[test]
-fn test_remove_integrity_fails_on_unsigned_block() {
+fn remove_integrity_fails_on_unsigned_block() {
     // Test that remove_integrity returns NotSigned error when called on a block
     // that is not the target of a BIB
 
@@ -1142,15 +1149,12 @@ fn test_remove_integrity_fails_on_unsigned_block() {
     let Err((_, e)) = result else {
         panic!("Expected remove_integrity to fail on unsigned block");
     };
-    assert!(
-        e.to_string().contains("not the target of a BIB"),
-        "Expected NotSigned error, got: {}",
-        e
-    );
+    let e = bpsec_error(e);
+    assert!(matches!(e, bpsec::Error::NotSigned), "got: {e}");
 }
 
 #[test]
-fn test_encrypt_bib_directly_fails() {
+fn encrypt_bib_directly_fails() {
     // Test that attempting to directly encrypt a BIB block fails.
     // RFC 9172 Section 3.8: A BCB MUST NOT target a BIB unless it shares a security target.
     // BIBs should only be encrypted as a side-effect when encrypting a block they protect.
@@ -1193,7 +1197,7 @@ fn test_encrypt_bib_directly_fails() {
         .blocks
         .get(&1)
         .and_then(|b| match b.bib {
-            hardy_bpv7::bundle::BibCoverage::Some(n) => Some(n),
+            BibCoverage::Some(n) => Some(n),
             _ => None,
         })
         .expect("BIB not found on payload block");
@@ -1222,14 +1226,13 @@ fn test_encrypt_bib_directly_fails() {
         panic!("Expected encrypt_block to fail when directly targeting a BIB");
     };
     assert!(
-        e.to_string().contains("Invalid block target"),
-        "Expected InvalidTarget error, got: {}",
-        e
+        matches!(e, encryptor::Error::InvalidTarget(n) if n == bib_block_num),
+        "got: {e}"
     );
 }
 
 #[test]
-fn test_sign_primary_block_with_crc() {
+fn sign_primary_block_with_crc() {
     // Test that signing the primary block (block 0) works even when
     // the primary block has a CRC. RFC 9171 Section 4.3.1 allows
     // both CRC and BIB on the primary block.
@@ -1244,7 +1247,7 @@ fn test_sign_primary_block_with_crc() {
     // Verify primary block has a CRC
     let primary = bundle.blocks.get(&0).expect("Primary block missing");
     assert!(
-        !matches!(primary.crc_type, hardy_bpv7::crc::CrcType::None),
+        !matches!(primary.crc_type, CrcType::None),
         "Primary block should have a CRC"
     );
 
@@ -1289,7 +1292,7 @@ fn test_sign_primary_block_with_crc() {
     // primary (RFC 9171 permits a primary with no CRC when a BIB targets it).
     let signed_primary = parsed.blocks.get(&0).expect("Primary block missing");
     assert!(
-        matches!(signed_primary.crc_type, hardy_bpv7::crc::CrcType::None),
+        matches!(signed_primary.crc_type, CrcType::None),
         "Primary block CRC must be removed by signing (RFC 9173 §3.8.1)"
     );
 
@@ -1299,7 +1302,7 @@ fn test_sign_primary_block_with_crc() {
 }
 
 #[test]
-fn test_sign_primary_block_with_crc_no_scope_flags() {
+fn sign_primary_block_with_crc_no_scope_flags() {
     // Test signing primary block with ScopeFlags::NONE to ensure
     // CRC handling works regardless of AAD configuration.
 
@@ -1344,7 +1347,7 @@ fn test_sign_primary_block_with_crc_no_scope_flags() {
 }
 
 #[test]
-fn test_sign_removes_crc_from_target_block() {
+fn sign_removes_crc_from_target_block() {
     // Test that signing a block properly removes the CRC from the target block
     // (not just setting the type to None while keeping the CRC value)
 
@@ -1358,7 +1361,7 @@ fn test_sign_removes_crc_from_target_block() {
     // Verify payload block (block 1) has a CRC before signing
     let payload_block = bundle.blocks.get(&1).expect("Payload block missing");
     assert!(
-        !matches!(payload_block.crc_type, hardy_bpv7::crc::CrcType::None),
+        !matches!(payload_block.crc_type, CrcType::None),
         "Payload block should have a CRC before signing"
     );
 
@@ -1394,7 +1397,7 @@ fn test_sign_removes_crc_from_target_block() {
 
     let signed_payload = parsed.blocks.get(&1).expect("Payload block missing");
     assert!(
-        matches!(signed_payload.crc_type, hardy_bpv7::crc::CrcType::None),
+        matches!(signed_payload.crc_type, CrcType::None),
         "Payload block CRC type should be None after signing, got {:?}",
         signed_payload.crc_type
     );

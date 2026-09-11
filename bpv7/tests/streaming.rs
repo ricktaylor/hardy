@@ -253,10 +253,7 @@ fn craft_bundle(crc_type: CrcType, indefinite: bool, body: &[u8]) -> Vec<u8> {
 #[test]
 fn crc_none_indefinite_payload() {
     let full = craft_bundle(CrcType::None, true, &vec![0xAB_u8; 50_000]);
-    assert!(
-        parser::parse(Bytes::copy_from_slice(&full)).is_ok(),
-        "craft is a valid bundle"
-    );
+    parser::parse(Bytes::copy_from_slice(&full)).expect("craft is a valid bundle");
 
     let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
     assert!(tail.push(&full[fed..]).unwrap(), "tail should complete");
@@ -268,10 +265,7 @@ fn crc_none_indefinite_payload() {
 #[test]
 fn crc32_indefinite_payload() {
     let full = craft_bundle(CrcType::CRC32_CASTAGNOLI, true, &vec![0xCD_u8; 50_000]);
-    assert!(
-        parser::parse(Bytes::copy_from_slice(&full)).is_ok(),
-        "craft is a valid bundle"
-    );
+    parser::parse(Bytes::copy_from_slice(&full)).expect("craft is a valid bundle");
 
     let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
     assert!(

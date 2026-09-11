@@ -80,11 +80,12 @@ impl FromCbor for BundleAge {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use hardy_cbor::decode::FromCbor;
+    use hardy_cbor::{decode::FromCbor, encode::emit};
     use hex_literal::hex;
 
-    /// Canonical encoding of `BundleAge(0)` is the single byte `0x00`.
+    use super::*;
+
+    // Canonical encoding of `BundleAge(0)` is the single byte `0x00`.
     #[test]
     fn accepts_zero() {
         let body = hex!("00");
@@ -94,8 +95,8 @@ mod tests {
         assert_eq!(len, 1);
     }
 
-    /// `BundleAge(1_000_000)` — a typical millisecond figure, two-byte
-    /// canonical encoding.
+    // `BundleAge(1_000_000)` — a typical millisecond figure, two-byte
+    // canonical encoding.
     #[test]
     fn accepts_typical_value() {
         let body = hex!("1A 000F4240"); // uint 1_000_000
@@ -105,9 +106,9 @@ mod tests {
         assert_eq!(len, 5);
     }
 
-    /// Non-shortest encoding of `0` (using the 1-byte argument form
-    /// `0x18 0x00` instead of the canonical `0x00`) is rejected.
-    /// Bare uints have no §4.1 carveout — this is a real violation.
+    // Non-shortest encoding of `0` (using the 1-byte argument form
+    // `0x18 0x00` instead of the canonical `0x00`) is rejected.
+    // Bare uints have no §4.1 carveout — this is a real violation.
     #[test]
     fn rejects_non_shortest_zero() {
         let body = hex!("18 00"); // uint 0, 1-byte argument
@@ -117,8 +118,8 @@ mod tests {
         ));
     }
 
-    /// Non-shortest encoding of `1000` using the 4-byte argument form
-    /// instead of the canonical 2-byte form.
+    // Non-shortest encoding of `1000` using the 4-byte argument form
+    // instead of the canonical 2-byte form.
     #[test]
     fn rejects_non_shortest_uint() {
         let body = hex!("1A 000003E8"); // uint 1000 as 4 bytes (canonical is `19 03E8`)
@@ -128,9 +129,9 @@ mod tests {
         ));
     }
 
-    /// Tagged encoding is rejected (RFC 9171 §4.1 disallows unexpected
-    /// tags on canonical bodies), refused from the tag's first byte
-    /// without reading the run.
+    // Tagged encoding is rejected (RFC 9171 §4.1 disallows unexpected
+    // tags on canonical bodies), refused from the tag's first byte
+    // without reading the run.
     #[test]
     fn rejects_tagged() {
         let body = hex!("C0 00"); // tag(0) on a uint
@@ -140,8 +141,8 @@ mod tests {
         ));
     }
 
-    /// Round-trip: encode a value, decode it back, verify equality and
-    /// canonical-form flag.
+    // Round-trip: encode a value, decode it back, verify equality and
+    // canonical-form flag.
     #[test]
     fn round_trip() {
         for &millis in &[
@@ -156,7 +157,7 @@ mod tests {
             u32::MAX as u64,
             u64::MAX,
         ] {
-            let encoded = hardy_cbor::encode::emit(&BundleAge(millis)).0;
+            let encoded = emit(&BundleAge(millis)).0;
             let (decoded, s, len) = BundleAge::from_cbor(&encoded).unwrap();
             assert_eq!(decoded, BundleAge(millis));
             assert!(s);
@@ -164,11 +165,11 @@ mod tests {
         }
     }
 
-    /// `Duration` conversion is saturating at `u64::MAX` ms (the upper
-    /// bound of what the wire format can carry).
+    // `Duration` conversion is saturating at `u64::MAX` ms (the upper
+    // bound of what the wire format can carry).
     #[test]
     fn duration_round_trip_saturates() {
-        let huge = core::time::Duration::from_secs(u64::MAX);
+        let huge = Duration::from_secs(u64::MAX);
         assert_eq!(BundleAge::from(huge), BundleAge(u64::MAX));
     }
 }

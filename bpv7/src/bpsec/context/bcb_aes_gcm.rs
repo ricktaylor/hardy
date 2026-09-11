@@ -516,14 +516,15 @@ pub fn parse(
 
 #[cfg(test)]
 mod tests {
-    use aes_gcm::KeyInit;
     use alloc::sync::Arc;
     use core::ops::Range;
 
-    use super::*;
-    use crate::HashMap;
+    use aes_gcm::{AesGcm, aes::Aes256};
 
-    use crate::bpsec::context::ScopeFlags;
+    use super::*;
+    // `Error` in this file is `bpsec::Error`; the context leaf enum needs an
+    // alias to be nameable alongside it.
+    use crate::{HashMap, bpsec::context::Error as ContextError};
 
     // RFC 9173 §4.3.1: decrypt must accept any IV of 8-16 bytes, not only 12.
     // Encrypt with a given nonce size via the crate's own encrypt_inner, then
@@ -536,9 +537,8 @@ mod tests {
 
         macro_rules! roundtrip {
             ($n:ty, $len:expr) => {{
-                let iv = Iv::from_bytes(&alloc::vec![0xAB; $len]).unwrap();
-                let cipher =
-                    aes_gcm::AesGcm::<aes_gcm::aes::Aes256, $n>::new_from_slice(&key).unwrap();
+                let iv = Iv::from_bytes(&rand_bytes::<$len>().unwrap()).unwrap();
+                let cipher = AesGcm::<Aes256, $n>::new_from_slice(&key).unwrap();
                 let ct = encrypt_inner(cipher, iv.as_slice(), aad, plaintext).unwrap();
                 let (ciphertext, tag) = ct.split_at(ct.len() - 16);
                 let op = Operation {
@@ -551,49 +551,55 @@ mod tests {
                     results: Results(Some(tag.into())),
                 };
                 let out = op
-                    .decrypt_gcm::<aes_gcm::aes::Aes256>(&key, aad, ciphertext)
+                    .decrypt_gcm::<Aes256>(&key, aad, ciphertext)
                     .unwrap_or_else(|e| panic!("IV length {} should decrypt: {e}", $len));
                 assert_eq!(out.as_ref(), plaintext, "IV length {} round trip", $len);
             }};
         }
 
-        roundtrip!(aes_gcm::aes::cipher::consts::U8, 8);
-        roundtrip!(aes_gcm::aes::cipher::consts::U9, 9);
-        roundtrip!(aes_gcm::aes::cipher::consts::U10, 10);
-        roundtrip!(aes_gcm::aes::cipher::consts::U11, 11);
-        roundtrip!(aes_gcm::aes::cipher::consts::U12, 12);
-        roundtrip!(aes_gcm::aes::cipher::consts::U13, 13);
-        roundtrip!(aes_gcm::aes::cipher::consts::U14, 14);
-        roundtrip!(aes_gcm::aes::cipher::consts::U15, 15);
-        roundtrip!(aes_gcm::aes::cipher::consts::U16, 16);
+        roundtrip!(U8, 8);
+        roundtrip!(U9, 9);
+        roundtrip!(U10, 10);
+        roundtrip!(U11, 11);
+        roundtrip!(U12, 12);
+        roundtrip!(U13, 13);
+        roundtrip!(U14, 14);
+        roundtrip!(U15, 15);
+        roundtrip!(U16, 16);
+    }
+
+    // Encode `bytes` as parameter 1 (the IV) of a definite-length CBOR byte
+    // string, paired with the parameter map the decoder expects.
+    fn iv_parameter(bytes: &[u8]) -> (HashMap<u64, Range<usize>>, Vec<u8>) {
+        assert!(bytes.len() < 24, "single-byte byte-string head only");
+        let mut data = Vec::with_capacity(bytes.len() + 1);
+        data.push(0x40 | bytes.len() as u8);
+        data.extend_from_slice(bytes);
+        ([(1, 0..data.len())].into_iter().collect(), data)
     }
 
     // RFC 9173 §4.3.1: an IV outside the 8-16 byte range is rejected at
     // parse, the one remaining runtime check (`Iv::from_bytes`).
     #[test]
     fn parameters_reject_out_of_range_iv() {
-        // Parameter 1 (IV) as a 20-byte CBOR byte string: 0x54 head + 20 bytes.
-        let mut data = alloc::vec![0x54u8];
-        data.extend_from_slice(&[0u8; 20]);
-        let params: HashMap<u64, Range<usize>> = [(1, 0..data.len())].into_iter().collect();
+        // 20 bytes overshoots the upper boundary.
+        let (params, data) = iv_parameter(&rand_bytes::<20>().unwrap());
         assert!(matches!(
             Parameters::from_cbor(params, &data),
-            Err(crate::bpsec::context::Error::InvalidIvLength(20))
+            Err(ContextError::InvalidIvLength(20))
         ));
 
-        // A 7-byte IV (0x47 head + 7 bytes) pins the lower boundary.
-        let mut data = alloc::vec![0x47u8];
-        data.extend_from_slice(&[0u8; 7]);
-        let params: HashMap<u64, Range<usize>> = [(1, 0..data.len())].into_iter().collect();
+        // 7 bytes undershoots the lower boundary.
+        let (params, data) = iv_parameter(&rand_bytes::<7>().unwrap());
         assert!(matches!(
             Parameters::from_cbor(params, &data),
-            Err(crate::bpsec::context::Error::InvalidIvLength(7))
+            Err(ContextError::InvalidIvLength(7))
         ));
 
-        // A 12-byte IV (0x4C head + 12 bytes) is accepted.
-        let mut data = alloc::vec![0x4Cu8];
-        data.extend_from_slice(&[0u8; 12]);
-        let params: HashMap<u64, Range<usize>> = [(1, 0..data.len())].into_iter().collect();
-        assert!(Parameters::from_cbor(params, &data).is_ok());
+        // 12 bytes is in range, and the IV survives the round trip intact.
+        let iv = rand_bytes::<12>().unwrap();
+        let (params, data) = iv_parameter(&iv);
+        let parsed = Parameters::from_cbor(params, &data).unwrap();
+        assert_eq!(parsed.iv.as_slice(), iv.as_ref());
     }
 }

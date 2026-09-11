@@ -1,21 +1,23 @@
 //! Integration tests for the BPSec validation/rewrite pipeline — composing
-//! the public `hardy_bpv7::{parse, checks, rewrite}` primitives the way a
-//! consumer would (mirrors the reference pipeline in `bpa::bundle::parse`).
+//! the public `hardy_bpv7::{parser, checks}` primitives the way a consumer
+//! would (mirrors the reference pipeline in `bpa::bundle::parse`).
+
+use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
-use hardy_bpv7::parser::Parsed;
 use hardy_bpv7::{
     CreationTimestamp, Error, bpsec, builder,
     bundle::{BibCoverage, BlockType, Bundle},
-    checks, editor, eid, parser,
+    checks, editor, eid,
+    parser::{self, Parsed},
 };
-use std::collections::{HashMap, HashSet};
 
 mod common;
+
 use self::common::{insert_after_primary, make_block, rand_k};
 
-/// Adapter: drive the public `parser::parse` and expose the legacy 4-tuple
-/// shape the pipeline tests are written against.
+// Adapter: drive the public `parser::parse` and expose the legacy 4-tuple
+// shape the pipeline tests are written against.
 #[allow(clippy::type_complexity)]
 fn raw_parse_tuple(
     data: Bytes,
@@ -281,6 +283,8 @@ fn unsupported_security_delete_bundle_errors() {
 // BIB-HMAC-SHA2) and serde (for JWK deserialisation).
 #[cfg(all(feature = "rfc9173", feature = "serde"))]
 mod cascade_reencryption_tests {
+    use hardy_bpv7::{bpsec::edit::BPSecEditor, editor::Editor};
+
     use super::*;
 
     // Fresh per call: a test binds the key once and passes it to every
@@ -721,9 +725,6 @@ mod cascade_reencryption_tests {
         assert!(bundle.blocks.contains_key(&1), "payload must survive");
     }
 
-    use hardy_bpv7::bpsec::edit::BPSecEditor;
-    use hardy_bpv7::editor::Editor;
-
     // Removing a plaintext BIB outright must clear its surviving targets'
     // coverage stamps: the rebuilt Bundle must not report coverage by a
     // block that no longer exists (parse-review finding E3).
@@ -789,9 +790,12 @@ mod cascade_reencryption_tests {
             .remove_blocks(HashSet::from([bcb_over_2]), &empty_keys())
             .map(|_| ())
             .unwrap_err();
+        let editor::Error::Builder(builder::Error::InternalError(Error::InvalidBPSec(err))) = err
+        else {
+            panic!("expected a BPSec error, got: {err}");
+        };
         assert!(
-            err.to_string()
-                .contains("without also removing all of its targets"),
+            matches!(err, bpsec::Error::StrandsCiphertext(n) if n == bcb_over_2),
             "{err}"
         );
     }
@@ -933,8 +937,9 @@ mod cascade_reencryption_tests {
 // handed-over map with `verify_payload` once the full bundle is resident.
 #[cfg(all(feature = "rfc9173", feature = "serde"))]
 mod deferred_payload_bib_tests {
-    use super::*;
     use hardy_bpv7::parser::{BundleParser, ParserProgress};
+
+    use super::*;
 
     fn sign_key() -> bpsec::key::Key {
         serde_json::from_value(serde_json::json!({

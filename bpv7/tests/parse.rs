@@ -176,10 +176,8 @@ fn truncated_large_payload() {
             .unwrap();
 
     // Confirm the complete bundle parses successfully.
-    assert!(
-        parser::parse(Bytes::copy_from_slice(&full_data)).is_ok(),
-        "complete large-payload bundle should parse"
-    );
+    parser::parse(Bytes::copy_from_slice(&full_data))
+        .expect("complete large-payload bundle should parse");
 
     // Truncate to just the primary block + payload block header (well before
     // the payload body ends). parse() must report the shortfall, not Ok.
@@ -781,7 +779,7 @@ mod bpsec_rules {
 // Relocated from the in-crate parser module: exercises only public API.
 mod parser_regressions {
     use bytes::Bytes;
-    use hardy_bpv7::parser::parse;
+    use hardy_bpv7::{CreationTimestamp, builder, parser::parse};
 
     // A block whose byte-string body header claims a length far larger than
     // the bytes present must not drive an unbounded `BytesMut::reserve` on the
@@ -797,9 +795,9 @@ mod parser_regressions {
     #[test]
     fn oversized_block_length_does_not_abort_the_reserve() {
         let (bundle, full) =
-            crate::builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
                 .with_payload(b"hi".as_slice().into())
-                .build(crate::CreationTimestamp::now())
+                .build(CreationTimestamp::now())
                 .unwrap();
 
         // Keep `0x9f` + the valid canonical primary block (so the input stays

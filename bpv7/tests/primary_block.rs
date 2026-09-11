@@ -27,11 +27,11 @@ fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
 fn valid_crc() {
     // CRC-32 (default) — valid bundle should parse
     let data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI);
-    assert!(parser::parse(Bytes::copy_from_slice(&data)).is_ok());
+    parser::parse(Bytes::copy_from_slice(&data)).expect("CRC-32 bundle should parse");
 
     // CRC-16 — valid bundle should parse
     let data = build_bundle_with_crc(crc::CrcType::CRC16_X25);
-    assert!(parser::parse(Bytes::copy_from_slice(&data)).is_ok());
+    parser::parse(Bytes::copy_from_slice(&data)).expect("CRC-16 bundle should parse");
 }
 
 #[test]
