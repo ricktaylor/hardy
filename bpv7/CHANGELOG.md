@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+A module reorganization runs through this release: every public type now has exactly one import path, and the module structure enforces it. Nothing serialized moves with it. No serde name changed anywhere in the crate, so `bpsec::key` configuration files and BPA metadata written by an earlier version load unchanged, and the `rfc9173` cargo feature keeps its name because `hardy-bpa` forwards it as a public feature. Porting is import-path edits and error-match adjustments, except for the two behaviour changes flagged below: non-canonical bundle framing is now a hard parse error, and `Error` gains variants that can break an exhaustive `match`.
+
 ### Added
 - `PrimaryBlock::canonical_bytes(raw)`: the canonical encoding of a primary block's raw bytes (borrowed when already canonical, re-emitted when not), used by BPSec IPPT/AAD construction. Previously an internal helper inside the security-context module; the primary block owns its canonical form, and the planned canonical-bytes caching gets its natural seat.
 - `Result<T>` aliases over the owning `Error` at the crate root and in `eid`, `bpsec`, `crc`, `builder`, `editor`, and `status_report`, per the house error convention. Signatures across the crate now spell `Result<T>`; the editor/signer/encryptor recovery-tuple returns (`Result<T, (Self, Error)>`) deliberately stay explicit, because the `(Self, Error)` payload is the point of those signatures.

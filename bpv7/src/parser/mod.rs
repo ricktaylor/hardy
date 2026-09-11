@@ -9,6 +9,8 @@ the primitives in [`crate::checks`].
 [RFC 9171]: https://www.rfc-editor.org/rfc/rfc9171.html
 */
 
+use alloc::boxed::Box;
+
 use bytes::{Bytes, BytesMut};
 use hardy_cbor::decode::{Error as CborError, Untagged};
 use smallvec::SmallVec;
