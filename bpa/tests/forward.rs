@@ -312,9 +312,10 @@ async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
         .unwrap()
         .send(
             dest.clone(),
-            Bytes::from_static(payload),
             core::time::Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(payload),
         )
         .await
         .unwrap();
@@ -701,9 +702,10 @@ async fn legacy_peer_receives_two_element_encoding() {
         .unwrap()
         .send(
             dest,
-            Bytes::from_static(b"legacy"),
             core::time::Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(b"legacy"),
         )
         .await
         .unwrap();
@@ -739,9 +741,10 @@ async fn non_legacy_peer_keeps_canonical_encoding() {
         .unwrap()
         .send(
             dest.clone(),
-            Bytes::from_static(b"canonical"),
             core::time::Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(b"canonical"),
         )
         .await
         .unwrap();

@@ -75,17 +75,18 @@ impl hardy_bpa::cla::Sink for Sink {
         // here instead of letting tonic break the gRPC stream, which would
         // cascade into `on_close` and unregister this CLA. Both pre-flight
         // failures are local refusals — normal verdicts, not sink faults.
-        let bundle = match hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE).await {
-            Ok(bundle) => bundle,
-            Err(hardy_bpa::stream::ConcatError::Cancelled) => {
-                debug!("Bundle stream cancelled mid-transfer, refused");
-                return Ok(hardy_bpa::cla::Acceptance::Refused);
-            }
-            Err(hardy_bpa::stream::ConcatError::TooLarge { size, max }) => {
-                debug!("Bundle exceeds the transport cap ({size} > {max}), refused");
-                return Ok(hardy_bpa::cla::Acceptance::Refused);
-            }
-        };
+        let bundle =
+            match hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE, None).await {
+                Ok(bundle) => bundle,
+                Err(hardy_bpa::stream::ConcatError::Cancelled) => {
+                    debug!("Bundle stream cancelled mid-transfer, refused");
+                    return Ok(hardy_bpa::cla::Acceptance::Refused);
+                }
+                Err(hardy_bpa::stream::ConcatError::TooLarge { size, max }) => {
+                    debug!("Bundle exceeds the transport cap ({size} > {max}), refused");
+                    return Ok(hardy_bpa::cla::Acceptance::Refused);
+                }
+            };
         match self
             .call(cla_to_bpa::Msg::Dispatch(DispatchBundleRequest {
                 bundle,

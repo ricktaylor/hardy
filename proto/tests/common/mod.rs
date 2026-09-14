@@ -231,11 +231,12 @@ impl services::ApplicationSink for ApplicationSinkWrapper {
     async fn send(
         &self,
         dest: hardy_bpv7::eid::Eid,
-        data: hardy_bpa::Bytes,
         lt: core::time::Duration,
         opts: Option<services::SendOptions>,
+        size_hint: Option<u64>,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.0.send(dest, data, lt, opts).await
+        self.0.send(dest, lt, opts, size_hint, stream).await
     }
 }
 

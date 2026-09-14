@@ -165,9 +165,10 @@ impl services::ApplicationSink for MockApplicationSink {
     async fn send(
         &self,
         _destination: hardy_bpv7::eid::Eid,
-        _data: hardy_bpa::Bytes,
         _lifetime: core::time::Duration,
         _options: Option<services::SendOptions>,
+        _size_hint: Option<u64>,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
         Err(services::Error::Internal(
             "mock sink: send not implemented".into(),

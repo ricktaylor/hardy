@@ -51,6 +51,7 @@ impl Application {
             }
         }
 
+        let mut payload = request.payload;
         self.sink()?
             .send(
                 request
@@ -59,9 +60,10 @@ impl Application {
                     .map_err(|e: hardy_bpv7::eid::Error| {
                         tonic::Status::invalid_argument(format!("Invalid eid: {e}"))
                     })?,
-                request.payload,
                 std::time::Duration::from_millis(request.lifetime),
                 options,
+                None,
+                &mut payload,
             )
             .await
             .map(|bundle_id| {

@@ -48,14 +48,14 @@ impl PipeService {
     pub async fn send(
         &self,
         destination: Eid,
-        data: hardy_bpa::Bytes,
+        mut data: hardy_bpa::Bytes,
         lifetime: core::time::Duration,
         options: Option<hardy_bpa::services::SendOptions>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
         self.sink
             .get()
             .expect("send called before registration")
-            .send(destination, data, lifetime, options)
+            .send(destination, lifetime, options, None, &mut data)
             .await
     }
 }
