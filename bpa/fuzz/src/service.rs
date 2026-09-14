@@ -82,9 +82,11 @@ impl hardy_bpa::services::Application for PipeService {
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        // Do nothing
+        // Receive to completion and discard the payload: an undrained
+        // delivery stream would stall the producer side of the harness.
+        let _ = hardy_bpa::stream::concat_stream(stream, usize::MAX).await;
         Ok(())
     }
 
