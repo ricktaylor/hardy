@@ -100,7 +100,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
         // `client::application::Sink::send`: an oversized bundle returns a
         // typed error here instead of letting tonic break the gRPC stream,
         // which would cascade into `on_close` and unregister this service.
-        let data = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
+        let data = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE, None)
             .await
             .map_err(|e| match e {
                 hardy_bpa::stream::ConcatError::Cancelled => {
