@@ -1,6 +1,6 @@
 use core::num::NonZeroU32;
 
-use hardy_bpv7::eid::NodeId;
+use hardy_bpv7::eid::{Eid, NodeId};
 
 use super::*;
 
@@ -92,7 +92,7 @@ impl cla::Sink for Sink {
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
         stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<()> {
+    ) -> Result<cla::Acceptance> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
 
         // A CLA that unregisters mid-stream must not land its bundle: the
@@ -104,9 +104,18 @@ impl cla::Sink for Sink {
             inner: stream,
             token: cla.cancel.clone(),
         };
-        self.dispatcher
+        let verdict = self
+            .dispatcher
             .receive_bundle(cla.name.clone(), peer_node, peer_addr, &mut stream)
-            .await
+            .await;
+
+        // A refusal caused by that teardown is not a verdict on the bundle
+        // — the registration died. Report the dead sink instead, so the CLA
+        // does not mistake its own unregistration for a per-bundle refusal.
+        if matches!(verdict, cla::Acceptance::Refused) && cla.cancel.is_cancelled() {
+            return Err(cla::Error::Disconnected);
+        }
+        Ok(verdict)
     }
 
     async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
@@ -254,9 +263,10 @@ impl ClaRegistry {
     pub async fn forward(
         &self,
         peer_id: u32,
+        next_hop: Eid,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        self.peers.forward(peer_id, bundle).await
+        self.peers.forward(peer_id, next_hop, bundle).await
     }
 
     pub async fn shutdown(&self) {
@@ -314,6 +324,7 @@ impl ClaRegistry {
         }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
+
         entry
             .cla
             .on_register(

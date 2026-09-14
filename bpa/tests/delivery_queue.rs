@@ -199,12 +199,15 @@ async fn unregister_sweeps_queued_deliveries() {
     // Bundle 1 is delivered and held open, occupying the service's
     // (serialized) delivery consumer.
     let (_id1, data1) = dispatch(b"held");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut data1.clone())
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut data1.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     tokio::time::timeout(tokio::time::Duration::from_secs(5), started_rx.recv_async())
         .await
         .expect("Timeout waiting for the held delivery")
@@ -212,12 +215,15 @@ async fn unregister_sweeps_queued_deliveries() {
 
     // Bundle 2 queues behind it in DeliverPending.
     let (id2, data2) = dispatch(b"queued");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut data2.clone())
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut data2.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     await_status(
         &metadata_store,
         &id2,

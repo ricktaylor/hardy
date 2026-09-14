@@ -21,7 +21,7 @@ impl hardy_bpa::cla::Sink for StubSink {
         _peer_node: Option<&NodeId>,
         _peer_addr: Option<&ClaAddress>,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<()> {
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         unreachable!("forward tests never dispatch inbound bundles");
     }
 

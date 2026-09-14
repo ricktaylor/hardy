@@ -1950,7 +1950,6 @@ dependencies = [
  "hardy-echo-service",
  "hardy-eid-patterns",
  "hardy-file-cla",
- "hardy-ipn-legacy-filter",
  "hardy-localdisk-storage",
  "hardy-otel",
  "hardy-postgres-storage",

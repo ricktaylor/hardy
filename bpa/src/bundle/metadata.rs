@@ -118,8 +118,12 @@ pub struct BundleMetadata {
     classification: Classification,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
-    /// Next-hop EID resolved by the RIB for the dispatch in progress; consumed
-    /// by the forwarding path, recomputed on re-dispatch. Never persisted.
+    /// Next-hop EID slot for the legacy egress `WriteFilter` API. Nothing
+    /// populates it: the transmission attempt's adjacency rides the
+    /// queue-assignment record ([`BundleStatus::ForwardPending`]'s
+    /// `next_hop`) instead, and readers of this field always see `None`.
+    /// It remains only so the standalone `IpnLegacyFilter` crate still
+    /// compiles; retired with the filter engine swap.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub next_hop: Option<Eid>,
     /// Mutable annotations that filters may update during processing.

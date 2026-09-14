@@ -441,8 +441,8 @@ mod tests {
             _peer_node: Option<&NodeId>,
             _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
             _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-        ) -> hardy_bpa::cla::Result<()> {
-            Ok(())
+        ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
+            Ok(hardy_bpa::cla::Acceptance::Accepted)
         }
 
         async fn add_peer(
