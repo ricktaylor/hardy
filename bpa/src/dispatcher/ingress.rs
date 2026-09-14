@@ -62,6 +62,22 @@ async fn drain_payload(
         };
         whole.extend_from_slice(&bytes);
         if complete {
+            // Structurally complete, but the wire's commit is the final
+            // segment (as in `parse_headers`): if the payload finished on a
+            // non-final chunk, the terminating `Final` still has to arrive.
+            if !last {
+                match stream.recv().await {
+                    Ok(Segment::Final(b)) if b.is_empty() => {}
+                    Ok(_) => {
+                        debug!("Trailing bytes after a complete payload");
+                        return Err(DrainFailure::Rejected);
+                    }
+                    Err(_) => {
+                        debug!("Payload stream ended before its final segment");
+                        return Err(DrainFailure::Cancelled);
+                    }
+                }
+            }
             break;
         }
         if last {
@@ -342,5 +358,93 @@ impl Dispatcher {
             }
             filter::ExecResult::Drop(bundle, None) => self.delete_bundle(bundle).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpv7::{bpsec::no_keys, builder::Builder, creation_timestamp::CreationTimestamp};
+
+    use super::*;
+
+    // Drive the real parser to the streaming fallback: a payload larger than
+    // the parser's chunk buffer, arriving in a small first segment, yields
+    // `Partial` — the resident prefix plus a `PayloadTail` for the drain.
+    async fn partial_bundle() -> (Bytes, Bytes, PayloadTail) {
+        let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.99".parse().unwrap())
+            .with_payload(vec![0x5a; 8192].into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let data = Bytes::from(data);
+
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Next(data.slice(..1024)))
+            .await
+            .expect("channel open");
+
+        let Ok((_, consumed, Some(tail))) = parse::parse_headers(&mut rx, 1 << 20, no_keys).await
+        else {
+            panic!("an 8 KiB payload takes the streaming fallback");
+        };
+        (data, consumed, tail)
+    }
+
+    // The drain's commit is the terminating `Final`, like the header pass:
+    // a tail that completes in a non-final segment is confirmed only by the
+    // empty `Final` behind it.
+    #[tokio::test]
+    async fn a_final_segment_commits_the_drained_payload() {
+        let (data, consumed, tail) = partial_bundle().await;
+
+        let (tx, mut rx) = hardy_async::channel::bounded(2);
+        tx.send(Segment::Next(data.slice(1024..)))
+            .await
+            .expect("channel open");
+        tx.send(Segment::Final(Bytes::new()))
+            .await
+            .expect("channel open");
+
+        let Ok(whole) = drain_payload(&mut rx, consumed, tail, 1 << 20).await else {
+            panic!("an empty `Final` commits the drained payload");
+        };
+        assert_eq!(whole, data);
+    }
+
+    // A producer that goes away after the tail completes in a non-final
+    // segment has truncated the transfer: the CLA must withhold the ack.
+    #[tokio::test]
+    async fn a_cancel_after_a_complete_non_final_tail_is_a_truncation() {
+        let (data, consumed, tail) = partial_bundle().await;
+
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Next(data.slice(1024..)))
+            .await
+            .expect("channel open");
+        drop(tx);
+
+        assert!(matches!(
+            drain_payload(&mut rx, consumed, tail, 1 << 20).await,
+            Err(DrainFailure::Cancelled)
+        ));
+    }
+
+    // Bytes after a complete payload are trailing garbage, even on the
+    // `Final` itself: the stream is rejected, not committed.
+    #[tokio::test]
+    async fn trailing_bytes_after_a_complete_payload_are_rejected() {
+        let (data, consumed, tail) = partial_bundle().await;
+
+        let (tx, mut rx) = hardy_async::channel::bounded(2);
+        tx.send(Segment::Next(data.slice(1024..)))
+            .await
+            .expect("channel open");
+        tx.send(Segment::Final(Bytes::from_static(b"trailing")))
+            .await
+            .expect("channel open");
+
+        assert!(matches!(
+            drain_payload(&mut rx, consumed, tail, 1 << 20).await,
+            Err(DrainFailure::Rejected)
+        ));
     }
 }
