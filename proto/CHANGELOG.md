@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `AppReceiveRequest.bundle_id` and `ServiceReceiveRequest.bundle_id` — the delivered bundle's identifier, in the key encoding documented on `SendResponse.bundle_id`. Required: the client SDK fails the delivery without it.
 
 ### Changed
+- The bridges follow `hardy-bpa`'s streamed `ApplicationSink::send`: the server-side bridge feeds the wire payload through the sink as a one-segment stream, and the client-side sink assembles the segment stream (pre-sized by the caller's `size_hint`, bounded by the wire's payload cap) before marshalling the unary send message. The wire schema is unchanged; the oversized-payload pre-check now falls out of the bounded accumulation instead of a manual length test.
 - **BREAKING:** `GrpcServer::serve` returns `Result<(), Box<dyn Error + Send + Sync>>` (was `Result<(), tonic::transport::Error>`): serving on the pre-bound listener can also fail on runtime registration, not only in transport.
 - **BREAKING:** `RemoteBpa::register_cla` takes the CLA's set-once declarations as a `hardy_bpa::cla::ClaInit` parameter — address type, lane count, and declared receive limit all travel in the registration request — and the client-side relay delivers the negotiated cap to `Cla::on_register` as `Option<NonZeroU64>` (wire absence ↔ `None`).
 - **BREAKING** (`serde` feature): the server `Config` refuses unknown keys at deserialization, so a typo in a consumer's `grpc` config section fails loudly instead of silently leaving the default in force.

@@ -196,15 +196,24 @@ pub enum ConcatError {
 /// beyond `max_size` bytes.
 ///
 /// This is the interim consumer both ends of a segment stream share until
-/// bundle storage can spool a stream directly; a capacity hint (e.g. from a
-/// wire schema that announces sizes up front) is a natural extension when a
-/// real streaming producer lands. An empty stream (a bare
+/// bundle storage can spool a stream directly. An empty stream (a bare
 /// `Final(Bytes::new())`) yields empty bytes — the caller's parser rejects
 /// those as it would any non-bundle.
+///
+/// `size_hint` pre-sizes the accumulator when the caller knows the total up
+/// front (a wire schema that announces sizes, or [`buffer_stream`] passing
+/// its exact `total_len`); pass `None` to grow on demand. The hint is
+/// advisory and clamped by `max_size`, so a caller-declared size can force
+/// at most the allocation the caller already accepts, and a stream that
+/// disagrees with its hint is still bounded only by `max_size`.
 pub async fn concat_stream<R: Receiver<Segment> + ?Sized>(
     stream: &mut R,
     max_size: usize,
+    size_hint: Option<u64>,
 ) -> core::result::Result<crate::Bytes, ConcatError> {
+    let reserve = size_hint.map_or(0, |hint| {
+        usize::try_from(hint.min(max_size as u64)).unwrap_or(max_size)
+    });
     // The first segment is held as-is until a second arrives, so a
     // single-`Final` stream (the whole-buffer convenience methods) is
     // returned untouched — unconditionally zero-copy, even when the caller
@@ -233,11 +242,13 @@ pub async fn concat_stream<R: Receiver<Segment> + ?Sized>(
             let mut current = match head.try_into_mut() {
                 Ok(head) => head,
                 Err(head) => {
-                    let mut current = crate::BytesMut::with_capacity(head.len() + data.len());
+                    let mut current =
+                        crate::BytesMut::with_capacity(reserve.max(head.len() + data.len()));
                     current.extend_from_slice(&head);
                     current
                 }
             };
+            current.reserve(reserve.saturating_sub(current.len()));
             current.extend_from_slice(&data);
             concat = Some(current);
         } else {
@@ -304,7 +315,7 @@ pub async fn buffer_stream<R: Receiver<Segment> + ?Sized>(
 ) -> core::result::Result<crate::Bytes, BufferError> {
     let total_len =
         usize::try_from(total_len).map_err(|_| BufferError::Unaddressable { total_len })?;
-    let data = concat_stream(stream, total_len)
+    let data = concat_stream(stream, total_len, Some(total_len as u64))
         .await
         .map_err(|e| match e {
             ConcatError::Cancelled => BufferError::Cancelled,
@@ -342,7 +353,10 @@ mod tests {
         ])
         .await;
         assert_eq!(
-            concat_stream(&mut rx, usize::MAX).await.unwrap().as_ref(),
+            concat_stream(&mut rx, usize::MAX, None)
+                .await
+                .unwrap()
+                .as_ref(),
             b"hello"
         );
     }
@@ -355,7 +369,10 @@ mod tests {
         ])
         .await;
         assert_eq!(
-            concat_stream(&mut rx, usize::MAX).await.unwrap().as_ref(),
+            concat_stream(&mut rx, usize::MAX, None)
+                .await
+                .unwrap()
+                .as_ref(),
             b"data"
         );
     }
@@ -368,7 +385,7 @@ mod tests {
             .unwrap();
         drop(tx); // no Final: the producer died mid-bundle
         assert!(matches!(
-            concat_stream(&mut rx, usize::MAX).await,
+            concat_stream(&mut rx, usize::MAX, None).await,
             Err(ConcatError::Cancelled)
         ));
     }
@@ -390,7 +407,10 @@ mod tests {
                 .unwrap();
         });
         assert_eq!(
-            concat_stream(&mut rx, usize::MAX).await.unwrap().as_ref(),
+            concat_stream(&mut rx, usize::MAX, None)
+                .await
+                .unwrap()
+                .as_ref(),
             b"aabbcc"
         );
         producer.await.unwrap();
@@ -404,7 +424,7 @@ mod tests {
         ])
         .await;
         assert!(matches!(
-            concat_stream(&mut rx, 15).await,
+            concat_stream(&mut rx, 15, None).await,
             Err(ConcatError::TooLarge { size: 20, max: 15 })
         ));
     }

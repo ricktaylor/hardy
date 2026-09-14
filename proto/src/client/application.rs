@@ -94,20 +94,17 @@ impl hardy_bpa::services::ApplicationSink for Sink {
     async fn send(
         &self,
         destination: eid::Eid,
-        data: hardy_bpa::Bytes,
         lifetime: std::time::Duration,
         options: Option<hardy_bpa::services::SendOptions>,
+        size_hint: Option<u64>,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
-        // Pre-check size so an oversized payload returns a typed error
-        // instead of letting tonic break the stream during encoding,
-        // which would cascade into `on_close` and unregister this
-        // application.
-        if data.len() > crate::MAX_PAYLOAD_SIZE {
-            return Err(hardy_bpa::services::Error::PayloadTooLarge {
-                size: data.len() as u64,
-                max: crate::MAX_PAYLOAD_SIZE as u64,
-            });
-        }
+        // Accumulate the payload for the unary wire message, bounded by the
+        // wire's payload cap so an oversized payload returns a typed error
+        // instead of letting tonic break the stream during encoding, which
+        // would cascade into `on_close` and unregister this application.
+        let data =
+            hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE, size_hint).await?;
         match self
             .call(app_to_bpa::Msg::Send(AppSendRequest {
                 destination: destination.to_string(),
