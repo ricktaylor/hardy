@@ -327,13 +327,35 @@ where
                 return Err(HeaderFailure::Invalid(None));
             }
             Ok(parse::ParserProgress::NeedMore(_)) => {}
-            Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
-                Ok(parsed) => break (parsed, whole, None),
-                Err(e) => {
-                    debug!("Bundle BPSec structural validation failed: {e}");
-                    return Err(HeaderFailure::Invalid(None));
+            Ok(parse::ParserProgress::Ready(whole)) => {
+                // Structurally complete, but the wire's commit is the final
+                // segment: a bundle whose bytes all arrived in a non-final
+                // chunk is confirmed only by the terminating `Final`. A
+                // cancel or half-close first is a truncation, and any
+                // further bytes are trailing garbage after a complete
+                // bundle. (The framer ends data on `Final`, so the happy
+                // path takes `last` here and never pulls again.)
+                if !last {
+                    match stream.recv().await {
+                        Ok(Segment::Final(b)) if b.is_empty() => {}
+                        Ok(_) => {
+                            debug!("Trailing bytes after a complete bundle");
+                            return Err(HeaderFailure::Invalid(None));
+                        }
+                        Err(_) => {
+                            debug!("Bundle stream ended before its final segment");
+                            return Err(HeaderFailure::Cancelled);
+                        }
+                    }
                 }
-            },
+                match parser.finish(whole.clone()) {
+                    Ok(parsed) => break (parsed, whole, None),
+                    Err(e) => {
+                        debug!("Bundle BPSec structural validation failed: {e}");
+                        return Err(HeaderFailure::Invalid(None));
+                    }
+                }
+            }
             // A `Partial` after the stream has already ended is a truncated
             // bundle: the declared payload cannot complete (`tail.remaining()`
             // is positive), so reject it exactly like `NeedMore` at end-of-
@@ -993,5 +1015,73 @@ mod tests {
             status_report_reason_for(&bpsec::Error::NoKey.into()),
             ReasonCode::BlockUnintelligible
         );
+    }
+
+    // A minimal unsecured bundle as its wire bytes.
+    fn small_bundle() -> Bytes {
+        use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
+
+        let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.99".parse().unwrap())
+            .with_payload(b"payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        Bytes::from(data)
+    }
+
+    // The wire's commit for a streamed bundle is the terminating `Final`:
+    // bytes that structurally complete the bundle in a non-final segment are
+    // confirmed only by the empty `Final` behind them.
+    #[tokio::test]
+    async fn a_complete_bundle_in_a_non_final_segment_commits_on_the_final() {
+        let data = small_bundle();
+
+        let (tx, mut rx) = hardy_async::channel::bounded(2);
+        tx.send(Segment::Next(data.clone()))
+            .await
+            .expect("channel open");
+        tx.send(Segment::Final(Bytes::new()))
+            .await
+            .expect("channel open");
+
+        let Ok((_, headers, tail)) = parse_headers(&mut rx, 1 << 20, bpsec::no_keys).await else {
+            panic!("an empty `Final` commits the complete bundle");
+        };
+        assert_eq!(headers, data);
+        assert!(tail.is_none(), "the small bundle is fully resident");
+    }
+
+    // A producer that goes away after a structurally complete non-final
+    // segment has truncated the transfer: the bundle must not commit, so the
+    // CLA withholds the transfer ack and the peer retransmits.
+    #[tokio::test]
+    async fn a_cancel_after_a_complete_non_final_segment_is_a_truncation() {
+        let data = small_bundle();
+
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Next(data)).await.expect("channel open");
+        drop(tx);
+
+        assert!(matches!(
+            parse_headers(&mut rx, 1 << 20, bpsec::no_keys).await,
+            Err(HeaderFailure::Cancelled)
+        ));
+    }
+
+    // Bytes after a structurally complete bundle are trailing garbage, not a
+    // second transfer, even when they ride the `Final` itself.
+    #[tokio::test]
+    async fn trailing_bytes_after_a_complete_bundle_are_rejected() {
+        let data = small_bundle();
+
+        let (tx, mut rx) = hardy_async::channel::bounded(2);
+        tx.send(Segment::Next(data)).await.expect("channel open");
+        tx.send(Segment::Final(Bytes::from_static(b"trailing")))
+            .await
+            .expect("channel open");
+
+        assert!(matches!(
+            parse_headers(&mut rx, 1 << 20, bpsec::no_keys).await,
+            Err(HeaderFailure::Invalid(None))
+        ));
     }
 }
