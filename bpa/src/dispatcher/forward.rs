@@ -96,7 +96,7 @@ impl Dispatcher {
         //   route to a different peer, so Egress will run again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
         let bundle_id = bundle.id().clone();
-        let (bundle, mut data) = match self
+        let (mut bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Egress, bundle, data, self.key_provider())
             .await
@@ -149,20 +149,48 @@ impl Dispatcher {
                 self.store.reset_peer_queue(peer).await;
                 OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
+            Err(cla::Error::StreamCancelled) => {
+                metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
+                debug!("Transfer to peer {peer} was interrupted, re-dispatching");
+
+                // An interrupted transfer: the stream was abandoned or
+                // truncated mid-forward. Transient, and the route is
+                // unchanged, so re-run the routing decision now, like the
+                // deferred `Failed` outcome; retries are paced by the CLA
+                // re-opening its transfer, and dispatch's expiry checkpoint
+                // bounds a bundle that keeps being interrupted. The swap
+                // arbitrates the resolution race (a sweep or the reaper may
+                // have resolved the claim first), and the re-fetch re-enters
+                // from the persisted representation: the in-hand copy
+                // carries the in-memory rewrite above (see park_bundle).
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!("Interrupted transfer lost the resolution race, ignored");
+                    return OfferOutcome::Lost;
+                }
+                match self.store.get_metadata(&bundle_id).await {
+                    Some(bundle) => OfferOutcome::Redispatch(bundle),
+                    None => OfferOutcome::Lost,
+                }
+            }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
                 debug!("Failed to forward bundle to peer {peer}: {e}, returning it to Waiting");
 
-                // Bundle-scoped evidence about a single transfer: park only
-                // this bundle, leaving the rest of the peer's queue alone —
-                // resetting the queue is the response to link-scoped
-                // evidence, above. Unlike the deferred `Failed` outcome,
-                // which is paced by a network round trip, a synchronous
-                // failure can be deterministic and instantaneous, so
-                // re-running dispatch inline here could spin; the retry
-                // waits in Waiting for the next routing or link event —
-                // park_bundle re-dispatches at most once, and only if such
-                // an event landed while this transfer was in flight.
+                // Any other synchronous error is the CLA rejecting this
+                // bundle (oversized, a bad address) — bundle-scoped
+                // evidence about a single transfer: park only this bundle,
+                // leaving the rest of the peer's queue alone — resetting
+                // the queue is the response to link-scoped evidence, above.
+                // Unlike an interrupted transfer, a rejection can be
+                // deterministic and instantaneous, so re-running dispatch
+                // inline here could spin; the retry waits in Waiting for
+                // the next routing or link event — park_bundle re-dispatches
+                // at most once, and only if such an event landed while this
+                // transfer was in flight.
                 OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
         }

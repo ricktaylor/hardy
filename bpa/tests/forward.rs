@@ -3,10 +3,7 @@
 //! need a contiguous bundle.
 
 use core::num::NonZeroU64;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 use hardy_bpa::{
     Bytes, async_trait,
@@ -41,18 +38,19 @@ enum Event {
 struct StreamingCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
     events_tx: flume::Sender<Event>,
-    /// When set, the first `forward` call fails without pulling.
-    flaky: AtomicBool,
+    /// When set, the first `forward` call fails with this error without
+    /// pulling the stream.
+    first_error: Mutex<Option<cla::Error>>,
 }
 
 impl StreamingCla {
-    fn new(flaky: bool) -> (Arc<Self>, flume::Receiver<Event>) {
+    fn new(first_error: Option<cla::Error>) -> (Arc<Self>, flume::Receiver<Event>) {
         let (tx, rx) = flume::bounded(16);
         (
             Arc::new(Self {
                 sink: hardy_async::sync::spin::Once::new(),
                 events_tx: tx,
-                flaky: AtomicBool::new(flaky),
+                first_error: Mutex::new(first_error),
             }),
             rx,
         )
@@ -80,9 +78,9 @@ impl cla::Cla for StreamingCla {
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
-        if self.flaky.swap(false, Ordering::SeqCst) {
+        if let Some(e) = self.first_error.lock().unwrap().take() {
             let _ = self.events_tx.send(Event::Failed);
-            return Err(cla::Error::StreamCancelled);
+            return Err(e);
         }
         let mut segments = Vec::new();
         loop {
@@ -150,51 +148,6 @@ impl cla::Cla for BufferedCla {
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let _ = self.events_tx.send(Event::Forward(bundle));
         Ok(cla::ForwardBundleResult::Sent)
-    }
-}
-
-/// Fails every `forward` call synchronously, without pulling.
-struct FailingCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-    events_tx: flume::Sender<Event>,
-}
-
-impl FailingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Event>) {
-        let (tx, rx) = flume::bounded(16);
-        (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                events_tx: tx,
-            }),
-            rx,
-        )
-    }
-}
-
-#[async_trait]
-impl cla::Cla for FailingCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn forward(
-        &self,
-        _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _total_len: u64,
-        _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        let _ = self.events_tx.send(Event::Failed);
-        Err(cla::Error::StreamCancelled)
     }
 }
 
@@ -314,7 +267,7 @@ async fn streaming_cla_receives_single_final_segment() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false).await;
 
-    let (cla, events_rx) = StreamingCla::new(false);
+    let (cla, events_rx) = StreamingCla::new(None);
     bpa.register_cla("stream".to_string(), cla.clone(), None, ClaInit::default())
         .await
         .unwrap();
@@ -397,110 +350,6 @@ async fn buffered_cla_receives_whole_bundle() {
     assert_eq!(parsed.bundle.primary.destination, dest);
 
     bpa.shutdown().await;
-}
-
-/// A failed streamed attempt takes the established requeue path: the bundle
-/// returns to Waiting and a routing change re-dispatches it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_streamed_forward_is_requeued_and_retried() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
-
-    let (cla, events_rx) = StreamingCla::new(true);
-    bpa.register_cla("flaky".to_string(), cla.clone(), None, ClaInit::default())
-        .await
-        .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
-            &[remote_node(2)],
-        )
-        .await
-        .unwrap();
-
-    let app = SendOnlyApp::new();
-    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
-        .await
-        .unwrap();
-    originate(&app, b"Try again").await;
-
-    assert!(matches!(recv_event(&events_rx, 5).await, Event::Failed));
-
-    // Nudge the RIB so the Waiting bundle is re-polled. The failed attempt
-    // returns the bundle to Waiting *after* the CLA reports the failure, so
-    // a single nudge can race it; each fresh peer re-triggers the poll.
-    let mut retry = None;
-    for i in 0.. {
-        cla.sink
-            .get()
-            .unwrap()
-            .add_peer(
-                cla::ClaAddress::Private(format!("peer-{i}").into_bytes().into()),
-                &[remote_node(2)],
-            )
-            .await
-            .unwrap();
-        if let Ok(Ok(event)) = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            events_rx.recv_async(),
-        )
-        .await
-        {
-            retry = Some(event);
-            break;
-        }
-        assert!(i < 20, "Timed out waiting for the retry");
-    }
-    let Some(Event::Streamed { segments, .. }) = retry else {
-        panic!("Expected a successful retry through the streamed door");
-    };
-    assert!(matches!(segments.last(), Some(Segment::Final(_))));
-
-    bpa.shutdown().await;
-}
-
-/// A synchronous per-transfer failure parks only that bundle, with no inline
-/// retry: a deterministic failure must not spin dispatch → forward → fail,
-/// so exactly one attempt occurs until the next routing or link event.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_streamed_forward_does_not_retry_inline() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
-
-    let (cla, events_rx) = FailingCla::new();
-    bpa.register_cla("failing".to_string(), cla.clone(), None, ClaInit::default())
-        .await
-        .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
-            &[remote_node(2)],
-        )
-        .await
-        .unwrap();
-
-    let app = SendOnlyApp::new();
-    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
-        .await
-        .unwrap();
-    originate(&app, b"One shot").await;
-
-    assert!(matches!(recv_event(&events_rx, 5).await, Event::Failed));
-
-    // The bundle is back in Waiting; with no routing or link event, no
-    // further attempt may occur. shutdown() is the barrier: it joins the
-    // pools, and the CLA mock records every attempt synchronously inside
-    // forward(), so any wrong re-attempt is in events_rx by the time it
-    // returns. No quiet window is involved.
-    bpa.shutdown().await;
-    assert!(
-        events_rx.is_empty(),
-        "A synchronous failure must not re-attempt without a routing event"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -615,4 +464,357 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
         cla::Error::PayloadTooLarge { size, max: 4 } if size > 4
     ));
     assert!(events_rx.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Forwarding-outcome behaviour at the streamed egress door: a synchronous
+// `Cla::forward` error is retried by its kind. Grouped in a module so the
+// storage rig's helpers do not collide with the door and buffer_stream
+// tests above; the mock CLA is the file-level `StreamingCla`.
+// ---------------------------------------------------------------------------
+mod outcomes {
+    use std::sync::Arc;
+
+    use hardy_bpa::{
+        Bytes, async_trait,
+        bpa::{Bpa, BpaRegistration},
+        bundle::{Bundle, BundleStatus},
+        cla::{self, ClaInit},
+        node_ids::NodeIds,
+        storage::{ConfirmResponse, MetadataMemStorage, MetadataStorage, Result as StorageResult},
+        stream::{Segment, Sender},
+    };
+    use hardy_bpv7::{
+        bundle::Id,
+        eid::{Eid, IpnNodeId, NodeId},
+    };
+
+    use super::{Event, StreamingCla, remote_node};
+
+    /// Builds a bundle from ipn:0.3.1 to ipn:0.2.99; the creation timestamp
+    /// makes each id unique.
+    fn test_bundle(payload: &[u8]) -> (Id, Bytes) {
+        let (bundle, data) = hardy_bpv7::builder::Builder::new(
+            "ipn:0.3.1".parse().unwrap(),
+            "ipn:0.2.99".parse().unwrap(),
+        )
+        .with_payload(std::borrow::Cow::Borrowed(payload))
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .expect("Failed to build bundle");
+        (bundle.primary.id, Bytes::from(data))
+    }
+
+    async fn recv_event(rx: &flume::Receiver<Event>) -> Event {
+        super::recv_event(rx, 5).await
+    }
+
+    // A metadata-store decorator that nudges a channel after every write
+    // (point transitions and bulk resets alike), so a [`StatusWatcher`]
+    // re-reads the store's true status on the change itself rather than
+    // polling on a timer. All calls delegate to the shared in-memory
+    // store, which the watcher reads directly.
+    struct SignalingMem {
+        store: Arc<MetadataMemStorage>,
+        tx: flume::Sender<()>,
+    }
+
+    #[async_trait]
+    impl MetadataStorage for SignalingMem {
+        async fn get(&self, bundle_id: &Id) -> StorageResult<Option<Bundle>> {
+            self.store.get(bundle_id).await
+        }
+
+        async fn insert(&self, bundle: &Bundle) -> StorageResult<bool> {
+            self.store.insert(bundle).await
+        }
+
+        async fn replace(&self, bundle: &Bundle) -> StorageResult<()> {
+            self.store.replace(bundle).await
+        }
+
+        async fn swap_status(
+            &self,
+            bundle_id: &Id,
+            expected: &BundleStatus,
+            status: &BundleStatus,
+        ) -> StorageResult<bool> {
+            let swapped = self.store.swap_status(bundle_id, expected, status).await;
+            let _ = self.tx.send(());
+            swapped
+        }
+
+        async fn tombstone_if(
+            &self,
+            bundle_id: &Id,
+            expected: &BundleStatus,
+        ) -> StorageResult<bool> {
+            let tombstoned = self.store.tombstone_if(bundle_id, expected).await;
+            let _ = self.tx.send(());
+            tombstoned
+        }
+
+        async fn tombstone(&self, bundle_id: &Id) -> StorageResult<()> {
+            let result = self.store.tombstone(bundle_id).await;
+            let _ = self.tx.send(());
+            result
+        }
+
+        async fn start_recovery(&self) {
+            self.store.start_recovery().await
+        }
+
+        async fn confirm_exists(&self, bundle_id: &Id) -> StorageResult<Option<ConfirmResponse>> {
+            self.store.confirm_exists(bundle_id).await
+        }
+
+        async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+            self.store.remove_unconfirmed(stream).await
+        }
+
+        async fn reset_peer_queue(&self, peer: u32) -> StorageResult<u64> {
+            // A bulk transition: nudge so the watcher re-reads each bundle
+            // this reset to Waiting.
+            let reset = self.store.reset_peer_queue(peer).await;
+            let _ = self.tx.send(());
+            reset
+        }
+
+        async fn reset_peer_ack_pending(&self, peer: u32) -> StorageResult<u64> {
+            let reset = self.store.reset_peer_ack_pending(peer).await;
+            let _ = self.tx.send(());
+            reset
+        }
+
+        async fn reset_service_queue(&self, service: &Eid) -> StorageResult<u64> {
+            let reset = self.store.reset_service_queue(service).await;
+            let _ = self.tx.send(());
+            reset
+        }
+
+        async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+            self.store.poll_expiry(stream).await
+        }
+
+        async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+            self.store.poll_waiting(stream).await
+        }
+
+        async fn poll_service_waiting(
+            &self,
+            source: Eid,
+            stream: &dyn Sender<Bundle>,
+        ) -> StorageResult<()> {
+            self.store.poll_service_waiting(source, stream).await
+        }
+
+        async fn poll_adu_fragments(
+            &self,
+            stream: &dyn Sender<Bundle>,
+            status: &BundleStatus,
+        ) -> StorageResult<()> {
+            self.store.poll_adu_fragments(stream, status).await
+        }
+
+        async fn poll_pending(
+            &self,
+            stream: &dyn Sender<Bundle>,
+            status: &BundleStatus,
+            limit: usize,
+        ) -> StorageResult<()> {
+            self.store.poll_pending(stream, status, limit).await
+        }
+    }
+
+    /// Reads a bundle's status directly from the store, waking on each
+    /// [`SignalingMem`] nudge rather than polling on a timer. Reading the
+    /// live store (not a cached signal value) means a bulk reset is
+    /// observed as faithfully as a point write.
+    struct StatusWatcher {
+        store: Arc<MetadataMemStorage>,
+        rx: flume::Receiver<()>,
+    }
+
+    impl StatusWatcher {
+        // Waits until `id`'s status satisfies `accept` (`None` once
+        // deleted). The timeout only bounds a regression.
+        async fn wait(
+            &mut self,
+            id: &Id,
+            what: &str,
+            accept: impl Fn(Option<&BundleStatus>) -> bool,
+        ) {
+            loop {
+                let bundle = self.store.get(id).await.unwrap();
+                if accept(bundle.as_ref().map(|b| &b.status)) {
+                    return;
+                }
+                tokio::time::timeout(tokio::time::Duration::from_secs(5), self.rx.recv_async())
+                    .await
+                    .unwrap_or_else(|_| panic!("Timed out waiting for {what}"))
+                    .expect("nudge channel closed");
+            }
+        }
+    }
+
+    /// A started BPA (node ipn:0.1) with `cla` registered, and a
+    /// [`StatusWatcher`] over its metadata store for status assertions.
+    /// Callers add peers through the CLA's sink.
+    async fn egress_setup(cla: Arc<dyn cla::Cla>) -> (Bpa, StatusWatcher) {
+        let (tx, rx) = flume::unbounded();
+        let store = Arc::new(MetadataMemStorage::new(None));
+        let metadata_store = Arc::new(SignalingMem {
+            store: store.clone(),
+            tx,
+        });
+        let node_ids = NodeIds::try_from(
+            [NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            })]
+            .as_slice(),
+        )
+        .unwrap();
+
+        let bpa = Bpa::builder()
+            .node_ids(node_ids)
+            .metadata_storage(metadata_store)
+            .build()
+            .await
+            .unwrap();
+        bpa.start(false).await;
+
+        bpa.register_cla("egress".to_string(), cla, None, ClaInit::default())
+            .await
+            .unwrap();
+
+        (bpa, StatusWatcher { store, rx })
+    }
+
+    /// An interrupted streamed transfer (`StreamCancelled`) is transient:
+    /// the bundle is re-dispatched over the same route straight away, with
+    /// no routing event needed, and the retry streams the whole bundle.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_streamed_forward_is_redispatched_and_retried() {
+        let (cla, events_rx) = StreamingCla::new(Some(cla::Error::StreamCancelled));
+        let (bpa, mut watcher) = egress_setup(cla.clone()).await;
+        cla.sink
+            .get()
+            .unwrap()
+            .add_peer(
+                cla::ClaAddress::Private("peer-a".as_bytes().into()),
+                &[remote_node(2)],
+            )
+            .await
+            .unwrap();
+
+        let (id, mut data) = test_bundle(b"try again streamed");
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut data)
+            .await
+            .unwrap();
+
+        // The first attempt fails as an interrupted transfer.
+        assert!(matches!(recv_event(&events_rx).await, Event::Failed));
+
+        // An interrupted transfer re-dispatches over the same route
+        // immediately: no fresh peer, and the retry streams the bundle.
+        let Event::Streamed { segments, .. } = recv_event(&events_rx).await else {
+            panic!("Expected a successful retry through the streamed door");
+        };
+        let Some(Segment::Final(forwarded)) = segments.last() else {
+            panic!("Expected the retry to end on a Final segment");
+        };
+        let parsed = hardy_bpv7::parse::parse(forwarded.clone())
+            .expect("Failed to parse the retried bundle");
+        assert_eq!(
+            parsed.bundle.primary.id, id,
+            "The retry must be the same bundle"
+        );
+
+        // `Sent` resolves the retry terminally: exactly one retry.
+        watcher
+            .wait(&id, "the retried bundle to be deleted", |st| st.is_none())
+            .await;
+        assert!(events_rx.is_empty(), "Exactly one retry is expected");
+
+        bpa.shutdown().await;
+    }
+
+    /// A synchronous rejection from the CLA is bundle-scoped evidence: the
+    /// bundle parks in `Waiting` (an unchanged routing decision is not
+    /// re-run at pipeline speed), and the next routing event re-offers it.
+    /// The successful retry resolves it terminally rather than looping.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synchronous_forward_error_parks_bundle_until_routing_event() {
+        let (cla, events_rx) = StreamingCla::new(Some(cla::Error::Internal(
+            "the CLA rejects this bundle".into(),
+        )));
+        let (bpa, mut watcher) = egress_setup(cla.clone()).await;
+        cla.sink
+            .get()
+            .unwrap()
+            .add_peer(
+                cla::ClaAddress::Private("peer-a".as_bytes().into()),
+                &[remote_node(2)],
+            )
+            .await
+            .unwrap();
+
+        let (id, mut data) = test_bundle(b"try again");
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut data)
+            .await
+            .unwrap();
+
+        // The first offer consumes the scripted rejection.
+        assert!(matches!(recv_event(&events_rx).await, Event::Failed));
+
+        // The rejection parks the bundle in Waiting. Parked means parked:
+        // the status was reached without a second offer in between.
+        watcher
+            .wait(&id, "the rejected bundle to park in Waiting", |st| {
+                matches!(st, Some(BundleStatus::Waiting))
+            })
+            .await;
+        assert!(
+            events_rx.is_empty(),
+            "no re-offer may precede a routing event"
+        );
+
+        // A fresh peer for the same node re-dispatches the parked bundle;
+        // the script is exhausted, so the retry streams and succeeds.
+        cla.sink
+            .get()
+            .unwrap()
+            .add_peer(
+                cla::ClaAddress::Private("peer-b".as_bytes().into()),
+                &[remote_node(2)],
+            )
+            .await
+            .unwrap();
+        let Event::Streamed { segments, .. } = recv_event(&events_rx).await else {
+            panic!("Expected the re-dispatched offer to stream");
+        };
+        let Some(Segment::Final(forwarded)) = segments.last() else {
+            panic!("Expected the retry to end on a Final segment");
+        };
+        let parsed = hardy_bpv7::parse::parse(forwarded.clone())
+            .expect("Failed to parse the retried bundle");
+        assert_eq!(
+            parsed.bundle.primary.id, id,
+            "Re-offer must be the same bundle"
+        );
+
+        watcher
+            .wait(&id, "the retried bundle to be deleted", |st| st.is_none())
+            .await;
+        // The bundle is resolved; no further offer follows.
+        assert!(events_rx.is_empty(), "no further offer after resolution");
+
+        bpa.shutdown().await;
+    }
 }
