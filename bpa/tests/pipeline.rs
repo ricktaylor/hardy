@@ -692,7 +692,7 @@ async fn service_streamed_send_rejects_spoofed_source() {
     let result = svc.sink.get().unwrap().send(&mut rx).await;
     assert!(matches!(
         result,
-        Err(hardy_bpa::services::Error::InvalidDestination(_))
+        Err(hardy_bpa::services::Error::InvalidSource(source)) if source == spoofed
     ));
 
     bpa.shutdown().await;

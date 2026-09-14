@@ -71,6 +71,11 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
+    /// The bundle's source EID does not match the sending registration's
+    /// endpoint.
+    #[error("Bundle source {0} is not the registration's endpoint")]
+    InvalidSource(Eid),
+
     /// The bundle stream was cancelled: the producer dropped its sender
     /// before delivering the final segment, so no complete bundle arrived.
     #[error("The bundle stream was cancelled before completion")]
