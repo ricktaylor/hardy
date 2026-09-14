@@ -169,6 +169,14 @@ impl core::fmt::Display for ClaAddress {
     }
 }
 
+/// The maximum number of explicit egress lanes a CLA may declare.
+///
+/// Lane declarations size per-peer egress queue sets, so the count is
+/// bounded to keep an erroneous or hostile declaration from driving
+/// unbounded allocation; [`ClaInit`] `lane_count` values above it are
+/// clamped, and wire registrations must reject them.
+pub const MAX_LANE_COUNT: u32 = 256;
+
 /// The result of a bundle forwarding attempt by a CLA.
 ///
 /// The variants encode who owns the transfer when `forward` returns, not
