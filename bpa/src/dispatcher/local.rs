@@ -131,7 +131,7 @@ impl Dispatcher {
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node)
         if &validated.bundle.primary.id.source != expected_source {
-            return Err(services::Error::InvalidDestination(
+            return Err(services::Error::InvalidSource(
                 validated.bundle.primary.id.source.clone(),
             ));
         }
