@@ -10,9 +10,14 @@
 grpc:
   # The local IP address and port to listen on for gRPC requests.
   # address: "[::1]:50051"
-  # List of gRPC services to enable. Available: "application", "cla", "service"
-  # The gRPC server will not start if this list is empty.
+  # The services to expose: application, service, cla, routing.
+  # List at least one, or the gRPC section fails to parse.
   services: ["application", "cla", "service"]
+
+  # How long a graceful shutdown waits for open connections to drain
+  # before abandoning them (humantime; `0s` cuts them immediately).
+  # Default: 5s.
+  # drain-timeout: "5s"
 
 # The Endpoint IDs (EIDs) that identify this node.
 # This can be a single string or a list of strings.
@@ -67,7 +72,7 @@ storage:
 # RFC 9171 Validity Filter
 # Configures policy checks from RFC 9171. These are SHOULD requirements,
 # not structural validity, so they can be relaxed for interoperability.
-rfc9171-validity:
+# rfc9171-validity:
   # Require the primary block to be protected by CRC or BIB.
   # Disable for interoperability with implementations that omit CRCs (e.g., dtn7-rs).
   # primary-block-integrity: true
@@ -82,7 +87,7 @@ rfc9171-validity:
 #
 # EID patterns matching next-hop peers that require legacy encoding.
 # Bundles forwarded to matching peers will have their IPN EIDs rewritten.
-ipn-legacy-nodes:
+# ipn-legacy-nodes:
 #  - "ipn:10.*"           # All endpoints on node 10
 #  - "ipn:20.0"           # Node 20's admin endpoint
 #  - "ipn:[100-199].*"    # Nodes 100-199 (range pattern)
