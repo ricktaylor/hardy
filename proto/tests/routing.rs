@@ -1,146 +1,603 @@
-//! Routing Agent client proxy tests (RTE-CLI-01 through RTE-CLI-03).
-//!
-//! Verify the routing agent client correctly maps Rust trait calls
-//! to routing.proto messages via the gRPC proxy.
+#![cfg(feature = "server")]
 
 mod common;
 
-use common::MockBpa;
-use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routing::{RouteAction, RoutingAgent, RoutingSink};
-use hardy_bpv7::eid::NodeId;
-use hardy_proto::client::RemoteBpa;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::num::NonZeroU64;
+use std::{net::SocketAddr, sync::Arc};
 
-// A mock RoutingAgent that stores the sink for test use.
-struct MockRoutingAgent {
-    registered: AtomicBool,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn RoutingSink>>>,
+use hardy_async::{TaskPool, sync::spin::Once};
+#[cfg(feature = "client")]
+use hardy_bpa::routing::{self, RoutingAgent, RoutingSink};
+use hardy_bpa::{
+    Bytes, async_trait,
+    bpa::{Bpa, BpaRegistration},
+    cla::{self, Cla, ClaAddress, ClaInit, ForwardBundleResult},
+    stream::{Receiver, Segment, concat_stream},
+};
+#[cfg(feature = "client")]
+use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{bundle::Id as BundleId, eid::NodeId};
+#[cfg(feature = "client")]
+use hardy_eid_patterns::EidPattern;
+#[cfg(feature = "client")]
+use hardy_proto::{
+    client::BpaClient,
+    routing::{
+        AddRouteRequest, AddRouteResponse, Discard, Register, RemoveRouteRequest,
+        RemoveRouteResponse, RouteAction, RouteActionError, SubscribeRequest, SubscribeResponse,
+        Unregister, route_action::Action, routing_service_client::RoutingServiceClient,
+        routing_service_server::RoutingServiceServer, subscribe_request, subscribe_response,
+    },
+    server::RoutingServiceImpl,
+};
+use tokio::sync::mpsc::{self, Sender};
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{
+    Code, Status, Streaming,
+    transport::{Channel, Server},
+};
+
+use common::{UnregisterWatch, build_bpa, build_bundle, ipn1, serve, timeout, wait_unregistered};
+
+struct Harness {
+    bpa: Arc<Bpa>,
+    client: RoutingServiceClient<Channel>,
+    #[cfg_attr(
+        not(feature = "client"),
+        expect(dead_code, reason = "read by the client SDK test")
+    )]
+    address: SocketAddr,
+    watch: Arc<UnregisterWatch>,
 }
 
-impl MockRoutingAgent {
-    fn new() -> Self {
-        Self {
-            registered: AtomicBool::new(false),
-            sink: hardy_async::sync::spin::Mutex::new(None),
-        }
-    }
+async fn harness() -> Harness {
+    let bpa = build_bpa(ipn1(), false).await;
 
-    fn take_sink(&self) -> Option<Box<dyn RoutingSink>> {
-        self.sink.lock().take()
+    let tasks = TaskPool::new();
+    let watch = UnregisterWatch::new(bpa.clone());
+    let server = RoutingServiceImpl::new(watch.clone(), tasks.clone());
+    let service = RoutingServiceServer::new(server.clone());
+    let address = serve(Server::builder().add_service(service)).await;
+
+    let client = RoutingServiceClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    Harness {
+        bpa,
+        client,
+        address,
+        watch,
     }
+}
+
+struct Registered {
+    requests_tx: Sender<SubscribeRequest>,
+    events: Streaming<SubscribeResponse>,
+    node_ids: Vec<String>,
+    token: Bytes,
+}
+
+async fn register(client: &mut RoutingServiceClient<Channel>, name: &str) -> Registered {
+    let (requests_tx, requests_rx) = mpsc::channel(4);
+    requests_tx
+        .send(SubscribeRequest {
+            request: Some(subscribe_request::Request::Register(Register {
+                name: name.to_string(),
+            })),
+        })
+        .await
+        .unwrap();
+
+    let mut events = client
+        .subscribe(ReceiverStream::new(requests_rx))
+        .await
+        .unwrap()
+        .into_inner();
+    let event = timeout(events.message()).await.unwrap().unwrap();
+    let Some(subscribe_response::Event::Registration(registration)) = event.event else {
+        panic!("expected the Registration event first");
+    };
+    assert!(!registration.session_token.is_empty());
+
+    Registered {
+        requests_tx,
+        events,
+        node_ids: registration.node_ids,
+        token: registration.session_token,
+    }
+}
+
+fn via(eid: &str) -> RouteAction {
+    RouteAction {
+        action: Some(Action::Via(eid.to_string())),
+    }
+}
+
+fn drop_with_reason(reason_code: u64) -> RouteAction {
+    RouteAction {
+        action: Some(Action::Drop(Discard {
+            reason_code: Some(reason_code),
+        })),
+    }
+}
+
+async fn add_route(
+    client: &mut RoutingServiceClient<Channel>,
+    token: Bytes,
+    pattern: &str,
+    action: RouteAction,
+    priority: u32,
+) -> Result<AddRouteResponse, Status> {
+    client
+        .add_route(AddRouteRequest {
+            session_token: token,
+            pattern: pattern.to_string(),
+            action: Some(action),
+            priority,
+        })
+        .await
+        .map(|r| r.into_inner())
+}
+
+async fn remove_route(
+    client: &mut RoutingServiceClient<Channel>,
+    token: Bytes,
+    pattern: &str,
+    action: RouteAction,
+    priority: u32,
+) -> Result<RemoveRouteResponse, Status> {
+    client
+        .remove_route(RemoveRouteRequest {
+            session_token: token,
+            pattern: pattern.to_string(),
+            action: Some(action),
+            priority,
+        })
+        .await
+        .map(|r| r.into_inner())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registration_returns_node_ids_and_a_token() {
+    let mut harness = harness().await;
+
+    let registered = register(&mut harness.client, "test-agent").await;
+    assert_eq!(registered.node_ids, ["ipn:1.0"]);
+
+    let (requests_tx, requests_rx) = mpsc::channel(4);
+    requests_tx
+        .send(SubscribeRequest {
+            request: Some(subscribe_request::Request::Register(Register {
+                name: "test-agent".to_string(),
+            })),
+        })
+        .await
+        .unwrap();
+    let status = timeout(harness.client.subscribe(ReceiverStream::new(requests_rx)))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::AlreadyExists);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn routes_are_added_and_removed_once() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, "test-agent").await;
+
+    assert!(
+        add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:2.0"),
+            100
+        )
+        .await
+        .unwrap()
+        .added
+    );
+    assert!(
+        !add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:2.0"),
+            100
+        )
+        .await
+        .unwrap()
+        .added
+    );
+
+    assert!(
+        remove_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:2.0"),
+            100
+        )
+        .await
+        .unwrap()
+        .removed
+    );
+    assert!(
+        !remove_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:2.0"),
+            100
+        )
+        .await
+        .unwrap()
+        .removed
+    );
+
+    harness.bpa.shutdown().await;
+}
+
+// A CLA whose only job is to say where the BPA sent each bundle.
+struct ReportingCla {
+    sink: Once<Box<dyn cla::Sink>>,
+    forwarded: mpsc::Sender<ClaAddress>,
 }
 
 #[async_trait]
-impl RoutingAgent for MockRoutingAgent {
+impl Cla for ReportingCla {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn forward(
+        &self,
+        _lane: Option<u32>,
+        cla_addr: &ClaAddress,
+        _bundle_id: &BundleId,
+        _total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> cla::Result<ForwardBundleResult> {
+        concat_stream(stream, usize::MAX, None)
+            .await
+            .map_err(|e| cla::Error::Internal(e.into()))?;
+        let _ = self.forwarded.send(cla_addr.clone()).await;
+        Ok(ForwardBundleResult::Sent)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_route_decides_which_peer_a_bundle_leaves_by() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, "test-agent").await;
+
+    let (forwarded_tx, mut forwarded_rx) = mpsc::channel(4);
+    let cla = Arc::new(ReportingCla {
+        sink: Once::new(),
+        forwarded: forwarded_tx,
+    });
+    harness
+        .watch
+        .register_cla(
+            "two-peers".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
+        .await
+        .unwrap();
+    let sink = cla.sink.get().unwrap();
+
+    let first = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
+    let second = ClaAddress::Tcp("127.0.0.1:4557".parse().unwrap());
+    sink.add_peer(first.clone(), &["ipn:3.0".parse().unwrap()])
+        .await
+        .unwrap();
+    sink.add_peer(second.clone(), &["ipn:4.0".parse().unwrap()])
+        .await
+        .unwrap();
+
+    // Neither peer is ipn:2.7's node, so only a route can send a bundle there.
+    assert!(
+        add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:3.0"),
+            100
+        )
+        .await
+        .unwrap()
+        .added
+    );
+    assert_eq!(
+        sink.dispatch(
+            None,
+            None,
+            &mut build_bundle("ipn:5.1", "ipn:2.7", b"routed"),
+        )
+        .await
+        .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    assert_eq!(timeout(forwarded_rx.recv()).await.unwrap(), first);
+
+    assert!(
+        remove_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:3.0"),
+            100
+        )
+        .await
+        .unwrap()
+        .removed
+    );
+    assert!(
+        add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:4.0"),
+            100
+        )
+        .await
+        .unwrap()
+        .added
+    );
+    assert_eq!(
+        sink.dispatch(
+            None,
+            None,
+            &mut build_bundle("ipn:5.1", "ipn:2.8", b"rerouted"),
+        )
+        .await
+        .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    assert_eq!(timeout(forwarded_rx.recv()).await.unwrap(), second);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invalid_pattern_is_rejected() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, "test-agent").await;
+
+    let status = add_route(
+        &mut harness.client,
+        registered.token.clone(),
+        "not a pattern",
+        via("ipn:2.0"),
+        100,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_action_is_rejected() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, "test-agent").await;
+
+    let status = harness
+        .client
+        .add_route(AddRouteRequest {
+            session_token: registered.token.clone(),
+            pattern: "ipn:2.*".to_string(),
+            action: None,
+            priority: 100,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reserved_drop_reason_is_rejected() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, "test-agent").await;
+
+    let status = add_route(
+        &mut harness.client,
+        registered.token.clone(),
+        "ipn:2.*",
+        drop_with_reason(255),
+        100,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+
+    assert!(
+        add_route(
+            &mut harness.client,
+            registered.token,
+            "ipn:2.*",
+            drop_with_reason(254),
+            100,
+        )
+        .await
+        .unwrap()
+        .added
+    );
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forged_token_is_rejected() {
+    let mut harness = harness().await;
+    register(&mut harness.client, "test-agent").await;
+
+    let status = add_route(
+        &mut harness.client,
+        Bytes::from_static(b"forged"),
+        "ipn:2.*",
+        via("ipn:2.0"),
+        100,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status.code(), Code::Unauthenticated);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_stream_tears_the_session_down() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, "test-agent").await;
+
+    let mut unregistered = harness.watch.subscribe();
+    drop(registered.events);
+    drop(registered.requests_tx);
+    wait_unregistered(&mut unregistered).await;
+
+    let status = add_route(
+        &mut harness.client,
+        registered.token.clone(),
+        "ipn:2.*",
+        via("ipn:2.0"),
+        100,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status.code(), Code::Unauthenticated);
+
+    let (requests_tx, requests_rx) = mpsc::channel(4);
+    requests_tx
+        .send(SubscribeRequest {
+            request: Some(subscribe_request::Request::Register(Register {
+                name: "test-agent".to_string(),
+            })),
+        })
+        .await
+        .unwrap();
+    harness
+        .client
+        .subscribe(ReceiverStream::new(requests_rx))
+        .await
+        .unwrap();
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregister_ends_the_session_and_invalidates_the_token() {
+    let mut harness = harness().await;
+    let mut registered = register(&mut harness.client, "test-agent").await;
+    registered
+        .requests_tx
+        .send(SubscribeRequest {
+            request: Some(subscribe_request::Request::Unregister(Unregister {})),
+        })
+        .await
+        .unwrap();
+    assert!(
+        timeout(registered.events.message())
+            .await
+            .unwrap()
+            .is_none(),
+        "unregister must end the session stream"
+    );
+
+    let status = add_route(
+        &mut harness.client,
+        registered.token.clone(),
+        "ipn:2.*",
+        via("ipn:2.0"),
+        100,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status.code(), Code::Unauthenticated);
+
+    harness.bpa.shutdown().await;
+}
+
+#[cfg(feature = "client")]
+struct SdkAgent {
+    sink: Once<Box<dyn RoutingSink>>,
+}
+
+#[cfg(feature = "client")]
+#[async_trait]
+impl RoutingAgent for SdkAgent {
     async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-        *self.sink.lock() = Some(sink);
-        self.registered.store(true, Ordering::Relaxed);
+        self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
 }
 
-// RTE-CLI-01: Register routing agent, receive node IDs.
-//
-// The client registers a routing agent via RemoteBpa. The mock BPA
-// calls on_register with a sink and node IDs. The client receives
-// the node IDs and the agent receives the sink.
-#[tokio::test]
-async fn rte_cli_01_registration() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
+#[cfg(feature = "client")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_sdk_roundtrip() {
+    let harness = harness().await;
+    let client = BpaClient::new(format!("http://{}", harness.address), TaskPool::new()).unwrap();
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = Arc::new(SdkAgent { sink: Once::new() });
+    let handle = client
+        .register_routing_agent("sdk-agent".to_string(), agent.clone())
         .await
-        .expect("registration should succeed");
-
-    assert!(!node_ids.is_empty(), "should receive at least one node ID");
-    assert!(
-        agent.registered.load(Ordering::Relaxed),
-        "agent should have received on_register"
-    );
-    assert!(
-        agent.sink.lock().is_some(),
-        "agent should have a sink after registration"
+        .unwrap();
+    assert_eq!(
+        handle
+            .id()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["ipn:1.0"]
     );
 
-    // Clean up
-    drop(agent.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    server_tasks.shutdown().await;
-}
+    let sink = agent.sink.get().unwrap();
+    let pattern: EidPattern = "ipn:2.*".parse().unwrap();
+    let action = routing::RouteAction::Via("ipn:2.0".parse().unwrap());
 
-// RTE-CLI-02: Add route via sink.
-//
-// After registration, the agent uses its sink to add a route. The
-// request goes through the gRPC proxy to the mock BPA's RoutingSink,
-// which returns success.
-#[tokio::test]
-async fn rte_cli_02_add_route() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
+    assert!(
+        sink.add_route(pattern.clone(), action.clone(), 50)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !sink
+            .add_route(pattern.clone(), action.clone(), 50)
+            .await
+            .unwrap()
+    );
+    assert!(sink.remove_route(&pattern, &action, 50).await.unwrap());
+    assert!(!sink.remove_route(&pattern, &action, 50).await.unwrap());
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
+    let reserved = routing::RouteAction::Drop(Some(ReasonCode::Unassigned(255)));
+    let Err(routing::Error::Internal(refused)) =
+        sink.add_route(pattern.clone(), reserved, 60).await
+    else {
+        panic!("a reserved reason code must be refused");
+    };
+    assert!(
+        matches!(
+            refused.downcast_ref::<RouteActionError>(),
+            Some(RouteActionError::ReservedReason)
+        ),
+        "the SDK refuses the action itself, and says why: {refused}"
+    );
 
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
-        .await
-        .expect("registration should succeed");
-
-    let sink = agent.take_sink().expect("agent should have a sink");
-
-    let pattern = "ipn:2.*.*".parse().expect("valid pattern");
-    let action = RouteAction::Via("ipn:2.1.0".parse().expect("valid EID"));
-    let added = sink
-        .add_route(pattern, action, 100)
-        .await
-        .expect("add_route should succeed");
-
-    assert!(added, "route should be newly added");
-
-    // Clean up
     sink.unregister().await;
-    server_tasks.shutdown().await;
-}
-
-// RTE-CLI-03: Remove route via sink.
-//
-// After registration, the agent uses its sink to remove a route. The
-// request goes through the gRPC proxy to the mock BPA's RoutingSink,
-// which returns success.
-#[tokio::test]
-async fn rte_cli_03_remove_route() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
-
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
-        .await
-        .expect("registration should succeed");
-
-    let sink = agent.take_sink().expect("agent should have a sink");
-
-    let pattern = "ipn:2.*.*".parse().expect("valid pattern");
-    let action = RouteAction::Via("ipn:2.1.0".parse().expect("valid EID"));
-    let removed = sink
-        .remove_route(&pattern, &action, 100)
-        .await
-        .expect("remove_route should succeed");
-
-    assert!(removed, "route should be removed");
-
-    // Clean up
-    sink.unregister().await;
-    server_tasks.shutdown().await;
+    harness.bpa.shutdown().await;
 }

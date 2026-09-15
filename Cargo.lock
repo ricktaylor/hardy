@@ -1966,6 +1966,8 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tonic",
+ "tonic-health",
  "trace-err",
  "tracing",
  "tracing-subscriber",
@@ -2173,20 +2175,25 @@ dependencies = [
 
 [[package]]
 name = "hardy-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "dashmap",
+ "foldhash 0.2.0",
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-eid-patterns",
+ "http-body 1.1.0",
+ "http-body-util",
  "prost",
  "prost-types",
- "serde",
+ "rand 0.10.2",
+ "subtle",
+ "thiserror",
  "time",
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-health",
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
@@ -2306,6 +2313,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "tonic",
  "trace-err",
  "tracing",
  "tracing-subscriber",
@@ -2339,6 +2347,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tonic-types",
  "tracing",
  "tracing-subscriber",
 ]

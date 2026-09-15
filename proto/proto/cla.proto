@@ -1,0 +1,395 @@
+syntax = "proto3";
+
+package hardy.cla.v1;
+
+import "google/protobuf/empty.proto";
+import "common.proto";
+
+// Convergence-layer adapter (CLA) API.
+//
+// A CLA registers with the BPA and connects it to a link layer.
+// Bundles from the link go up with Dispatch; bundles to transmit
+// come down with Forward.
+//
+// The registration lives in one Subscribe call, the session. Its
+// first request is Register. Its first response is a Registration
+// event carrying a session token. After that, the response stream
+// carries only Forwarding events, each expecting a Forward call
+// back to transmit a bundle. Bundle bytes never travel on this
+// stream.
+//
+// Every other RPC presents the session token in its first message.
+// Dispatch streams a received bundle to the BPA and returns the
+// BPA's acceptance decision. Forward fetches the bundle of a
+// Forwarding and completes it with a ForwardResult. AddPeer and
+// RemovePeer maintain the set of reachable neighbours.
+// ReportTransferOutcome reports the final outcome of a forwarding
+// the CLA answered with accepted.
+//
+// Unregister, or closing the Subscribe stream, ends the
+// registration and invalidates the token. A Forwarding left
+// incomplete is pushed again later.
+//
+// A failed call ends with a gRPC status: a code and a short message,
+// and nothing else. The code is what a client branches on; the message
+// is a phrase for a developer reading a log, and never reflects
+// any string the client sent. A status with a code this file does not
+// name for the call came from the transport, not the BPA.
+//
+// Every call opens the same way, so any call can end with:
+//
+//   INVALID_ARGUMENT   the first message is not the one the call
+//                      opens with, or a field of it is not valid.
+//   UNAUTHENTICATED    the session token is unknown or expired;
+//                      every call but Subscribe presents one.
+//   DEADLINE_EXCEEDED  the first message did not arrive in time, or
+//                      the client later made the server wait past a
+//                      bound the Registration announced.
+//   UNAVAILABLE        the server is shutting down, or the
+//                      registration has closed.
+//   INTERNAL           the server failed for a cause it does not
+//                      disclose; the detail is in its log.
+//
+// A request stream that breaks before its first message is decoded
+// fails with the transport's own status, which this file does not
+// name; after that it is ABORTED. The comments below name only what
+// each call adds to this list.
+service ClaService {
+  // -- Control plane ---------------------------------------------------
+
+  // Establishes the session and registers the CLA.
+  //
+  // The first request must be Register; the first response is a
+  // Registration event carrying the session token. The stream then
+  // carries only Forwarding events. Unregister, or closing the
+  // stream, ends the registration.
+  // Adds ALREADY_EXISTS if a CLA of that name is registered on
+  // another session, and RESOURCE_EXHAUSTED if the server is at its
+  // session limit.
+  rpc Subscribe(stream SubscribeRequest) returns (stream SubscribeResponse);
+
+  // -- Data plane ------------------------------------------------------
+
+  // Passes a bundle received from the link to the BPA.
+  //
+  // The first message must be the metadata, which carries the
+  // session token; the bundle follows as chunk messages ended by
+  // last_chunk. Only the response carries the BPA's acceptance
+  // decision, which is what lets the CLA acknowledge the transfer
+  // to its peer; a call that fails carries no decision, and no
+  // decision means refusal.
+  // Adds RESOURCE_EXHAUSTED if a size is above one the Registration
+  // announced, above the max_bundle_size this CLA declared, or above
+  // what the BPA accepts, or if the session has as many transfers
+  // open as the server allows and none ends within the idle bound,
+  // CANCELLED if the CLA cancelled the transfer, and ABORTED if the
+  // request stream ends before last_chunk.
+  rpc Dispatch(stream DispatchRequest) returns (DispatchResponse);
+
+  // Streams a bundle to the CLA for transmission, as requested by a
+  // Forwarding event.
+  //
+  // The first message must be the metadata, which carries the
+  // session token; the bundle arrives on the response stream as
+  // chunk messages ended by last_chunk. A truncated stream must not
+  // be transmitted. Only a ForwardResult after last_chunk completes
+  // the forwarding; in every other case the bundle stays queued and
+  // a new Forwarding is pushed later. Each Forwarding permits a
+  // single Forward call.
+  //
+  // The wait for the result is bounded by the same idle limit as
+  // every other wait on the client. A CLA whose transmission may
+  // outlast it must answer accepted once the bundle is safely
+  // queued for the link and report the real outcome later with
+  // ReportTransferOutcome.
+  // Adds NOT_FOUND if no uncollected Forwarding carries that bundle
+  // id, ABORTED if the BPA withdraws the bundle while this call
+  // holds it, and CANCELLED if the request stream closes before the
+  // ForwardResult.
+  rpc Forward(stream ForwardRequest) returns (stream ForwardResponse);
+
+  // -- Peers and transfers ---------------------------------------------
+
+  // Registers a reachable link-layer neighbour.
+  rpc AddPeer(AddPeerRequest) returns (AddPeerResponse);
+
+  // Removes a previously added neighbour.
+  rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
+
+  // Reports the final outcome of a transfer the CLA answered with
+  // accepted. A report for a bundle this session did not accept, or
+  // has already reported on, is taken and discarded: the call ends
+  // OK either way.
+  rpc ReportTransferOutcome(ReportTransferOutcomeRequest)
+      returns (ReportTransferOutcomeResponse);
+}
+
+// ---------------------------------------------------------------------
+// Control plane: the session stream. Small messages only.
+// ---------------------------------------------------------------------
+
+// Request message for Subscribe.
+message SubscribeRequest {
+  // The request. Register must be the first message on the stream;
+  // Unregister ends the registration.
+  oneof request {
+    // Opens the registration.
+    Register   register   = 1;
+    // Ends the registration.
+    Unregister unregister = 2;
+  }
+}
+
+// Registers a CLA. Must be the first message on the stream.
+message Register {
+  // A unique name for this CLA instance.
+  string                  name          = 1;
+  // The address type this CLA uses, if the type is well known.
+  optional ClaAddressType address_type  = 2;
+  // The number of egress lanes (parallel transmission channels) this
+  // CLA provides. If unset, lanes are unlimited. Zero, or a value
+  // above the server's limit, fails with INVALID_ARGUMENT.
+  optional uint32         lane_count    = 3;
+  // The largest bundle this CLA accepts, in bytes. If unset, no
+  // limit. Zero fails with INVALID_ARGUMENT.
+  optional uint64         max_bundle_size = 4;
+  // The largest chunk this client wants to handle, in bytes. The
+  // server replies with the max_chunk_size it agreed, never above
+  // this.
+  // A value below 1024 fails with INVALID_ARGUMENT. If unset, the
+  // server picks.
+  optional uint64         max_chunk_size = 5;
+}
+
+// Ends the registration. Closing the request stream has the same
+// effect.
+message Unregister {}
+
+// Response message for Subscribe. If registration fails, the
+// Subscribe call itself fails with a gRPC status instead.
+message SubscribeResponse {
+  // The event. Registration is always the first; forwardings follow.
+  oneof event {
+    // The registration succeeded; carries the session token.
+    Registration registration = 1;
+    // A bundle is ready for transmission.
+    Forwarding   forwarding   = 2;
+  }
+}
+
+// The result of a successful registration. Always the first event on
+// the stream.
+message Registration {
+  // The node ids of the BPA.
+  repeated string node_ids = 1;
+  // The token that authenticates data-plane calls for this session.
+  // Opaque; expires when the session stream closes.
+  bytes           session_token = 2;
+  // The bundle size limit agreed for this registration, in bytes.
+  // The CLA should advertise it so peers never offer larger
+  // transfers. If unset, no limit was agreed.
+  optional uint64 max_bundle_size = 3;
+  // The sizes this session runs under.
+  hardy.common.v1.Sizes sizes = 4;
+}
+
+// Requests transmission of a bundle; the CLA executes it with
+// Forward.
+message Forwarding {
+  // The bundle id. See hardy.application.v1 SendResponse.bundle_id
+  // for the encoding.
+  string          bundle_id   = 1;
+  // The link-layer address to transmit to.
+  ClaAddress      address     = 2;
+  // The egress lane to transmit on. If unset, use a fresh lane.
+  optional uint32 lane        = 3;
+  // The size of the bundle in bytes.
+  uint64          bundle_size = 4;
+}
+
+// ---------------------------------------------------------------------
+// Data plane: token-gated RPCs. Bundle bytes move here.
+// ---------------------------------------------------------------------
+
+// A single message in the Dispatch request stream.
+message DispatchRequest {
+  // The message. Metadata comes first, then chunks ended by
+  // last_chunk; cancel may come at any point instead.
+  oneof request {
+    // Describes the transfer. Must be the first message.
+    DispatchMetadata      metadata   = 1;
+    // The next fragment of bundle data. Must not be empty.
+    bytes                 chunk      = 2;
+    // Cancels the transfer; the partial bundle is discarded.
+    google.protobuf.Empty cancel     = 3;
+    // The final fragment of bundle data (possibly empty). Completes
+    // the transfer.
+    bytes                 last_chunk = 4;
+  }
+}
+
+// Describes an inbound transfer. The first message of a Dispatch
+// call.
+message DispatchMetadata {
+  // The session token from Registration.
+  bytes               session_token = 1;
+  // The node id of the sending peer, if known.
+  optional string     peer_node_id  = 2;
+  // The link-layer address of the sending peer, if known.
+  optional ClaAddress peer_address  = 3;
+  // The size of the bundle in bytes, if declared. A declared size
+  // above the server's transfer limit, or above the bundle size limit
+  // agreed for this registration, fails with RESOURCE_EXHAUSTED before
+  // any byte moves; a transfer that ends at a different size fails
+  // with INVALID_ARGUMENT. If unset, last_chunk alone delimits. The
+  // server never allocates against the declaration.
+  optional uint64     bundle_size   = 4;
+}
+
+// Response message for Dispatch.
+message DispatchResponse {
+  // The BPA's acceptance decision.
+  Acceptance acceptance = 1;
+}
+
+// The BPA's decision on an inbound transfer. Unrelated to
+// ForwardResult.accepted, which concerns outbound transfers.
+enum Acceptance {
+  // No decision was made; treat as REFUSED.
+  ACCEPTANCE_UNSPECIFIED = 0;
+  // The BPA accepted the bundle; the CLA may acknowledge the
+  // transfer to its peer. An accepted bundle may still be discarded
+  // internally (for example a duplicate), so acceptance is not
+  // delivery.
+  ACCEPTANCE_ACCEPTED    = 1;
+  // The BPA rejected the transfer; the CLA must not acknowledge it,
+  // leaving its peer responsible for the bundle. Reserved for
+  // transfers the BPA could not take at all: a truncated stream (a
+  // resend may succeed), or a bundle over its size cap (the peer
+  // must stop offering it here).
+  ACCEPTANCE_REFUSED     = 2;
+}
+
+// A single message in the Forward request stream.
+message ForwardRequest {
+  // The message. Metadata comes first; then either the result or
+  // cancel.
+  oneof request {
+    // Identifies the forwarding to execute. Must be the first
+    // message.
+    ForwardMetadata       metadata = 1;
+    // The transmission result; completes the call. Only no_neighbour
+    // may be sent before last_chunk; an early sent or accepted fails
+    // with INVALID_ARGUMENT.
+    ForwardResult         result   = 2;
+    // Abandons the forwarding; the bundle remains queued.
+    google.protobuf.Empty cancel   = 3;
+  }
+}
+
+// Identifies the forwarding to execute. The first message of a
+// Forward call.
+message ForwardMetadata {
+  // The session token from Registration.
+  bytes  session_token = 1;
+  // The bundle id from the Forwarding event.
+  string bundle_id     = 2;
+}
+
+// The outcome of a transmission attempt.
+message ForwardResult {
+  // The outcome. Exactly one is set.
+  oneof result {
+    // The bundle was transmitted.
+    google.protobuf.Empty sent         = 1;
+    // The neighbour is unreachable.
+    google.protobuf.Empty no_neighbour = 2;
+    // The CLA took responsibility for the transfer and will report
+    // the outcome with ReportTransferOutcome. This is the answer a
+    // CLA whose transmission may outlast the server's idle limit
+    // has to give, rather than waiting to answer sent.
+    google.protobuf.Empty accepted     = 3;
+  }
+}
+
+// A single message in the Forward response stream.
+message ForwardResponse {
+  // The message: chunks ended by last_chunk.
+  oneof response {
+    // The next fragment of bundle data.
+    bytes chunk      = 1;
+    // The final fragment of bundle data (possibly empty).
+    bytes last_chunk = 2;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Peers and transfers: token-gated unary RPCs.
+// ---------------------------------------------------------------------
+
+// Request message for AddPeer.
+message AddPeerRequest {
+  // The session token from Registration.
+  bytes           session_token = 1;
+  // The node ids of the peer. May be empty if not yet known;
+  // multiple ids describe a multi-homed peer.
+  repeated string node_ids      = 2;
+  // The link-layer address of the peer.
+  ClaAddress      address       = 3;
+}
+
+// Response message for AddPeer.
+message AddPeerResponse {
+  // True if the peer was not already known.
+  bool added = 1;
+}
+
+// Request message for RemovePeer.
+message RemovePeerRequest {
+  // The session token from Registration.
+  bytes      session_token = 1;
+  // The link-layer address of the peer.
+  ClaAddress address       = 2;
+}
+
+// Response message for RemovePeer.
+message RemovePeerResponse {
+  // True if the peer was known and removed.
+  bool removed = 1;
+}
+
+// Request message for ReportTransferOutcome.
+message ReportTransferOutcomeRequest {
+  // The session token from Registration.
+  bytes  session_token = 1;
+  // The bundle id of the accepted forwarding.
+  string bundle_id     = 2;
+  // The final outcome of the transfer.
+  oneof outcome {
+    // The bundle was passed to the receiving node.
+    google.protobuf.Empty completed = 3;
+    // The transfer failed permanently.
+    google.protobuf.Empty failed    = 4;
+  }
+}
+
+// Response message for ReportTransferOutcome.
+message ReportTransferOutcomeResponse {}
+
+// A link-layer address: an address type and the address bytes.
+message ClaAddress {
+  // The format of the address bytes.
+  ClaAddressType address_type = 1;
+  // The address, in the format address_type names.
+  bytes          address      = 2;
+}
+
+// The format of the bytes in a ClaAddress.
+enum ClaAddressType {
+  // No type given; an address carrying it is rejected.
+  CLA_ADDRESS_TYPE_UNSPECIFIED = 0;
+  // A TCP socket address string.
+  CLA_ADDRESS_TYPE_TCP         = 1;
+  // A format private to the CLA.
+  CLA_ADDRESS_TYPE_PRIVATE     = 2;
+}

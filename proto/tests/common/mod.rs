@@ -1,287 +1,331 @@
-//! Shared test infrastructure for proto component tests.
-//!
-//! Each integration test binary compiles this module independently,
-//! so items used by other test files appear unused in each binary.
+// Each test binary uses a different subset of these fixtures, so unused helpers are expected.
 #![allow(dead_code)]
 
-pub mod sinks;
+use core::{future::Future, num::NonZeroU64};
+use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Duration};
 
-use core::num::NonZeroU64;
-use hardy_async::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{cla, routing, services};
-use hardy_bpv7::eid::NodeId;
-use sinks::*;
-use std::sync::Arc;
+use hardy_bpa::{
+    Bytes, async_trait,
+    bpa::{Bpa, BpaRegistration},
+    cla::{self, Cla, ClaInit, ForwardBundleResult},
+    node_ids::NodeIds,
+    policy::FlowControllerFactory,
+    routing::{self, RoutingAgent, RoutingSink},
+    services::{
+        self, Application, ApplicationSink, Service as BpaService, ServiceSink, StatusNotify,
+    },
+    stream::{Receiver, Segment},
+};
+use hardy_bpv7::{
+    builder::Builder,
+    bundle::Id as BundleId,
+    creation_timestamp::CreationTimestamp,
+    eid::{Eid, IpnNodeId, NodeId, Service},
+    status_report::ReasonCode,
+};
+use time::OffsetDateTime;
+use tokio::{net::TcpListener, sync::broadcast};
+use tonic::transport::server::{Router, TcpIncoming};
 
-// ── Mock BPA ──────────────────────────────────────────────────────────
-
-/// A mock BPA that implements `BpaRegistration` for all component types.
-///
-/// Calls `on_register` with mock sinks and fixed node IDs.
-/// Tracks the last registered routing agent and sink for assertions.
-pub struct MockBpa {
-    node_ids: Vec<NodeId>,
-    /// The effective cap this mock hands to `Cla::on_register`.
-    effective_max_bundle_size: Option<NonZeroU64>,
-    /// The declarations the last `register_cla` carried.
-    pub declared_init: hardy_async::sync::spin::Mutex<Option<cla::ClaInit>>,
-    pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
-    pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::RoutingAgent>>>,
-    pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
-    pub last_cla_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockClaSink>>>,
-    pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Service>>>,
-    pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Application>>>,
+// The timeout only bounds a regression; correct code completes at once.
+pub async fn timeout<F: Future>(future: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(10), future)
+        .await
+        .expect("test timed out")
 }
 
-impl MockBpa {
-    pub fn new() -> Self {
-        Self {
-            node_ids: vec!["ipn:1.0".parse().unwrap()],
-            effective_max_bundle_size: None,
-            declared_init: hardy_async::sync::spin::Mutex::new(None),
-            last_routing_sink: hardy_async::sync::spin::Mutex::new(None),
-            last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
-            last_cla: hardy_async::sync::spin::Mutex::new(None),
-            last_cla_sink: hardy_async::sync::spin::Mutex::new(None),
-            last_service: hardy_async::sync::spin::Mutex::new(None),
-            last_application: hardy_async::sync::spin::Mutex::new(None),
-        }
+pub fn ipn1() -> NodeIds {
+    NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap()
+}
+
+pub fn build_bundle(source: &str, destination: &str, payload: &[u8]) -> Bytes {
+    let (_, data) = Builder::new(source.parse().unwrap(), destination.parse().unwrap())
+        .with_payload(Cow::Borrowed(payload))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    Bytes::from(data)
+}
+
+pub async fn build_bpa(node_ids: NodeIds, status_reports: bool) -> Arc<Bpa> {
+    let bpa = Arc::new(
+        Bpa::builder()
+            .node_ids(node_ids)
+            .status_reports(status_reports)
+            .build()
+            .await
+            .unwrap(),
+    );
+    bpa.start(false).await;
+    bpa
+}
+
+pub async fn serve(router: Router) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
+    tokio::spawn(router.serve_with_incoming(incoming));
+    address
+}
+
+pub async fn wait_unregistered(unregistered: &mut broadcast::Receiver<()>) {
+    timeout(unregistered.recv()).await.unwrap();
+}
+
+pub struct UnregisterWatch {
+    bpa: Arc<dyn BpaRegistration>,
+    unregistered: broadcast::Sender<()>,
+}
+
+impl UnregisterWatch {
+    pub fn new(bpa: Arc<dyn BpaRegistration>) -> Arc<Self> {
+        Arc::new(Self {
+            bpa,
+            unregistered: broadcast::channel(16).0,
+        })
     }
 
-    /// A mock whose `register_cla` hands `effective` to `Cla::on_register`.
-    pub fn with_effective_max_bundle_size(effective: NonZeroU64) -> Self {
-        Self {
-            effective_max_bundle_size: Some(effective),
-            ..Self::new()
-        }
-    }
-
-    /// Simulate a server crash by forcing unregistration of all
-    /// registered components.
-    pub async fn crash(&self) {
-        if let Some(agent) = self.last_routing_agent.lock().take() {
-            agent.on_unregister().await;
-        }
-        if let Some(cla) = self.last_cla.lock().take() {
-            cla.on_unregister().await;
-        }
+    pub fn subscribe(&self) -> broadcast::Receiver<()> {
+        self.unregistered.subscribe()
     }
 }
 
 #[async_trait]
-impl BpaRegistration for MockBpa {
+impl BpaRegistration for UnregisterWatch {
     async fn register_cla(
         &self,
-        _name: String,
-        cla: Arc<dyn cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
-        init: cla::ClaInit,
+        name: String,
+        cla: Arc<dyn Cla>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
+        init: ClaInit,
     ) -> cla::Result<Vec<NodeId>> {
-        *self.declared_init.lock() = Some(init);
-        let sink = Arc::new(MockClaSink::new());
-        *self.last_cla.lock() = Some(cla.clone());
-        *self.last_cla_sink.lock() = Some(sink.clone());
-        cla.on_register(
-            Box::new(ClaSinkWrapper(sink)),
-            &self.node_ids,
-            self.effective_max_bundle_size,
-        )
-        .await;
-        Ok(self.node_ids.clone())
+        self.bpa
+            .register_cla(
+                name,
+                Arc::new(WatchedCla {
+                    inner: cla,
+                    unregistered: self.unregistered.clone(),
+                }),
+                policy,
+                init,
+            )
+            .await
     }
 
     async fn register_service(
         &self,
-        _service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn services::Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
-        let sink = Arc::new(MockServiceSink::new());
-        *self.last_service.lock() = Some(service.clone());
-        service
-            .on_register(&endpoint, Box::new(ServiceSinkWrapper(sink)))
-            .await;
-        Ok(endpoint)
+        service_id: Service,
+        service: Arc<dyn BpaService>,
+    ) -> services::Result<Eid> {
+        self.bpa
+            .register_service(
+                service_id,
+                Arc::new(WatchedService {
+                    inner: service,
+                    unregistered: self.unregistered.clone(),
+                }),
+            )
+            .await
     }
 
     async fn register_application(
         &self,
-        _service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
-        let sink = Arc::new(MockApplicationSink::new());
-        *self.last_application.lock() = Some(application.clone());
-        application
-            .on_register(&endpoint, Box::new(ApplicationSinkWrapper(sink)))
-            .await;
-        Ok(endpoint)
+        service_id: Service,
+        application: Arc<dyn Application>,
+    ) -> services::Result<Eid> {
+        self.bpa
+            .register_application(
+                service_id,
+                Arc::new(WatchedApplication {
+                    inner: application,
+                    unregistered: self.unregistered.clone(),
+                }),
+            )
+            .await
     }
 
     async fn register_dynamic_service(
         &self,
-        service: Arc<dyn services::Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        self.register_service(hardy_bpv7::eid::Service::Ipn(0), service)
+        service: Arc<dyn BpaService>,
+    ) -> services::Result<Eid> {
+        self.bpa
+            .register_dynamic_service(Arc::new(WatchedService {
+                inner: service,
+                unregistered: self.unregistered.clone(),
+            }))
             .await
     }
 
     async fn register_dynamic_application(
         &self,
-        application: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        self.register_application(hardy_bpv7::eid::Service::Ipn(0), application)
+        application: Arc<dyn Application>,
+    ) -> services::Result<Eid> {
+        self.bpa
+            .register_dynamic_application(Arc::new(WatchedApplication {
+                inner: application,
+                unregistered: self.unregistered.clone(),
+            }))
             .await
     }
 
     async fn register_routing_agent(
         &self,
-        _name: String,
-        agent: Arc<dyn routing::RoutingAgent>,
+        name: String,
+        agent: Arc<dyn RoutingAgent>,
     ) -> routing::Result<Vec<NodeId>> {
-        let sink = Arc::new(MockRoutingSink::new());
-        *self.last_routing_sink.lock() = Some(sink.clone());
-        *self.last_routing_agent.lock() = Some(agent.clone());
-
-        agent
-            .on_register(Box::new(RoutingSinkWrapper(sink)), &self.node_ids)
-            .await;
-
-        Ok(self.node_ids.clone())
+        self.bpa
+            .register_routing_agent(
+                name,
+                Arc::new(WatchedAgent {
+                    inner: agent,
+                    unregistered: self.unregistered.clone(),
+                }),
+            )
+            .await
     }
 }
 
-// ── Sink wrappers (delegate to Arc<Mock>) ─────────────────────────────
-
-struct RoutingSinkWrapper(Arc<MockRoutingSink>);
-struct ClaSinkWrapper(Arc<MockClaSink>);
-struct ServiceSinkWrapper(Arc<MockServiceSink>);
-struct ApplicationSinkWrapper(Arc<MockApplicationSink>);
-
-#[async_trait]
-impl routing::RoutingSink for RoutingSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn add_route(
-        &self,
-        p: hardy_eid_patterns::EidPattern,
-        a: routing::RouteAction,
-        pri: u32,
-    ) -> routing::Result<bool> {
-        self.0.add_route(p, a, pri).await
-    }
-    async fn remove_route(
-        &self,
-        p: &hardy_eid_patterns::EidPattern,
-        a: &routing::RouteAction,
-        pri: u32,
-    ) -> routing::Result<bool> {
-        self.0.remove_route(p, a, pri).await
-    }
+struct WatchedApplication {
+    inner: Arc<dyn Application>,
+    unregistered: broadcast::Sender<()>,
 }
 
 #[async_trait]
-impl cla::Sink for ClaSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
+impl Application for WatchedApplication {
+    async fn on_register(&self, source: &Eid, sink: Box<dyn ApplicationSink>) {
+        self.inner.on_register(source, sink).await
     }
-    async fn dispatch(
+
+    async fn on_unregister(&self) {
+        self.inner.on_unregister().await;
+        let _ = self.unregistered.send(());
+    }
+
+    async fn on_deliver(
         &self,
-        pn: Option<&NodeId>,
-        pa: Option<&cla::ClaAddress>,
-        s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> cla::Result<cla::Acceptance> {
-        self.0.dispatch(pn, pa, s).await
+        bundle_id: &BundleId,
+        expiry: OffsetDateTime,
+        ack_requested: bool,
+        adu_size: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        self.inner
+            .on_deliver(bundle_id, expiry, ack_requested, adu_size, stream)
+            .await
     }
-    async fn add_peer(&self, a: cla::ClaAddress, n: &[NodeId]) -> cla::Result<bool> {
-        self.0.add_peer(a, n).await
-    }
-    async fn remove_peer(&self, a: &cla::ClaAddress) -> cla::Result<bool> {
-        self.0.remove_peer(a).await
-    }
-    async fn transfer_outcome(
+
+    async fn on_status_notify(
         &self,
-        id: &hardy_bpv7::bundle::Id,
-        o: cla::TransferOutcome,
-    ) -> cla::Result<()> {
-        self.0.transfer_outcome(id, o).await
+        bundle_id: &BundleId,
+        from: &Eid,
+        kind: StatusNotify,
+        reason: ReasonCode,
+        timestamp: Option<OffsetDateTime>,
+    ) {
+        self.inner
+            .on_status_notify(bundle_id, from, kind, reason, timestamp)
+            .await
     }
+}
+
+struct WatchedService {
+    inner: Arc<dyn BpaService>,
+    unregistered: broadcast::Sender<()>,
 }
 
 #[async_trait]
-impl services::ServiceSink for ServiceSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
+impl BpaService for WatchedService {
+    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>) {
+        self.inner.on_register(endpoint, sink).await
     }
-    async fn send(
+
+    async fn on_unregister(&self) {
+        self.inner.on_unregister().await;
+        let _ = self.unregistered.send(());
+    }
+
+    async fn on_deliver(
         &self,
-        s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.0.send(s).await
+        bundle_id: &BundleId,
+        expiry: OffsetDateTime,
+        bundle_size: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        self.inner
+            .on_deliver(bundle_id, expiry, bundle_size, stream)
+            .await
     }
+
+    async fn on_status_notify(
+        &self,
+        bundle_id: &BundleId,
+        from: &Eid,
+        kind: StatusNotify,
+        reason: ReasonCode,
+        timestamp: Option<OffsetDateTime>,
+    ) {
+        self.inner
+            .on_status_notify(bundle_id, from, kind, reason, timestamp)
+            .await
+    }
+}
+
+struct WatchedCla {
+    inner: Arc<dyn Cla>,
+    unregistered: broadcast::Sender<()>,
 }
 
 #[async_trait]
-impl services::ApplicationSink for ApplicationSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn send(
+impl Cla for WatchedCla {
+    async fn on_register(
         &self,
-        dest: hardy_bpv7::eid::Eid,
-        lt: core::time::Duration,
-        opts: Option<services::SendOptions>,
-        size_hint: Option<u64>,
-        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.0.send(dest, lt, opts, size_hint, stream).await
+        sink: Box<dyn cla::Sink>,
+        node_ids: &[NodeId],
+        max_bundle_size: Option<NonZeroU64>,
+    ) {
+        self.inner
+            .on_register(sink, node_ids, max_bundle_size)
+            .await
+    }
+
+    async fn on_unregister(&self) {
+        self.inner.on_unregister().await;
+        let _ = self.unregistered.send(());
+    }
+
+    async fn forward(
+        &self,
+        lane: Option<u32>,
+        cla_addr: &cla::ClaAddress,
+        bundle_id: &BundleId,
+        total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> cla::Result<ForwardBundleResult> {
+        self.inner
+            .forward(lane, cla_addr, bundle_id, total_len, stream)
+            .await
     }
 }
 
-// ── Server helpers ────────────────────────────────────────────────────
-
-/// The loopback host for test servers: IPv6 when available, IPv4 as a
-/// fallback (some sandboxes have no `::1`).
-fn loopback_host() -> &'static str {
-    static HOST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    HOST.get_or_init(|| {
-        if std::net::TcpListener::bind(("::1", 0)).is_ok() {
-            "[::1]"
-        } else {
-            "127.0.0.1"
-        }
-    })
+struct WatchedAgent {
+    inner: Arc<dyn RoutingAgent>,
+    unregistered: broadcast::Sender<()>,
 }
 
-/// Start a gRPC server with the specified services.
-/// Returns the gRPC address string and the task pool (cancel to stop).
-pub async fn start_server(
-    bpa: &Arc<MockBpa>,
-    service_names: &[&str],
-) -> (String, hardy_async::TaskPool) {
-    // Port 0: the kernel assigns a free port, so concurrent test binaries
-    // never collide. `GrpcServer::new` binds the socket, so connections are
-    // accepted (into the backlog) from here on and no listen-wait is needed.
-    let host = loopback_host();
-    let addr: std::net::SocketAddr = format!("{host}:0").parse().unwrap();
+#[async_trait]
+impl RoutingAgent for WatchedAgent {
+    async fn on_register(&self, sink: Box<dyn RoutingSink>, node_ids: &[NodeId]) {
+        self.inner.on_register(sink, node_ids).await
+    }
 
-    let tasks = hardy_async::TaskPool::new();
-    let config = hardy_proto::server::Config {
-        address: addr,
-        services: service_names.iter().map(|s| s.to_string()).collect(),
-    };
-
-    let server = hardy_proto::server::GrpcServer::new(&config, bpa.clone())
-        .expect("Failed to create gRPC server");
-    let grpc_addr = format!("http://{}", server.local_addr());
-    let cancel = tasks.cancel_token().clone();
-    hardy_async::spawn!(tasks, "grpc_server", async move {
-        if let Err(e) = server.serve(cancel).await {
-            tracing::error!("gRPC server failed: {e}");
-        }
-    });
-
-    (grpc_addr, tasks)
+    async fn on_unregister(&self) {
+        self.inner.on_unregister().await;
+        let _ = self.unregistered.send(());
+    }
 }

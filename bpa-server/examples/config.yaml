@@ -10,9 +10,32 @@
 grpc:
   # The local IP address and port to listen on for gRPC requests.
   # address: "[::1]:50051"
-  # List of gRPC services to enable. Available: "application", "cla", "service"
-  # The gRPC server will not start if this list is empty.
+  # The services to expose: application, service, cla, routing.
+  # List at least one, or the gRPC section fails to parse.
   services: ["application", "cla", "service"]
+
+  # How long a graceful shutdown waits for open connections to drain
+  # before abandoning them (humantime; `0s` cuts them immediately).
+  # Default: 5s.
+  # drain-timeout: "5s"
+
+  # Stall defences for registration sessions. `handshake`, `idle`,
+  # `claim` and `grace` are humantime strings and none of them may be
+  # zero; raise them on long-RTT links. `min-rate` is the minimum bytes
+  # per second a transfer must sustain once `grace` is spent; `0`
+  # disables the rate floor, which also leaves `grace` unused.
+  # `max-sessions` caps the live sessions per service. A stalled
+  # application or service session holds at most 73 MiB of buffers, so
+  # the cap times that is the memory such a service can have committed
+  # to clients that stopped answering; a CLA session holds more, one
+  # collection per peer.
+  # limits:
+  #   handshake: "10s"
+  #   idle: "30s"
+  #   claim: "30s"
+  #   grace: "30s"
+  #   min-rate: 1024
+  #   max-sessions: 64
 
 # The Endpoint IDs (EIDs) that identify this node.
 # This can be a single string or a list of strings.
@@ -67,7 +90,7 @@ storage:
 # RFC 9171 Validity Filter
 # Configures policy checks from RFC 9171. These are SHOULD requirements,
 # not structural validity, so they can be relaxed for interoperability.
-rfc9171-validity:
+# rfc9171-validity:
   # Require the primary block to be protected by CRC or BIB.
   # Disable for interoperability with implementations that omit CRCs (e.g., dtn7-rs).
   # primary-block-integrity: true
@@ -82,7 +105,7 @@ rfc9171-validity:
 #
 # EID patterns matching next-hop peers that require legacy encoding.
 # Bundles forwarded to matching peers will have their IPN EIDs rewritten.
-ipn-legacy-nodes:
+# ipn-legacy-nodes:
 #  - "ipn:10.*"           # All endpoints on node 10
 #  - "ipn:20.0"           # Node 20's admin endpoint
 #  - "ipn:[100-199].*"    # Nodes 100-199 (range pattern)

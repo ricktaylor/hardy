@@ -1,312 +1,763 @@
-//! Lifecycle tests for gRPC proxy unregistration (LIFE-01 through LIFE-06).
-//!
-//! These tests validate that stream close correctly triggers cleanup on
-//! both client and server sides for all shutdown scenarios.
+#![cfg(all(feature = "server", feature = "client"))]
 
 mod common;
 
-use common::MockBpa;
-use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routing::{RoutingAgent, RoutingSink};
-use hardy_bpv7::eid::NodeId;
-use hardy_proto::client::RemoteBpa;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{
+    error::Error as _, future::pending, io, net::SocketAddr, pin::pin, sync::Arc, time::Duration,
+};
 
-// A mock RoutingAgent that records lifecycle callbacks.
-struct MockRoutingAgent {
-    registered: AtomicBool,
-    unregister_count: AtomicUsize,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn RoutingSink>>>,
+use hardy_async::{TaskPool, sync::spin::Once};
+use hardy_bpa::{
+    Bytes, async_trait,
+    bpa::Bpa,
+    services,
+    stream::{Receiver, RecvError, Segment, concat_stream},
+};
+use hardy_bpv7::{
+    bundle::Id as BundleId,
+    eid::{Eid, Service},
+    status_report::ReasonCode,
+};
+use hardy_proto::{
+    application::application_service_server::ApplicationServiceServer, client::BpaClient,
+    server::ApplicationServiceImpl,
+};
+use time::OffsetDateTime;
+use tokio::{
+    io::copy_bidirectional,
+    net::{TcpListener, TcpStream},
+    spawn,
+    sync::{
+        Barrier,
+        mpsc::{self, error::TryRecvError},
+    },
+    task::{JoinHandle, JoinSet},
+};
+use tonic::{Code, Status, transport::Server};
+
+use common::{UnregisterWatch, build_bpa, ipn1, serve, timeout, wait_unregistered};
+
+struct Harness {
+    bpa: Arc<Bpa>,
+    watch: Arc<UnregisterWatch>,
+    tasks: TaskPool,
+    address: SocketAddr,
+    url: String,
 }
 
-impl MockRoutingAgent {
-    fn new() -> Self {
-        Self {
-            registered: AtomicBool::new(false),
-            unregister_count: AtomicUsize::new(0),
-            sink: hardy_async::sync::spin::Mutex::new(None),
+async fn harness() -> Harness {
+    let bpa = build_bpa(ipn1(), false).await;
+    let tasks = TaskPool::new();
+    let watch = UnregisterWatch::new(bpa.clone());
+    let service =
+        ApplicationServiceServer::new(ApplicationServiceImpl::new(watch.clone(), tasks.clone()));
+    let address = serve(Server::builder().add_service(service)).await;
+
+    Harness {
+        bpa,
+        watch,
+        tasks,
+        address,
+        url: format!("http://{address}"),
+    }
+}
+
+// The proxy runs until aborted; a failure before that is returned rather than
+// unwrapped, so `assert_ran_until_aborted` can name it.
+async fn killable_proxy(upstream: SocketAddr) -> (SocketAddr, JoinHandle<io::Result<()>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let proxy = spawn(async move {
+        let mut connections = JoinSet::new();
+        loop {
+            let (mut inbound, _) = listener.accept().await?;
+            let mut outbound = TcpStream::connect(upstream).await?;
+            connections.spawn(async move {
+                let _ = copy_bidirectional(&mut inbound, &mut outbound).await;
+            });
         }
+    });
+    (address, proxy)
+}
+
+async fn assert_ran_until_aborted(proxy: JoinHandle<io::Result<()>>) {
+    match timeout(proxy).await {
+        Err(join) if join.is_cancelled() => {}
+        other => panic!("the proxy must run until it is aborted, got {other:?}"),
+    }
+}
+
+enum AppEvent {
+    Registered,
+    Unregistered,
+    Delivered(Bytes),
+}
+
+enum DeliveryMode {
+    Collect,
+    Decline,
+    Stall,
+    Rendezvous(Arc<Barrier>),
+}
+
+struct LifecycleApp {
+    sink: Once<Box<dyn services::ApplicationSink>>,
+    events: mpsc::UnboundedSender<AppEvent>,
+    keep_sink: bool,
+    mode: DeliveryMode,
+}
+
+impl LifecycleApp {
+    fn new() -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+        Self::build(true, DeliveryMode::Collect)
     }
 
-    fn is_registered(&self) -> bool {
-        self.registered.load(Ordering::Relaxed)
+    fn dropping_its_sink() -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+        Self::build(false, DeliveryMode::Collect)
     }
 
-    fn is_unregistered(&self) -> bool {
-        self.unregister_count.load(Ordering::Relaxed) > 0
+    fn declining() -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+        Self::build(true, DeliveryMode::Decline)
     }
 
-    fn unregister_count(&self) -> usize {
-        self.unregister_count.load(Ordering::Relaxed)
+    fn stalling() -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+        Self::build(true, DeliveryMode::Stall)
     }
 
-    fn take_sink(&self) -> Option<Box<dyn RoutingSink>> {
-        self.sink.lock().take()
+    fn rendezvousing(parties: usize) -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+        Self::build(
+            true,
+            DeliveryMode::Rendezvous(Arc::new(Barrier::new(parties))),
+        )
+    }
+
+    fn build(
+        keep_sink: bool,
+        mode: DeliveryMode,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (
+            Arc::new(Self {
+                sink: Once::new(),
+                events: tx,
+                keep_sink,
+                mode,
+            }),
+            rx,
+        )
+    }
+
+    fn sink(&self) -> &dyn services::ApplicationSink {
+        self.sink.get().unwrap().as_ref()
     }
 }
 
 #[async_trait]
-impl RoutingAgent for MockRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-        *self.sink.lock() = Some(sink);
-        self.registered.store(true, Ordering::Relaxed);
+impl services::Application for LifecycleApp {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+        if self.keep_sink {
+            self.sink.call_once(|| sink);
+        }
+        let _ = self.events.send(AppEvent::Registered);
     }
 
     async fn on_unregister(&self) {
-        self.unregister_count.fetch_add(1, Ordering::Relaxed);
+        let _ = self.events.send(AppEvent::Unregistered);
+    }
+
+    async fn on_deliver(
+        &self,
+        _bundle_id: &BundleId,
+        _expiry: OffsetDateTime,
+        _ack_requested: bool,
+        _adu_size: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        match &self.mode {
+            DeliveryMode::Collect => {
+                let data = concat_stream(stream, usize::MAX, None).await?;
+                let _ = self.events.send(AppEvent::Delivered(data));
+                Ok(())
+            }
+            DeliveryMode::Decline => {
+                let _ = self.events.send(AppEvent::Delivered(Bytes::new()));
+                Err(services::Error::Internal("test: declined".into()))
+            }
+            DeliveryMode::Stall => {
+                let _ = self.events.send(AppEvent::Delivered(Bytes::new()));
+                // Reads past the last chunk, where the server holds the
+                // stream open for the ack, so the delivery stays blocked on
+                // the stream until the session ends it.
+                loop {
+                    stream
+                        .recv()
+                        .await
+                        .map_err(|_| services::Error::StreamCancelled)?;
+                }
+            }
+            DeliveryMode::Rendezvous(barrier) => {
+                barrier.wait().await;
+                let data = concat_stream(stream, usize::MAX, None).await?;
+                let _ = self.events.send(AppEvent::Delivered(data));
+                Ok(())
+            }
+        }
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &BundleId,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: ReasonCode,
+        _timestamp: Option<OffsetDateTime>,
+    ) {
     }
 }
 
-// LIFE-01: Client-initiated unregister via stream close.
-//
-// The client calls `Sink::unregister()` which shuts down the proxy,
-// closing the stream. The server detects the close via `on_close`,
-// unregisters the component from the mock BPA, and cancels the proxy.
-// The client receives a synthetic `on_unregister()` callback.
-#[tokio::test]
-async fn life_01_client_initiated_unregister() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
-
-    // Create a mock routing agent and register it via the gRPC client
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
-        .await
-        .expect("registration should succeed");
-
-    assert!(!node_ids.is_empty(), "should receive node IDs");
+async fn expect_registered(events: &mut mpsc::UnboundedReceiver<AppEvent>) {
     assert!(
-        agent.is_registered(),
-        "agent should have received on_register"
+        matches!(timeout(events.recv()).await, Some(AppEvent::Registered)),
+        "expected the registration event"
     );
-    assert!(
-        !agent.is_unregistered(),
-        "agent should not be unregistered yet"
-    );
-
-    // The mock BPA should have received the registration
-    assert!(
-        bpa.last_routing_sink.lock().is_some(),
-        "BPA should have a routing sink"
-    );
-
-    // Client-initiated unregister: take the sink and call unregister()
-    let sink = agent
-        .take_sink()
-        .expect("agent should have a sink from on_register");
-    sink.unregister().await;
-
-    // Give the server a moment to process the stream close
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // The client should have received a synthetic on_unregister()
-    assert!(
-        agent.is_unregistered(),
-        "agent should have received on_unregister via on_close"
-    );
-
-    // Clean up server
-    server_tasks.shutdown().await;
 }
 
-// LIFE-02: BPA-initiated unregister.
-//
-// The BPA calls `on_unregister()` on the server-side RemoteRoutingAgent
-// (simulating BPA shutdown). The server shuts down the proxy, closing the
-// stream. The client receives a synthetic `on_unregister()` via `on_close`.
-#[tokio::test]
-async fn life_02_bpa_initiated_unregister() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
-
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
-        .await
-        .expect("registration should succeed");
-
-    assert!(agent.is_registered());
-    assert!(!agent.is_unregistered());
-
-    // BPA-initiated: call on_unregister on the server-side RemoteRoutingAgent
-    let server_agent = bpa
-        .last_routing_agent
-        .lock()
-        .clone()
-        .expect("BPA should have the server-side agent");
-    server_agent.on_unregister().await;
-
-    // Give the client a moment to detect the stream close
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // The client should have received a synthetic on_unregister()
-    assert!(
-        agent.is_unregistered(),
-        "agent should have received on_unregister via on_close"
-    );
-
-    // Clean up server
-    server_tasks.shutdown().await;
+async fn expect_unregistered(events: &mut mpsc::UnboundedReceiver<AppEvent>) {
+    loop {
+        match timeout(events.recv()).await {
+            Some(AppEvent::Unregistered) => return,
+            Some(_) => continue,
+            None => panic!("the application was never unregistered"),
+        }
+    }
 }
 
-// LIFE-03: Client drops proxy without calling unregister.
-//
-// The client drops its sink (and thus the proxy) without calling
-// `unregister()`. The proxy's `Drop` impl cancels the tasks, closing
-// the stream. The server detects the close via `on_close`, unregisters
-// the component from the BPA, and cancels the server-side proxy.
-#[tokio::test]
-async fn life_03_drop_without_unregister() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_unregister_round_trips() {
+    let served = harness().await;
+    let mut unregistered = served.watch.subscribe();
+    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let (app, mut events) = LifecycleApp::new();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
         .await
-        .expect("registration should succeed");
+        .unwrap();
+    let eid = handle.id().clone();
+    expect_registered(&mut events).await;
+    assert_eq!(eid.to_string(), "ipn:1.9");
 
-    assert!(agent.is_registered());
+    app.sink().unregister().await;
+    expect_unregistered(&mut events).await;
 
-    // Verify the mock BPA received the registration
-    let sink = bpa
-        .last_routing_sink
-        .lock()
-        .clone()
-        .expect("BPA should have a routing sink");
-    assert!(!sink.is_unregistered());
+    timeout(handle.join())
+        .await
+        .expect("a round-tripped unregister must end the session cleanly");
 
-    // Drop the sink without calling unregister.
-    drop(agent.take_sink());
+    wait_unregistered(&mut unregistered).await;
+    let (successor, mut successor_events) = LifecycleApp::new();
+    let _successor = client
+        .register_application(Service::Ipn(9), successor.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut successor_events).await;
 
-    // Give the server a moment to detect the stream close and clean up
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // The server's on_close should have called sink.unregister() on the BPA
-    assert!(
-        sink.is_unregistered(),
-        "BPA sink should have been unregistered by server on_close"
-    );
-
-    // Clean up server
-    server_tasks.shutdown().await;
+    served.bpa.shutdown().await;
 }
 
-// LIFE-04: Server crashes while client is connected.
-//
-// The server-side BPA forcefully unregisters all agents (simulating a
-// crash or abrupt shutdown). The client detects the stream close and
-// delivers a synthetic `on_unregister()` to the trait impl via `on_close`.
-#[tokio::test]
-async fn life_04_server_crash() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bpa_initiated_teardown_reaches_the_client() {
+    let served = harness().await;
+    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let (app, mut events) = LifecycleApp::new();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
         .await
-        .expect("registration should succeed");
+        .unwrap();
+    expect_registered(&mut events).await;
 
-    assert!(agent.is_registered());
-    assert!(!agent.is_unregistered());
+    served.bpa.shutdown().await;
+    expect_unregistered(&mut events).await;
 
-    // Simulate crash: force-unregister all agents
-    bpa.crash().await;
-
-    // Give the client a moment to detect the stream close
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // The client should have received a synthetic on_unregister()
     assert!(
-        agent.is_unregistered(),
-        "agent should have received on_unregister via on_close"
+        matches!(
+            timeout(handle.join()).await,
+            Err(services::Error::Disconnected)
+        ),
+        "an unsolicited close must reach the caller as a disconnection"
     );
-
-    // Clean up server
-    server_tasks.shutdown().await;
 }
 
-// LIFE-05: Client and BPA unregister simultaneously.
-//
-// Both the client and BPA initiate unregister concurrently. The
-// `Mutex<Option>.take()` on the server ensures exactly one path
-// takes the sink. No double-unregister, no deadlock.
-#[tokio::test]
-async fn life_05_simultaneous_unregister() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_pool_shutdown_defers_a_declined_delivery() {
+    let served = harness().await;
+    let mut unregistered = served.watch.subscribe();
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let doomed_tasks = TaskPool::new();
+    let doomed_client = BpaClient::new(served.url.clone(), doomed_tasks.clone()).unwrap();
+    let (doomed, mut doomed_events) = LifecycleApp::declining();
+    let handle = doomed_client
+        .register_application(Service::Ipn(9), doomed.clone())
         .await
-        .expect("registration should succeed");
+        .unwrap();
+    let eid = handle.id().clone();
+    expect_registered(&mut doomed_events).await;
 
-    assert!(agent.is_registered());
+    let payload = Bytes::from_static(b"survives the connection");
+    doomed
+        .sink()
+        .send(
+            eid.clone(),
+            Duration::from_secs(3600),
+            None,
+            None,
+            &mut payload.clone(),
+        )
+        .await
+        .unwrap();
+    loop {
+        match timeout(doomed_events.recv()).await {
+            Some(AppEvent::Delivered(_)) => break,
+            Some(_) => continue,
+            None => panic!("the delivery was never announced"),
+        }
+    }
 
-    // Fire both unregister paths concurrently
-    let sink = agent.take_sink().expect("agent should have a sink");
-    let bpa_clone = bpa.clone();
-    let (_, _) = tokio::join!(sink.unregister(), bpa_clone.crash());
+    doomed_tasks.shutdown().await;
+    drop(doomed);
+    drop(doomed_client);
 
-    // Give everything a moment to settle
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    wait_unregistered(&mut unregistered).await;
+    let client = BpaClient::new(served.url, TaskPool::new()).unwrap();
+    let (fresh, mut fresh_events) = LifecycleApp::new();
+    let _fresh = client
+        .register_application(Service::Ipn(9), fresh.clone())
+        .await
+        .unwrap();
 
-    // The client should have received on_unregister
-    assert!(
-        agent.is_unregistered(),
-        "agent should have received on_unregister"
-    );
+    let collected = loop {
+        match timeout(fresh_events.recv()).await {
+            Some(AppEvent::Delivered(data)) => break data,
+            Some(_) => continue,
+            None => panic!("the parked bundle was never re-announced"),
+        }
+    };
+    assert_eq!(collected, payload);
 
-    // No panic, no deadlock — test completing is the assertion
-    server_tasks.shutdown().await;
+    served.bpa.shutdown().await;
 }
 
-// LIFE-06: Client receives on_unregister exactly once.
-//
-// After BPA-initiated unregister (which closes the stream), the client
-// must receive exactly one `on_unregister()` call — not zero, not two.
-#[tokio::test]
-async fn life_06_exactly_once_unregister() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simultaneous_unregister_settles() {
+    let served = harness().await;
+    let tasks = TaskPool::new();
+    let client = BpaClient::new(served.url.clone(), tasks.clone()).unwrap();
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let (app, mut events) = LifecycleApp::new();
+    let _handle = client
+        .register_application(Service::Ipn(9), app.clone())
         .await
-        .expect("registration should succeed");
+        .unwrap();
+    expect_registered(&mut events).await;
 
-    assert_eq!(agent.unregister_count(), 0);
+    let bpa = served.bpa.clone();
+    let client_side = {
+        let app = app.clone();
+        spawn(async move { app.sink().unregister().await })
+    };
+    let bpa_side = spawn(async move { bpa.shutdown().await });
 
-    // BPA-initiated unregister
-    bpa.crash().await;
+    timeout(client_side).await.unwrap();
+    timeout(bpa_side).await.unwrap();
+    expect_unregistered(&mut events).await;
 
-    // Give the client time to process
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    timeout(tasks.shutdown()).await;
 
-    // Exactly one on_unregister — not zero (missed), not two (duplicate)
-    assert_eq!(
-        agent.unregister_count(),
-        1,
-        "on_unregister should be called exactly once"
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Unregistered),
+            "unregistration must be observed exactly once"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_the_sink_unregisters() {
+    let served = harness().await;
+    let mut unregistered = served.watch.subscribe();
+    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
+
+    let (app, mut events) = LifecycleApp::dropping_its_sink();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut events).await;
+    expect_unregistered(&mut events).await;
+
+    timeout(handle.join())
+        .await
+        .expect("a dropped sink must end the session cleanly");
+
+    wait_unregistered(&mut unregistered).await;
+    let (successor, mut successor_events) = LifecycleApp::new();
+    let _successor = client
+        .register_application(Service::Ipn(9), successor.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut successor_events).await;
+
+    served.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_registration_on_a_shut_down_client_is_refused() {
+    let served = harness().await;
+    let tasks = TaskPool::new();
+    let client = BpaClient::new(served.url.clone(), tasks.clone()).unwrap();
+    tasks.shutdown().await;
+
+    let (app, mut events) = LifecycleApp::new();
+    let result = timeout(client.register_application(Service::Ipn(9), app.clone())).await;
+
+    assert!(
+        matches!(result, Err(services::Error::Disconnected)),
+        "a shut down client must refuse a registration"
+    );
+    // The refusal came from the client's own shut-down pool, with nothing
+    // left running, so the channel is quiet rather than closed.
+    assert!(
+        matches!(events.try_recv(), Err(TryRecvError::Empty)),
+        "a refused registration must not have registered the application"
     );
 
-    server_tasks.shutdown().await;
+    served.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_shutdown_releases_the_registration() {
+    let served = harness().await;
+    let mut unregistered = served.watch.subscribe();
+    let tasks = TaskPool::new();
+    let client = BpaClient::new(served.url.clone(), tasks.clone()).unwrap();
+
+    let (app, mut events) = LifecycleApp::new();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut events).await;
+
+    tasks.shutdown().await;
+    expect_unregistered(&mut events).await;
+    timeout(handle.join())
+        .await
+        .expect("a pool shutdown must end the session cleanly");
+
+    wait_unregistered(&mut unregistered).await;
+    let successor_client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
+    let (successor, mut successor_events) = LifecycleApp::new();
+    let _successor = successor_client
+        .register_application(Service::Ipn(9), successor.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut successor_events).await;
+
+    served.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_pool_shutdown_disconnects_the_client() {
+    let served = harness().await;
+    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
+
+    let (app, mut events) = LifecycleApp::new();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    let eid = handle.id().clone();
+    expect_registered(&mut events).await;
+
+    served.tasks.shutdown().await;
+    expect_unregistered(&mut events).await;
+
+    assert!(
+        matches!(
+            timeout(handle.join()).await,
+            Err(services::Error::Disconnected)
+        ),
+        "a bridge teardown must read as a disconnection"
+    );
+
+    let result = app
+        .sink()
+        .send(
+            eid,
+            Duration::from_secs(3600),
+            None,
+            None,
+            &mut Bytes::from_static(b"into the void"),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(services::Error::Disconnected)),
+        "a dead session must fail the send as disconnected"
+    );
+
+    served.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transport_loss_surfaces_the_session_error() {
+    let served = harness().await;
+    let (proxy_address, proxy) = killable_proxy(served.address).await;
+    let client = BpaClient::new(format!("http://{proxy_address}"), TaskPool::new()).unwrap();
+
+    let (app, mut events) = LifecycleApp::new();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut events).await;
+
+    proxy.abort();
+    assert_ran_until_aborted(proxy).await;
+
+    let Err(services::Error::Internal(e)) = timeout(handle.join()).await else {
+        panic!("a killed transport must end the session with its own error");
+    };
+    let status = e
+        .downcast::<Status>()
+        .expect("the session error must be the transport's own status");
+    assert_eq!(status.code(), Code::Unknown);
+    assert!(
+        status.source().is_some(),
+        "the transport failure's source chain must survive to the handle"
+    );
+    expect_unregistered(&mut events).await;
+
+    served.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_ends_the_stream_a_delivery_is_blocked_on() {
+    let served = harness().await;
+    let tasks = TaskPool::new();
+    let client = BpaClient::new(served.url.clone(), tasks.clone()).unwrap();
+
+    let (app, mut events) = LifecycleApp::stalling();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    let eid = handle.id().clone();
+    expect_registered(&mut events).await;
+
+    app.sink()
+        .send(
+            eid,
+            Duration::from_secs(3600),
+            None,
+            None,
+            &mut Bytes::from_static(b"never collected").clone(),
+        )
+        .await
+        .unwrap();
+
+    loop {
+        match timeout(events.recv()).await {
+            Some(AppEvent::Delivered(_)) => break,
+            Some(_) => continue,
+            None => panic!("the delivery was never announced"),
+        }
+    }
+
+    timeout(tasks.shutdown()).await;
+    expect_unregistered(&mut events).await;
+
+    served.bpa.shutdown().await;
+}
+
+#[ignore = "the BPA serialises deliveries per service, so a held-open collection blocks the next announcement: see docs/TODO.md"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deliveries_collect_concurrently() {
+    let served = harness().await;
+    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
+
+    let (app, mut events) = LifecycleApp::rendezvousing(2);
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    let eid = handle.id().clone();
+    expect_registered(&mut events).await;
+
+    let first = Bytes::from_static(b"first of the pair");
+    let second = Bytes::from_static(b"second of the pair");
+    for payload in [&first, &second] {
+        app.sink()
+            .send(
+                eid.clone(),
+                Duration::from_secs(3600),
+                None,
+                None,
+                &mut payload.clone(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let mut collected = Vec::new();
+    while collected.len() < 2 {
+        match timeout(events.recv()).await {
+            Some(AppEvent::Delivered(data)) => collected.push(data),
+            Some(_) => continue,
+            None => panic!("both deliveries must complete"),
+        }
+    }
+    collected.sort();
+    let mut expected = vec![first, second];
+    expected.sort();
+    assert_eq!(collected, expected);
+
+    served.bpa.shutdown().await;
+}
+
+struct StalledProducer;
+
+#[async_trait]
+impl Receiver<Segment> for StalledProducer {
+    async fn recv(&mut self) -> Result<Segment, RecvError> {
+        pending().await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_session_fails_a_send_from_a_stalled_producer() {
+    let served = harness().await;
+    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
+
+    let (app, mut events) = LifecycleApp::new();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    let eid = handle.id().clone();
+    expect_registered(&mut events).await;
+
+    served.tasks.shutdown().await;
+    expect_unregistered(&mut events).await;
+
+    let result = timeout(app.sink().send(
+        eid,
+        Duration::from_secs(3600),
+        None,
+        None,
+        &mut StalledProducer,
+    ))
+    .await;
+    assert!(
+        matches!(result, Err(services::Error::Disconnected)),
+        "a dead session must fail the send as disconnected"
+    );
+
+    served.bpa.shutdown().await;
+}
+
+// An application that holds the registration open inside `on_register`, so a
+// test can give up on a registration while the component is being registered.
+struct SlowApp {
+    started: Arc<Barrier>,
+    release: Arc<Barrier>,
+    events: mpsc::UnboundedSender<AppEvent>,
+}
+
+impl SlowApp {
+    fn new() -> (
+        Arc<Self>,
+        Arc<Barrier>,
+        Arc<Barrier>,
+        mpsc::UnboundedReceiver<AppEvent>,
+    ) {
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (tx, rx) = mpsc::unbounded_channel();
+        (
+            Arc::new(Self {
+                started: started.clone(),
+                release: release.clone(),
+                events: tx,
+            }),
+            started,
+            release,
+            rx,
+        )
+    }
+}
+
+#[async_trait]
+impl services::Application for SlowApp {
+    async fn on_register(&self, _source: &Eid, _sink: Box<dyn services::ApplicationSink>) {
+        self.started.wait().await;
+        self.release.wait().await;
+        let _ = self.events.send(AppEvent::Registered);
+    }
+
+    async fn on_unregister(&self) {
+        let _ = self.events.send(AppEvent::Unregistered);
+    }
+
+    async fn on_deliver(
+        &self,
+        _bundle_id: &BundleId,
+        _expiry: OffsetDateTime,
+        _ack_requested: bool,
+        _adu_size: u64,
+        _stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        unreachable!("the test never delivers");
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &BundleId,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: ReasonCode,
+        _timestamp: Option<OffsetDateTime>,
+    ) {
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_registration_the_caller_gives_up_on_is_unregistered() {
+    let served = harness().await;
+    let mut unregistered = served.watch.subscribe();
+    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
+
+    let (app, started, release, mut events) = SlowApp::new();
+    {
+        let mut registering = pin!(client.register_application(Service::Ipn(9), app.clone()));
+        tokio::select! {
+            _ = &mut registering => {
+                panic!("a registration cannot finish while `on_register` is still running")
+            }
+            _ = started.wait() => {}
+        }
+    }
+    release.wait().await;
+
+    expect_unregistered(&mut events).await;
+    wait_unregistered(&mut unregistered).await;
+
+    // The service id the abandoned registration held is free again.
+    let (successor, mut successor_events) = LifecycleApp::new();
+    let _successor = timeout(client.register_application(Service::Ipn(9), successor.clone()))
+        .await
+        .expect("an abandoned registration must leave its service id free");
+    expect_registered(&mut successor_events).await;
+
+    served.bpa.shutdown().await;
 }
