@@ -1,5 +1,14 @@
 use core::num::{NonZeroU64, NonZeroUsize};
-use std::{collections::HashMap, path::PathBuf};
+#[cfg(unix)]
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(feature = "postgres-storage")]
+use std::time::Duration;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use hardy_async::watcher::WatchMode;
 use hardy_bpa::node_ids::NodeIds;
@@ -11,7 +20,11 @@ use crate::error::Error;
 
 pub mod bpsec;
 pub mod cla;
+#[cfg(feature = "grpc")]
+pub mod grpc;
 pub mod storage;
+#[cfg(feature = "tcpclv4")]
+pub mod tls;
 
 // Returns the default config directory, platform-specific:
 // - Linux: /etc/hardy/
@@ -61,19 +74,65 @@ mod log_level_serde {
     }
 }
 
+// A private-key file that fails the owner-only permission policy.
+#[derive(Debug, thiserror::Error)]
+pub enum KeyFileError {
+    #[error(
+        "key file '{}' has group/other permissions (mode {mode:04o}); \
+         restrict to owner-only (chmod 0600)",
+        path.display()
+    )]
+    Insecure { path: PathBuf, mode: u32 },
+}
+
+// The one key-file permission policy: a private-key file must not be
+// accessible by group or other (the sshd and PostgreSQL rule). Applied
+// as the configuration parses and again when a key file is reloaded. A
+// path whose metadata cannot be read, including one that does not exist
+// yet, passes: its absence surfaces when the consumer opens it.
+// Platforms without POSIX permission bits skip the check.
+pub fn check_key_file_permissions(path: &Path) -> Result<(), KeyFileError> {
+    #[cfg(unix)]
+    if let Ok(meta) = fs::metadata(path) {
+        let mode = meta.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(KeyFileError::Insecure {
+                path: path.to_path_buf(),
+                mode,
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+// Deserializes a private-key file path through
+// `check_key_file_permissions`: the check rides the field's own
+// deserializer, so every key-bearing field enforces it without a central
+// walk to keep in sync.
+fn owner_only_key_file<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let path = PathBuf::deserialize(deserializer)?;
+    check_key_file_permissions(&path).map_err(serde::de::Error::custom)?;
+    Ok(path)
+}
+
 // A positive duration, written as a humantime string (e.g. `30s`, `10m`,
 // `1h 30m`).
 #[cfg(feature = "postgres-storage")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NonZeroDuration(std::time::Duration);
+pub struct NonZeroDuration(Duration);
 
 #[cfg(feature = "postgres-storage")]
 impl NonZeroDuration {
-    pub fn new(duration: std::time::Duration) -> Option<Self> {
+    pub fn new(duration: Duration) -> Option<Self> {
         (!duration.is_zero()).then_some(Self(duration))
     }
 
-    pub fn get(&self) -> std::time::Duration {
+    pub fn get(&self) -> Duration {
         self.0
     }
 }
@@ -214,7 +273,7 @@ pub struct Config {
     // gRPC options
     #[serde(default)]
     #[cfg(feature = "grpc")]
-    pub grpc: Option<hardy_proto::server::Config>,
+    pub grpc: Option<grpc::GrpcConfig>,
 
     // Storage configuration (cache + metadata + bundle backends)
     #[serde(default)]
@@ -291,9 +350,23 @@ impl Config {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use serial_test::serial;
+
+    // Helper: an error and its whole source chain as one string, so an
+    // assertion can match text a source carries rather than only the
+    // top-level message.
+    pub fn error_chain(err: &dyn std::error::Error) -> String {
+        let mut out = err.to_string();
+        let mut source = err.source();
+        while let Some(e) = source {
+            out.push_str(": ");
+            out.push_str(&e.to_string());
+            source = e.source();
+        }
+        out
+    }
 
     // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
@@ -537,7 +610,7 @@ clas:
             tls.identity.as_ref().unwrap().key_file,
             std::path::PathBuf::from("/etc/hardy/private/server.key")
         );
-        assert_eq!(tls.client_auth, cla::ClientAuth::Required);
+        assert_eq!(tls.client_auth, super::tls::ClientAuth::Required);
         assert_eq!(
             tls.ca_certs.as_deref(),
             Some(std::path::Path::new("/etc/hardy/ca"))
@@ -658,7 +731,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("this-field-does-not-exist"), "{err}");
 
         // Sections are strict too: a typo'd storage knob is refused, not
@@ -668,7 +741,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("lru-capactiy"), "{err}");
     }
 
@@ -683,8 +756,10 @@ storage:
         feature = "tcpclv4"
     ))]
     fn example_config_parses() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.yaml");
-        Config::load(Some(path)).expect("the shipped config.yaml must parse");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        Config::load(Some(root.join("config.yaml"))).expect("the shipped config.yaml must parse");
+        Config::load(Some(root.join("examples/config.yaml")))
+            .expect("the example config.yaml must parse");
     }
 
     // Admin endpoints can be a single string, and the legacy `node-ids`
@@ -753,6 +828,65 @@ admin-endpoints:
         assert!(config.bpsec.is_none());
     }
 
+    // A group-readable BPSec keys file is refused at parse: the check
+    // rides the field's deserializer, so a misconfigured key never
+    // reaches its consumer.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn insecure_bpsec_keys_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = dir.path().join("keys.jwks");
+        std::fs::write(&keys_path, r#"{ "keys": [] }"#).unwrap();
+        std::fs::set_permissions(&keys_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            format!("bpsec:\n  keys-file: \"{}\"\n", keys_path.display()),
+        )
+        .unwrap();
+
+        let Err(err) = Config::load(Some(config_path)) else {
+            panic!("a group-readable keys file must be refused");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("group/other permissions"), "{err}");
+    }
+
+    // A group-readable TLS private key in a tcpclv4 CLA entry is refused
+    // at parse by the same field-level check.
+    #[test]
+    #[serial]
+    #[cfg(all(unix, feature = "tcpclv4"))]
+    fn insecure_cla_tls_key_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("node.key");
+        std::fs::write(&key_path, "").unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "clas:\n  - name: tcp\n    type: tcpclv4\n    tls:\n      identity:\n        cert-file: \"{}\"\n        key-file: \"{}\"\n",
+                dir.path().join("node.crt").display(),
+                key_path.display()
+            ),
+        )
+        .unwrap();
+
+        let Err(err) = Config::load(Some(config_path)) else {
+            panic!("a group-readable TLS key must be refused");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("group/other permissions"), "{err}");
+    }
+
     // The removed `address` key of a tcpclv4 CLA entry is refused with the
     // replacement named: unknown keys are otherwise ignored, and a
     // deliberately loopback-only `address` must not silently escalate to
@@ -771,7 +905,7 @@ admin-endpoints:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("listeners"), "{err}");
     }
 
@@ -792,7 +926,7 @@ admin-endpoints:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("keepalive"), "{err}");
     }
 
@@ -818,7 +952,7 @@ admin-endpoints:
     #[cfg(feature = "postgres-storage")]
     fn non_zero_duration_round_trips() {
         let duration: NonZeroDuration = serde_json::from_str("\"1m 30s\"").unwrap();
-        assert_eq!(duration.get(), std::time::Duration::from_secs(90));
+        assert_eq!(duration.get(), Duration::from_secs(90));
         assert_eq!(serde_json::to_string(&duration).unwrap(), "\"1m 30s\"");
 
         let err = serde_json::from_str::<NonZeroDuration>("\"0s\"")

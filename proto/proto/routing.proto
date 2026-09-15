@@ -1,0 +1,158 @@
+syntax = "proto3";
+
+package hardy.routing.v1;
+
+import "google/protobuf/empty.proto";
+import "common.proto";
+
+// Routing agent API.
+//
+// A routing agent registers with the BPA and supplies routes to its
+// routing information base (RIB). The BPA never calls the agent
+// back.
+//
+// The registration lives in one Subscribe call, the session. Its
+// first request is Register. Its first response is a Registration
+// event carrying a session token. After that, the stream only holds
+// the registration open.
+//
+// AddRoute and RemoveRoute present the session token and maintain
+// the agent's routes in the RIB.
+//
+// Unregister, or closing the Subscribe stream, ends the
+// registration, invalidates the token, and removes the agent's
+// routes.
+//
+// A failed call ends with a gRPC status: a code and a short message,
+// and nothing else. The code is what a client branches on; the message
+// is a phrase for a developer reading a log, and never reflects
+// anything the client sent. A status with a code this file does not
+// name for the call came from the transport, not the BPA.
+service RoutingService {
+  // -- Control plane ---------------------------------------------------
+
+  // Establishes the session and registers the agent.
+  //
+  // The first request must be Register; the first response is a
+  // Registration event carrying the session token. The stream then
+  // only holds the session open. Unregister, or closing the stream,
+  // ends the registration and removes the agent's routes.
+  rpc Subscribe(stream SubscribeRequest) returns (stream SubscribeResponse);
+
+  // -- Routes ----------------------------------------------------------
+
+  // Adds a route to the RIB.
+  rpc AddRoute(AddRouteRequest) returns (AddRouteResponse);
+
+  // Removes a route from the RIB.
+  rpc RemoveRoute(RemoveRouteRequest) returns (RemoveRouteResponse);
+}
+
+// ---------------------------------------------------------------------
+// Control plane: the session stream. Small messages only.
+// ---------------------------------------------------------------------
+
+// Request message for Subscribe.
+message SubscribeRequest {
+  // The request. Register must be the first message on the stream;
+  // Unregister ends the registration.
+  oneof request {
+    // Opens the registration.
+    Register   register   = 1;
+    // Ends the registration.
+    Unregister unregister = 2;
+  }
+}
+
+// Registers a routing agent. Must be the first message on the
+// stream.
+message Register {
+  // A unique name for this agent; its routes are attributed to it.
+  string name = 1;
+}
+
+// Ends the registration. Closing the request stream has the same
+// effect.
+message Unregister {}
+
+// Response message for Subscribe. If registration fails, the
+// Subscribe call itself fails with a gRPC status instead.
+message SubscribeResponse {
+  // The event. Registration is the only one.
+  oneof event {
+    // The registration succeeded; carries the session token.
+    Registration registration = 1;
+  }
+}
+
+// The result of a successful registration. Always the first event on
+// the stream.
+message Registration {
+  // The node ids of the BPA.
+  repeated string node_ids = 1;
+  // The token that authenticates route calls for this session.
+  // Opaque; expires when the session stream closes.
+  bytes           session_token = 2;
+  // The sizes this session runs under.
+  hardy.common.v1.Sizes sizes = 3;
+}
+
+// ---------------------------------------------------------------------
+// Routes: token-gated unary RPCs.
+// ---------------------------------------------------------------------
+
+// Request message for AddRoute.
+message AddRouteRequest {
+  // The session token from Registration.
+  bytes       session_token = 1;
+  // The EID pattern the route matches, e.g. "ipn:*.*" or
+  // "dtn://node/**".
+  string      pattern       = 2;
+  // The action applied to matching bundles.
+  RouteAction action        = 3;
+  // The route priority; lower values win.
+  uint32      priority      = 4;
+}
+
+// Response message for AddRoute.
+message AddRouteResponse {
+  // True if the route was not already present.
+  bool added = 1;
+}
+
+// Request message for RemoveRoute. The route must match exactly.
+message RemoveRouteRequest {
+  // The session token from Registration.
+  bytes       session_token = 1;
+  // The pattern of the route.
+  string      pattern       = 2;
+  // The action of the route.
+  RouteAction action        = 3;
+  // The priority of the route.
+  uint32      priority      = 4;
+}
+
+// Response message for RemoveRoute.
+message RemoveRouteResponse {
+  // True if the route was found and removed.
+  bool removed = 1;
+}
+
+// The action a route applies to matching bundles.
+message RouteAction {
+  // The action. Exactly one is set.
+  oneof action {
+    // Drops the bundle.
+    Discard               drop    = 1;
+    // Returns the bundle to the node it came from.
+    google.protobuf.Empty reflect = 2;
+    // Repeats the route lookup with this EID.
+    string                via     = 3;
+  }
+}
+
+// Drops matching bundles.
+message Discard {
+  // The RFC 9171 reason code to report, if any.
+  optional uint64 reason_code = 1;
+}

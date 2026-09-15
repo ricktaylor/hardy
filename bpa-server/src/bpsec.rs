@@ -4,7 +4,8 @@
 //! [`PatternKeySource`], so the key configuration can be hot-reloaded while
 //! bundles are being processed.
 
-use crate::config::bpsec::BPSecConfig;
+use std::{collections::HashMap, fs, sync::Arc};
+
 use arc_swap::ArcSwap;
 use hardy_async::{TaskPool, watcher};
 use hardy_bpa::keys::KeyProvider;
@@ -14,8 +15,10 @@ use hardy_bpv7::{
 };
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
 use tracing::{debug, error, info, warn};
+
+use crate::config::{bpsec::BPSecConfig, check_key_file_permissions};
+
 /// The BPA's role with respect to a security block (RFC 9172 Section 2.5).
 ///
 /// A role is expressed entirely through which operations keys are released
@@ -122,8 +125,10 @@ impl PatternKeySource {
     ///
     /// Every key must be a non-empty symmetric key (`kty: oct`) carrying a
     /// `key_ops` field, and every binding must reference a known key id.
+    /// The file must pass the owner-only permission policy
+    /// ([`check_key_file_permissions`]), on a reload as at startup.
     pub fn load(config: &BPSecConfig) -> anyhow::Result<Self> {
-        check_permissions(&config.keys_file);
+        check_key_file_permissions(&config.keys_file)?;
 
         let file = fs::File::open(&config.keys_file).map_err(|e| {
             anyhow::anyhow!(
@@ -182,26 +187,6 @@ impl PatternKeySource {
         Ok(Self::new(keys, bindings))
     }
 }
-
-#[cfg(unix)]
-fn check_permissions(path: &Path) {
-    use std::os::unix::fs::MetadataExt;
-
-    if let Ok(meta) = fs::metadata(path) {
-        let mode = meta.mode() & 0o777;
-        if mode & 0o077 != 0 {
-            warn!(
-                "Key file '{}' has group/other permissions (mode {:04o}). \
-                 Restrict to owner-only (chmod 0600).",
-                path.display(),
-                mode
-            );
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn check_permissions(_path: &Path) {}
 
 impl KeySource for PatternKeySource {
     fn key<'a>(&'a self, source: &Eid, operations: &[Operation]) -> Option<&'a Key> {
@@ -815,8 +800,10 @@ mod load_tests {
     use std::fs;
 
     use super::{PatternKeySource, SecurityRole};
-    use crate::config::WatchConfig;
-    use crate::config::bpsec::{BPSecConfig, KeyBindingConfig};
+    use crate::config::{
+        KeyFileError, WatchConfig,
+        bpsec::{BPSecConfig, KeyBindingConfig},
+    };
 
     fn parse_eid(s: &str) -> Eid {
         s.parse().expect("valid EID")
@@ -991,5 +978,26 @@ mod load_tests {
         let keys_path = write_keys(&dir, VALID_KEYS);
         let config = config_with(&keys_path, vec![]);
         assert!(PatternKeySource::load(&config).is_ok());
+    }
+
+    // The reload path applies the same owner-only policy as the config
+    // parse: a group-readable keys file is refused with the typed error,
+    // so a key file loosened after startup never replaces the loaded keys.
+    #[cfg(unix)]
+    #[test]
+    fn group_readable_key_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(&dir, VALID_KEYS);
+        fs::set_permissions(&keys_path, fs::Permissions::from_mode(0o640)).unwrap();
+        let config = config_with(&keys_path, vec![]);
+
+        let err = PatternKeySource::load(&config).unwrap_err();
+        let Some(KeyFileError::Insecure { path, mode }) = err.downcast_ref::<KeyFileError>() else {
+            panic!("expected KeyFileError::Insecure, got: {err:#}");
+        };
+        assert_eq!(path, &keys_path);
+        assert_eq!(*mode, 0o640);
     }
 }

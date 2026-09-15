@@ -1,328 +1,652 @@
-//! Service client proxy tests (SVC-CLI-01 through SVC-CLI-06).
-//!
-//! Verify the low-level Service client correctly maps Rust trait calls
-//! to service.proto messages via the gRPC proxy.
+#![cfg(feature = "server")]
 
 mod common;
 
-use common::MockBpa;
-use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::services::{Service, ServiceSink, StatusNotify};
-use hardy_bpv7::eid::Eid;
-use hardy_proto::client::RemoteBpa;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(feature = "client")]
+use std::borrow::Cow;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-// A mock Service that records lifecycle callbacks and incoming bundles.
-struct MockService {
-    registered: AtomicBool,
-    received: AtomicBool,
-    status_notified: AtomicBool,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn ServiceSink>>>,
+use hardy_async::TaskPool;
+#[cfg(feature = "client")]
+use hardy_async::sync::spin::Once;
+use hardy_bpa::{Bytes, bpa::Bpa};
+#[cfg(feature = "client")]
+use hardy_bpa::{
+    async_trait,
+    services::{self, ServiceSink},
+    stream::{Receiver, Segment, concat_stream},
+};
+#[cfg(feature = "client")]
+use hardy_bpv7::{
+    builder::Builder,
+    bundle::{self, Id as BundleId},
+    creation_timestamp::CreationTimestamp,
+    eid::{Eid, Service},
+    status_report,
+};
+#[cfg(feature = "client")]
+use hardy_proto::client::BpaClient;
+use hardy_proto::{
+    chunking::DEFAULT_CHUNK_SIZE,
+    server::{Limits, ServiceServiceImpl},
+    service::{
+        Delivery, ReceiveMetadata, ReceiveRequest, Register, SendMetadata, SendRequest,
+        SendResponse, SubscribeRequest, SubscribeResponse, Unregister, receive_request,
+        receive_response, register, send_request, service_service_client::ServiceServiceClient,
+        service_service_server::ServiceServiceServer, subscribe_request, subscribe_response,
+    },
+};
+#[cfg(feature = "client")]
+use time::OffsetDateTime;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{
+    Code, Status, Streaming,
+    transport::{Channel, Server},
+};
+
+use common::{UnregisterWatch, build_bpa, build_bundle, ipn1, serve, timeout, wait_unregistered};
+
+struct Harness {
+    bpa: Arc<Bpa>,
+    #[expect(dead_code, reason = "held for its liveness")]
+    tasks: TaskPool,
+    client: ServiceServiceClient<Channel>,
+    #[cfg_attr(
+        not(feature = "client"),
+        expect(dead_code, reason = "read by the client SDK test")
+    )]
+    address: SocketAddr,
+    watch: Arc<UnregisterWatch>,
 }
 
-impl MockService {
-    fn new() -> Self {
-        Self {
-            registered: AtomicBool::new(false),
-            received: AtomicBool::new(false),
-            status_notified: AtomicBool::new(false),
-            sink: hardy_async::sync::spin::Mutex::new(None),
-        }
-    }
-
-    fn take_sink(&self) -> Option<Box<dyn ServiceSink>> {
-        self.sink.lock().take()
-    }
+async fn harness() -> Harness {
+    harness_with_limits(Limits::default()).await
 }
 
-#[async_trait]
-impl Service for MockService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
-        *self.sink.lock() = Some(sink);
-        self.registered.store(true, Ordering::Relaxed);
-    }
+async fn harness_with_limits(limits: Limits) -> Harness {
+    let bpa = build_bpa(ipn1(), true).await;
 
-    async fn on_unregister(&self) {}
+    let tasks = TaskPool::new();
+    let watch = UnregisterWatch::new(bpa.clone());
+    let server = ServiceServiceImpl::with_limits(watch.clone(), tasks.clone(), limits);
+    let service = ServiceServiceServer::new(server.clone());
+    let address = serve(Server::builder().add_service(service)).await;
 
-    async fn on_deliver(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _expiry: time::OffsetDateTime,
-        _total_len: u64,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<()> {
-        self.received.store(true, Ordering::Relaxed);
-        Ok(())
-    }
-
-    async fn on_status_notify(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _from: &Eid,
-        _kind: StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
-        _timestamp: Option<time::OffsetDateTime>,
-    ) {
-        self.status_notified.store(true, Ordering::Relaxed);
-    }
-}
-
-// SVC-CLI-01: Register service, receive endpoint ID.
-#[tokio::test]
-async fn svc_cli_01_registration() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
-
-    let svc = Arc::new(MockService::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
+    let client = ServiceServiceClient::connect(format!("http://{address}"))
         .await
-        .expect("registration should succeed");
-
-    assert_eq!(endpoint.to_string(), "ipn:1.42");
-    assert!(svc.registered.load(Ordering::Relaxed));
-    assert!(svc.sink.lock().is_some());
-
-    // Clean up
-    drop(svc.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    server_tasks.shutdown().await;
-}
-
-// SVC-CLI-02: Send raw bundle via sink.
-#[tokio::test]
-async fn svc_cli_02_send_bundle() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
-
-    let svc = Arc::new(MockService::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
-        .await
-        .expect("registration should succeed");
-
-    let sink = svc.take_sink().expect("service should have a sink");
-
-    // send() calls the mock BPA sink which is unimplemented — expect an error
-    let result = sink
-        .send(&mut hardy_bpa::Bytes::from_static(b"\x9f\x89"))
-        .await;
-    assert!(result.is_err(), "mock sink send is unimplemented");
-
-    // Clean up
-    sink.unregister().await;
-    server_tasks.shutdown().await;
-}
-
-// SVC-CLI-03: Receive raw bundle (BPA pushes to service).
-#[tokio::test]
-async fn svc_cli_03_receive_bundle() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
-
-    let svc = Arc::new(MockService::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
-        .await
-        .expect("registration should succeed");
-
-    assert!(!svc.received.load(Ordering::Relaxed));
-
-    // BPA pushes a bundle via the server-side Service proxy
-    let server_svc = bpa
-        .last_service
-        .lock()
-        .clone()
-        .expect("BPA should have the server-side service");
-
-    let mut data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00");
-    let total_len = data.len() as u64;
-    let bundle_id = hardy_bpv7::bundle::Id::default();
-    let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
-    server_svc
-        .on_deliver(&bundle_id, expiry, total_len, &mut data)
-        .await
-        .expect("Delivery should succeed");
-
-    assert!(
-        svc.received.load(Ordering::Relaxed),
-        "MockService should have received the bundle"
-    );
-
-    // Clean up
-    drop(svc.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    server_tasks.shutdown().await;
-}
-
-// SVC-CLI-04: Status notification (BPA pushes to service).
-#[tokio::test]
-async fn svc_cli_04_status_notify() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
-
-    let svc = Arc::new(MockService::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
-        .await
-        .expect("registration should succeed");
-
-    assert!(!svc.status_notified.load(Ordering::Relaxed));
-
-    let server_svc = bpa
-        .last_service
-        .lock()
-        .clone()
-        .expect("BPA should have the server-side service");
-
-    let bundle_id = hardy_bpv7::bundle::Id {
-        source: "ipn:1.42".parse().unwrap(),
-        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::new_sequential(),
-        fragment_info: None,
-    };
-    let from: Eid = "ipn:2.0".parse().unwrap();
-
-    server_svc
-        .on_status_notify(
-            &bundle_id,
-            &from,
-            StatusNotify::Delivered,
-            hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation,
-            None,
-        )
-        .await;
-
-    assert!(
-        svc.status_notified.load(Ordering::Relaxed),
-        "MockService should have received the status notification"
-    );
-
-    // Clean up
-    drop(svc.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    server_tasks.shutdown().await;
-}
-
-// A service that replies from inside `on_deliver`, the shape echo-service
-// and any request/reply service uses.
-struct ReplyingService {
-    sink: hardy_async::sync::spin::Mutex<Option<Arc<dyn ServiceSink>>>,
-    replied: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl Service for ReplyingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
-        *self.sink.lock() = Some(Arc::from(sink));
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _expiry: time::OffsetDateTime,
-        total_len: u64,
-        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<()> {
-        let mut data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
-        let sink = self.sink.lock().clone().expect("registered");
-        // Send back to the BPA before returning. The mock sink answers with an
-        // error, but the round-trip must complete: a Send drawn from the same
-        // id space as the BPA's in-flight Receive used to be mis-routed as that
-        // Receive's response, hanging this call forever.
-        let _ = sink.send(&mut data).await;
-        self.replied.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    async fn on_status_notify(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _from: &Eid,
-        _kind: StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
-        _timestamp: Option<time::OffsetDateTime>,
-    ) {
+        .unwrap();
+    Harness {
+        bpa,
+        tasks,
+        client,
+        address,
+        watch,
     }
 }
 
-// SVC-CLI-06 (regression): concurrent deliveries to a service that replies
-// from within `on_deliver` must not wedge. The two ends of the proxy draw
-// request ids from disjoint parities (proxy::Side), so a reply Send can never
-// collide with the BPA's outstanding Receive. Before the fix this deadlocked
-// deterministically on the first bundle.
-#[tokio::test]
-async fn svc_cli_06_concurrent_reply_from_on_deliver() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
+struct Registered {
+    requests_tx: mpsc::Sender<SubscribeRequest>,
+    events: Streaming<SubscribeResponse>,
+    endpoint_id: String,
+    token: Bytes,
+}
 
-    let replied = Arc::new(AtomicUsize::new(0));
-    let svc = Arc::new(ReplyingService {
-        sink: hardy_async::sync::spin::Mutex::new(None),
-        replied: replied.clone(),
-    });
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-    remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
-        .await
-        .expect("registration should succeed");
-
-    let server_svc = bpa
-        .last_service
-        .lock()
-        .clone()
-        .expect("BPA should have the server-side service");
-
-    // Drive more concurrent deliveries than the handler pool has permits, so a
-    // wedge (leaked permits) cannot be masked by spare capacity.
-    const N: usize = 32;
-    let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
-    let deliveries = (0..N).map(|_| {
-        let server_svc = server_svc.clone();
-        tokio::spawn(async move {
-            let mut data = hardy_bpa::Bytes::from_static(b"payload");
-            let total_len = data.len() as u64;
-            let _ = server_svc
-                .on_deliver(
-                    &hardy_bpv7::bundle::Id::default(),
-                    expiry,
-                    total_len,
-                    &mut data,
-                )
-                .await;
+async fn register(
+    client: &mut ServiceServiceClient<Channel>,
+    service_id: Option<register::ServiceId>,
+) -> Registered {
+    let (requests_tx, requests_rx) = mpsc::channel(4);
+    requests_tx
+        .send(SubscribeRequest {
+            request: Some(subscribe_request::Request::Register(Register {
+                service_id,
+                max_chunk_size: None,
+            })),
         })
-    });
-
-    let drive = async {
-        for d in deliveries {
-            let _ = d.await;
-        }
-        while replied.load(Ordering::Relaxed) < N {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(10), drive)
         .await
-        .expect("concurrent replying deliveries must not wedge");
+        .unwrap();
 
-    assert_eq!(replied.load(Ordering::Relaxed), N);
+    let mut events = client
+        .subscribe(ReceiverStream::new(requests_rx))
+        .await
+        .unwrap()
+        .into_inner();
+    let event = timeout(events.message()).await.unwrap().unwrap();
+    let Some(subscribe_response::Event::Registration(registration)) = event.event else {
+        panic!("expected the Registration event first");
+    };
+    assert!(!registration.session_token.is_empty());
 
-    // Close the client so the server's bidi stream ends; otherwise
-    // server_tasks.shutdown() waits on the still-open stream.
-    let sink = svc.sink.lock().take();
-    if let Some(sink) = sink {
-        sink.unregister().await;
+    Registered {
+        requests_tx,
+        events,
+        endpoint_id: registration.endpoint_id,
+        token: registration.session_token,
     }
-    server_tasks.shutdown().await;
+}
+
+async fn send(
+    client: &mut ServiceServiceClient<Channel>,
+    token: Bytes,
+    bundle: Bytes,
+) -> Result<SendResponse, Status> {
+    let mut messages = vec![SendRequest {
+        request: Some(send_request::Request::Metadata(SendMetadata {
+            session_token: token,
+            bundle_size: None,
+        })),
+    }];
+    for chunk in bundle.chunks(DEFAULT_CHUNK_SIZE) {
+        messages.push(SendRequest {
+            request: Some(send_request::Request::Chunk(Bytes::copy_from_slice(chunk))),
+        });
+    }
+    messages.push(SendRequest {
+        request: Some(send_request::Request::LastChunk(Bytes::new())),
+    });
+    client
+        .send(tokio_stream::iter(messages))
+        .await
+        .map(|response| response.into_inner())
+}
+
+async fn collect(
+    client: &mut ServiceServiceClient<Channel>,
+    token: Bytes,
+    bundle_id: &str,
+    abandon: bool,
+) -> Result<Vec<u8>, Status> {
+    let (requests_tx, requests_rx) = mpsc::channel(4);
+    requests_tx
+        .send(ReceiveRequest {
+            request: Some(receive_request::Request::Metadata(ReceiveMetadata {
+                session_token: token,
+                bundle_id: bundle_id.to_string(),
+            })),
+        })
+        .await
+        .unwrap();
+
+    let mut stream = client
+        .receive(ReceiverStream::new(requests_rx))
+        .await?
+        .into_inner();
+    let mut collected = Vec::new();
+    let mut cancelled = false;
+    loop {
+        match timeout(stream.message()).await?.and_then(|r| r.response) {
+            Some(receive_response::Response::Chunk(chunk)) => {
+                collected.extend_from_slice(&chunk);
+                if abandon && !cancelled {
+                    cancelled = true;
+                    let _ = requests_tx
+                        .send(ReceiveRequest {
+                            request: Some(receive_request::Request::Cancel(())),
+                        })
+                        .await;
+                }
+            }
+            Some(receive_response::Response::LastChunk(chunk)) => {
+                collected.extend_from_slice(&chunk);
+                if abandon {
+                    continue;
+                }
+                let _ = requests_tx
+                    .send(ReceiveRequest {
+                        request: Some(receive_request::Request::Ack(())),
+                    })
+                    .await;
+                while timeout(stream.message()).await?.is_some() {}
+                return Ok(collected);
+            }
+            None if abandon => return Ok(collected),
+            other => panic!("expected a chunk, got {other:?}"),
+        }
+    }
+}
+
+async fn drain_undelivered(events: &mut Streaming<SubscribeResponse>, why: &str) {
+    loop {
+        match timeout(events.message()).await {
+            Ok(Some(event)) => assert!(
+                !matches!(event.event, Some(subscribe_response::Event::Delivery(_))),
+                "{why}"
+            ),
+            Ok(None) => panic!("an unsolicited ending must state a status"),
+            Err(status) => {
+                assert_eq!(status.code(), Code::Unavailable);
+                break;
+            }
+        }
+    }
+}
+
+async fn delivery(registered: &mut Registered, bundle_size: u64) -> Delivery {
+    loop {
+        let event = timeout(registered.events.message()).await.unwrap().unwrap();
+        match event.event {
+            Some(subscribe_response::Event::Delivery(delivery)) => {
+                assert_eq!(delivery.bundle_size, bundle_size);
+                return delivery;
+            }
+            Some(subscribe_response::Event::BundleStatusReport(_)) => {}
+            other => panic!("expected a Delivery, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_and_dynamic_registrations_mint_distinct_sessions() {
+    let mut harness = harness().await;
+
+    let explicit = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+    assert_eq!(explicit.endpoint_id, "ipn:1.7");
+
+    let dynamic = register(&mut harness.client, None).await;
+    assert!(!dynamic.endpoint_id.is_empty());
+    assert_ne!(dynamic.endpoint_id, explicit.endpoint_id);
+    assert_ne!(dynamic.token, explicit.token);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_to_self_roundtrip() {
+    let mut harness = harness().await;
+    let mut registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let bundle = build_bundle(
+        &registered.endpoint_id,
+        &registered.endpoint_id,
+        b"a whole bundle over the v1 wire",
+    );
+    let sent = send(
+        &mut harness.client,
+        registered.token.clone(),
+        bundle.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!sent.bundle_id.is_empty());
+
+    let delivery = delivery(&mut registered, bundle.len() as u64).await;
+
+    let collected = collect(
+        &mut harness.client,
+        registered.token.clone(),
+        &delivery.bundle_id,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(collected, bundle);
+
+    assert_eq!(delivery.bundle_id, sent.bundle_id);
+    let gone = collect(
+        &mut harness.client,
+        registered.token.clone(),
+        &delivery.bundle_id,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(gone.code(), Code::NotFound);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_uncollected_delivery_expires_its_claim_and_ends_the_session() {
+    let mut harness = harness_with_limits(Limits {
+        claim: Duration::ZERO,
+        ..Limits::default()
+    })
+    .await;
+    let mut unregistered = harness.watch.subscribe();
+    let mut registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let bundle = build_bundle(
+        &registered.endpoint_id,
+        &registered.endpoint_id,
+        b"never collected",
+    );
+    let size = bundle.len() as u64;
+    send(&mut harness.client, registered.token.clone(), bundle)
+        .await
+        .unwrap();
+
+    delivery(&mut registered, size).await;
+
+    wait_unregistered(&mut unregistered).await;
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_truncated_send_never_commits() {
+    let mut harness = harness().await;
+    let mut registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let bundle = build_bundle(&registered.endpoint_id, &registered.endpoint_id, b"cut");
+    let messages = [
+        SendRequest {
+            request: Some(send_request::Request::Metadata(SendMetadata {
+                session_token: registered.token.clone(),
+                bundle_size: None,
+            })),
+        },
+        SendRequest {
+            request: Some(send_request::Request::Chunk(bundle)),
+        },
+    ];
+    let status = harness
+        .client
+        .send(tokio_stream::iter(messages))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Aborted);
+
+    harness.bpa.shutdown().await;
+    drain_undelivered(&mut registered.events, "a truncated send must not deliver").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_send_is_discarded() {
+    let mut harness = harness().await;
+    let mut registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let bundle = build_bundle(&registered.endpoint_id, &registered.endpoint_id, b"undo");
+    let messages = [
+        SendRequest {
+            request: Some(send_request::Request::Metadata(SendMetadata {
+                session_token: registered.token.clone(),
+                bundle_size: None,
+            })),
+        },
+        SendRequest {
+            request: Some(send_request::Request::Chunk(bundle)),
+        },
+        SendRequest {
+            request: Some(send_request::Request::Cancel(())),
+        },
+    ];
+    let status = harness
+        .client
+        .send(tokio_stream::iter(messages))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Cancelled);
+
+    harness.bpa.shutdown().await;
+    drain_undelivered(&mut registered.events, "a cancelled send must not deliver").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invalid_bundle_is_rejected() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let status = send(
+        &mut harness.client,
+        registered.token.clone(),
+        Bytes::from_static(b"not a bundle"),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abandoned_collection_defers_to_the_next_registration() {
+    let mut harness = harness().await;
+    let mut registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let payload = vec![0x5a; DEFAULT_CHUNK_SIZE + 3];
+    let bundle = build_bundle(&registered.endpoint_id, &registered.endpoint_id, &payload);
+    send(
+        &mut harness.client,
+        registered.token.clone(),
+        bundle.clone(),
+    )
+    .await
+    .unwrap();
+    let first = delivery(&mut registered, bundle.len() as u64).await;
+
+    collect(
+        &mut harness.client,
+        registered.token.clone(),
+        &first.bundle_id,
+        true,
+    )
+    .await
+    .expect("a cancelled collection ends cleanly");
+
+    let spent = collect(
+        &mut harness.client,
+        registered.token.clone(),
+        &first.bundle_id,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(spent.code(), Code::NotFound);
+
+    registered
+        .requests_tx
+        .send(SubscribeRequest {
+            request: Some(subscribe_request::Request::Unregister(Unregister {})),
+        })
+        .await
+        .unwrap();
+    assert!(
+        timeout(registered.events.message())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let mut registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+    let announced = delivery(&mut registered, bundle.len() as u64).await;
+    let collected = collect(
+        &mut harness.client,
+        registered.token.clone(),
+        &announced.bundle_id,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(collected, bundle);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forged_token_is_rejected() {
+    let mut harness = harness().await;
+    register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let bundle = build_bundle("ipn:1.7", "ipn:1.7", b"denied");
+    let status = send(&mut harness.client, Bytes::from_static(b"forged"), bundle)
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unauthenticated);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forged_source_is_rejected() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let bundle = build_bundle("ipn:1.99", "ipn:1.7", b"forged source");
+    let status = send(&mut harness.client, registered.token.clone(), bundle)
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_stream_tears_the_session_down() {
+    let mut harness = harness().await;
+    let registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+    let bundle = build_bundle("ipn:1.7", "ipn:1.7", b"stale");
+    let mut unregistered = harness.watch.subscribe();
+    drop(registered.events);
+    drop(registered.requests_tx);
+    wait_unregistered(&mut unregistered).await;
+
+    let status = send(&mut harness.client, registered.token.clone(), bundle)
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unauthenticated);
+
+    harness.bpa.shutdown().await;
+}
+
+#[cfg(feature = "client")]
+struct SdkService {
+    sink: Once<Box<dyn ServiceSink>>,
+    delivered: mpsc::Sender<Bytes>,
+    statuses: mpsc::Sender<(BundleId, services::StatusNotify)>,
+}
+
+#[cfg(feature = "client")]
+#[async_trait]
+impl services::Service for SdkService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn on_deliver(
+        &self,
+        _bundle_id: &BundleId,
+        _expiry: OffsetDateTime,
+        _bundle_size: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        let data = concat_stream(stream, usize::MAX, None).await?;
+        let _ = self.delivered.send(data).await;
+        Ok(())
+    }
+
+    async fn on_status_notify(
+        &self,
+        bundle_id: &BundleId,
+        _from: &Eid,
+        kind: services::StatusNotify,
+        _reason: status_report::ReasonCode,
+        _timestamp: Option<OffsetDateTime>,
+    ) {
+        let _ = self.statuses.send((bundle_id.clone(), kind)).await;
+    }
+}
+
+#[cfg(feature = "client")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_sdk_roundtrip() {
+    let harness = harness().await;
+    let client = BpaClient::new(format!("http://{}", harness.address), TaskPool::new()).unwrap();
+
+    let (delivered_tx, mut delivered_rx) = mpsc::channel(4);
+    let (statuses_tx, _statuses_rx) = mpsc::channel(4);
+    let svc = Arc::new(SdkService {
+        sink: Once::new(),
+        delivered: delivered_tx,
+        statuses: statuses_tx,
+    });
+    let handle = client
+        .register_service(Service::Ipn(9), svc.clone())
+        .await
+        .unwrap();
+    let eid = handle.id().clone();
+    assert_eq!(eid.to_string(), "ipn:1.9");
+
+    let bundle = build_bundle("ipn:1.9", "ipn:1.9", b"through the sdk as a whole bundle");
+    let sink = svc.sink.get().unwrap();
+    sink.send(&mut bundle.clone()).await.unwrap();
+
+    let data = timeout(delivered_rx.recv()).await.unwrap();
+    assert_eq!(data, bundle);
+
+    sink.unregister().await;
+    harness.bpa.shutdown().await;
+}
+
+#[cfg(feature = "client")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_report_reaches_the_sending_service() {
+    let harness = harness().await;
+    let client = BpaClient::new(format!("http://{}", harness.address), TaskPool::new()).unwrap();
+
+    let (delivered_tx, mut delivered_rx) = mpsc::channel(4);
+    let (statuses_tx, mut statuses_rx) = mpsc::channel(4);
+    let svc = Arc::new(SdkService {
+        sink: Once::new(),
+        delivered: delivered_tx,
+        statuses: statuses_tx,
+    });
+    let _handle = client
+        .register_service(Service::Ipn(9), svc.clone())
+        .await
+        .unwrap();
+
+    let (built, data) = Builder::new("ipn:1.9".parse().unwrap(), "ipn:1.9".parse().unwrap())
+        .with_flags(bundle::Flags {
+            delivery_report_requested: true,
+            ..Default::default()
+        })
+        .with_report_to("ipn:1.0".parse().unwrap())
+        .with_payload(Cow::Borrowed(b"report me"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    let sink = svc.sink.get().unwrap();
+    let sent = sink.send(&mut Bytes::from(data)).await.unwrap();
+    assert_eq!(sent, built.primary.id);
+
+    let _ = timeout(delivered_rx.recv()).await.unwrap();
+
+    let (reported, kind) = timeout(statuses_rx.recv()).await.unwrap();
+    assert_eq!(reported, sent);
+    assert_eq!(kind, services::StatusNotify::Delivered);
+
+    sink.unregister().await;
+    harness.bpa.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregister_ends_the_session_and_invalidates_the_token() {
+    let mut harness = harness().await;
+    let mut registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+    registered
+        .requests_tx
+        .send(SubscribeRequest {
+            request: Some(subscribe_request::Request::Unregister(Unregister {})),
+        })
+        .await
+        .unwrap();
+    assert!(
+        timeout(registered.events.message())
+            .await
+            .unwrap()
+            .is_none(),
+        "unregister must end the session stream"
+    );
+
+    let bundle = build_bundle("ipn:1.7", "ipn:1.7", b"stale");
+    let status = send(&mut harness.client, registered.token.clone(), bundle)
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unauthenticated);
+
+    harness.bpa.shutdown().await;
 }

@@ -192,6 +192,14 @@ pub enum ConcatError {
     TooLarge { size: usize, max: usize },
 }
 
+/// The most a `size_hint` makes [`concat_stream`] reserve before any byte has
+/// arrived.
+///
+/// A hint comes from the producer, which may be a remote peer, so it buys at
+/// most this much memory per stream; a larger transfer grows its buffer as the
+/// bytes arrive.
+pub const MAX_SIZE_HINT: usize = 1 << 20;
+
 /// Accumulates a complete bundle from a segment stream, refusing to grow
 /// beyond `max_size` bytes.
 ///
@@ -203,16 +211,18 @@ pub enum ConcatError {
 /// `size_hint` pre-sizes the accumulator when the caller knows the total up
 /// front (a wire schema that announces sizes, or [`buffer_stream`] passing
 /// its exact `total_len`); pass `None` to grow on demand. The hint is
-/// advisory and clamped by `max_size`, so a caller-declared size can force
-/// at most the allocation the caller already accepts, and a stream that
-/// disagrees with its hint is still bounded only by `max_size`.
+/// advisory: it is honoured up to [`MAX_SIZE_HINT`] and `max_size`,
+/// whichever is smaller, beyond which the buffer grows as the bytes arrive,
+/// so a hint from an untrusted producer commits at most that much before a
+/// byte has moved, and a stream that disagrees with its hint is still bounded
+/// only by `max_size`.
 pub async fn concat_stream<R: Receiver<Segment> + ?Sized>(
     stream: &mut R,
     max_size: usize,
     size_hint: Option<u64>,
 ) -> core::result::Result<crate::Bytes, ConcatError> {
     let reserve = size_hint.map_or(0, |hint| {
-        usize::try_from(hint.min(max_size as u64)).unwrap_or(max_size)
+        usize::try_from(hint.min(max_size as u64).min(MAX_SIZE_HINT as u64)).unwrap_or(max_size)
     });
     // The first segment is held as-is until a second arrives, so a
     // single-`Final` stream (the whole-buffer convenience methods) is
@@ -427,6 +437,25 @@ mod tests {
             concat_stream(&mut rx, 15, None).await,
             Err(ConcatError::TooLarge { size: 20, max: 15 })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_size_hint_reserves_at_most_the_cap() {
+        let mut rx = feed(vec![
+            Segment::Next(crate::Bytes::from_static(b"01234")),
+            Segment::Final(crate::Bytes::from_static(b"56789")),
+        ])
+        .await;
+        // An unclamped hint of this size would be asked of the allocator
+        // before the second segment is appended.
+        let hint = usize::MAX as u64;
+        assert_eq!(
+            concat_stream(&mut rx, usize::MAX, Some(hint))
+                .await
+                .unwrap()
+                .as_ref(),
+            b"0123456789"
+        );
     }
 
     #[tokio::test]

@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package hardy.common.v1;
+
+// Messages shared by the four component APIs.
+
+// The sizes one session runs under, sent in every Registration so a
+// client sizes itself from what the server said rather than from
+// constants agreed out of band.
+message Sizes {
+  // The largest encoded gRPC message the server sends or accepts, in
+  // bytes.
+  uint64 max_message_size = 1;
+  // The run of payload bytes a chunk carries, in bytes. The server
+  // picks it, never above the max_chunk_size the client asked for, and
+  // both ends send chunks of at most this size.
+  uint64 chunk_size = 2;
+  // The largest transfer the server accepts, in bytes. A declared size
+  // above it is refused before any byte moves.
+  uint64 max_transfer_size = 3;
+}

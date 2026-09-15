@@ -268,9 +268,11 @@ pub trait ApplicationSink: Send + Sync {
     ///
     /// `size_hint` is the total payload size in bytes when the caller
     /// knows it up front: purely an allocation hint that lets the BPA
-    /// pre-size reassembly instead of growing by reallocation, advisory
-    /// and clamped by the BPA's bundle size limit. Pass `None` when the
-    /// size is not known ahead of the stream.
+    /// pre-size reassembly instead of growing by reallocation. It is
+    /// honoured up to [`MAX_SIZE_HINT`](crate::stream::MAX_SIZE_HINT) and
+    /// the BPA's bundle size limit, and a stream that disagrees with its
+    /// hint is still bounded only by that limit. Pass `None` when the size
+    /// is not known ahead of the stream.
     ///
     /// A caller holding a complete payload in memory sends it as a
     /// one-segment stream, since `Bytes` implements
