@@ -6,9 +6,9 @@
 use core::time::Duration;
 use std::sync::Arc;
 
+use anyhow::Context;
 use hardy_async::{CancellationToken, TaskPool};
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_proto::client::RemoteBpa;
+use hardy_proto::client::{BpaClient, Endpoint};
 use hardy_tcpclv4::{Tcpclv4, tls};
 use tokio::net::lookup_host;
 use tracing::{info, warn};
@@ -24,6 +24,7 @@ const PEER_REDIAL_INTERVAL: Duration = Duration::from_secs(5);
 // and "stopped" inside [`run`](Self::run).
 pub struct Tcpclv4Server {
     cla: Arc<Tcpclv4>,
+    bpa_endpoint: Endpoint,
     bpa_address: String,
     cla_name: String,
     peers: Vec<String>,
@@ -93,8 +94,12 @@ impl Tcpclv4Server {
             builder = builder.tls(tls_builder.build()?);
         }
 
+        let bpa_endpoint = BpaClient::default_endpoint(config.bpa_address.clone())
+            .context("Invalid BPA address")?;
+
         Ok(Self {
             cla: Arc::new(builder.build()?),
+            bpa_endpoint,
             bpa_address: config.bpa_address,
             cla_name: config.cla_name,
             peers: config.peers,
@@ -102,31 +107,35 @@ impl Tcpclv4Server {
         })
     }
 
-    // Runs the server to completion: register with the BPA, keep the
-    // static peers dialed, then wait for the pool's cancellation token
-    // (the composition root wires signals to it) and unregister
-    // gracefully.
+    // Runs the server to completion: register with the BPA, dial the
+    // static peers, then hold the handle until its session ends —
+    // the pool's cancellation token (the composition root wires signals
+    // to it), a clean close, or a lost connection.
     pub async fn run(self) -> anyhow::Result<()> {
         info!("Connecting to BPA at {}", self.bpa_address);
 
-        let remote_bpa = RemoteBpa::new(self.bpa_address.clone());
+        let client = BpaClient::with_endpoint(self.bpa_endpoint.clone(), self.tasks.clone());
 
-        let node_ids = remote_bpa
-            .register_cla(
-                self.cla_name.clone(),
-                self.cla.clone(),
-                None,
-                self.cla.cla_init(),
-            )
+        // Register: the registration handle returns once the handshake completes (a
+        // failure returns here), and its session runs on the pool. There
+        // is no automatic re-registration; a supervisor restarts the
+        // process.
+        let handle = client
+            .register_cla(self.cla_name.clone(), self.cla.clone(), self.cla.cla_init())
             .await
-            .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
-
+            .context("CLA registration failed")?;
         info!(
             "CLA {} registered, node IDs: {:?}",
             self.cla_name,
-            node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
+            handle
+                .id()
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
         );
 
+        // Dial the static peers in the background; peering is a transport
+        // concern of the CLA entity, independent of the BPA registration.
         for peer in &self.peers {
             let cla = self.cla.clone();
             let peer = peer.clone();
@@ -138,21 +147,17 @@ impl Tcpclv4Server {
 
         info!("Started successfully");
 
-        self.tasks.cancel_token().cancelled().await;
-
-        self.shutdown().await;
-
+        // Await the session's end. It resolves `Ok` only for an ending
+        // this process asked for (here, the pool's cancellation); the BPA
+        // closing the session or losing the connection is an error, so
+        // the exit code tells a supervisor to restart us. The
+        // registration ran its own `on_unregister`, so teardown here is
+        // just the remaining tasks.
+        let result = handle.await;
+        self.tasks.shutdown().await;
         info!("Stopped");
 
-        Ok(())
-    }
-
-    // Leaves the network gracefully, in dependency order: unregister from
-    // the BPA first, so it stops offering bundles and sweeps this CLA's
-    // queues, then wait for the server's remaining tasks to finish.
-    async fn shutdown(&self) {
-        self.cla.unregister().await;
-        self.tasks.shutdown().await;
+        result.context("CLA session ended")
     }
 
     // Dials `peer` until a session is established or the server is
