@@ -6,8 +6,6 @@ use hardy_async::async_trait;
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
 use thiserror::Error;
 
-use crate::Bytes;
-
 /// A specialized `Result` type for service operations.
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -106,6 +104,18 @@ pub enum StatusNotify {
     Delivered,
     /// The bundle was deleted by the reporting node.
     Deleted,
+}
+
+impl From<crate::stream::ConcatError> for Error {
+    fn from(e: crate::stream::ConcatError) -> Self {
+        match e {
+            crate::stream::ConcatError::Cancelled => Error::StreamCancelled,
+            crate::stream::ConcatError::TooLarge { size, max } => Error::PayloadTooLarge {
+                size: size as u64,
+                max: max as u64,
+            },
+        }
+    }
 }
 
 impl From<crate::stream::BufferError> for Error {
@@ -248,12 +258,31 @@ pub trait ApplicationSink: Send + Sync {
     async fn unregister(&self);
 
     /// Sends a payload to a destination, wrapped in a bundle by the BPA.
+    ///
+    /// The payload arrives as a stream of
+    /// [`Segment`](crate::stream::Segment)s; the BPA assembles it
+    /// (canonical CBOR needs the payload's definite length before the
+    /// bundle can be built), builds and stores the bundle, and returns
+    /// its id. Dropping the sender before a [`Segment::Final`](crate::stream::Segment::Final)
+    /// cancels the send and returns [`Error::StreamCancelled`].
+    ///
+    /// `size_hint` is the total payload size in bytes when the caller
+    /// knows it up front: purely an allocation hint that lets the BPA
+    /// pre-size reassembly instead of growing by reallocation, advisory
+    /// and clamped by the BPA's bundle size limit. Pass `None` when the
+    /// size is not known ahead of the stream.
+    ///
+    /// A caller holding a complete payload in memory sends it as a
+    /// one-segment stream, since `Bytes` implements
+    /// [`Receiver`](crate::stream::Receiver):
+    /// `sink.send(destination, lifetime, options, None, &mut data).await`.
     async fn send(
         &self,
         destination: Eid,
-        data: Bytes,
         lifetime: Duration,
         options: Option<SendOptions>,
+        size_hint: Option<u64>,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> Result<Id>;
 }
 

@@ -141,9 +141,10 @@ async fn app_cli_03_send_payload() {
     let result = sink
         .send(
             "ipn:2.1".parse().unwrap(),
-            hardy_bpa::Bytes::from_static(b"hello"),
             std::time::Duration::from_secs(3600),
             None,
+            None,
+            &mut hardy_bpa::Bytes::from_static(b"hello"),
         )
         .await;
     assert!(result.is_err(), "mock sink send returns error");
