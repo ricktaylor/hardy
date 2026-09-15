@@ -4,20 +4,13 @@ mod config;
 mod connect;
 mod listen;
 
-use core::num::NonZeroU64;
+use std::{path::PathBuf, sync::Arc};
 
-use hardy_async::TaskPool;
-use hardy_async::sync::spin::Once;
-use hardy_bpa::{
-    bpa::BpaRegistration,
-    cla::{ClaAddressType, ClaInit},
-};
-use hardy_bpv7::eid::NodeId;
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
-
+use anyhow::Context;
 use clap::Parser;
-use std::path::PathBuf;
+use hardy_async::{TaskPool, sync::spin::Once};
+use hardy_bpv7::eid::NodeId;
+use tracing::{debug, error, info, warn};
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -49,47 +42,54 @@ async fn main() -> anyhow::Result<()> {
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
 
-    inner_main(config).await.inspect_err(|e| error!("{e}"))
+    inner_main(config).await.inspect_err(|e| error!("{e:#}"))
 }
 
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
-    // The configured inbound framing bound doubles as the declared
-    // receive limit (0 = unbounded, declared as no limit).
-    let init = ClaInit {
-        address_type: Some(ClaAddressType::Tcp),
-        lane_count: None,
-        max_bundle_size: NonZeroU64::new(config.cla.max_bundle_size),
-    };
     let cla = Arc::new(cla::Cla::new(config.cla));
-
-    info!("Connecting to BPA at {}", config.bpa_address);
-
-    let remote_bpa = hardy_proto::client::RemoteBpa::new(config.bpa_address);
-
-    let node_ids = remote_bpa
-        .register_cla(config.cla_name.clone(), cla.clone(), None, init)
-        .await
-        .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
-
-    info!(
-        "CLA {} registered, node IDs: {:?}",
-        config.cla_name,
-        node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
-    );
 
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    info!("Started successfully");
+    info!("Connecting to BPA at {}", config.bpa_address);
 
-    tasks.cancel_token().cancelled().await;
+    let client = hardy_proto::client::BpaClient::new(config.bpa_address, tasks.clone())
+        .context("Invalid BPA address")?;
 
-    // Gracefully unregister from the BPA before shutting down
-    cla.unregister().await;
+    // Register: the registration handle returns once the handshake completes (a
+    // failure returns here), and its session runs on the pool until the
+    // pool is cancelled, the BPA closes it, or the connection is lost.
+    // There is no automatic re-registration; a supervisor restarts the
+    // process. The registration ran its own `on_unregister`, so teardown
+    // here is just the pool.
+    let handle = client
+        .register_cla(
+            config.cla_name.clone(),
+            cla.clone(),
+            hardy_bpa::cla::ClaInit {
+                address_type: Some(hardy_bpa::cla::ClaAddressType::Tcp),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("CLA registration failed")?;
+    info!(
+        "CLA {} registered, node IDs: {:?}",
+        config.cla_name,
+        handle
+            .id()
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+    );
 
+    // The handle resolves `Ok` only for an ending this process asked for
+    // (here, the pool's cancellation); the BPA closing the session or
+    // losing the connection is an error, so the exit code tells a
+    // supervisor to restart us.
+    let result = handle.await;
     tasks.shutdown().await;
-
     info!("Stopped");
 
-    Ok(())
+    result.context("CLA session ended")
 }

@@ -1,0 +1,763 @@
+// The `hardy.routing.v1` service. `Subscribe` opens a registration
+// session; `AddRoute` and `RemoveRoute` drive the RIB. Control plane
+// only: no bundle data flows here.
+
+use std::sync::Arc;
+
+use dashmap::DashMap;
+use foldhash::fast::RandomState;
+use hardy_async::TaskPool;
+use hardy_bpa::{
+    Bytes, async_trait,
+    bpa::BpaRegistration,
+    routing::{self, Error, RoutingAgent, RoutingSink},
+};
+use hardy_bpv7::eid::NodeId;
+use hardy_eid_patterns::EidPattern;
+use tokio::sync::oneshot;
+use tonic::{Request, Response, Status, Streaming};
+use tracing::error;
+#[cfg(feature = "instrument")]
+use tracing::{Instrument, Span, instrument, trace_span};
+
+use crate::{
+    routing::{
+        AddRouteRequest, AddRouteResponse, Registration, RemoveRouteRequest, RemoveRouteResponse,
+        SubscribeRequest, SubscribeResponse, routing_agent_service_server::RoutingAgentService,
+        subscribe_request, subscribe_response,
+    },
+    server::{
+        Limits,
+        session::{Session, SessionStream},
+    },
+    status::embed_routing_error,
+    token::Token,
+};
+
+// The surface name used in spans, lease warnings, and the token `sub`.
+const LABEL: &str = "routing";
+
+// A routing session emits only the Registration, which bypasses the
+// event channel, so the smallest capacity suffices.
+const EVENT_DEPTH: usize = 1;
+
+// Maps a BPA routing error to a gRPC status, embedding the typed
+// discriminator for the SDK.
+fn routing_status(error: Error) -> Status {
+    let status = match &error {
+        Error::AlreadyExists(_) => Status::already_exists(error.to_string()),
+        Error::Disconnected => Status::unavailable("Unregistered"),
+        Error::NullNextHop | Error::ViaOwnNode(_) => Status::invalid_argument(error.to_string()),
+        // May carry host detail: logged here, redacted to a generic
+        // status on the wire.
+        Error::Internal(e) => {
+            error!("internal routing error: {e}");
+            Status::internal("internal error")
+        }
+    };
+    embed_routing_error(status, &error)
+}
+
+// The per-session `RoutingAgent` registered with the BPA.
+struct GrpcRoutingAgent {
+    session: Session<SubscribeResponse, Arc<dyn RoutingSink>>,
+}
+
+impl GrpcRoutingAgent {
+    fn new(session: Session<SubscribeResponse, Arc<dyn RoutingSink>>) -> Self {
+        Self { session }
+    }
+}
+
+#[async_trait]
+impl RoutingAgent for GrpcRoutingAgent {
+    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+        self.session.register(Arc::from(sink));
+    }
+
+    async fn on_unregister(&self) {
+        self.session.abort();
+    }
+}
+
+/// The server implementation of the `hardy.routing.v1` service.
+///
+/// Clones share one set of sessions. Shut down the pool given to
+/// [`new`](Self::new) only after the transport has stopped accepting:
+/// pool shutdown tears down every subscription.
+#[derive(Clone)]
+pub struct RoutingAgentServiceImpl {
+    bpa: Arc<dyn BpaRegistration>,
+    tasks: TaskPool,
+    limits: Limits,
+    sessions: Arc<DashMap<Token, Arc<GrpcRoutingAgent>, RandomState>>,
+    #[cfg(test)]
+    hooks: super::tests::Hooks,
+}
+
+impl RoutingAgentServiceImpl {
+    /// Creates the service with default [`Limits`].
+    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool) -> Self {
+        Self::with_limits(bpa, tasks, Limits::default())
+    }
+
+    /// Creates the service with the given [`Limits`].
+    ///
+    /// This surface uses none of the deadlines.
+    pub fn with_limits(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool, limits: Limits) -> Self {
+        Self {
+            bpa,
+            tasks,
+            limits,
+            sessions: Arc::new(DashMap::with_hasher(RandomState::default())),
+            #[cfg(test)]
+            hooks: super::tests::Hooks::default(),
+        }
+    }
+
+    async fn subscription(
+        self,
+        mut requests: Streaming<SubscribeRequest>,
+        response_tx: oneshot::Sender<Result<Response<SessionStream<SubscribeResponse>>, Status>>,
+    ) {
+        // Only the pool can cancel this wait: no session exists yet.
+        let first = tokio::select! {
+            biased;
+            _ = self.tasks.cancel_token().cancelled() => {
+                let _ = response_tx.send(Err(Status::unavailable("Shutting down")));
+                return;
+            }
+            message = requests.message() => message,
+        };
+        let register = match first {
+            Ok(Some(SubscribeRequest {
+                request: Some(subscribe_request::Request::Register(register)),
+            })) => register,
+            Ok(_) => {
+                let _ = response_tx.send(Err(Status::invalid_argument(
+                    "The first message must be Register",
+                )));
+                return;
+            }
+            Err(e) => {
+                let _ = response_tx.send(Err(e));
+                return;
+            }
+        };
+
+        let token = Token::mint(&format!("{LABEL}:{}", register.name));
+        let session = Session::new(self.tasks.child_token(), LABEL, self.limits, EVENT_DEPTH);
+        let agent = Arc::new(GrpcRoutingAgent::new(session));
+
+        let node_ids = match self
+            .bpa
+            .register_routing_agent(register.name, agent.clone())
+            .await
+        {
+            Ok(node_ids) => node_ids,
+            Err(e) => {
+                let _ = response_tx.send(Err(routing_status(e)));
+                return;
+            }
+        };
+
+        self.sessions.insert(token.clone(), agent.clone());
+
+        let registration = SubscribeResponse {
+            event: Some(subscribe_response::Event::Registration(Registration {
+                node_ids: node_ids.iter().map(ToString::to_string).collect(),
+                session_token: token.clone().into(),
+            })),
+        };
+        let mut stream = agent.session.open(registration);
+        let _guard = stream.cancel_guard();
+
+        if response_tx.send(Ok(Response::new(stream))).is_ok() {
+            agent.session.serve(requests).await;
+        }
+
+        // In order: stop the work, drop the token, unregister; the
+        // stream ends last.
+        agent.session.abort();
+        self.sessions.remove(&token);
+        if let Some(sink) = agent.session.registered() {
+            sink.unregister().await;
+        }
+        #[cfg(test)]
+        let _ = self.hooks.torn_down.send(token);
+    }
+
+    fn resolve(&self, token: Bytes) -> Result<Arc<GrpcRoutingAgent>, Status> {
+        self.sessions
+            .get(&Token::from(token))
+            .map(|agent| agent.clone())
+            .ok_or_else(|| Status::unauthenticated("Unknown session token"))
+    }
+}
+
+#[async_trait]
+impl RoutingAgentService for RoutingAgentServiceImpl {
+    type SubscribeStream = SessionStream<SubscribeResponse>;
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    async fn subscribe(
+        &self,
+        request: Request<Streaming<SubscribeRequest>>,
+    ) -> Result<Response<Self::SubscribeStream>, Status> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let subscription = self.clone().subscription(request.into_inner(), response_tx);
+        #[cfg(feature = "instrument")]
+        {
+            let span = trace_span!(parent: None, "grpc_session", surface = LABEL);
+            span.follows_from(Span::current());
+            self.tasks.spawn(subscription.instrument(span));
+        }
+        #[cfg(not(feature = "instrument"))]
+        self.tasks.spawn(subscription);
+
+        response_rx
+            .await
+            .unwrap_or_else(|_| Err(Status::unavailable("Shutting down")))
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    async fn add_route(
+        &self,
+        request: Request<AddRouteRequest>,
+    ) -> Result<Response<AddRouteResponse>, Status> {
+        let AddRouteRequest {
+            session_token,
+            pattern,
+            action,
+            priority,
+        } = request.into_inner();
+        let agent = self.resolve(session_token)?;
+        let pattern: EidPattern = pattern
+            .parse()
+            .map_err(|e| Status::invalid_argument(format!("Invalid pattern: {e}")))?;
+        let action: routing::RouteAction = action
+            .and_then(|a| a.action)
+            .ok_or_else(|| Status::invalid_argument("Missing route action"))?
+            .try_into()?;
+
+        let added = agent
+            .session
+            .registered()
+            .ok_or_else(|| routing_status(Error::Disconnected))?
+            .add_route(pattern, action, priority)
+            .await
+            .map_err(routing_status)?;
+        Ok(Response::new(AddRouteResponse { added }))
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    async fn remove_route(
+        &self,
+        request: Request<RemoveRouteRequest>,
+    ) -> Result<Response<RemoveRouteResponse>, Status> {
+        let RemoveRouteRequest {
+            session_token,
+            pattern,
+            action,
+            priority,
+        } = request.into_inner();
+        let agent = self.resolve(session_token)?;
+        let pattern: EidPattern = pattern
+            .parse()
+            .map_err(|e| Status::invalid_argument(format!("Invalid pattern: {e}")))?;
+        let action: routing::RouteAction = action
+            .and_then(|a| a.action)
+            .ok_or_else(|| Status::invalid_argument("Missing route action"))?
+            .try_into()?;
+
+        let removed = agent
+            .session
+            .registered()
+            .ok_or_else(|| routing_status(Error::Disconnected))?
+            .remove_route(&pattern, &action, priority)
+            .await
+            .map_err(routing_status)?;
+        Ok(Response::new(RemoveRouteResponse { removed }))
+    }
+}
+
+// Wire tests against a real BPA.
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use hardy_bpa::{Bytes, bpa::Bpa};
+    #[cfg(feature = "client")]
+    use hardy_bpv7::{eid::NodeId, status_report::ReasonCode};
+    #[cfg(feature = "client")]
+    use hardy_eid_patterns::EidPattern;
+    use tokio::sync::mpsc::{self, Sender};
+    use tokio_stream::wrappers::ReceiverStream;
+    use tonic::{
+        Code,
+        transport::{Channel, Server},
+    };
+
+    use super::{
+        super::tests::{build_bpa, ipn1, serve, timeout, wait_torn_down},
+        *,
+    };
+    #[cfg(feature = "client")]
+    use crate::client::BpaClient;
+    use crate::routing::{
+        Drop, Register, RouteAction, Unregister, route_action::Action,
+        routing_agent_service_client::RoutingAgentServiceClient,
+        routing_agent_service_server::RoutingAgentServiceServer,
+    };
+
+    struct Harness {
+        bpa: Arc<Bpa>,
+        // Held live: dropping the pool would tear down the sessions.
+        #[expect(dead_code, reason = "held for its liveness")]
+        tasks: TaskPool,
+        client: RoutingAgentServiceClient<Channel>,
+        #[cfg_attr(
+            not(feature = "client"),
+            expect(dead_code, reason = "read by the client SDK test")
+        )]
+        address: SocketAddr,
+        // A second handle on the surface, for the teardown barrier.
+        surface: RoutingAgentServiceImpl,
+    }
+
+    // A running BPA (node ipn:1) behind the surface on a port-0
+    // listener, plus a connected generated client.
+    async fn harness() -> Harness {
+        let bpa = build_bpa(ipn1(), false).await;
+
+        let tasks = TaskPool::new();
+        let surface = RoutingAgentServiceImpl::new(bpa.clone(), tasks.clone());
+        let service = RoutingAgentServiceServer::new(surface.clone());
+        let address = serve(Server::builder().add_service(service)).await;
+
+        let client = RoutingAgentServiceClient::connect(format!("http://{address}"))
+            .await
+            .unwrap();
+        Harness {
+            bpa,
+            tasks,
+            client,
+            address,
+            surface,
+        }
+    }
+
+    struct Registered {
+        requests_tx: Sender<SubscribeRequest>,
+        events: Streaming<SubscribeResponse>,
+        node_ids: Vec<String>,
+        token: Bytes,
+    }
+
+    // Opens a session and completes the registration handshake.
+    async fn register(client: &mut RoutingAgentServiceClient<Channel>, name: &str) -> Registered {
+        let (requests_tx, requests_rx) = mpsc::channel(4);
+        requests_tx
+            .send(SubscribeRequest {
+                request: Some(subscribe_request::Request::Register(Register {
+                    name: name.to_string(),
+                })),
+            })
+            .await
+            .unwrap();
+
+        let mut events = client
+            .subscribe(ReceiverStream::new(requests_rx))
+            .await
+            .unwrap()
+            .into_inner();
+        let event = timeout(events.message()).await.unwrap().unwrap();
+        let Some(subscribe_response::Event::Registration(registration)) = event.event else {
+            panic!("expected the Registration event first, got {event:?}");
+        };
+        assert!(!registration.session_token.is_empty());
+
+        Registered {
+            requests_tx,
+            events,
+            node_ids: registration.node_ids,
+            token: registration.session_token,
+        }
+    }
+
+    fn via(eid: &str) -> RouteAction {
+        RouteAction {
+            action: Some(Action::Via(eid.to_string())),
+        }
+    }
+
+    fn drop_with_reason(reason_code: u64) -> RouteAction {
+        RouteAction {
+            action: Some(Action::Drop(Drop {
+                reason_code: Some(reason_code),
+            })),
+        }
+    }
+
+    async fn add_route(
+        client: &mut RoutingAgentServiceClient<Channel>,
+        token: Bytes,
+        pattern: &str,
+        action: RouteAction,
+        priority: u32,
+    ) -> Result<AddRouteResponse, Status> {
+        client
+            .add_route(AddRouteRequest {
+                session_token: token,
+                pattern: pattern.to_string(),
+                action: Some(action),
+                priority,
+            })
+            .await
+            .map(|r| r.into_inner())
+    }
+
+    async fn remove_route(
+        client: &mut RoutingAgentServiceClient<Channel>,
+        token: Bytes,
+        pattern: &str,
+        action: RouteAction,
+        priority: u32,
+    ) -> Result<RemoveRouteResponse, Status> {
+        client
+            .remove_route(RemoveRouteRequest {
+                session_token: token,
+                pattern: pattern.to_string(),
+                action: Some(action),
+                priority,
+            })
+            .await
+            .map(|r| r.into_inner())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_returns_node_ids_and_a_token() {
+        let mut harness = harness().await;
+
+        let registered = register(&mut harness.client, "test-agent").await;
+        assert_eq!(registered.node_ids.len(), 1);
+        assert!(registered.node_ids[0].starts_with("ipn:1"));
+
+        // A second registration with the same name is rejected.
+        let (requests_tx, requests_rx) = mpsc::channel(4);
+        requests_tx
+            .send(SubscribeRequest {
+                request: Some(subscribe_request::Request::Register(Register {
+                    name: "test-agent".to_string(),
+                })),
+            })
+            .await
+            .unwrap();
+        let status = harness
+            .client
+            .subscribe(ReceiverStream::new(requests_rx))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::AlreadyExists);
+
+        harness.bpa.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn routes_are_added_and_removed_once() {
+        let mut harness = harness().await;
+        let registered = register(&mut harness.client, "test-agent").await;
+
+        // Newly installed, then a duplicate is a no-op.
+        assert!(
+            add_route(
+                &mut harness.client,
+                registered.token.clone(),
+                "ipn:2.*",
+                via("ipn:2.0"),
+                100
+            )
+            .await
+            .unwrap()
+            .added
+        );
+        assert!(
+            !add_route(
+                &mut harness.client,
+                registered.token.clone(),
+                "ipn:2.*",
+                via("ipn:2.0"),
+                100
+            )
+            .await
+            .unwrap()
+            .added
+        );
+
+        // Removed once, then unknown.
+        assert!(
+            remove_route(
+                &mut harness.client,
+                registered.token.clone(),
+                "ipn:2.*",
+                via("ipn:2.0"),
+                100
+            )
+            .await
+            .unwrap()
+            .removed
+        );
+        assert!(
+            !remove_route(
+                &mut harness.client,
+                registered.token.clone(),
+                "ipn:2.*",
+                via("ipn:2.0"),
+                100
+            )
+            .await
+            .unwrap()
+            .removed
+        );
+
+        harness.bpa.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_invalid_pattern_is_rejected() {
+        let mut harness = harness().await;
+        let registered = register(&mut harness.client, "test-agent").await;
+
+        let status = add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "not a pattern",
+            via("ipn:2.0"),
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status.code(), Code::InvalidArgument);
+
+        harness.bpa.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_missing_action_is_rejected() {
+        let mut harness = harness().await;
+        let registered = register(&mut harness.client, "test-agent").await;
+
+        let status = harness
+            .client
+            .add_route(AddRouteRequest {
+                session_token: registered.token.clone(),
+                pattern: "ipn:2.*".to_string(),
+                action: None,
+                priority: 100,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::InvalidArgument);
+
+        harness.bpa.shutdown().await;
+    }
+
+    // RFC 9171 reserves status-report reason code 255: the wire
+    // refuses it; an unassigned code such as 254 is accepted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reserved_drop_reason_is_rejected() {
+        let mut harness = harness().await;
+        let registered = register(&mut harness.client, "test-agent").await;
+
+        let status = add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            drop_with_reason(255),
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status.code(), Code::InvalidArgument);
+
+        assert!(
+            add_route(
+                &mut harness.client,
+                registered.token,
+                "ipn:2.*",
+                drop_with_reason(254),
+                100,
+            )
+            .await
+            .unwrap()
+            .added
+        );
+
+        harness.bpa.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_forged_token_is_rejected() {
+        let mut harness = harness().await;
+        register(&mut harness.client, "test-agent").await;
+
+        let status = add_route(
+            &mut harness.client,
+            Bytes::from_static(b"forged"),
+            "ipn:2.*",
+            via("ipn:2.0"),
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status.code(), Code::Unauthenticated);
+
+        harness.bpa.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_dropped_stream_tears_the_session_down() {
+        let mut harness = harness().await;
+        let registered = register(&mut harness.client, "test-agent").await;
+
+        // The client vanishes without Unregister. The teardown signal
+        // fires after the token is removed and the agent unregistered,
+        // so the rejection and re-registration below are race-free.
+        let mut torn = harness.surface.hooks.torn_down.subscribe();
+        drop(registered.events);
+        drop(registered.requests_tx);
+        wait_torn_down(&mut torn, &registered.token).await;
+
+        // The token is dead.
+        let status = add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:2.0"),
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status.code(), Code::Unauthenticated);
+
+        // Teardown freed the name, so a new registration succeeds on
+        // the first try.
+        let (requests_tx, requests_rx) = mpsc::channel(4);
+        requests_tx
+            .send(SubscribeRequest {
+                request: Some(subscribe_request::Request::Register(Register {
+                    name: "test-agent".to_string(),
+                })),
+            })
+            .await
+            .unwrap();
+        harness
+            .client
+            .subscribe(ReceiverStream::new(requests_rx))
+            .await
+            .unwrap();
+
+        harness.bpa.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unregister_ends_the_session_and_invalidates_the_token() {
+        let mut harness = harness().await;
+        let mut registered = register(&mut harness.client, "test-agent").await;
+        let mut torn = harness.surface.hooks.torn_down.subscribe();
+
+        registered
+            .requests_tx
+            .send(SubscribeRequest {
+                request: Some(subscribe_request::Request::Unregister(Unregister {})),
+            })
+            .await
+            .unwrap();
+        assert!(
+            timeout(registered.events.message())
+                .await
+                .unwrap()
+                .is_none(),
+            "unregister must end the session stream"
+        );
+
+        // Teardown runs after the stream closes; waiting on the signal
+        // makes the rejection below race-free.
+        wait_torn_down(&mut torn, &registered.token).await;
+        let status = add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            via("ipn:2.0"),
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status.code(), Code::Unauthenticated);
+
+        harness.bpa.shutdown().await;
+    }
+
+    // A `RoutingAgent` driven through the client SDK; stores its sink.
+    #[cfg(feature = "client")]
+    struct SdkAgent {
+        sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
+    }
+
+    #[cfg(feature = "client")]
+    #[async_trait]
+    impl RoutingAgent for SdkAgent {
+        async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+            self.sink.call_once(|| sink);
+        }
+
+        async fn on_unregister(&self) {}
+    }
+
+    #[cfg(feature = "client")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_sdk_roundtrip() {
+        let harness = harness().await;
+        let client =
+            BpaClient::new(format!("http://{}", harness.address), TaskPool::new()).unwrap();
+
+        let agent = Arc::new(SdkAgent {
+            sink: hardy_async::sync::spin::Once::new(),
+        });
+        let handle = client
+            .register_routing_agent("sdk-agent".to_string(), agent.clone())
+            .await
+            .unwrap();
+        assert_eq!(handle.id().len(), 1);
+
+        let sink = agent.sink.get().unwrap();
+        let pattern: EidPattern = "ipn:2.*".parse().unwrap();
+        let action = routing::RouteAction::Via("ipn:2.0".parse().unwrap());
+
+        assert!(
+            sink.add_route(pattern.clone(), action.clone(), 50)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !sink
+                .add_route(pattern.clone(), action.clone(), 50)
+                .await
+                .unwrap()
+        );
+        assert!(sink.remove_route(&pattern, &action, 50).await.unwrap());
+        assert!(!sink.remove_route(&pattern, &action, 50).await.unwrap());
+
+        // The sink refuses the reserved drop reason client-side,
+        // before it reaches the wire.
+        let reserved = routing::RouteAction::Drop(Some(ReasonCode::Unassigned(255)));
+        assert!(matches!(
+            sink.add_route(pattern.clone(), reserved, 60).await,
+            Err(routing::Error::Internal(_))
+        ));
+
+        sink.unregister().await;
+        harness.bpa.shutdown().await;
+    }
+}

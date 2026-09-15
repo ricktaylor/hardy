@@ -7,10 +7,7 @@ processing-pool-size: 16
 
 grpc:
   address: "[::]:50051"
-  services:
-    - application
-    - cla
-    - service
+  services: ["application", "cla", "service"]
 
 storage:
   metadata:
