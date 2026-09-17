@@ -1,0 +1,34 @@
+name: Setup protoc
+description: >
+  Install a pinned protoc release and add it to PATH, cached by version.
+  The release-asset URL is a plain CDN download, not the GitHub API, so it
+  is not subject to API rate limits; with the cache the download only runs
+  at all when the version changes.
+
+inputs:
+  version:
+    description: protoc release version to install (e.g. "29.3")
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache protoc
+      id: protoc-cache
+      uses: actions/cache@v6
+      with:
+        path: ~/.local/protoc
+        key: protoc-${{ inputs.version }}-linux-x86_64
+
+    - name: Install protoc (cache miss)
+      if: steps.protoc-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        curl -fsSL -o /tmp/protoc.zip \
+          "https://github.com/protocolbuffers/protobuf/releases/download/v${{ inputs.version }}/protoc-${{ inputs.version }}-linux-x86_64.zip"
+        mkdir -p "$HOME/.local/protoc"
+        unzip -q /tmp/protoc.zip -d "$HOME/.local/protoc"
+
+    - name: Add protoc to PATH
+      shell: bash
+      run: echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"

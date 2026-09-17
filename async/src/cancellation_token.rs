@@ -42,5 +42,4 @@
 /// - `cancel()` - Signal cancellation
 /// - `cancelled()` - Returns a future that completes when cancelled
 /// - `is_cancelled()` - Check if cancellation has been requested
-#[cfg(feature = "tokio")]
 pub type CancellationToken = tokio_util::sync::CancellationToken;

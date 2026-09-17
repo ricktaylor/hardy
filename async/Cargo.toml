@@ -19,7 +19,7 @@ crate-type = ["rlib"]
 default = ["tokio"]
 std = ["time/std", "tracing/std", "dep:flume", "dep:futures"]
 tokio = ["std", "dep:tokio", "dep:tokio-util"]
-watcher = ["std", "dep:notify", "dep:notify-debouncer-full"]
+watcher = ["tokio", "dep:notify", "dep:notify-debouncer-full"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
@@ -41,3 +41,4 @@ flume = { version = "0.12", optional = true }
 
 [dev-dependencies]
 hardy-async = { path = ".", features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }

@@ -20,7 +20,9 @@ serde = ["dep:serde", "hardy-bpa/serde", "hardy-bpv7/serde"]
 [dependencies]
 time = { version = "0.3", default-features = false }
 hardy-async = { version = "0.2", path = "../async", default-features = false }
-hardy-bpa = { version = "0.2", path = "../bpa", default-features = false }
+# `tokio` is required until hardy-bpa's no_std build is complete; drop
+# it (and let `std` carry the choice) when that lands.
+hardy-bpa = { version = "0.2", path = "../bpa", default-features = false, features = ["tokio"] }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", default-features = false }
 hardy-cbor = { version = "2", path = "../cbor" }
 thiserror = "2"

@@ -41,7 +41,6 @@
 /// println!("1 second has passed");
 /// # });
 /// ```
-#[cfg(feature = "tokio")]
 pub async fn sleep(duration: time::Duration) {
     if !duration.is_positive() {
         return;

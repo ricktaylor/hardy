@@ -26,5 +26,4 @@
 /// This is a type alias that abstracts over runtime-specific join handles.
 /// Currently uses Tokio's JoinHandle, but will be feature-gated for Embassy
 /// support in the future.
-#[cfg(feature = "tokio")]
 pub type JoinHandle<T> = tokio::task::JoinHandle<T>;

@@ -34,8 +34,9 @@ hardy-async provides runtime-agnostic async primitives used by all Hardy crates 
 
 ### Feature Flags
 
-- **`tokio`** (default) -- Tokio runtime backend. Implies `std`
-- **`std`** -- Enables std-based sync primitives and OS thread count queries
+- **`tokio`** (default) -- Tokio runtime backend. Implies `std`. The runtime-backed modules (`task_pool`, `bounded_task_pool`, `cancellation_token`, `join_handle`, `notify`, `closeable`, `time`, `signal`) exist only when a runtime backend is enabled; today that means this feature
+- **`std`** -- Enables the flume-backed `channel` module, std-based sync primitives, and OS thread count queries
+- **`watcher`** -- Filesystem watcher (`watcher` module). Implies `tokio`
 - **`instrument`** -- Enables span instrumentation in the `spawn!` macro via `tracing/attributes`
 
 ## Usage
