@@ -36,18 +36,31 @@ extern crate alloc;
 
 mod spawn;
 
-pub mod bounded_task_pool;
-pub mod cancellation_token;
-pub mod channel;
-pub mod closeable;
-pub mod join_handle;
-pub mod notify;
 pub mod sync;
-pub mod task_pool;
-pub mod time;
+
+// Each module below is declared only when a backend for it exists.
+// `channel` is backed by `flume` and needs `std`; the rest are backed
+// by tokio today, so they need `tokio` (when an alternative runtime is
+// added, these gates become `any(...)` over the runtime features).
+#[cfg(feature = "std")]
+pub mod channel;
 
 #[cfg(feature = "tokio")]
+pub mod bounded_task_pool;
+#[cfg(feature = "tokio")]
+pub mod cancellation_token;
+#[cfg(feature = "tokio")]
+pub mod closeable;
+#[cfg(feature = "tokio")]
+pub mod join_handle;
+#[cfg(feature = "tokio")]
+pub mod notify;
+#[cfg(feature = "tokio")]
 pub mod signal;
+#[cfg(feature = "tokio")]
+pub mod task_pool;
+#[cfg(feature = "tokio")]
+pub mod time;
 
 #[cfg(feature = "watcher")]
 pub mod watcher;
@@ -55,11 +68,11 @@ pub mod watcher;
 // Re-export commonly used types at crate root
 pub use async_trait::async_trait;
 
-pub use self::bounded_task_pool::BoundedTaskPool;
-pub use self::cancellation_token::CancellationToken;
-pub use self::join_handle::JoinHandle;
-pub use self::notify::Notify;
-pub use self::task_pool::TaskPool;
+#[cfg(feature = "tokio")]
+pub use self::{
+    bounded_task_pool::BoundedTaskPool, cancellation_token::CancellationToken,
+    join_handle::JoinHandle, notify::Notify, task_pool::TaskPool,
+};
 
 /// Returns the number of available hardware threads.
 ///

@@ -46,10 +46,8 @@ use std::future::Future;
 /// - [`new()`](Notify::new) - Create a new notification primitive
 /// - [`notify_one()`](Notify::notify_one) - Wake one waiting task
 /// - [`notified()`](Notify::notified) - Returns a future that completes when notified
-#[cfg(feature = "tokio")]
 pub struct Notify(tokio::sync::Notify);
 
-#[cfg(feature = "tokio")]
 impl Notify {
     /// Creates a new `Notify` instance.
     ///
@@ -129,7 +127,6 @@ impl Notify {
     }
 }
 
-#[cfg(feature = "tokio")]
 impl Default for Notify {
     fn default() -> Self {
         Self::new()

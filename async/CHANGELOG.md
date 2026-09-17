@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- Sparse feature builds compile again: the runtime-backed modules (`task_pool`, `bounded_task_pool`, `cancellation_token`, `join_handle`, `notify`, `closeable`, `time`, `signal`) are now gated on `tokio` and `channel` on `std`, instead of declaring items that failed to resolve without them.
+
+### Changed
+- **BREAKING:** the `watcher` feature now implies `tokio` (its implementation always required the tokio-backed `CancellationToken`).
+
 ## [0.2.0]
 
 ### Added

@@ -31,7 +31,6 @@
 //! # });
 //! ```
 
-#[cfg(feature = "std")]
 mod flume {
 
     /// A cloneable producer handle for a channel.
@@ -199,5 +198,4 @@ mod flume {
     }
 }
 
-#[cfg(feature = "std")]
 pub use self::flume::*;

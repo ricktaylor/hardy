@@ -34,6 +34,8 @@
 #[cfg(feature = "std")]
 use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
 
+// Only the std-backed primitives handle poisoning.
+#[cfg(feature = "std")]
 use trace_err::*;
 
 pub mod spin;

@@ -118,12 +118,12 @@ jobs:
         with:
           tool: cargo-hack
 
-      # hardy-async and hardy-bpa do not yet compile without `tokio`
-      # (see rust.yml's no-std job TODO), so they sweep with `tokio`
-      # pinned on and every remaining feature checked on top of it; the
-      # others sweep unrestricted.
-      # TODO: merge the two lists once their --no-default-features
-      # builds are clean.
+      # hardy-bpa does not yet compile without `tokio` (see rust.yml's
+      # no-std job TODO), so it sweeps with `tokio` pinned on and every
+      # remaining feature checked on top of it; the others sweep
+      # unrestricted.
+      # TODO: merge the two lists once its --no-default-features build
+      # is clean.
       - name: Select changed crates
         id: pkgs
         run: |
@@ -135,7 +135,7 @@ jobs:
               bpv7)         plain="$plain -p hardy-bpv7" ;;
               eid-patterns) plain="$plain -p hardy-eid-patterns" ;;
               proto)        plain="$plain -p hardy-proto" ;;
-              async)        tokio="$tokio -p hardy-async" ;;
+              async)        plain="$plain -p hardy-async" ;;
               bpa)          tokio="$tokio -p hardy-bpa" ;;
             esac
           done
