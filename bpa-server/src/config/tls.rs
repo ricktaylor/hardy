@@ -1,12 +1,17 @@
+#[cfg(any(feature = "tcpclv4", feature = "grpc"))]
 use std::path::PathBuf;
 
+#[cfg(feature = "tcpclv4")]
 use hardy_tcpclv4::tls;
+#[cfg(any(feature = "tcpclv4", feature = "grpc"))]
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(feature = "tcpclv4", feature = "grpc"))]
 use super::owner_only_key_file;
 
 // A certificate and the private key that proves it: only representable as
 // a pair.
+#[cfg(any(feature = "tcpclv4", feature = "grpc"))]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Identity {
@@ -23,6 +28,7 @@ pub struct Identity {
 // (mutual TLS): `required` refuses dialers without a certificate chaining
 // to `ca-certs`; `optional` verifies a certificate when one is presented
 // but accepts dialers without one; `off` never requests one.
+#[cfg(any(feature = "tcpclv4", feature = "grpc"))]
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClientAuth {
@@ -34,6 +40,7 @@ pub enum ClientAuth {
 
 // The config schema's client-auth policy is a mirror of the library's;
 // this conversion is the one place the two are stitched together.
+#[cfg(feature = "tcpclv4")]
 impl From<ClientAuth> for tls::ClientAuth {
     fn from(policy: ClientAuth) -> Self {
         match policy {
@@ -51,6 +58,7 @@ impl From<ClientAuth> for tls::ClientAuth {
 // TLS without configuring TLS" cannot be written. The trust-anchor rules
 // are judged by the library at build time, with errors in the config's
 // own vocabulary.
+#[cfg(feature = "tcpclv4")]
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Tcpclv4TlsConfig {
@@ -81,4 +89,33 @@ pub struct Tcpclv4TlsConfig {
     // SNI override presented when dialing (for certificates issued to
     // domain names).
     pub server_name: Option<String>,
+}
+
+// The `tls` sub-section of the `grpc` section. This is a listener, so it
+// carries only the server-relevant subset of the TLS vocabulary: an
+// `identity` to present (required, so "TLS without a certificate" cannot
+// be written), and the mutual-TLS knobs. The dial-side keys of the CLA
+// `tls` section (`required`, `server-name`, `insecure-skip-verify`) have
+// no meaning here and are absent.
+#[cfg(feature = "grpc")]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GrpcTlsConfig {
+    // The server's own certificate and private key, presented to every
+    // client.
+    pub identity: Identity,
+
+    // Client-certificate verification for inbound connections (mutual
+    // TLS): `off` (the default) never requests one, `optional` verifies a
+    // presented certificate but accepts dialers without one, `required`
+    // refuses dialers without a certificate chaining to `ca-certs`. Any
+    // value other than `off` requires `ca-certs`.
+    #[serde(default)]
+    pub client_auth: ClientAuth,
+
+    // A PEM file of CA certificates (one file, one or more certificates)
+    // used to verify client certificates under mutual TLS. Required when
+    // `client-auth` is not `off`, ignored otherwise.
+    #[serde(default)]
+    pub ca_certs: Option<PathBuf>,
 }

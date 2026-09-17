@@ -27,7 +27,7 @@ use hardy_proto::{
 use tonic::{
     service::Routes,
     transport::{
-        Server,
+        Server, ServerTlsConfig,
         server::{Router, TcpIncoming},
     },
 };
@@ -62,6 +62,7 @@ impl GrpcServer {
         address: Option<SocketAddr>,
         services: Vec<GrpcService>,
         drain_timeout: Duration,
+        tls: Option<ServerTlsConfig>,
         bpa: &Arc<Bpa>,
         tasks: &TaskPool,
     ) -> Result<Self, Error> {
@@ -124,15 +125,25 @@ impl GrpcServer {
         // GB-scale bundles on any link with non-trivial latency. The frame
         // cap carries a whole chunk in as few DATA frames as possible,
         // matching the client SDK's default endpoint.
-        let router = Server::builder()
+        let mut builder = Server::builder()
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
             .http2_adaptive_window(Some(true))
-            .max_frame_size(Some(DEFAULT_MAX_FRAME_SIZE))
+            .max_frame_size(Some(DEFAULT_MAX_FRAME_SIZE));
+
+        let tls_enabled = tls.is_some();
+        if let Some(tls) = tls {
+            builder = builder.tls_config(tls)?;
+        }
+
+        let router = builder
             .add_routes(routes.routes())
             .add_service(health_service);
 
-        info!("gRPC server hosting {services:?}, bound on {address}");
+        info!(
+            "gRPC server hosting {services:?}, bound on {address}{}",
+            if tls_enabled { " over TLS" } else { "" }
+        );
 
         Ok(Self {
             router,
@@ -211,11 +222,16 @@ impl GrpcServer {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv6Addr, sync::Arc, time::Duration};
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr},
+        sync::Arc,
+        time::Duration,
+    };
 
     use hardy_async::{CancellationToken, TaskPool};
     use hardy_bpa::bpa::Bpa;
-    use tonic::transport::Channel;
+    use rcgen::{CertifiedKey, generate_simple_self_signed};
+    use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, ServerTlsConfig};
     use tonic_health::pb::{
         HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
     };
@@ -270,6 +286,7 @@ mod tests {
             vec![GrpcService::Application],
             // Do not wait on the still-open health connection at shutdown.
             Duration::ZERO,
+            None,
             &bpa,
             &tasks,
         )
@@ -280,6 +297,47 @@ mod tests {
         let served = tokio::spawn(server.serve(cancel.clone()));
 
         let channel = Channel::from_shared(format!("http://{address}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        assert_serving(channel).await;
+
+        cancel_and_join(cancel, served).await;
+    }
+
+    #[tokio::test]
+    async fn serves_over_tls() {
+        let bpa = minimal_bpa().await;
+        let tasks = TaskPool::new();
+
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let tls = ServerTlsConfig::new()
+            .identity(Identity::from_pem(cert.pem(), signing_key.serialize_pem()));
+
+        let server = GrpcServer::new(
+            Some((Ipv4Addr::LOCALHOST, 0).into()),
+            vec![GrpcService::Application],
+            Duration::ZERO,
+            Some(tls),
+            &bpa,
+            &tasks,
+        )
+        .unwrap();
+        let address = server.address();
+
+        let cancel = tasks.cancel_token().clone();
+        let served = tokio::spawn(server.serve(cancel.clone()));
+
+        // The client trusts the self-signed cert as its own CA and verifies
+        // it against the SAN, so a successful check proves the TLS handshake.
+        let tls = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(cert.pem()))
+            .domain_name("localhost");
+        let channel = Channel::from_shared(format!("https://{address}"))
+            .unwrap()
+            .tls_config(tls)
             .unwrap()
             .connect()
             .await

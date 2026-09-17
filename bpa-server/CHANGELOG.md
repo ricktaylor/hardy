@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- Optional TLS for the gRPC listener: a `grpc.tls` block with a required `identity` (`cert-file`/`key-file`, `private-key-file` aliasing `key-file`), a `client-auth` key (`off` | `optional` | `required`) enabling mutual TLS, and `ca-certs` (a PEM file of one or more CA certificates) as the client-certificate trust anchor, required when `client-auth` is not `off`. Absent, the listener serves plaintext HTTP/2 as before. The vocabulary mirrors the tcpclv4 `tls` block minus the keys with no meaning for a listener: a gRPC port is TLS or plaintext with no in-band negotiation, so there is no `required` key (the block's presence enforces TLS), and the dial-side `server-name`/`insecure-skip-verify` are absent. The `identity.key-file` gets the same owner-only permission check at parse as the other key files.
 - Private-key file paths are checked for owner-only permissions as the configuration parses (`bpsec.keys-file` and a tcpclv4 `tls.identity.key-file`): a group/other-accessible key file is a configuration error naming the file and its mode, rather than a warning that scrolls by. Unix only; a path that does not exist yet passes, and its absence surfaces when the consumer opens it.
 
 ### Changed

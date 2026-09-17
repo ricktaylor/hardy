@@ -123,6 +123,31 @@ Available service names:
     `application` and `service`. Enable `cla` and `routing` when running
     separate CLA or routing agent containers.
 
+### `grpc.tls` — Listener TLS
+
+An absent `tls` block serves plaintext HTTP/2; a present block enforces TLS for the whole port (there is no in-band negotiation, so no `required` key exists). Because this is a listener, the dial-side keys of the CLA `tls` vocabulary (`server-name`, `insecure-skip-verify`) do not apply and are not accepted.
+
+| Key | Valid Values | Default | Description |
+|-----|-------------|---------|-------------|
+| `identity` | Object with `cert-file` and `key-file` | - | Required. The server's own certificate and private key, presented to every client. The two fields are only representable as a pair, so a lone certificate or key is a parse error. |
+| `identity.cert-file` | File path | - | The server's certificate (PEM). |
+| `identity.key-file` | File path | - | The private key (PEM: PKCS#8, PKCS#1, or SEC1) matching `cert-file`. `private-key-file` is accepted as an alias. A group/other-accessible key file is refused at parse (Unix). |
+| `client-auth` | `off`, `optional`, `required` | `off` | Client-certificate verification for inbound connections (mutual TLS): `off` never requests a certificate, `optional` verifies one when presented but accepts clients without one, `required` refuses clients without a certificate chaining to `ca-certs`. Any value other than `off` requires `ca-certs`. |
+| `ca-certs` | File path | *(none)* | A PEM file of CA certificates (one file, one or more certificates) used to verify client certificates under mutual TLS. Required when `client-auth` is not `off`, ignored otherwise. |
+
+Example:
+
+```yaml
+grpc:
+  services: ["application", "cla"]
+  tls:
+    identity:
+      cert-file: "/etc/hardy/certs/server.crt"
+      key-file: "/etc/hardy/private/server.key"
+    client-auth: "required"
+    ca-certs: "/etc/hardy/ca/clients.pem"
+```
+
 ## `built-in-services` — Application Services
 
 Built-in services are configured as key-value pairs. Each key is a

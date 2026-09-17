@@ -97,7 +97,7 @@ When the `grpc` feature is enabled, the `grpc` module assembles a `GrpcServer` t
 - **Cla** service for convergence layer adaptors
 - **Routing** service for remote routing agents
 
-The enabled surfaces are chosen by the `grpc.services` config list. `GrpcServer::new` composes them onto a tonic router (with message-size caps and HTTP/2 keepalive), adds a gRPC health service, and binds the listener eagerly so a port conflict is a startup error; `serve` runs it until cancelled, then drains open connections up to a configurable timeout. Remote CLAs and services connect to these endpoints, and hardy-proto's bridges translate between protobuf messages and BPA trait calls.
+The enabled surfaces are chosen by the `grpc.services` config list. `GrpcServer::new` composes them onto a tonic router (with message-size caps and HTTP/2 keepalive), adds a gRPC health service, and binds the listener eagerly so a port conflict is a startup error; `serve` runs it until cancelled, then drains open connections up to a configurable timeout. TLS (including mutual TLS) is optional, configured by the `grpc.tls` block. Remote CLAs and services connect to these endpoints, and hardy-proto's bridges translate between protobuf messages and BPA trait calls.
 
 ## Service Priority
 

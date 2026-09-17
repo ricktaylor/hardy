@@ -14,12 +14,13 @@ use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
+#[cfg(feature = "grpc")]
+use crate::config::tls::GrpcTlsConfig;
 use crate::error::Error;
 
 pub mod bpsec;
 pub mod cla;
 pub mod storage;
-#[cfg(feature = "tcpclv4")]
 pub mod tls;
 
 // Returns the default config directory, platform-specific:
@@ -309,6 +310,12 @@ pub struct GrpcConfig {
     // open indefinitely.
     #[serde(default = "default_drain_timeout", with = "human_duration")]
     pub drain_timeout: Duration,
+
+    // TLS for the listener; absent serves plaintext HTTP/2. The
+    // certificate and key are read once at startup; there is no hot
+    // reload, so a rotated certificate needs a restart to take effect.
+    #[serde(default)]
+    pub tls: Option<GrpcTlsConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
