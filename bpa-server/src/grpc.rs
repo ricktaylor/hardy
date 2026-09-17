@@ -37,11 +37,15 @@ use tonic_health::{
 };
 use tracing::{error, info, warn};
 
-use crate::config::GrpcService;
+use crate::config::{GrpcHttp2Config, GrpcService};
 use crate::error::Error;
 
 // The listen address used when `grpc.address` is absent.
 const DEFAULT_ADDRESS: SocketAddr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 50051);
+
+// Auto-size the HTTP/2 flow-control window unless the operator says
+// otherwise: the fixed default window throttles GB-scale transfers.
+const DEFAULT_ADAPTIVE_WINDOW: bool = true;
 
 // The composed gRPC router and its bound listener, built but not yet
 // serving. Constructed by [`new`](Self::new) and consumed by
@@ -63,6 +67,7 @@ impl GrpcServer {
         services: Vec<GrpcService>,
         drain_timeout: Duration,
         tls: Option<ServerTlsConfig>,
+        http2: GrpcHttp2Config,
         bpa: &Arc<Bpa>,
         tasks: &TaskPool,
     ) -> Result<Self, Error> {
@@ -119,17 +124,38 @@ impl GrpcServer {
 
         // HTTP/2 keepalive bounds how long a silently dead peer can hold
         // sessions and parked door calls; graceful ends are caught by the
-        // streams themselves. The flow-control window is adaptive
+        // streams themselves. The flow-control window defaults to adaptive
         // (auto-sized to the connection's bandwidth-delay product): the
         // fixed ~64 KiB default caps a transfer at window/RTT, throttling
-        // GB-scale bundles on any link with non-trivial latency. The frame
-        // cap carries a whole chunk in as few DATA frames as possible,
-        // matching the client SDK's default endpoint.
+        // GB-scale bundles on any link with non-trivial latency. The window,
+        // stream, and frame limits are operator-tunable via `grpc.http2`.
+        // Adaptive sizing overrides any fixed window, so a pinned window is
+        // silently ignored while it is on: warn rather than let the operator
+        // believe their setting took effect.
+        let adaptive_window = http2.adaptive_window.unwrap_or(DEFAULT_ADAPTIVE_WINDOW);
+        if adaptive_window
+            && (http2.initial_stream_window_size.is_some()
+                || http2.initial_connection_window_size.is_some())
+        {
+            warn!(
+                "gRPC initial-*-window-size is ignored while adaptive-window is on; \
+                 set adaptive-window: false to apply a fixed window"
+            );
+        }
+
         let mut builder = Server::builder()
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
-            .http2_adaptive_window(Some(true))
-            .max_frame_size(Some(DEFAULT_MAX_FRAME_SIZE));
+            .http2_adaptive_window(Some(adaptive_window))
+            .initial_stream_window_size(http2.initial_stream_window_size.map(|w| w.get()))
+            .initial_connection_window_size(http2.initial_connection_window_size.map(|w| w.get()))
+            .max_concurrent_streams(http2.max_concurrent_streams.map(|n| n.get()))
+            .max_frame_size(Some(
+                http2
+                    .max_frame_size
+                    .map(|f| f.get())
+                    .unwrap_or(DEFAULT_MAX_FRAME_SIZE),
+            ));
 
         let tls_enabled = tls.is_some();
         if let Some(tls) = tls {
@@ -237,7 +263,7 @@ mod tests {
     };
 
     use super::GrpcServer;
-    use crate::config::GrpcService;
+    use crate::config::{GrpcHttp2Config, GrpcService};
     use crate::error::Error;
 
     // Bounds a hung shutdown only; the wait it wraps is event-driven.
@@ -287,6 +313,7 @@ mod tests {
             // Do not wait on the still-open health connection at shutdown.
             Duration::ZERO,
             None,
+            GrpcHttp2Config::default(),
             &bpa,
             &tasks,
         )
@@ -321,6 +348,7 @@ mod tests {
             vec![GrpcService::Application],
             Duration::ZERO,
             Some(tls),
+            GrpcHttp2Config::default(),
             &bpa,
             &tasks,
         )

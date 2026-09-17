@@ -148,6 +148,30 @@ grpc:
     ca-certs: "/etc/hardy/ca/clients.pem"
 ```
 
+### `grpc.http2` — Transport Tuning
+
+HTTP/2 transport tuning for the gRPC listener. Every key is optional; absent keys defer to the server's own defaults, which favour throughput at scale (a fixed ~64 KiB window would otherwise cap a single transfer at window/round-trip-time). All sizes are in bytes.
+
+| Key | Valid Values | Default | Description |
+|-----|-------------|---------|-------------|
+| `adaptive-window` | `true`, `false` | `true` | Auto-size the stream and connection flow-control windows to the connection's bandwidth-delay product. When on, the fixed `initial-*-window-size` keys below are ignored; set `false` to pin fixed windows instead. Note that with adaptive windows, one stalled consumer can hold the connection-window budget it has grown on its connection (head-of-line blocking); pinned fixed windows bound that. |
+| `initial-stream-window-size` | Integer in `1..=2147483647` (2^31 - 1, RFC 9113 §6.9.1) | *(transport default)* | Fixed initial per-stream receive window. Ignored while `adaptive-window` is on. Out-of-range values, including zero (which would wedge every stream), are a parse error. |
+| `initial-connection-window-size` | Integer in `1..=2147483647` (2^31 - 1, RFC 9113 §6.9.1) | *(transport default)* | Fixed initial whole-connection receive window. Ignored while `adaptive-window` is on. Out-of-range values, including zero (which would wedge every stream), are a parse error. |
+| `max-concurrent-streams` | Positive integer | *(transport default, ~200)* | Maximum concurrent HTTP/2 streams a peer may open. Zero would wedge the listener, so it is a parse error. Bounds per-connection memory (window &times; streams), and doubles as a throughput knob: each transfer is its own RPC, so this caps a connection's concurrent in-flight transfers. Raise it, or pool connections client-side, to push more transfers in parallel. |
+| `max-frame-size` | Integer in `16384..=16777215` (2^14 to 2^24 - 1, RFC 9113 §6.5.2) | `1048576` (1 MiB) | Maximum HTTP/2 DATA frame payload, defaulting to one data-plane chunk per frame. Larger frames cut per-frame bookkeeping for big transfers. Out-of-range values are a parse error. |
+
+Example:
+
+```yaml
+grpc:
+  services: ["application"]
+  http2:
+    adaptive-window: false
+    initial-stream-window-size: 16777216       # 16 MiB
+    initial-connection-window-size: 134217728  # 128 MiB
+    max-concurrent-streams: 1024
+```
+
 ## `built-in-services` — Application Services
 
 Built-in services are configured as key-value pairs. Each key is a
