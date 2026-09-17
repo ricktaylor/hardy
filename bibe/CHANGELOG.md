@@ -8,3 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 - An encapsulated outer bundle that exceeds the size cap negotiated at registration is rejected deterministically at `forward` with `PayloadTooLarge` (a per-bundle error, so the peer queue is not swept), instead of being dispatched into a certain rejection. When no cap was negotiated, no pre-check applies.
+
+### Fixed
+- The crate builds standalone again: the `hardy-bpa` dependency now enables `tokio` explicitly (previously only workspace feature unification made any configuration compile). Temporary until hardy-bpa's no_std build is complete.

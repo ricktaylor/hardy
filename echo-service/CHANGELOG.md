@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- The crate builds standalone again: the `hardy-bpa` dependency now enables `tokio` explicitly (previously only workspace feature unification made any configuration compile). Temporary until hardy-bpa's no_std build is complete.
+
 ## [0.2.0]
 
 ### Changed
