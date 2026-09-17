@@ -7,6 +7,7 @@ on:
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust.yml"
+      - ".github/actions/**"
       - "proto/**"
       - "tests/**"
 
@@ -35,26 +36,10 @@ jobs:
         with:
           shared-key: checks
 
-      # The release-asset URL is a plain CDN download, not the GitHub API,
-      # so it is not subject to API rate limits; with the cache it only
-      # runs at all when PROTOC_VERSION changes.
-      - name: Cache protoc
-        id: protoc-cache
-        uses: actions/cache@v6
+      - name: Setup protoc
+        uses: ./.github/actions/setup-protoc
         with:
-          path: ~/.local/protoc
-          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64
-
-      - name: Install protoc (cache miss)
-        if: steps.protoc-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL -o /tmp/protoc.zip \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          mkdir -p "$HOME/.local/protoc"
-          unzip -q /tmp/protoc.zip -d "$HOME/.local/protoc"
-
-      - name: Add protoc to PATH
-        run: echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"
+          version: ${{ env.PROTOC_VERSION }}
 
       - name: Check formatting
         run: cargo fmt --check
@@ -75,23 +60,10 @@ jobs:
         with:
           shared-key: tests
 
-      - name: Cache protoc
-        id: protoc-cache
-        uses: actions/cache@v6
+      - name: Setup protoc
+        uses: ./.github/actions/setup-protoc
         with:
-          path: ~/.local/protoc
-          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64
-
-      - name: Install protoc (cache miss)
-        if: steps.protoc-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL -o /tmp/protoc.zip \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          mkdir -p "$HOME/.local/protoc"
-          unzip -q /tmp/protoc.zip -d "$HOME/.local/protoc"
-
-      - name: Add protoc to PATH
-        run: echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"
+          version: ${{ env.PROTOC_VERSION }}
 
       - name: Start postgres and minio
         run: docker compose up -d --wait postgres minio
@@ -204,23 +176,10 @@ jobs:
         with:
           shared-key: msrv
 
-      - name: Cache protoc
-        id: protoc-cache
-        uses: actions/cache@v6
+      - name: Setup protoc
+        uses: ./.github/actions/setup-protoc
         with:
-          path: ~/.local/protoc
-          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64
-
-      - name: Install protoc (cache miss)
-        if: steps.protoc-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL -o /tmp/protoc.zip \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          mkdir -p "$HOME/.local/protoc"
-          unzip -q /tmp/protoc.zip -d "$HOME/.local/protoc"
-
-      - name: Add protoc to PATH
-        run: echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"
+          version: ${{ env.PROTOC_VERSION }}
 
       - name: Check on MSRV
         run: cargo check --locked --all-features --workspace
