@@ -1,5 +1,3 @@
-use core::num::NonZeroU64;
-
 use super::*;
 
 pub struct Cla {
@@ -16,14 +14,6 @@ impl Cla {
             tasks: Arc::new(hardy_async::TaskPool::new()),
         }
     }
-
-    /// Unregisters this CLA from the BPA.
-    pub async fn unregister(&self) {
-        self.tasks.shutdown().await;
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
-    }
 }
 
 #[hardy_bpa::async_trait]
@@ -32,7 +22,7 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
         _node_ids: &[NodeId],
-        max_bundle_size: Option<NonZeroU64>,
+        _max_bundle_size: Option<core::num::NonZeroU64>,
     ) {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
         self.sink.call_once(|| sink.clone());
@@ -55,21 +45,12 @@ impl hardy_bpa::cla::Cla for Cla {
             }
         }
 
-        // Start listener if address is configured. The inbound framing
-        // bound is the configured limit folded with the negotiated
-        // effective cap (0 = unbounded): a frame the BPA would only
-        // reject deterministically is refused at the codec instead of
-        // being buffered whole first.
+        // Start listener if address is configured
         if let Some(address) = self.config.address {
-            let max_bundle_size = match (self.config.max_bundle_size, max_bundle_size) {
-                (0, Some(cap)) => cap.get(),
-                (configured, Some(cap)) => configured.min(cap.get()),
-                (configured, None) => configured,
-            };
             let listener = listen::Listener {
                 address,
                 framing: self.config.framing.clone(),
-                max_bundle_size,
+                max_bundle_size: self.config.max_bundle_size,
                 sink,
             };
             let tasks = self.tasks.clone();

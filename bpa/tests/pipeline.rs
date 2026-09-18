@@ -385,9 +385,10 @@ async fn app_to_cla_routing() {
         .unwrap()
         .send(
             dest.clone(),
-            Bytes::from_static(b"Hello remote"),
             Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(b"Hello remote"),
         )
         .await
         .unwrap();
@@ -662,6 +663,133 @@ async fn service_unregister_cancels_parked_send() {
 
     svc.sink.get().unwrap().unregister().await;
 
+    let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
+        .await
+        .expect("parked send was not woken by unregistration")
+        .expect("task panicked");
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::StreamCancelled)
+    ));
+    drop(tx);
+
+    bpa.shutdown().await;
+}
+
+/// A streamed application send concatenates its segments into the bundle's
+/// payload, pre-sized by the caller's `size_hint`, and the assembled ADU is
+/// what the destination application receives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn application_streamed_send_concatenates_segments() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (sender, _sender_rx) = TestApp::new();
+    let source_eid = bpa
+        .register_application(Service::Ipn(42), sender.clone())
+        .await
+        .unwrap();
+    let (receiver, receiver_rx) = TestApp::new();
+    let dest = bpa
+        .register_application(Service::Ipn(43), receiver.clone())
+        .await
+        .unwrap();
+
+    let payload = b"Hello streamed world";
+    let (tx, mut rx) = hardy_async::channel::bounded(3);
+    for segment in [
+        Segment::Next(Bytes::from_static(b"Hello ")),
+        Segment::Next(Bytes::from_static(b"streamed ")),
+        Segment::Final(Bytes::from_static(b"world")),
+    ] {
+        hardy_async::channel::Sender::send(&tx, segment)
+            .await
+            .unwrap();
+    }
+
+    sender
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            dest,
+            Duration::from_secs(3600),
+            None,
+            Some(payload.len() as u64),
+            &mut rx,
+        )
+        .await
+        .unwrap();
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let (source, delivered) = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        receiver_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for local delivery")
+    .expect("Channel closed");
+    assert_eq!(source, source_eid);
+    assert_eq!(delivered.as_ref(), payload);
+
+    bpa.shutdown().await;
+}
+
+/// Unregistering an application wakes its in-flight sends immediately: a
+/// consumer parked behind a stalled producer fails with `StreamCancelled`
+/// the moment the registration dies, without waiting for the producer's
+/// next segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn application_unregister_cancels_parked_send() {
+    let bpa = Bpa::builder().build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    // Capacity-1 rendezvous: the second send below completes only once the
+    // consumer has drained this first segment, proving the send has entered
+    // the stream before the unregister lands.
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    hardy_async::channel::Sender::send(&tx, Segment::Next(Bytes::from_static(b"half")))
+        .await
+        .unwrap();
+
+    let parked = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            app.sink
+                .get()
+                .unwrap()
+                .send(
+                    "ipn:0.2.99".parse().unwrap(),
+                    Duration::from_secs(3600),
+                    None,
+                    None,
+                    &mut rx,
+                )
+                .await
+        })
+    };
+
+    hardy_async::channel::Sender::send(&tx, Segment::Next(Bytes::from_static(b"a payload")))
+        .await
+        .unwrap();
+
+    app.sink.get().unwrap().unregister().await;
+
+    // The sender stays alive throughout, so only registration teardown can
+    // end the stream. The timeout only bounds a regression.
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
         .await
         .expect("parked send was not woken by unregistration")
@@ -1928,9 +2056,10 @@ async fn egress_filter_sees_consistent_extents() {
         .unwrap()
         .send(
             "ipn:0.2.99".parse().unwrap(),
-            Bytes::from_static(b"Hello remote"),
             Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(b"Hello remote"),
         )
         .await
         .unwrap();
@@ -2042,9 +2171,10 @@ async fn dispatcher_handles_on_deliver_err() {
         .unwrap()
         .send(
             receiver_eid,
-            Bytes::from_static(b"payload"),
             Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(b"payload"),
         )
         .await
         .unwrap();
@@ -2522,9 +2652,10 @@ async fn forward_failure_park_recheck_redispatches() {
         .unwrap()
         .send(
             "ipn:0.2.7".parse().unwrap(),
-            Bytes::from_static(b"recheck"),
             Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(b"recheck"),
         )
         .await
         .unwrap();
@@ -2609,9 +2740,10 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .unwrap()
         .send(
             "ipn:0.2.7".parse().unwrap(),
-            Bytes::from_static(b"resolve me"),
             Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(b"resolve me"),
         )
         .await
         .unwrap();

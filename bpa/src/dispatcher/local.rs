@@ -25,15 +25,27 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, payload)))]
+    /// Dispatch a payload from a segment stream (for the Application trait).
+    ///
+    /// Accumulates the stream (bounded by `max_bundle_size`, like the other
+    /// doors) before building: canonical CBOR needs the payload's definite
+    /// length up front, so the ADU is whole before the bundle exists. A
+    /// producer that goes away before the final segment cancels the send:
+    /// nothing has been stored, and the caller gets
+    /// [`StreamCancelled`](services::Error::StreamCancelled).
+    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     pub async fn local_dispatch(
         self: &Arc<Self>,
         source: Eid,
         destination: Eid,
-        payload: Bytes,
         lifetime: core::time::Duration,
         flags: Option<services::SendOptions>,
+        size_hint: Option<u64>,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+        let payload =
+            crate::stream::concat_stream(stream, self.max_bundle_size_mem(), size_hint).await?;
+
         // Build bundle and run Originate filter before storing. The bundle
         // id is unique within this process by construction —
         // `CreationTimestamp::now` issues process-monotonic `(time,
@@ -94,17 +106,7 @@ impl Dispatcher {
         expected_source: &Eid,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
-        let data = crate::stream::concat_stream(stream, self.max_bundle_size_mem())
-            .await
-            .map_err(|e| match e {
-                crate::stream::ConcatError::Cancelled => services::Error::StreamCancelled,
-                crate::stream::ConcatError::TooLarge { size, max } => {
-                    services::Error::PayloadTooLarge {
-                        size: size as u64,
-                        max: max as u64,
-                    }
-                }
-            })?;
+        let data = crate::stream::concat_stream(stream, self.max_bundle_size_mem(), None).await?;
         self.local_dispatch_raw(expected_source, data).await
     }
 

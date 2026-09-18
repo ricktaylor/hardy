@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: the process ends when its routing session ends. A session lost to a dropped connection, or closed by the BPA (its shutdown or restart), exits nonzero so a `Restart=on-failure` supervisor restarts the agent; previously the process kept running with a dead sink and only ever exited 0. SIGINT/SIGTERM still exit 0. The explicit in-band unregister on shutdown is gone: the session's teardown is the unregistration, and the BPA withdraws the agent's routes on it either way.
+
 ## [0.2.0]
 
 ### Changed
