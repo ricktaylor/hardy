@@ -190,7 +190,7 @@ mod tests {
 
     use hardy_bpa::{
         async_trait,
-        cla::{ClaAddress, Segment, Sink, TransferOutcome},
+        cla::{ClaAddress, PeerLinkInfo, Segment, Sink, TransferOutcome},
         stream::Receiver,
     };
     use hardy_bpv7::{bundle::Id, eid::NodeId};
@@ -227,6 +227,7 @@ mod tests {
             &self,
             _cla_addr: ClaAddress,
             _node_ids: &[NodeId],
+            _peer_link_info: PeerLinkInfo,
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }

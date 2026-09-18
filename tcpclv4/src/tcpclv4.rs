@@ -386,6 +386,7 @@ async fn transmit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hardy_bpa::cla::PeerLinkInfo;
 
     struct MockSink;
 
@@ -402,7 +403,12 @@ mod tests {
             Ok(())
         }
 
-        async fn add_peer(&self, _cla_addr: ClaAddress, _node_ids: &[NodeId]) -> cla::Result<bool> {
+        async fn add_peer(
+            &self,
+            _cla_addr: ClaAddress,
+            _node_ids: &[NodeId],
+            _peer_link_info: PeerLinkInfo,
+        ) -> cla::Result<bool> {
             Ok(true)
         }
 

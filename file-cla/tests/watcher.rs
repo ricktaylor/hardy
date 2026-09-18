@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::Path, time::Duration};
 
-use hardy_bpa::cla::{Cla as _, ClaAddress};
+use hardy_bpa::cla::{Cla as _, ClaAddress, PeerLinkInfo};
 use hardy_bpv7::eid::NodeId;
 use hardy_file_cla::{Cla, Config};
 
@@ -48,6 +48,7 @@ impl hardy_bpa::cla::Sink for StubSink {
         &self,
         _cla_addr: ClaAddress,
         _node_ids: &[NodeId],
+        _peer_link_info: PeerLinkInfo,
     ) -> hardy_bpa::cla::Result<bool> {
         Ok(true)
     }

@@ -1,5 +1,9 @@
 use core::num::{NonZeroU32, NonZeroU64};
 
+// Alias the BPA type to distinguish it from the generated wire message.
+use hardy_bpa::cla::{Error as ClaError, PeerLinkInfo as BpaPeerLinkInfo};
+use tonic::Status;
+
 use super::*;
 use proto::cla::*;
 
@@ -107,11 +111,17 @@ impl hardy_bpa::cla::Sink for Sink {
         &self,
         cla_addr: hardy_bpa::cla::ClaAddress,
         node_ids: &[hardy_bpv7::eid::NodeId],
+        peer_link_info: BpaPeerLinkInfo,
     ) -> hardy_bpa::cla::Result<bool> {
         match self
             .call(cla_to_bpa::Msg::AddPeer(AddPeerRequest {
                 node_ids: node_ids.iter().map(|n| n.to_string()).collect(),
                 address: Some(cla_addr.into()),
+                peer_link_info: Some(
+                    peer_link_info
+                        .try_into()
+                        .map_err(|e: Status| ClaError::Internal(e.into()))?,
+                ),
             }))
             .await?
         {

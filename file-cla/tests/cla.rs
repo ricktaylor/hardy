@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use hardy_bpa::cla::{Cla as _, ClaAddress, ForwardBundleResult};
+use hardy_bpa::cla::{Cla as _, ClaAddress, ForwardBundleResult, PeerLinkInfo};
 use hardy_bpv7::{bundle::FragmentInfo, eid::NodeId};
 use hardy_file_cla::{Cla, Config};
 
@@ -29,6 +29,7 @@ impl hardy_bpa::cla::Sink for StubSink {
         &self,
         cla_addr: ClaAddress,
         _node_ids: &[NodeId],
+        _peer_link_info: PeerLinkInfo,
     ) -> hardy_bpa::cla::Result<bool> {
         self.0.lock().unwrap().push(cla_addr);
         Ok(true)

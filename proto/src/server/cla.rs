@@ -74,8 +74,10 @@ impl Cla {
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
+        let peer_link_info = request.peer_link_info.unwrap_or_default().try_into()?;
+
         self.sink()?
-            .add_peer(cla_addr, &node_ids)
+            .add_peer(cla_addr, &node_ids, peer_link_info)
             .await
             .map(|added| bpa_to_cla::Msg::AddPeer(AddPeerResponse { added }))
             .map_err(|e| tonic::Status::from_error(e.into()))
@@ -372,4 +374,108 @@ pub fn new_cla_service(
     })
     .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
     .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+
+    // Distinguish BPA types from the generated wire types and local aliases.
+    use hardy_bpa::{
+        cla::{
+            ClaAddress as BpaClaAddress, PeerLinkInfo as BpaPeerLinkInfo, Result as ClaResult,
+            Segment, Sink as BpaSink, TransferOutcome,
+        },
+        stream::Receiver,
+    };
+    use hardy_bpv7::{bundle::Id, eid::NodeId};
+    use prost_types::Timestamp;
+    use tonic::Code;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        info: OnceLock<BpaPeerLinkInfo>,
+    }
+
+    #[async_trait]
+    impl BpaSink for RecordingSink {
+        async fn unregister(&self) {}
+
+        async fn dispatch(
+            &self,
+            _peer_node: Option<&NodeId>,
+            _peer_addr: Option<&BpaClaAddress>,
+            _stream: &mut dyn Receiver<Segment>,
+        ) -> ClaResult<()> {
+            unreachable!()
+        }
+
+        async fn add_peer(
+            &self,
+            _cla_addr: BpaClaAddress,
+            _node_ids: &[NodeId],
+            info: BpaPeerLinkInfo,
+        ) -> ClaResult<bool> {
+            self.info.set(info).unwrap();
+            Ok(true)
+        }
+
+        async fn remove_peer(&self, _cla_addr: &BpaClaAddress) -> ClaResult<bool> {
+            unreachable!()
+        }
+
+        async fn transfer_outcome(&self, _id: &Id, _outcome: TransferOutcome) -> ClaResult<()> {
+            unreachable!()
+        }
+    }
+
+    fn registered_cla(sink: Arc<RecordingSink>) -> Cla {
+        Cla {
+            sink: Mutex::new(Some(sink)),
+            proxy: Once::new(),
+            max_bundle_size: OnceLock::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn add_peer_without_link_info_preserves_legacy_requests() {
+        let sink = Arc::new(RecordingSink::default());
+        let cla = registered_cla(sink.clone());
+        let response = cla
+            .add_peer(AddPeerRequest {
+                address: Some(ClaAddress::default()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            response,
+            bpa_to_cla::Msg::AddPeer(AddPeerResponse { added: true })
+        ));
+        assert_eq!(sink.info.get(), Some(&BpaPeerLinkInfo::default()));
+    }
+
+    #[tokio::test]
+    async fn invalid_contact_end_does_not_register_a_peer() {
+        let sink = Arc::new(RecordingSink::default());
+        let cla = registered_cla(sink.clone());
+        let error = cla
+            .add_peer(AddPeerRequest {
+                address: Some(ClaAddress::default()),
+                peer_link_info: Some(PeerLinkInfo {
+                    contact_end: Some(Timestamp {
+                        seconds: 0,
+                        nanos: -1,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert_eq!(sink.info.get(), None);
+    }
 }

@@ -1,15 +1,30 @@
 use core::num::{NonZeroU32, NonZeroU64};
 
-use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
+use time::OffsetDateTime;
+
+use super::*;
 
 pub use crate::stream::Segment;
 
+mod egress_queue;
 pub(crate) mod peers;
 pub(crate) mod registry;
 
-mod egress_queue;
+/// Link characteristics reported by a CLA for a peer.
+///
+/// Each absent field means unknown. These values are stored as metadata;
+/// they do not enforce rate limits, bundle size limits, or contact expiry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PeerLinkInfo {
+    /// Conservative link rate estimate, in bits per second.
+    pub bandwidth_bps: Option<u64>,
+    /// Maximum bundle size, in bytes.
+    pub mtu: Option<u32>,
+    /// The instant when the link is expected to become unavailable.
+    pub contact_end: Option<OffsetDateTime>,
+}
 
 /// A specialized `Result` type for CLA operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -450,10 +465,13 @@ pub trait Sink: Send + Sync {
     ///   Multi-homed nodes may have multiple EIDs at the same CL address.
     ///
     /// The BPA will update its routing information accordingly.
+    /// `peer_link_info` records the link characteristics for this registration.
+    /// Use its default value when these characteristics are unknown.
     async fn add_peer(
         &self,
         cla_addr: ClaAddress,
         node_ids: &[hardy_bpv7::eid::NodeId],
+        peer_link_info: PeerLinkInfo,
     ) -> Result<bool>;
 
     /// Notifies the BPA that a peer is no longer reachable at a given `ClaAddress`.

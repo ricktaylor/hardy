@@ -376,6 +376,7 @@ async fn racing_forward_is_not_stranded_by_unregister() {
                 allocator_id: 0,
                 node_number: 3,
             })],
+            Default::default(),
         )
         .await
         .unwrap();

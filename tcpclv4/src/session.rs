@@ -995,6 +995,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use hardy_bpa::cla::PeerLinkInfo;
     use std::sync::Mutex;
 
     use super::*;
@@ -1044,6 +1045,7 @@ mod tests {
             &self,
             _cla_addr: hardy_bpa::cla::ClaAddress,
             _node_ids: &[hardy_bpv7::eid::NodeId],
+            _peer_link_info: PeerLinkInfo,
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }

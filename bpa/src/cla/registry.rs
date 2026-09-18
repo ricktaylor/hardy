@@ -109,11 +109,22 @@ impl cla::Sink for Sink {
             .await
     }
 
-    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
+    async fn add_peer(
+        &self,
+        cla_addr: ClaAddress,
+        node_ids: &[NodeId],
+        peer_link_info: PeerLinkInfo,
+    ) -> cla::Result<bool> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
         Ok(self
             .registry
-            .add_peer(cla, self.dispatcher.clone(), cla_addr, node_ids)
+            .add_peer(
+                cla,
+                self.dispatcher.clone(),
+                cla_addr,
+                node_ids,
+                peer_link_info,
+            )
             .await)
     }
 
@@ -375,6 +386,7 @@ impl ClaRegistry {
         dispatcher: Arc<dispatcher::Dispatcher>,
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
+        peer_link_info: PeerLinkInfo,
     ) -> bool {
         // Mint the id without publishing anything (reserved against reuse),
         // then claim the address — the adjacency's natural key — so a
@@ -409,6 +421,7 @@ impl ClaRegistry {
             self.store.clone(),
             dispatcher,
             &self.tasks,
+            peer_link_info,
         )
         .await;
         reservation.publish(peer);
@@ -538,7 +551,11 @@ mod tests {
 
         // Add peer
         let added = sink
-            .add_peer(peer_addr.clone(), core::slice::from_ref(&peer_node))
+            .add_peer(
+                peer_addr.clone(),
+                core::slice::from_ref(&peer_node),
+                Default::default(),
+            )
             .await
             .unwrap();
         assert!(added, "First add_peer should succeed");
@@ -584,8 +601,12 @@ mod tests {
             node_number: 21,
         });
 
-        sink.add_peer(addr1, &[node1]).await.unwrap();
-        sink.add_peer(addr2, &[node2]).await.unwrap();
+        sink.add_peer(addr1, &[node1], Default::default())
+            .await
+            .unwrap();
+        sink.add_peer(addr2, &[node2], Default::default())
+            .await
+            .unwrap();
 
         // Unregister the CLA — should cascade-remove both peers
         sink.unregister().await;

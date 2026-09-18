@@ -367,7 +367,7 @@ async fn app_to_cla_routing() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, &[remote_node])
+        .add_peer(peer_addr, &[remote_node], Default::default())
         .await
         .unwrap();
 
@@ -454,7 +454,7 @@ async fn echo_round_trip() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, from_ref(&remote_node))
+        .add_peer(peer_addr, from_ref(&remote_node), Default::default())
         .await
         .unwrap();
 
@@ -542,7 +542,7 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, from_ref(&remote_node))
+        .add_peer(peer_addr, from_ref(&remote_node), Default::default())
         .await
         .unwrap();
 
@@ -847,7 +847,7 @@ async fn reception_report_carries_unknown_security_operation() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, from_ref(&remote_node))
+        .add_peer(peer_addr, from_ref(&remote_node), Default::default())
         .await
         .unwrap();
 
@@ -1381,7 +1381,7 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, from_ref(&remote_node))
+        .add_peer(peer_addr, from_ref(&remote_node), Default::default())
         .await
         .unwrap();
 
@@ -1662,7 +1662,7 @@ async fn throughput() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, from_ref(&remote_node))
+        .add_peer(peer_addr, from_ref(&remote_node), Default::default())
         .await
         .unwrap();
 
@@ -1769,7 +1769,7 @@ async fn forwarding_latency() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, from_ref(&remote_node))
+        .add_peer(peer_addr, from_ref(&remote_node), Default::default())
         .await
         .unwrap();
 
@@ -1912,7 +1912,7 @@ async fn egress_filter_sees_consistent_extents() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, &[remote_node])
+        .add_peer(peer_addr, &[remote_node], Default::default())
         .await
         .unwrap();
 
@@ -2177,6 +2177,7 @@ async fn deferring_setup(
                 allocator_id: 0,
                 node_number: peer_node_number,
             })],
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2317,7 +2318,11 @@ async fn deferred_outcome_peer_removal_resolves_unknown() {
     assert!(cla.sink().remove_peer(&peer_addr).await.unwrap());
     assert!(
         cla.sink()
-            .add_peer(peer_addr, core::slice::from_ref(&peer_node))
+            .add_peer(
+                peer_addr,
+                core::slice::from_ref(&peer_node),
+                Default::default()
+            )
             .await
             .unwrap()
     );
@@ -2359,6 +2364,7 @@ async fn deferred_outcome_ignores_wrong_cla() {
                 allocator_id: 0,
                 node_number: 4,
             })],
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2508,6 +2514,7 @@ async fn forward_failure_park_recheck_redispatches() {
         .add_peer(
             cla::ClaAddress::Private("peer-a".as_bytes().into()),
             from_ref(&remote_node),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2546,6 +2553,7 @@ async fn forward_failure_park_recheck_redispatches() {
         .add_peer(
             cla::ClaAddress::Private("peer-b".as_bytes().into()),
             from_ref(&remote_node),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2595,6 +2603,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .add_peer(
             cla::ClaAddress::Private("peer-a".as_bytes().into()),
             from_ref(&remote_node),
+            Default::default(),
         )
         .await
         .unwrap();

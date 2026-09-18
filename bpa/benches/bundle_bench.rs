@@ -111,6 +111,7 @@ fn get_state() -> &'static BenchState {
                 .add_peer(
                     cla::ClaAddress::Private("peer".as_bytes().into()),
                     &[remote_node],
+                    Default::default(),
                 )
                 .await
                 .unwrap();

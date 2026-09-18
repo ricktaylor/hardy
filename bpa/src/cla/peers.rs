@@ -15,6 +15,10 @@ pub struct Peer {
     // This peer's controller: owns the queue assignment (`queue_for`), so
     // the hot forwarding path touches no shared policy state.
     controller: Arc<dyn policy::FlowController>,
+
+    // Retained metadata; forwarding does not yet consume link characteristics.
+    #[expect(dead_code)]
+    peer_link_info: PeerLinkInfo,
 }
 
 impl Peer {
@@ -32,6 +36,7 @@ impl Peer {
         store: Arc<storage::store::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         tasks: &hardy_async::TaskPool,
+        peer_link_info: PeerLinkInfo,
     ) -> Arc<Self> {
         let controller = cla
             .policy
@@ -57,7 +62,11 @@ impl Peer {
             ));
         }
 
-        Arc::new(Self { queues, controller })
+        Arc::new(Self {
+            queues,
+            controller,
+            peer_link_info,
+        })
     }
 
     fn start_queue_poller(

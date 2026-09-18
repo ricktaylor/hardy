@@ -5,7 +5,11 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use hardy_bpa::{async_trait, bpa::BpaRegistration, cla};
+use hardy_bpa::{
+    async_trait,
+    bpa::BpaRegistration,
+    cla::{self, PeerLinkInfo},
+};
 use hardy_bpv7::eid::NodeId;
 
 // A mock CLA Sink that accepts everything and discards it.
@@ -30,6 +34,7 @@ impl cla::Sink for MockSink {
         &self,
         _cla_addr: cla::ClaAddress,
         _node_ids: &[NodeId],
+        _peer_link_info: PeerLinkInfo,
     ) -> cla::Result<bool> {
         Ok(true)
     }

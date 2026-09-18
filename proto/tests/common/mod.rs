@@ -7,12 +7,17 @@
 pub mod sinks;
 
 use core::num::NonZeroU64;
-use hardy_async::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{cla, routing, services};
-use hardy_bpv7::eid::NodeId;
-use sinks::*;
 use std::sync::Arc;
+
+use hardy_async::async_trait;
+use hardy_bpa::{
+    bpa::BpaRegistration,
+    cla::{self, PeerLinkInfo},
+    routing, services,
+};
+use hardy_bpv7::eid::NodeId;
+
+use self::sinks::{MockApplicationSink, MockClaSink, MockRoutingSink, MockServiceSink};
 
 // ── Mock BPA ──────────────────────────────────────────────────────────
 
@@ -195,8 +200,13 @@ impl cla::Sink for ClaSinkWrapper {
     ) -> cla::Result<()> {
         self.0.dispatch(pn, pa, s).await
     }
-    async fn add_peer(&self, a: cla::ClaAddress, n: &[NodeId]) -> cla::Result<bool> {
-        self.0.add_peer(a, n).await
+    async fn add_peer(
+        &self,
+        a: cla::ClaAddress,
+        n: &[NodeId],
+        peer_link_info: PeerLinkInfo,
+    ) -> cla::Result<bool> {
+        self.0.add_peer(a, n, peer_link_info).await
     }
     async fn remove_peer(&self, a: &cla::ClaAddress) -> cla::Result<bool> {
         self.0.remove_peer(a).await

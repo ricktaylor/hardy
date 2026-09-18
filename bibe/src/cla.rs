@@ -69,7 +69,7 @@ impl BibeCla {
             .get()
             .ok_or(Error::NotRegistered)?
             .sink
-            .add_peer(cla_addr, &[tunnel_id])
+            .add_peer(cla_addr, &[tunnel_id], Default::default())
             .await?;
 
         Ok(())
@@ -183,7 +183,7 @@ mod tests {
     use alloc::{borrow::Cow, sync::Arc};
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use hardy_bpa::cla::TransferOutcome;
+    use hardy_bpa::cla::{PeerLinkInfo, TransferOutcome};
     use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
 
     use super::*;
@@ -213,7 +213,12 @@ mod tests {
             Ok(())
         }
 
-        async fn add_peer(&self, _cla_addr: ClaAddress, _node_ids: &[NodeId]) -> ClaResult<bool> {
+        async fn add_peer(
+            &self,
+            _cla_addr: ClaAddress,
+            _node_ids: &[NodeId],
+            _peer_link_info: PeerLinkInfo,
+        ) -> ClaResult<bool> {
             Ok(true)
         }
 

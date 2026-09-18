@@ -279,6 +279,7 @@ async fn expiry_mid_transfer_rig() -> (
                 allocator_id: 0,
                 node_number: 3,
             })],
+            Default::default(),
         )
         .await
         .unwrap();
@@ -485,6 +486,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
                 allocator_id: 0,
                 node_number: 3,
             })],
+            Default::default(),
         )
         .await
         .unwrap();
