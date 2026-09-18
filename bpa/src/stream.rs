@@ -20,7 +20,10 @@ use hardy_async::async_trait;
 /// producer should stop. Wraps the rejected item so the producer can
 /// recover ownership (e.g. for logging, metrics, or alternative delivery).
 /// Producers should treat this as a definitive "stop streaming" signal,
-/// not a transient error.
+/// not a transient error — and as nothing more: it carries no verdict on
+/// the items already sent. A consumer may stop reading precisely because
+/// it has accepted them (see [`cla::Sink::dispatch`](crate::cla::Sink::dispatch));
+/// any verdict rides the consuming call's own return value.
 #[derive(Debug)]
 pub struct SendError<T>(pub T);
 

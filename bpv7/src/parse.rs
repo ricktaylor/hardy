@@ -15,7 +15,7 @@ use bytes::{Bytes, BytesMut};
 use hardy_cbor::decode::{Error as CborError, Head, Marker, Untagged};
 use smallvec::SmallVec;
 
-use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock};
+use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock, reader::PlainReader};
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
@@ -655,7 +655,7 @@ impl BundleParser {
             // of truth shared with the post-decrypt keyed filter.
             ops.check(
                 *bcb_block_number,
-                &bpsec::PlainBlockSet {
+                &PlainReader {
                     blocks: &bundle.blocks,
                     source_data: data,
                 },
@@ -709,7 +709,7 @@ impl BundleParser {
             // of truth shared with the post-decrypt keyed filter.
             ops.check(
                 bib_block_number,
-                &bpsec::PlainBlockSet {
+                &PlainReader {
                     blocks: &bundle.blocks,
                     source_data: data,
                 },

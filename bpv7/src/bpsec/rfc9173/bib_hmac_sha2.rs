@@ -165,14 +165,14 @@ where
         .blocks
         .block(args.target)
         .ok_or(Error::MissingSecurityTarget)?;
-    let payload = payload.ok_or(Error::MissingSecurityTarget)?;
+    let payload = payload.available().ok_or(Error::MissingSecurityTarget)?;
 
     if !matches!(target_block.block_type, block::Type::Primary) {
         if flags.include_primary_block {
             let raw = args
                 .blocks
                 .block(0)
-                .and_then(|v| v.1)
+                .and_then(|v| v.1.available())
                 .expect("Missing primary block!");
             let raw = raw.as_ref();
             // RFC 9172 §4: IPPT requires the canonical (deterministic) form.

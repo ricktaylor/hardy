@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Deprecated
+
+- The filter is inert against the current `hardy-bpa`: nothing populates the `BundleMetadata::next_hop` field it reads, so every bundle passes through unchanged. Configure the BPA's built-in per-hop re-encode via `BpaBuilder::ipn_legacy_peers` instead (`hardy-bpa-server` reads the same `ipn-legacy-nodes` config key it always did). The crate is retired by the filter subsystem rework.
+
 ## [0.2.0]
 
 ### Changed

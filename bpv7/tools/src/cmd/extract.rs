@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::bpsec::{block_data, key::KeySet};
+use hardy_bpv7::bpsec::{DecryptingReader, key::KeySet};
 #[derive(Parser, Debug)]
 #[command(
     about = "Extract the data from a block in a bundle",
@@ -40,8 +40,10 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let payload = block_data(self.block, &bundle.blocks, &data, &bcb_ops, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?;
+        let payload = DecryptingReader::new(&bundle.blocks, &data, &bcb_ops, &key_store)
+            .block_data(self.block)
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?
+            .ok_or_else(|| anyhow::anyhow!("Block {} is not resident", self.block))?;
 
         self.output.write_all(payload.as_ref())
     }

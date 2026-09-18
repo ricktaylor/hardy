@@ -433,13 +433,10 @@ fn dump_block(
     let payload = if let Some(bcb) = block.bcb {
         output.append_str(format!("Encrypted by Security Block {bcb}: "))?;
 
-        match bpsec::block_data(
-            block_number,
-            blocks,
-            data,
-            &security.bcb_ops,
-            &security.keys,
-        ) {
+        match bpsec::DecryptingReader::new(blocks, data, &security.bcb_ops, &security.keys)
+            .block_data(block_number)
+            .and_then(|p| p.ok_or(hardy_bpv7::Error::Altered))
+        {
             Err(e) => {
                 output.append_str(format!("Error {e}\n\n"))?;
                 None
@@ -451,14 +448,10 @@ fn dump_block(
         }
     } else {
         Some(
-            bpsec::block_data(
-                block_number,
-                blocks,
-                data,
-                &security.bcb_ops,
-                &security.keys,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to get block data: {e}"))?,
+            bpsec::DecryptingReader::new(blocks, data, &security.bcb_ops, &security.keys)
+                .block_data(block_number)
+                .map_err(|e| anyhow::anyhow!("Failed to get block data: {e}"))?
+                .ok_or_else(|| anyhow::anyhow!("Block {block_number} is not resident"))?,
         )
     };
 

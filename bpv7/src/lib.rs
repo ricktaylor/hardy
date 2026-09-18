@@ -111,10 +111,12 @@ pub mod creation_timestamp;
 pub mod dtn_time;
 pub mod editor;
 pub mod eid;
+pub mod extension_editor;
 pub mod hop_info;
 pub mod lifetime;
 pub mod parse;
 pub mod primary_block;
+pub mod reader;
 pub mod rewrite;
 pub mod status_report;
 

@@ -280,7 +280,7 @@ impl<'a> Encryptor<'a> {
             let source = b.block_number();
             editor = b.rebuild();
 
-            let mut editor_bs = editor::EditorBlockSet { editor };
+            let mut editor_bs = editor::EditorReader { editor };
             let mut operations = HashMap::with_capacity(targets.len());
             for (target, key) in targets {
                 let (op, data) = build_bcb_data(

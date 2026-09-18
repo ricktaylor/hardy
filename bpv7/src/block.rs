@@ -223,7 +223,11 @@ impl FromCbor for Type {
 /// payload has been decrypted from a Block Confidentiality Block (BCB) and
 /// therefore does not correspond to a contiguous region of the original data.
 pub enum Payload<'a> {
-    /// A slice within the original bundle data.
+    /// A borrowed slice: the block's wire bytes within the original bundle
+    /// data, or — when lent by a caching reader such as
+    /// [`DecryptingReader`](crate::bpsec::DecryptingReader) — a decrypted
+    /// payload owned by the reader for its lifetime. Only take it as a
+    /// sub-slice of the bundle buffer where the lender guarantees that.
     Borrowed(&'a [u8]),
     /// An owned byte slice, typically holding a decrypted payload.
     Decrypted(zeroize::Zeroizing<Box<[u8]>>),

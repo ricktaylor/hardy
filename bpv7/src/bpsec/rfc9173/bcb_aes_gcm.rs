@@ -174,7 +174,7 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
         let raw = args
             .blocks
             .block(0)
-            .and_then(|v| v.1)
+            .and_then(|v| v.1.available())
             .expect("Missing primary block!");
         let raw = raw.as_ref();
         // RFC 9172 §4: AAD requires the canonical (deterministic) form.
@@ -242,6 +242,7 @@ impl Operation {
             .block(args.target)
             .ok_or(Error::MissingSecurityTarget)?
             .1
+            .available()
             .ok_or(Error::MissingSecurityTarget)?;
 
         if let Some(ops) = &jwk.operations
@@ -352,6 +353,7 @@ impl Operation {
             .block(args.target)
             .ok_or(Error::MissingSecurityTarget)?
             .1
+            .available()
             .ok_or(Error::MissingSecurityTarget)?;
 
         let aad = build_data(&self.parameters.flags, &args)?;

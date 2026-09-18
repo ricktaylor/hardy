@@ -464,12 +464,15 @@ async fn echo_round_trip() {
     let mut inbound = build_bundle(&remote_source, &echo_dest, b"ping");
 
     // Dispatch it as if received from the CLA
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(Some(&remote_node), None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The echo service should reflect the bundle back:
     // source=ipn:0.1.7 (echo), dest=ipn:0.2.1 (remote)
@@ -738,12 +741,15 @@ async fn local_delivery() {
     let mut inbound = build_bundle(&remote_source, &local_dest, b"Hello local");
 
     // Dispatch via CLA
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // Application should receive the payload
     let (source, payload) =
@@ -864,12 +870,15 @@ async fn reception_report_carries_unknown_security_operation() {
         .unwrap();
     let mut inbound = splice_unrecognised_bcb(&data);
 
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(Some(&remote_node), None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // Two bundles come back out of the CLA in either order: the reception
     // report (to ipn:0.2.1) and the forwarded original (to ipn:0.2.99).
@@ -979,12 +988,15 @@ async fn cla_streamed_ingress_delivers() {
         }
     });
 
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut rx)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut rx)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     producer.await.unwrap();
 
     let (source, payload) =
@@ -1049,25 +1061,23 @@ async fn cla_unregister_cancels_parked_stream() {
     cla.sink.get().unwrap().unregister().await;
 
     // The parked pull must fail promptly — the assertion is event-driven;
-    // the timeout only bounds a regression.
+    // the timeout only bounds a regression. The teardown is reported as the
+    // dead registration, not a per-bundle refusal.
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
         .await
         .expect("parked stream was not woken by unregistration")
         .expect("task panicked");
-    assert!(matches!(
-        result,
-        Err(hardy_bpa::cla::Error::StreamCancelled)
-    ));
+    assert!(matches!(result, Err(hardy_bpa::cla::Error::Disconnected)));
     drop(tx);
 
     bpa.shutdown().await;
 }
 
-/// A producer that dies before `Final` is a truncation: the sink surfaces
-/// `StreamCancelled` (so a CLA withholds its transfer ack) and nothing is
+/// A producer that dies before `Final` is a truncation: the sink refuses
+/// acceptance (so a CLA withholds its transfer ack) and nothing is
 /// delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cla_streamed_ingress_truncation_is_an_error() {
+async fn cla_streamed_ingress_truncation_is_refused() {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
@@ -1103,10 +1113,7 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
     drop(tx); // no Final
 
     let result = cla.sink.get().unwrap().dispatch(None, None, &mut rx).await;
-    assert!(matches!(
-        result,
-        Err(hardy_bpa::cla::Error::StreamCancelled)
-    ));
+    assert!(matches!(result, Ok(cla::Acceptance::Refused)));
 
     // Known test-guide deviation (quiet-window absence assert):
     // scheduled for the dedicated pipeline de-flake pass (see bpa/docs/TODO.md).
@@ -1209,12 +1216,15 @@ async fn streamed_oversized_payload_local_delivery() {
 
     // Deliver the bundle as a stream of 1000-byte segments (forces Partial).
     let mut stream = SegmentReceiver::new(&inbound, 1000);
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut stream)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let (source, delivered) =
         // Event-driven wait; the timeout only bounds a regression.
@@ -1298,7 +1308,10 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     let expired = build_expired_bundle(&remote_source, &local_dest, &payload);
     assert!(expired.len() > 4096, "payload must exceed the parser chunk");
     let mut stream = SegmentReceiver::new(&expired, 1000);
-    sink().dispatch(None, None, &mut stream).await.unwrap();
+    assert_eq!(
+        sink().dispatch(None, None, &mut stream).await.unwrap(),
+        cla::Acceptance::Accepted
+    );
     assert!(
         stream.remaining() > 0,
         "expired bundle must be dropped before the payload tail is drained"
@@ -1307,7 +1320,10 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     // Hop-exhausted — gated on hop count; same expectation.
     let hopped = build_hop_exhausted_bundle(&remote_source, &local_dest, &payload);
     let mut stream = SegmentReceiver::new(&hopped, 1000);
-    sink().dispatch(None, None, &mut stream).await.unwrap();
+    assert_eq!(
+        sink().dispatch(None, None, &mut stream).await.unwrap(),
+        cla::Acceptance::Accepted
+    );
     assert!(
         stream.remaining() > 0,
         "hop-exhausted bundle must be dropped before the payload tail is drained"
@@ -1318,7 +1334,10 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     // not a stalled stream.
     let valid = build_bundle(&remote_source, &local_dest, &payload);
     let mut stream = SegmentReceiver::new(&valid, 1000);
-    sink().dispatch(None, None, &mut stream).await.unwrap();
+    assert_eq!(
+        sink().dispatch(None, None, &mut stream).await.unwrap(),
+        cla::Acceptance::Accepted
+    );
     assert_eq!(
         stream.remaining(),
         0,
@@ -1404,12 +1423,15 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
         .build(CreationTimestamp::now())
         .unwrap();
     let mut inbound = Bytes::from(data);
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(Some(&remote_node), None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // Exactly the report pair comes out of the CLA — the bundle itself must
     // not be forwarded. Both are admin records to the source.
@@ -1463,12 +1485,15 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
         .build(timestamp)
         .unwrap();
     let mut inbound = Bytes::from(data);
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(Some(&remote_node), None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
@@ -1539,10 +1564,10 @@ async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
     );
 }
 
-// R-04: the ingress size cap refuses an over-cap bundle at both new
+// R-04: the ingress size cap refuses an over-cap bundle at both
 // enforcement points — header accumulation (`HeaderFailure::TooLarge`) and the
-// payload drain (`DrainFailure::TooLarge`) — surfacing `PayloadTooLarge` so the
-// CLA withholds the transfer ack.
+// payload drain (`DrainFailure::TooLarge`) — surfacing `Acceptance::Refused`
+// so the CLA withholds the transfer ack.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_size_cap_refuses_oversized_bundle() {
     let node_ids = NodeIds::try_from(
@@ -1577,16 +1602,15 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         .await
         .unwrap();
         let mut stream = SegmentReceiver::new(&inbound, 1000);
-        let err = cla
-            .sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut stream)
-            .await
-            .expect_err("an over-cap bundle must be refused");
-        assert!(
-            matches!(err, cla::Error::PayloadTooLarge { max, .. } if max == 256),
-            "header-phase over-cap must refuse with PayloadTooLarge, got {err:?}"
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut stream)
+                .await
+                .unwrap(),
+            cla::Acceptance::Refused,
+            "header-phase over-cap must be refused"
         );
         bpa.shutdown().await;
     }
@@ -1611,16 +1635,15 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         .await
         .unwrap();
         let mut stream = SegmentReceiver::new(&inbound, 1000);
-        let err = cla
-            .sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut stream)
-            .await
-            .expect_err("an over-cap payload tail must be refused");
-        assert!(
-            matches!(err, cla::Error::PayloadTooLarge { max, .. } if max == 10_000),
-            "drain-phase over-cap must refuse with PayloadTooLarge, got {err:?}"
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut stream)
+                .await
+                .unwrap(),
+            cla::Acceptance::Refused,
+            "drain-phase over-cap must be refused"
         );
         bpa.shutdown().await;
     }
@@ -1680,12 +1703,15 @@ async fn throughput() {
 
     // Warm up
     for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut bundle)
-            .await
-            .unwrap();
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut bundle)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         // Event-driven wait; the timeout only bounds a regression.
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
             .await
@@ -1698,12 +1724,15 @@ async fn throughput() {
     let start = tokio::time::Instant::now();
     let mut last_arrival = start;
     for (i, mut bundle) in test_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut bundle)
-            .await
-            .unwrap();
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut bundle)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         last_arrival =
             // Event-driven wait; the timeout only bounds a regression.
             tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
@@ -1787,12 +1816,15 @@ async fn forwarding_latency() {
 
     // Warm up
     for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut bundle)
-            .await
-            .unwrap();
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut bundle)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         // Event-driven wait; the timeout only bounds a regression.
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
             .await
@@ -1807,12 +1839,15 @@ async fn forwarding_latency() {
 
     for (i, mut bundle) in test_bundles.into_iter().enumerate() {
         let dispatched = tokio::time::Instant::now();
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut bundle)
-            .await
-            .unwrap();
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut bundle)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         let arrived =
             // Event-driven wait; the timeout only bounds a regression.
             tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
@@ -2214,18 +2249,21 @@ async fn expect_no_offer(rx: &flume::Receiver<Id>) {
 async fn deferred_outcome_failed_redispatches() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
 
-    cla.sink()
-        .dispatch(
-            None,
-            None,
-            &mut build_bundle(
-                &"ipn:0.3.1".parse().unwrap(),
-                &"ipn:0.2.99".parse().unwrap(),
-                b"deferred-fail",
-            ),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink()
+            .dispatch(
+                None,
+                None,
+                &mut build_bundle(
+                    &"ipn:0.3.1".parse().unwrap(),
+                    &"ipn:0.2.99".parse().unwrap(),
+                    b"deferred-fail",
+                ),
+            )
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let id = expect_offer(&offers_rx).await;
     cla.sink()
@@ -2257,10 +2295,13 @@ async fn deferred_outcome_completed_resolves() {
         &"ipn:0.2.99".parse().unwrap(),
         b"deferred-ok",
     );
-    cla.sink()
-        .dispatch(None, None, &mut data.clone())
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink()
+            .dispatch(None, None, &mut data.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let id = expect_offer(&offers_rx).await;
     cla.sink()
@@ -2277,7 +2318,10 @@ async fn deferred_outcome_completed_resolves() {
 
     // The completed bundle was deleted with a tombstone: a re-arrival of the
     // same bundle is dropped as a duplicate rather than re-forwarded.
-    cla.sink().dispatch(None, None, &mut data).await.unwrap();
+    assert_eq!(
+        cla.sink().dispatch(None, None, &mut data).await.unwrap(),
+        cla::Acceptance::Accepted
+    );
     expect_no_offer(&offers_rx).await;
 
     bpa.shutdown().await;
@@ -2294,18 +2338,21 @@ async fn deferred_outcome_completed_resolves() {
 async fn deferred_outcome_peer_removal_resolves_unknown() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
 
-    cla.sink()
-        .dispatch(
-            None,
-            None,
-            &mut build_bundle(
-                &"ipn:0.3.1".parse().unwrap(),
-                &"ipn:0.2.99".parse().unwrap(),
-                b"outcome-unknown",
-            ),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink()
+            .dispatch(
+                None,
+                None,
+                &mut build_bundle(
+                    &"ipn:0.3.1".parse().unwrap(),
+                    &"ipn:0.2.99".parse().unwrap(),
+                    b"outcome-unknown",
+                ),
+            )
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let id = expect_offer(&offers_rx).await;
 
@@ -2363,19 +2410,22 @@ async fn deferred_outcome_ignores_wrong_cla() {
         .await
         .unwrap();
 
-    cla_a
-        .sink()
-        .dispatch(
-            None,
-            None,
-            &mut build_bundle(
-                &"ipn:0.3.1".parse().unwrap(),
-                &"ipn:0.2.99".parse().unwrap(),
-                b"wrong-cla",
-            ),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        cla_a
+            .sink()
+            .dispatch(
+                None,
+                None,
+                &mut build_bundle(
+                    &"ipn:0.3.1".parse().unwrap(),
+                    &"ipn:0.2.99".parse().unwrap(),
+                    b"wrong-cla",
+                ),
+            )
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let id = expect_offer(&offers_a).await;
 
@@ -2648,6 +2698,154 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
 }
 
 // ---------------------------------------------------------------------------
+// The config-gated RFC 9171 validity checks at the pre-drain gate
+// ---------------------------------------------------------------------------
+
+/// Feeds `data` to the BPA through the CLA sink as one Final segment.
+async fn dispatch_inbound(cla: &PipelineCla, data: Bytes) {
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    let producer = tokio::spawn(async move {
+        hardy_async::channel::Sender::send(&tx, Segment::Final(data))
+            .await
+            .unwrap();
+    });
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut rx)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    producer.await.unwrap();
+}
+
+/// Builds a strict-or-relaxed BPA around a local application at ipn:0.1.42,
+/// returning the delivery channel.
+async fn gate_fixture(
+    configure: impl FnOnce(hardy_bpa::builder::BpaBuilder) -> hardy_bpa::builder::BpaBuilder,
+) -> (Bpa, Arc<PipelineCla>, flume::Receiver<(Eid, Bytes)>) {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = configure(Bpa::builder().node_ids(node_ids))
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    (bpa, cla, app_rx)
+}
+
+fn unprotected_primary_bundle() -> Bytes {
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_crc_type(hardy_bpv7::crc::CrcType::None)
+        .with_payload(Cow::Borrowed(b"no integrity".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    Bytes::from(data)
+}
+
+fn clockless_ageless_bundle() -> Bytes {
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_payload(Cow::Borrowed(b"no clock".as_slice()))
+        .build(CreationTimestamp::default())
+        .expect("Failed to build bundle");
+    Bytes::from(data)
+}
+
+/// RFC 9171 §4.3.1: with the default strict config, a primary block with
+/// neither CRC nor BIB coverage is rejected at the pre-drain gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_rejects_unprotected_primary_block() {
+    let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
+
+    dispatch_inbound(&cla, unprotected_primary_bundle()).await;
+
+    // Shutdown is the barrier: an admitted bundle would have completed
+    // delivery before it returns.
+    bpa.shutdown().await;
+    assert!(
+        app_rx.is_empty(),
+        "an unprotected primary block must be rejected at the gate"
+    );
+}
+
+/// `primary_block_integrity(false)` relaxes the §4.3.1 check: the same
+/// bundle is admitted and delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relaxed_gate_admits_unprotected_primary_block() {
+    let (bpa, cla, app_rx) = gate_fixture(|b| b.primary_block_integrity(false)).await;
+
+    dispatch_inbound(&cla, unprotected_primary_bundle()).await;
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let (_, payload) =
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for delivery")
+            .expect("Channel closed");
+    assert_eq!(payload.as_ref(), b"no integrity");
+
+    bpa.shutdown().await;
+}
+
+/// RFC 9171 §4.4.2: with the default strict config, a clockless bundle
+/// without a Bundle Age block is rejected at the pre-drain gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_rejects_clockless_bundle_without_age() {
+    let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
+
+    dispatch_inbound(&cla, clockless_ageless_bundle()).await;
+
+    // Shutdown is the barrier: an admitted bundle would have completed
+    // delivery before it returns.
+    bpa.shutdown().await;
+    assert!(
+        app_rx.is_empty(),
+        "a clockless bundle without a Bundle Age block must be rejected at the gate"
+    );
+}
+
+/// `bundle_age_required(false)` relaxes the §4.4.2 check: the same bundle
+/// is admitted and delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relaxed_gate_admits_clockless_bundle_without_age() {
+    let (bpa, cla, app_rx) = gate_fixture(|b| b.bundle_age_required(false)).await;
+
+    dispatch_inbound(&cla, clockless_ageless_bundle()).await;
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let (_, payload) =
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for delivery")
+            .expect("Channel closed");
+    assert_eq!(payload.as_ref(), b"no clock");
+
+    bpa.shutdown().await;
+}
 
 /// A builder-configured CLA goes live at `start`, not at `build`: activation
 /// waits for storage recovery, so the quiescent-store contract covers the

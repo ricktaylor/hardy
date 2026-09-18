@@ -150,7 +150,7 @@ pub(crate) fn verify_block(
         .operations()
         .get(&block_number)
         .ok_or(hardy_bpv7::Error::Altered)?;
-    let block_set = hardy_bpv7::bpsec::PlainBlockSet {
+    let block_set = hardy_bpv7::reader::PlainReader {
         blocks,
         source_data: data,
     };
