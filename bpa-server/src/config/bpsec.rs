@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
 
-use super::WatchConfig;
+use super::{WatchConfig, owner_only_key_file};
 use crate::bpsec::SecurityRole;
 
 /// BPSec configuration: the JWKS key file and its EID-pattern key bindings.
@@ -11,7 +11,9 @@ use crate::bpsec::SecurityRole;
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct BPSecConfig {
     /// Path to a JWK Set file (RFC 7517 Section 5).
-    /// The file SHOULD have restrictive permissions (0600 on Unix).
+    /// The file MUST have owner-only permissions (0600 on Unix); a
+    /// group/other-accessible file is refused at parse.
+    #[serde(deserialize_with = "owner_only_key_file")]
     pub keys_file: PathBuf,
 
     /// Watch the key file for changes and reload automatically.

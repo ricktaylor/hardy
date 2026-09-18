@@ -1,9 +1,10 @@
 use crate::contacts::{Contact, Schedule, TvrAgent};
 use crate::cron::CronExpr;
+use anyhow::Context;
 use hardy_bpa::routing::RouteAction;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod proto {
     pub mod tvr {
@@ -383,23 +384,32 @@ async fn handle_message(
     }
 }
 
-// Create and start the TVR gRPC server.
-pub async fn start(
+// Create and start the TVR gRPC server. The listener is bound here, so
+// a bad or occupied address fails startup rather than a spawned task;
+// a serve failure after that cancels the pool, so the daemon exits
+// instead of running on without its control plane.
+pub fn start(
     listen_addr: std::net::SocketAddr,
     agent: &Arc<TvrAgent>,
     tasks: &hardy_async::TaskPool,
-) {
+) -> anyhow::Result<()> {
+    let incoming = tonic::transport::server::TcpIncoming::bind(listen_addr)
+        .with_context(|| format!("Failed to bind TVR gRPC listener on {listen_addr}"))?;
     let service = TvrService::new(agent, tasks);
     let cancel_token = tasks.cancel_token().clone();
 
     hardy_async::spawn!(tasks, "tvr_grpc_server", async move {
         info!("TVR gRPC server listening on {listen_addr}");
-        tonic::transport::Server::builder()
+        if let Err(e) = tonic::transport::Server::builder()
             .add_service(tvr_server::TvrServer::new(service))
-            .serve_with_shutdown(listen_addr, cancel_token.cancelled())
+            .serve_with_incoming_shutdown(incoming, cancel_token.clone().cancelled_owned())
             .await
-            .expect("TVR gRPC server failed");
+        {
+            error!("TVR gRPC server failed: {e}");
+            cancel_token.cancel();
+        }
     });
+    Ok(())
 }
 
 #[cfg(test)]

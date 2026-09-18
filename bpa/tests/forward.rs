@@ -294,9 +294,10 @@ async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
         .unwrap()
         .send(
             dest.clone(),
-            Bytes::from_static(payload),
             core::time::Duration::from_secs(3600),
             None,
+            None,
+            &mut Bytes::from_static(payload),
         )
         .await
         .unwrap();

@@ -1,4 +1,11 @@
 use core::num::{NonZeroU64, NonZeroUsize};
+#[cfg(unix)]
+use std::fs;
+#[cfg(feature = "grpc")]
+use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+use std::time::Duration;
 use std::{collections::HashMap, path::PathBuf};
 
 use hardy_async::watcher::WatchMode;
@@ -7,11 +14,14 @@ use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
+#[cfg(feature = "grpc")]
+use crate::config::tls::GrpcTlsConfig;
 use crate::error::Error;
 
 pub mod bpsec;
 pub mod cla;
 pub mod storage;
+pub mod tls;
 
 // Returns the default config directory, platform-specific:
 // - Linux: /etc/hardy/
@@ -34,6 +44,10 @@ pub(crate) fn default_config_dir() -> std::path::PathBuf {
 
 fn default_config_path() -> std::path::PathBuf {
     default_config_dir().join("bpa")
+}
+
+fn default_drain_timeout() -> Duration {
+    Duration::from_secs(5)
 }
 
 fn default_log_level() -> Level {
@@ -61,19 +75,68 @@ mod log_level_serde {
     }
 }
 
+// A duration written as a humantime string (e.g. `5s`, `1m 30s`);
+// zero is allowed, meaning the wait is disabled outright.
+mod human_duration {
+    use std::time::Duration;
+
+    use serde::Deserialize;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        humantime::parse_duration(&text)
+            .map_err(|e| serde::de::Error::custom(format_args!("invalid duration: {e}")))
+    }
+
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(&humantime::format_duration(*duration))
+    }
+}
+
+// Deserializes a private-key file path, refusing one whose file is
+// accessible by group or other: the check rides the field's own
+// deserializer, so every key-bearing field enforces it without a central
+// walk to keep in sync. A path that does not exist yet passes (its
+// absence surfaces when the consumer opens it); platforms without POSIX
+// permission bits skip the check.
+fn owner_only_key_file<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let path = PathBuf::deserialize(deserializer)?;
+    #[cfg(unix)]
+    if let Ok(meta) = fs::metadata(&path) {
+        let mode = meta.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(serde::de::Error::custom(format_args!(
+                "key file '{}' has group/other permissions (mode {mode:04o}); \
+                 restrict to owner-only (chmod 0600)",
+                path.display()
+            )));
+        }
+    }
+    Ok(path)
+}
+
 // A positive duration, written as a humantime string (e.g. `30s`, `10m`,
 // `1h 30m`).
 #[cfg(feature = "postgres-storage")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NonZeroDuration(std::time::Duration);
+pub struct NonZeroDuration(Duration);
 
 #[cfg(feature = "postgres-storage")]
 impl NonZeroDuration {
-    pub fn new(duration: std::time::Duration) -> Option<Self> {
+    pub fn new(duration: Duration) -> Option<Self> {
         (!duration.is_zero()).then_some(Self(duration))
     }
 
-    pub fn get(&self) -> std::time::Duration {
+    pub fn get(&self) -> Duration {
         self.0
     }
 }
@@ -170,6 +233,91 @@ pub struct BuiltInServicesConfig {
     pub echo: Option<Vec<Service>>,
 }
 
+// A BPA registration surface the gRPC front end can host. Listed by
+// name in `grpc.services`; an unknown name is refused at parse with the
+// known ones listed.
+#[cfg(feature = "grpc")]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GrpcService {
+    // Remote convergence-layer adapters.
+    Cla,
+    // Remote low-level services, which exchange whole BPv7 bundles.
+    Service,
+    // Remote applications, which exchange payloads (ADUs).
+    Application,
+    // Remote routing agents.
+    Routing,
+}
+
+// The service list must name at least one surface and each at most once:
+// an empty list is a misconfiguration (omit the `grpc` section to run no
+// gRPC server), and a repeated surface is a mistake, not a doubled mount.
+// Each name re-enters the derived `GrpcService` deserializer, the one
+// source of the kebab-case mapping, so an unknown name is refused with
+// the valid ones listed.
+#[cfg(feature = "grpc")]
+fn at_least_one_service<'de, D>(deserializer: D) -> Result<Vec<GrpcService>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, IntoDeserializer};
+
+    let names = Vec::<String>::deserialize(deserializer)?;
+    if names.is_empty() {
+        return Err(D::Error::custom(
+            "grpc.services must list at least one service",
+        ));
+    }
+    let mut services = Vec::with_capacity(names.len());
+    for name in names {
+        let service = GrpcService::deserialize(name.as_str().into_deserializer()).map_err(
+            |e: serde::de::value::Error| D::Error::custom(format_args!("grpc.services: {e}")),
+        )?;
+        if services.contains(&service) {
+            return Err(D::Error::custom(format!(
+                "grpc.services lists {service:?} more than once"
+            )));
+        }
+        services.push(service);
+    }
+    Ok(services)
+}
+
+// The `grpc` section: the gRPC front end serving BPA registration to
+// remote CLAs, services, applications, and routing agents. Absent runs
+// no gRPC server. The transport is owned and assembled by this crate
+// (`hardy-proto` provides the per-surface services), so the defaults are
+// this crate's own.
+#[cfg(feature = "grpc")]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GrpcConfig {
+    // The listen address; absent defers to the server default
+    // (`[::1]:50051`).
+    #[serde(default)]
+    pub address: Option<SocketAddr>,
+
+    // The services to expose, e.g. `["application", "cla", "service",
+    // "routing"]`; required and non-empty.
+    #[serde(deserialize_with = "at_least_one_service")]
+    pub services: Vec<GrpcService>,
+
+    // How long a graceful shutdown waits for open gRPC connections to
+    // drain before abandoning them, as a humantime string; `0s` cuts
+    // them immediately. The drain is shutdown's one unbounded wait: a
+    // client holding an unread response stream keeps its connection
+    // open indefinitely.
+    #[serde(default = "default_drain_timeout", with = "human_duration")]
+    pub drain_timeout: Duration,
+
+    // TLS for the listener; absent serves plaintext HTTP/2. The
+    // certificate and key are read once at startup; there is no hot
+    // reload, so a rotated certificate needs a restart to take effect.
+    #[serde(default)]
+    pub tls: Option<GrpcTlsConfig>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
@@ -214,7 +362,7 @@ pub struct Config {
     // gRPC options
     #[serde(default)]
     #[cfg(feature = "grpc")]
-    pub grpc: Option<hardy_proto::server::Config>,
+    pub grpc: Option<GrpcConfig>,
 
     // Storage configuration (cache + metadata + bundle backends)
     #[serde(default)]
@@ -294,6 +442,20 @@ impl Config {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    // Helper: an error and its whole source chain as one string, so an
+    // assertion can match text a source carries rather than only the
+    // top-level message.
+    fn error_chain(err: &dyn std::error::Error) -> String {
+        let mut out = err.to_string();
+        let mut source = err.source();
+        while let Some(e) = source {
+            out.push_str(": ");
+            out.push_str(&e.to_string());
+            source = e.source();
+        }
+        out
+    }
 
     // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
@@ -537,7 +699,7 @@ clas:
             tls.identity.as_ref().unwrap().key_file,
             std::path::PathBuf::from("/etc/hardy/private/server.key")
         );
-        assert_eq!(tls.client_auth, cla::ClientAuth::Required);
+        assert_eq!(tls.client_auth, super::tls::ClientAuth::Required);
         assert_eq!(
             tls.ca_certs.as_deref(),
             Some(std::path::Path::new("/etc/hardy/ca"))
@@ -658,7 +820,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("this-field-does-not-exist"), "{err}");
 
         // Sections are strict too: a typo'd storage knob is refused, not
@@ -668,8 +830,112 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("lru-capactiy"), "{err}");
+    }
+
+    // A `grpc` section enabling no services is refused at parse: absent
+    // and all-off are different spellings, and only an absent section
+    // means "no gRPC server".
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_no_services_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let path = dir.path().join("all-off.yaml");
+        std::fs::write(&path, "grpc:\n  services: []\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("at least one"), "{err}");
+
+        let path = dir.path().join("missing.yaml");
+        std::fs::write(&path, "grpc:\n  address: \"[::1]:50051\"\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("services"), "{err}");
+    }
+
+    // Unknown gRPC service names are refused at parse with the known ones
+    // listed.
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_unknown_service_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grpc.yaml");
+        std::fs::write(&path, "grpc:\n  services: [\"clas\"]\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("application"), "{err}");
+    }
+
+    // The service list parses into the typed surfaces it names.
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_services_list() {
+        use super::GrpcService;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("list.yaml");
+        std::fs::write(&path, "grpc:\n  services: [\"application\", \"routing\"]\n").unwrap();
+
+        let config = Config::load(Some(path)).expect("the service list must parse");
+        let services = config.grpc.expect("grpc section must be present").services;
+        assert_eq!(
+            services,
+            vec![GrpcService::Application, GrpcService::Routing]
+        );
+    }
+
+    // The drain timeout is a humantime string: defaulted when absent,
+    // zero allowed (cut connections immediately), garbage refused.
+    #[test]
+    #[cfg(feature = "grpc")]
+    fn grpc_drain_timeout_parses_as_humantime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+
+        std::fs::write(&path, "grpc:\n  services: [\"application\"]\n").unwrap();
+        let config = Config::load(Some(path.clone())).unwrap();
+        assert_eq!(config.grpc.unwrap().drain_timeout, Duration::from_secs(5));
+
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  drain-timeout: 0s\n",
+        )
+        .unwrap();
+        let config = Config::load(Some(path.clone())).unwrap();
+        assert_eq!(config.grpc.unwrap().drain_timeout, Duration::ZERO);
+
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  drain-timeout: eventually\n",
+        )
+        .unwrap();
+        assert!(Config::load(Some(path)).is_err());
+    }
+
+    // A repeated surface is a mistake, not a doubled mount.
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_duplicate_service_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.yaml");
+        std::fs::write(&path, "grpc:\n  services: [\"cla\", \"cla\"]\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("more than once"), "{err}");
     }
 
     // The shipped example config parses under the strict schema, so its
@@ -683,8 +949,10 @@ storage:
         feature = "tcpclv4"
     ))]
     fn example_config_parses() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.yaml");
-        Config::load(Some(path)).expect("the shipped config.yaml must parse");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        Config::load(Some(root.join("config.yaml"))).expect("the shipped config.yaml must parse");
+        Config::load(Some(root.join("examples/config.yaml")))
+            .expect("the example config.yaml must parse");
     }
 
     // Admin endpoints can be a single string, and the legacy `node-ids`
@@ -753,6 +1021,65 @@ admin-endpoints:
         assert!(config.bpsec.is_none());
     }
 
+    // A group-readable BPSec keys file is refused at parse: the check
+    // rides the field's deserializer, so a misconfigured key never
+    // reaches its consumer.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn insecure_bpsec_keys_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = dir.path().join("keys.jwks");
+        std::fs::write(&keys_path, r#"{ "keys": [] }"#).unwrap();
+        std::fs::set_permissions(&keys_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            format!("bpsec:\n  keys-file: \"{}\"\n", keys_path.display()),
+        )
+        .unwrap();
+
+        let Err(err) = Config::load(Some(config_path)) else {
+            panic!("a group-readable keys file must be refused");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("group/other permissions"), "{err}");
+    }
+
+    // A group-readable TLS private key in a tcpclv4 CLA entry is refused
+    // at parse by the same field-level check.
+    #[test]
+    #[serial]
+    #[cfg(all(unix, feature = "tcpclv4"))]
+    fn insecure_cla_tls_key_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("node.key");
+        std::fs::write(&key_path, "").unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "clas:\n  - name: tcp\n    type: tcpclv4\n    tls:\n      identity:\n        cert-file: \"{}\"\n        key-file: \"{}\"\n",
+                dir.path().join("node.crt").display(),
+                key_path.display()
+            ),
+        )
+        .unwrap();
+
+        let Err(err) = Config::load(Some(config_path)) else {
+            panic!("a group-readable TLS key must be refused");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("group/other permissions"), "{err}");
+    }
+
     // The removed `address` key of a tcpclv4 CLA entry is refused with the
     // replacement named: unknown keys are otherwise ignored, and a
     // deliberately loopback-only `address` must not silently escalate to
@@ -771,7 +1098,7 @@ admin-endpoints:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("listeners"), "{err}");
     }
 
@@ -792,7 +1119,7 @@ admin-endpoints:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("keepalive"), "{err}");
     }
 
@@ -818,7 +1145,7 @@ admin-endpoints:
     #[cfg(feature = "postgres-storage")]
     fn non_zero_duration_round_trips() {
         let duration: NonZeroDuration = serde_json::from_str("\"1m 30s\"").unwrap();
-        assert_eq!(duration.get(), std::time::Duration::from_secs(90));
+        assert_eq!(duration.get(), Duration::from_secs(90));
         assert_eq!(serde_json::to_string(&duration).unwrap(), "\"1m 30s\"");
 
         let err = serde_json::from_str::<NonZeroDuration>("\"0s\"")
