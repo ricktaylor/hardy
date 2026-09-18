@@ -1,101 +1,93 @@
-use super::*;
-use proxy::*;
+/*!
+The client SDK: a local component registers against a remote BPA over
+the v1 wire with the same traits a local [`Bpa`](hardy_bpa::bpa::Bpa)
+uses, and the SDK carries the sessions, tokens, and data-plane calls.
 
-mod application;
-mod cla;
-mod routing;
-mod service;
+All four surfaces are served: applications, low-level services,
+convergence-layer adapters, and routing agents.
+*/
 
-fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, tonic::Status> {
-    Ok(time::OffsetDateTime::from_unix_timestamp(t.seconds)
-        .map_err(|e| tonic::Status::from_error(e.into()))?
-        + time::Duration::nanoseconds(t.nanos.into()))
-}
+use core::{future::Future, num::NonZeroUsize, pin::pin};
 
-/// A remote BPA client that implements `BpaRegistration` via gRPC.
-///
-/// This allows CLAs, services, and applications to connect to a remote BPA
-/// server using the same interface as a local `Bpa` instance.
-///
-/// # Example
-///
-/// ```ignore
-/// let remote_bpa = RemoteBpa::new("http://[::1]:50051".to_string());
-/// cla.register(&remote_bpa, "tcp0".to_string(), None).await?;
-/// ```
-pub struct RemoteBpa {
-    grpc_addr: String,
-}
+use hardy_bpa::stream::{Receiver, Segment};
+use tokio::{select, sync::mpsc};
+use tokio_stream::wrappers::ReceiverStream;
+// `Response` is this module's generic parameter for a wire response
+// message, so tonic's own wrapper is aliased.
+use tonic::{Response as RpcResponse, Status};
 
-impl RemoteBpa {
-    /// Create a new RemoteBpa client.
-    ///
-    /// # Arguments
-    ///
-    /// * `grpc_addr` - The gRPC server address (e.g., "http://[::1]:50051")
-    pub fn new(grpc_addr: String) -> Self {
-        Self { grpc_addr }
-    }
+use self::adapter::RequestWriter;
+use crate::{
+    grammar::{Cancel, Chunk},
+    transfer::Writer,
+};
 
-    /// Get the gRPC address this client connects to.
-    pub fn grpc_addr(&self) -> &str {
-        &self.grpc_addr
-    }
-}
+mod adapter;
+mod bpa_client;
+mod services;
 
-#[async_trait]
-impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
-    async fn register_cla(
-        &self,
-        name: String,
-        cla: Arc<dyn hardy_bpa::cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
-        init: hardy_bpa::cla::ClaInit,
-    ) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        // Note: policy is not supported over gRPC currently
-        cla::register_cla(self.grpc_addr.clone(), name, cla, init).await
-    }
+pub use self::bpa_client::{BpaClient, EndpointError, RegistrationHandle};
+/// Re-exported for [`BpaClient::with_endpoint`] callers, so holding or
+/// passing an endpoint needs no direct `tonic` dependency.
+pub use tonic::transport::Endpoint;
 
-    async fn register_service(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), Some(service_id), service).await
-    }
+// The request channel of one data-plane transfer. Small on purpose,
+// since it is where a transfer's backpressure comes from; every send on
+// it is awaited, so nothing depends on the depth.
+pub(crate) const TRANSFER_REQUEST_CAPACITY: usize = 2;
 
-    async fn register_application(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(
-            self.grpc_addr.clone(),
-            Some(service_id),
-            application,
-        )
-        .await
-    }
+// The request channel of a Subscribe session: the Register handshake plus
+// a later Unregister, with headroom.
+pub(crate) const SUBSCRIBE_REQUEST_CAPACITY: usize = 4;
 
-    async fn register_dynamic_service(
-        &self,
-        service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), None, service).await
-    }
+// How many announced deliveries one registration collects at once:
+// enough that one slow collection does not serialise the rest, small
+// enough that a registration cannot monopolise its connection. Beyond
+// it, the announcement loop waits for a slot, backpressuring the
+// session stream and through it the BPA.
+pub(crate) const MAX_CONCURRENT_DELIVERIES: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
-    async fn register_dynamic_application(
-        &self,
-        application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(self.grpc_addr.clone(), None, application).await
-    }
+// Runs one streamed request call to its response, writing `stream` onto
+// the request side behind `metadata`, which the wire requires first.
+//
+// The response ends this, never the writer. A server may answer before
+// the transfer is complete, and a writer parked on a stalled producer
+// would hold that answer back indefinitely, so the two race and a
+// response drops the writer. The ordinary path is the writer finishing
+// first: dropping the request sender half-closes the request side, and
+// the server answers.
+async fn write_transfer<Request, Response, Call, Fut>(
+    metadata: Request,
+    stream: &mut dyn Receiver<Segment>,
+    call: Call,
+) -> Result<RpcResponse<Response>, Status>
+where
+    Request: Chunk + Cancel + Send + 'static,
+    Call: FnOnce(ReceiverStream<Request>) -> Fut,
+    Fut: Future<Output = Result<RpcResponse<Response>, Status>>,
+{
+    let (requests_tx, requests_rx) = mpsc::channel::<Request>(TRANSFER_REQUEST_CAPACITY);
+    let writing = async move {
+        if requests_tx.send(metadata).await.is_err() {
+            return;
+        }
+        // Complete or not, this side is done; the response is what
+        // answers the call.
+        let _ = RequestWriter::new(&requests_tx, stream).write_all().await;
+    };
 
-    async fn register_routing_agent(
-        &self,
-        name: String,
-        agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
-    ) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        routing::register_routing_agent(self.grpc_addr.clone(), name, agent).await
+    let mut call = pin!(call(ReceiverStream::new(requests_rx)));
+    // The response is polled first so an answer already waiting is
+    // taken over another turn of the writer.
+    let answered = select! {
+        biased;
+        response = &mut call => Some(response),
+        () = writing => None,
+    };
+    match answered {
+        Some(response) => response,
+        // The writer is dropped with the `select!`, so the request side
+        // is closed before the call is awaited to its response.
+        None => call.await,
     }
 }

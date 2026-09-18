@@ -1,141 +1,61 @@
-//! gRPC server implementations for BPA services.
-//!
-//! This module provides gRPC server implementations that allow remote CLAs,
-//! services, and applications to connect to a BPA instance.
+/*!
+The gRPC front door of a BPA: one service per component surface,
+implementing the v1 wire contract against the public registration
+traits of `hardy_bpa`. A host wires them up with its own `TaskPool`,
+one `<Surface>ServiceImpl` per enabled surface, each wrapped in its
+generated `<Surface>ServiceServer` and sized to the wire's message
+caps ([`MAX_MESSAGE_SIZE`](crate::MAX_MESSAGE_SIZE) in both
+directions, matching the client SDK's ends).
 
-use super::*;
-use hardy_async::sync::spin::Once;
-use proxy::*;
+Every surface follows the same design: `Subscribe` is the session (a
+registration, then a pure event stream), and every other RPC presents
+the session token minted at registration. `subscribe` serves that rpc
+for all four, from registration to unregistration, against each
+surface's own `SubscribeHandler`, and holds the live-session map a
+data-plane door resolves its token against; `session` holds the
+per-session state (`Session`, its stream and guard); `slot` holds what
+a registration hands its surface; `announce` holds the
+announce-and-collect table; and the surfaces themselves live under
+`services/`, one file per surface, with `services/application.rs` as
+the template.
+*/
 
-mod application;
-mod cla;
-mod routing;
-mod service;
+mod adapter;
+mod announce;
+mod services;
+mod session;
+mod slot;
+mod subscribe;
 
-fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
-    prost_types::Timestamp {
-        seconds: (t.unix_timestamp_nanos() / 1_000_000_000) as i64,
-        nanos: (t.unix_timestamp_nanos() % 1_000_000_000) as i32,
-    }
+pub use self::services::{
+    application::ApplicationServiceImpl, cla::ClaServiceImpl, routing::RoutingAgentServiceImpl,
+    service::ServiceServiceImpl,
+};
+
+/// Why an exchange with the component behind a session did not happen.
+/// Every variant leaves the work with the BPA; they differ in what they
+/// say about the session, which is what a surface reports upwards.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SessionError {
+    /// The session was torn down: before it could take an event, or
+    /// before any door collected an announcement.
+    #[error("The session is closed")]
+    Closed,
+
+    /// A later announcement of the same bundle id took this one's
+    /// place, and the door will collect that one. The session is alive,
+    /// so this is one exchange failing, not a disconnection.
+    #[error("A later announcement superseded this one")]
+    Superseded,
 }
 
-/// Configuration for the gRPC server.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
-pub struct Config {
-    /// Address to bind the gRPC server to.
-    pub address: std::net::SocketAddr,
-    /// List of services to enable: "cla", "service", "application", "routing"
-    pub services: Vec<String>,
-}
+// The outbound buffer per session stream: events are small, so this
+// only smooths bursts.
+const CHANNEL_DEPTH: usize = 16;
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            address: std::net::SocketAddr::new(
-                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-                50051,
-            ),
-            services: Vec::new(),
-        }
-    }
-}
-
-/// A gRPC server that exposes BPA registration services to remote clients.
-///
-/// The listening socket is bound by [`new()`](GrpcServer::new), so a bind
-/// failure surfaces at construction and a config address with port 0 gets a
-/// kernel-assigned port, readable via [`local_addr()`](GrpcServer::local_addr).
-/// The server does not spawn any tasks itself — call [`serve()`](GrpcServer::serve)
-/// to get a future, and spawn it in your own runtime.
-pub struct GrpcServer {
-    routes: tonic::service::Routes,
-    listener: std::net::TcpListener,
-    local_addr: std::net::SocketAddr,
-    session_tasks: hardy_async::TaskPool,
-}
-
-impl GrpcServer {
-    /// Build a gRPC server with the configured services, bound to
-    /// `config.address`.
-    pub fn new(
-        config: &Config,
-        bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        if config.services.is_empty() {
-            return Err("No gRPC services configured".into());
-        }
-
-        let tasks = hardy_async::TaskPool::new();
-        let mut routes = tonic::service::Routes::builder();
-        for svc in &config.services {
-            match svc.as_str() {
-                "application" => {
-                    routes.add_service(application::new_application_service(&bpa, &tasks));
-                }
-                "cla" => {
-                    routes.add_service(cla::new_cla_service(&bpa, &tasks));
-                }
-                "service" => {
-                    routes.add_service(service::new_endpoint_service(&bpa, &tasks));
-                }
-                "routing" => {
-                    routes.add_service(routing::new_routing_agent_service(&bpa, &tasks));
-                }
-                s => {
-                    warn!("Ignoring unknown gRPC service {s}");
-                }
-            }
-        }
-
-        let listener = std::net::TcpListener::bind(config.address)?;
-        listener.set_nonblocking(true)?;
-        let local_addr = listener.local_addr()?;
-
-        info!(
-            "gRPC server hosting {:?}, listening on {local_addr}",
-            config.services
-        );
-
-        Ok(Self {
-            routes: routes.routes(),
-            listener,
-            local_addr,
-            session_tasks: tasks,
-        })
-    }
-
-    /// The address the listening socket is bound to. With a port-0 config
-    /// address this carries the kernel-assigned port. The socket accepts
-    /// connections into its backlog from construction, before
-    /// [`serve()`](GrpcServer::serve) runs.
-    pub fn local_addr(&self) -> std::net::SocketAddr {
-        self.local_addr
-    }
-
-    /// Serve until cancelled, then shut down session tasks.
-    pub async fn serve(
-        self,
-        cancel: hardy_async::CancellationToken,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let (health_reporter, health_service) = tonic_health::server::health_reporter();
-        health_reporter
-            .set_service_status("", tonic_health::ServingStatus::Serving)
-            .await;
-        // NODELAY matches what `serve_with_shutdown` would apply through the
-        // builder's default `tcp_nodelay(true)` when it binds the socket
-        // itself.
-        let incoming = tonic::transport::server::TcpIncoming::from(
-            tokio::net::TcpListener::from_std(self.listener)?,
-        )
-        .with_nodelay(Some(true));
-        tonic::transport::Server::builder()
-            .add_routes(self.routes)
-            .add_service(health_service)
-            .serve_with_incoming_shutdown(incoming, cancel.cancelled())
-            .await?;
-        self.session_tasks.shutdown().await;
-        Ok(())
-    }
-}
+// The outbound buffer for a data-plane transfer, in
+// [`CHUNK_SIZE`](crate::CHUNK_SIZE) slices. Shallow on purpose: HTTP/2
+// flow control does the real pacing, and the resident cost per
+// in-flight transfer is `DATA_CHANNEL_DEPTH * CHUNK_SIZE`. Tune against
+// the negotiated flow-control window.
+const DATA_CHANNEL_DEPTH: usize = 4;
