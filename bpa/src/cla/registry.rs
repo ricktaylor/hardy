@@ -1,6 +1,10 @@
 use core::num::NonZeroU32;
+use futures::FutureExt;
 
+use futures::select_biased;
 use hardy_bpv7::eid::NodeId;
+
+use crate::cla::peers::PeerId;
 
 use super::*;
 
@@ -25,7 +29,7 @@ pub struct Cla {
     // Key: ClaAddress (primary key for a link-layer adjacency)
     // Value: (known EIDs for the peer, peer_id in PeerTable)
     // An empty EID vec means a Neighbour (EID not yet known; no RIB entry installed)
-    peers: hardy_async::sync::spin::Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
+    peers: hardy_async::sync::spin::Mutex<HashMap<ClaAddress, (Vec<NodeId>, PeerId)>>,
 }
 
 impl PartialEq for Cla {
@@ -381,7 +385,7 @@ impl ClaRegistry {
     }
 
     async fn add_peer(
-        &self,
+        self: &Arc<Self>,
         cla: Arc<Cla>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         cla_addr: ClaAddress,
@@ -392,7 +396,7 @@ impl ClaRegistry {
         // then claim the address — the adjacency's natural key — so a
         // duplicate exits before any peer state exists.
         let reservation = self.peers.reserve();
-        let peer_id = reservation.id();
+        let peer_id = reservation.id;
         let claimed = {
             let mut peers = cla.peers.lock();
             match peers.entry(cla_addr.clone()) {
@@ -443,11 +447,46 @@ impl ClaRegistry {
             metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
         }
 
+        if let Some(contact_end) = peer_link_info.contact_end {
+            let registry = self.clone();
+            let tasks = self.tasks.clone();
+            hardy_async::spawn!(tasks, "peer_contact_expiration", async move {
+                let expiration = contact_end - OffsetDateTime::now_utc();
+                select_biased! {
+                    _ = registry.tasks.cancel_token().cancelled().fuse() => {}
+                    _ = hardy_async::time::sleep(expiration).fuse() => {
+                        registry.remove_peer_if_current(cla, &cla_addr, Some(peer_id)).await;
+                    }
+                };
+            });
+        }
         true
     }
 
     async fn remove_peer(&self, cla: Arc<Cla>, cla_addr: &ClaAddress) -> bool {
-        let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
+        self.remove_peer_if_current(cla, cla_addr, None).await
+    }
+
+    async fn remove_peer_if_current(
+        &self,
+        cla: Arc<Cla>,
+        cla_addr: &ClaAddress,
+        expected_peer_id: Option<PeerId>,
+    ) -> bool {
+        let removed = {
+            let mut peers = cla.peers.lock();
+            let Some((_, current_peer_id)) = peers.get(cla_addr) else {
+                return false;
+            };
+
+            if expected_peer_id.is_some_and(|expected| expected != *current_peer_id) {
+                return false;
+            }
+
+            peers.remove(cla_addr)
+        };
+
+        let Some((node_ids, peer_id)) = removed else {
             return false;
         };
 
