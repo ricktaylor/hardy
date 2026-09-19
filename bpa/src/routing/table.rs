@@ -2,7 +2,7 @@ use core::cmp::Ordering;
 
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use tracing::trace;
 
 #[cfg(feature = "instrument")]
