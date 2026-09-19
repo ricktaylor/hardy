@@ -42,7 +42,10 @@ impl hardy_bpa::cla::Cla for Cla {
             if let Ok(addr) = peer_addr.parse::<std::net::SocketAddr>() {
                 if let Ok(node_id) = peer_node.parse::<NodeId>() {
                     let cla_addr = hardy_bpa::cla::ClaAddress::Tcp(addr);
-                    match sink.add_peer(cla_addr, &[node_id]).await {
+                    match sink
+                        .add_peer(cla_addr, &[node_id], Default::default())
+                        .await
+                    {
                         Ok(true) => info!("Registered peer {peer_node} at {peer_addr}"),
                         Ok(false) => warn!("Peer {peer_node} at {peer_addr} already registered"),
                         Err(e) => error!("Failed to register peer: {e:?}"),

@@ -2,6 +2,7 @@ use tracing::warn;
 
 use super::*;
 
+pub type PeerId = u32;
 // PeerTable uses hardy_async::sync::spin::RwLock because:
 // 1. All operations are O(1) HashMap lookups/inserts
 // 2. Read-heavy pattern (forward is called frequently)
@@ -15,6 +16,9 @@ pub struct Peer {
     // This peer's controller: owns the queue assignment (`queue_for`), so
     // the hot forwarding path touches no shared policy state.
     controller: Arc<dyn policy::FlowController>,
+    // Link characteristics retained for runtime forwarding constraints.
+    #[expect(dead_code)]
+    peer_link_info: PeerLinkInfo,
 }
 
 impl Peer {
@@ -27,19 +31,20 @@ impl Peer {
     pub async fn start(
         poll_channel_depth: usize,
         cla: Arc<registry::Cla>,
-        peer: u32,
+        peer_id: PeerId,
         cla_addr: ClaAddress,
         store: Arc<storage::store::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         tasks: &hardy_async::TaskPool,
+        peer_link_info: PeerLinkInfo,
     ) -> Arc<Self> {
         let controller = cla
             .policy
             .new_controller(egress_queue::new_queue_set(
                 cla.cla.clone(),
                 dispatcher,
-                peer,
-                cla_addr,
+                peer_id,
+                cla_addr.clone(),
                 cla.lane_count,
             ))
             .await;
@@ -52,12 +57,16 @@ impl Peer {
                 controller.clone(),
                 store.clone(),
                 tasks,
-                peer,
+                peer_id,
                 q,
             ));
         }
 
-        Arc::new(Self { queues, controller })
+        Arc::new(Self {
+            queues,
+            controller,
+            peer_link_info,
+        })
     }
 
     fn start_queue_poller(
@@ -119,14 +128,14 @@ impl Peer {
 
 #[derive(Default)]
 struct PeerTableInner {
-    peers: HashMap<u32, Arc<Peer>>,
+    peers: HashMap<PeerId, Arc<Peer>>,
     // Ids minted by `reserve` but not yet published. Cleared by the
     // `Reservation` — `publish` (the normal path) or its `Drop` (an
     // abandoned claim); `remove` never touches it, so a concurrent removal
     // cannot let `reserve` re-mint an id whose peer is still
     // mid-construction.
-    reserved: HashSet<u32>,
-    next: u32,
+    reserved: HashSet<PeerId>,
+    next: PeerId,
 }
 
 pub struct PeerTable {
@@ -194,16 +203,11 @@ impl PeerTable {
 #[must_use = "an unused reservation releases its id immediately"]
 pub struct Reservation<'a> {
     table: &'a PeerTable,
-    id: u32,
+    pub id: u32,
     published: bool,
 }
 
 impl Reservation<'_> {
-    /// The reserved peer id.
-    pub fn id(&self) -> u32 {
-        self.id
-    }
-
     /// Publish a fully-constructed peer under the reserved id — the only
     /// way a peer becomes reachable, and it is complete by construction.
     pub fn publish(mut self, peer: Arc<Peer>) {
@@ -245,7 +249,7 @@ mod tests {
         let table = PeerTable::new();
 
         let reservation = table.reserve();
-        let id = reservation.id();
+        let id = reservation.id;
         assert!(
             table.inner.read().reserved.contains(&id),
             "the id is withheld from reuse while the reservation lives"

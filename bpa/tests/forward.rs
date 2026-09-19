@@ -324,6 +324,7 @@ async fn streaming_cla_receives_single_final_segment() {
         .add_peer(
             cla::ClaAddress::Private("peer".as_bytes().into()),
             &[remote_node(2)],
+            Default::default(),
         )
         .await
         .unwrap();
@@ -378,6 +379,7 @@ async fn buffered_cla_receives_whole_bundle() {
         .add_peer(
             cla::ClaAddress::Private("peer".as_bytes().into()),
             &[remote_node(2)],
+            Default::default(),
         )
         .await
         .unwrap();
@@ -416,6 +418,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
         .add_peer(
             cla::ClaAddress::Private("peer-a".as_bytes().into()),
             &[remote_node(2)],
+            Default::default(),
         )
         .await
         .unwrap();
@@ -439,6 +442,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
             .add_peer(
                 cla::ClaAddress::Private(format!("peer-{i}").into_bytes().into()),
                 &[remote_node(2)],
+                Default::default(),
             )
             .await
             .unwrap();
@@ -479,6 +483,7 @@ async fn failed_streamed_forward_does_not_retry_inline() {
         .add_peer(
             cla::ClaAddress::Private("peer-a".as_bytes().into()),
             &[remote_node(2)],
+            Default::default(),
         )
         .await
         .unwrap();

@@ -25,6 +25,7 @@ impl hardy_bpa::cla::Cla for Cla {
                         path.as_bytes(),
                     )),
                     slice::from_ref(eid),
+                    Default::default(),
                 )
                 .await
             {

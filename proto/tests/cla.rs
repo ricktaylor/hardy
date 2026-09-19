@@ -5,15 +5,25 @@
 
 mod common;
 
-use common::MockBpa;
-use core::num::{NonZeroU32, NonZeroU64};
-use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::cla::{self, ClaAddress, ClaInit, ForwardBundleResult};
+use core::{
+    num::{NonZeroU32, NonZeroU64},
+    slice::from_ref,
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use hardy_bpa::{
+    async_trait,
+    bpa::BpaRegistration,
+    cla::{self, ClaAddress, ClaInit, ForwardBundleResult, PeerLinkInfo},
+};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use time::{OffsetDateTime, UtcOffset};
+
+use self::common::MockBpa;
 
 // A mock CLA that records lifecycle callbacks and forward requests.
 struct MockCla {
@@ -231,12 +241,34 @@ async fn cla_cli_04_add_peer() {
 
     let addr = ClaAddress::Tcp("192.168.1.1:4556".parse().unwrap());
     let peer_node: NodeId = "ipn:2.0".parse().unwrap();
-    let added = sink
-        .add_peer(addr, &[peer_node])
-        .await
-        .expect("add_peer should succeed");
-
-    assert!(added, "peer should be added");
+    let contact_end = OffsetDateTime::from_unix_timestamp(1_800_000_000)
+        .unwrap()
+        .replace_nanosecond(123_456_789)
+        .unwrap()
+        .to_offset(UtcOffset::from_hms(2, 0, 0).unwrap());
+    let infos = [
+        PeerLinkInfo::default(),
+        PeerLinkInfo {
+            bandwidth_bps: Some(1_000_000),
+            mtu: Some(65_536),
+            contact_end: Some(contact_end),
+        },
+    ];
+    for info in infos {
+        assert!(
+            sink.add_peer(addr.clone(), from_ref(&peer_node), info)
+                .await
+                .expect("add_peer should succeed")
+        );
+    }
+    let recorded = bpa.last_cla_sink.lock().as_ref().unwrap().peers();
+    assert_eq!(
+        recorded,
+        infos
+            .into_iter()
+            .map(|info| (addr.clone(), vec![peer_node.clone()], info))
+            .collect::<Vec<_>>()
+    );
 
     // Clean up
     sink.unregister().await;

@@ -96,7 +96,11 @@ impl ConnectionPool {
             .insert(node_id.clone())
             && !self
                 .sink
-                .add_peer(self.remote_addr.clone(), slice::from_ref(&node_id))
+                .add_peer(
+                    self.remote_addr.clone(),
+                    slice::from_ref(&node_id),
+                    Default::default(),
+                )
                 .await
                 .unwrap_or_else(|e| {
                     warn!("add_peer failed: {e:?}");
@@ -421,7 +425,7 @@ impl ConnectionRegistry {
 
 #[cfg(test)]
 mod tests {
-    use hardy_bpa::async_trait;
+    use hardy_bpa::{async_trait, cla::PeerLinkInfo};
 
     use super::*;
 
@@ -449,6 +453,7 @@ mod tests {
             &self,
             _cla_addr: hardy_bpa::cla::ClaAddress,
             _node_ids: &[NodeId],
+            _peer_link_info: PeerLinkInfo,
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }

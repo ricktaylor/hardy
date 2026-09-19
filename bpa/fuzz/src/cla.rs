@@ -84,6 +84,7 @@ impl hardy_bpa::cla::Cla for NullCla {
                 allocator_id: 0,
                 node_number: 2,
             })],
+            Default::default(),
         )
         .await
         .expect("add_peer failed");

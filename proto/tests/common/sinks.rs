@@ -1,13 +1,20 @@
 //! Mock sink implementations for testing.
 //!
 //! Each mock tracks `unregister()` calls via an `AtomicBool`.
-//! Other methods return success with no side effects.
+//! CLA peer registrations and transfer outcomes are recorded for assertions.
 #![allow(dead_code)]
 
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
 use hardy_async::async_trait;
-use hardy_bpa::{cla, routing, services};
+use hardy_bpa::{
+    cla::{self, PeerLinkInfo},
+    routing, services,
+};
 use hardy_bpv7::eid::NodeId;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── RoutingSink ───────────────────────────────────────────────────────
 
@@ -56,15 +63,21 @@ impl routing::RoutingSink for MockRoutingSink {
 
 pub struct MockClaSink {
     unregistered: AtomicBool,
-    outcomes: std::sync::Mutex<Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)>>,
+    peers: Mutex<Vec<(cla::ClaAddress, Vec<NodeId>, PeerLinkInfo)>>,
+    outcomes: Mutex<Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)>>,
 }
 
 impl MockClaSink {
     pub fn new() -> Self {
         Self {
             unregistered: AtomicBool::new(false),
-            outcomes: std::sync::Mutex::new(Vec::new()),
+            peers: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn peers(&self) -> Vec<(cla::ClaAddress, Vec<NodeId>, PeerLinkInfo)> {
+        self.peers.lock().unwrap().clone()
     }
 
     pub fn outcomes(&self) -> Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)> {
@@ -89,9 +102,14 @@ impl cla::Sink for MockClaSink {
 
     async fn add_peer(
         &self,
-        _cla_addr: cla::ClaAddress,
-        _node_ids: &[NodeId],
+        cla_addr: cla::ClaAddress,
+        node_ids: &[NodeId],
+        peer_link_info: PeerLinkInfo,
     ) -> cla::Result<bool> {
+        self.peers
+            .lock()
+            .unwrap()
+            .push((cla_addr, node_ids.to_vec(), peer_link_info));
         Ok(true)
     }
 

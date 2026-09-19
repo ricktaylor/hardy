@@ -387,6 +387,7 @@ mod tests {
                     allocator_id: 0,
                     node_number: 2,
                 })],
+                Default::default(),
             )
             .await
             .unwrap();
@@ -478,6 +479,7 @@ mod tests {
                     allocator_id: 0,
                     node_number: 2,
                 })],
+                Default::default(),
             )
             .await
             .unwrap();
