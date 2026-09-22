@@ -12,27 +12,36 @@ exclude = ["docs/"]
 description = "Bundle Processing Agent library implementing RFC 9171"
 
 [features]
-default = ["rfc9173", "tokio"]
+default = ["rfc9173", "tokio", "metrics"]
 rfc9173 = ["hardy-bpv7/rfc9173"]
 no-rfc9171-autoregister = []
 tokio = ["std", "hardy-async/tokio"]
-serde = ["dep:serde","dep:base64","hardy-bpv7/serde","hardy-eid-patterns/serde"]
-critical-section = ["hardy-bpv7/critical-section", "portable-atomic/critical-section"]
+serde = [
+  "dep:serde",
+  "dep:base64",
+  "hardy-bpv7/serde",
+  "hardy-eid-patterns/serde",
+]
+critical-section = [
+  "hardy-bpv7/critical-section",
+  "portable-atomic/critical-section",
+]
 std = [
-    "hardy-async/std",
-    "portable-atomic/std",
-    "time/std",
-    "hardy-bpv7/std",
-    "hardy-eid-patterns/std",
-    "tracing/std",
-    "rand/std",
-    "thiserror/std",
-    "futures/std",
-    "serde?/std",
-    "base64?/std",
-    "foldhash/std",
+  "hardy-async/std",
+  "portable-atomic/std",
+  "time/std",
+  "hardy-bpv7/std",
+  "hardy-eid-patterns/std",
+  "tracing/std",
+  "rand/std",
+  "thiserror/std",
+  "futures/std",
+  "serde?/std",
+  "base64?/std",
+  "foldhash/std",
 ]
 instrument = ["tracing/attributes"]
+metrics = ["metrics/metrics"]
 
 [lib]
 path = "src/lib.rs"
@@ -40,30 +49,53 @@ crate-type = ["rlib"]
 
 [dependencies]
 hardy-async = { version = "0.2", path = "../async", default-features = false }
+metrics = { package = "hardy-metrics", version = "0.1", path = "../metrics", default-features = false }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", default-features = false }
 hardy-cbor = { version = "2", path = "../cbor" }
-hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item"] }
-time = { version = "0.3", default-features = false, features = ["serde-human-readable"] }
+hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-features = false, features = [
+  "dtn-pat-item",
+] }
+time = { version = "0.3", default-features = false, features = [
+  "serde-human-readable",
+] }
 bytes = "1"
 tracing = { version = "0.1", default-features = false }
-metrics = "0.24"
 trace-err = "1"
-rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
+rand = { version = "0.10", default-features = false, features = [
+  "alloc",
+  "sys_rng",
+] }
 hashbrown = "0.17"
 foldhash = { version = "0.2", default-features = false }
 lru = { version = "0.18", default-features = false }
-portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
+portable-atomic = { version = "1", default-features = false, features = [
+  "fallback",
+] }
 thiserror = { version = "2", default-features = false }
 arc-swap = "1"
-futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
-serde = { version = "1", default-features = false, features = ["derive","rc","alloc"], optional = true }
-base64 = { version = "0.23", default-features = false, features = ["alloc"], optional = true }
+futures = { version = "0.3", default-features = false, features = [
+  "alloc",
+  "async-await",
+] }
+serde = { version = "1", default-features = false, features = [
+  "derive",
+  "rc",
+  "alloc",
+], optional = true }
+base64 = { version = "0.23", default-features = false, features = [
+  "alloc",
+], optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
 flume = "0.12"
 hex-literal = "1"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "time",
+] }
 hardy-bpa-fuzz = { path = "./fuzz" }
 hardy-cbor = { version = "2", path = "../cbor" }
 

@@ -1899,10 +1899,10 @@ dependencies = [
  "hardy-bpv7",
  "hardy-cbor",
  "hardy-eid-patterns",
+ "hardy-metrics",
  "hashbrown 0.17.1",
  "hex-literal",
  "lru",
- "metrics",
  "portable-atomic",
  "rand 0.10.2",
  "serde",
@@ -2141,11 +2141,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-metrics"
+version = "0.1.0"
+dependencies = [
+ "metrics",
+]
+
+[[package]]
 name = "hardy-otel"
 version = "0.2.0"
 dependencies = [
  "dashmap",
- "metrics",
+ "hardy-metrics",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
@@ -2238,7 +2245,7 @@ dependencies = [
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
- "metrics",
+ "hardy-metrics",
  "rand 0.10.2",
  "rcgen",
  "rustls",
@@ -2325,10 +2332,10 @@ dependencies = [
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-eid-patterns",
+ "hardy-metrics",
  "hardy-otel",
  "hardy-proto",
  "humantime",
- "metrics",
  "prost",
  "prost-types",
  "serde",

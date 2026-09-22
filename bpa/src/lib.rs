@@ -13,16 +13,9 @@ This crate is `no_std` compatible with a heap allocator. Feature flags control f
 - **`rfc9173`**: Enables RFC 9173 security contexts via hardy-bpv7.
 - **`serde`**: Enables serialization support for metadata.
 - **`instrument`**: Enables span instrumentation.
+- **`metrics`**: Enables metrics recording through the `hardy-metrics` facade.
 - **`critical-section`**: Forwards to hardy-bpv7. Required on targets
   without native 64-bit atomics (e.g. thumbv6m / Cortex-M0).
-
-## Current Limitations
-
-Full `no_std` support is blocked by:
-- `metrics` (observability) - std-only
-
-This is planned for future work via a `hardy-metrics` facade crate
-that provides no-op shims under `no_std`.
 
 ## Embedded Targets
 

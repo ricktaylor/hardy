@@ -1,0 +1,13 @@
+[package]
+name = "hardy-metrics"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+metrics = ["dep:metrics"]
+
+[dependencies]
+metrics = { version = "0.24.6", optional = true }
