@@ -163,7 +163,12 @@ impl hardy_bpa::services::Service for EchoService {
         // Do nothing
     }
 
-    /// Called when a bundle is delivered
+    /// Receives the delivered bundle to completion and reflects it.
+    /// A failed response send is transient and propagates, so the
+    /// request bundle is parked as `WaitingForService` and re-delivered
+    /// to the endpoint's next registration rather than the reply being
+    /// lost. A permanent failure (an unparseable request, or one the
+    /// spec says not to answer) completes the delivery instead.
     // INTERIM BUFFERING: the echo service parses the whole request bundle
     // with a whole-buffer codec, so it assembles the stream in memory via
     // `stream::buffer_stream` before reflecting the payload. This is a
@@ -173,10 +178,10 @@ impl hardy_bpa::services::Service for EchoService {
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
-        total_len: u64,
+        bundle_size: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        let data = buffer_stream(stream, total_len).await?;
+        let data = buffer_stream(stream, bundle_size).await?;
         self.echo(data).await.map_err(Into::into)
     }
 }

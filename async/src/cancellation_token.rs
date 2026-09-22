@@ -44,3 +44,11 @@
 /// - `is_cancelled()` - Check if cancellation has been requested
 #[cfg(feature = "tokio")]
 pub type CancellationToken = tokio_util::sync::CancellationToken;
+
+/// A guard that cancels its [`CancellationToken`] when dropped.
+///
+/// Returned by `CancellationToken::drop_guard()`. Hold one wherever the
+/// end of a scope, or the drop of the struct owning it, is the
+/// cancellation signal.
+#[cfg(feature = "tokio")]
+pub type DropGuard = tokio_util::sync::DropGuard;

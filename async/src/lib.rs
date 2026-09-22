@@ -56,7 +56,7 @@ pub mod watcher;
 pub use async_trait::async_trait;
 
 pub use self::bounded_task_pool::BoundedTaskPool;
-pub use self::cancellation_token::CancellationToken;
+pub use self::cancellation_token::{CancellationToken, DropGuard};
 pub use self::join_handle::JoinHandle;
 pub use self::notify::Notify;
 pub use self::task_pool::TaskPool;

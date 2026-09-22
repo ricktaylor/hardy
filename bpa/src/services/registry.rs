@@ -3,7 +3,7 @@ use hardy_bpv7::eid::Eid;
 use portable_atomic::{AtomicU32, Ordering};
 use tracing::{error, info};
 
-use crate::{Arc, Bytes, HashMap, Weak, bundle, dispatcher, node_ids, routing, services, storage};
+use crate::{Arc, HashMap, Weak, bundle, dispatcher, node_ids, routing, services, storage};
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -150,6 +150,26 @@ impl Sink {
             error!("Failed to unregister service: {e}");
         }
     }
+
+    /// Wraps a send stream in the registration's cancel token: a service
+    /// that unregisters mid-send must not originate its bundle, and the
+    /// token races every pull, so teardown wakes the stream immediately —
+    /// even parked behind a stalled producer — and the send surfaces as
+    /// cancelled. Sink-side, so the dispatcher's stream consumers stay
+    /// registration-agnostic.
+    fn cancellable<'a>(
+        &self,
+        stream: &'a mut dyn crate::stream::Receiver<crate::stream::Segment>,
+    ) -> services::Result<crate::stream::CancellableReceiver<'a, crate::stream::Segment>> {
+        let service = self
+            .service
+            .upgrade()
+            .ok_or(services::Error::Disconnected)?;
+        Ok(crate::stream::CancellableReceiver {
+            inner: stream,
+            token: service.cancel.clone(),
+        })
+    }
 }
 
 #[async_trait]
@@ -162,20 +182,7 @@ impl services::ServiceSink for Sink {
         &self,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
-        let service = self
-            .service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
-        // A service that unregisters mid-send must not originate its bundle:
-        // the registration's token races every pull, so teardown wakes this
-        // stream immediately — even parked behind a stalled producer — and
-        // the send surfaces as cancelled. Sink-side, so the dispatcher's
-        // stream consumers stay registration-agnostic.
-        let mut stream = crate::stream::CancellableReceiver {
-            inner: stream,
-            token: service.cancel.clone(),
-        };
+        let mut stream = self.cancellable(stream)?;
         self.dispatcher
             .local_dispatch_raw_streamed(&self.eid, &mut stream)
             .await
@@ -191,16 +198,21 @@ impl services::ApplicationSink for Sink {
     async fn send(
         &self,
         destination: Eid,
-        data: Bytes,
         lifetime: core::time::Duration,
         options: Option<services::SendOptions>,
+        size_hint: Option<u64>,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
+        let mut stream = self.cancellable(stream)?;
         self.dispatcher
-            .local_dispatch(self.eid.clone(), destination, data, lifetime, options)
+            .local_dispatch(
+                self.eid.clone(),
+                destination,
+                lifetime,
+                options,
+                size_hint,
+                &mut stream,
+            )
             .await
     }
 }
