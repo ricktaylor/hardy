@@ -1890,10 +1890,10 @@ dependencies = [
  "hardy-bpv7",
  "hardy-cbor",
  "hardy-eid-patterns",
+ "hardy-metrics",
  "hashbrown 0.17.1",
  "hex-literal",
  "lru 0.19.0",
- "metrics",
  "portable-atomic",
  "rand 0.10.3",
  "serde",
@@ -2144,6 +2144,13 @@ dependencies = [
  "tokio",
  "trace-err",
  "tracing",
+]
+
+[[package]]
+name = "hardy-metrics"
+version = "0.1.0"
+dependencies = [
+ "metrics",
 ]
 
 [[package]]

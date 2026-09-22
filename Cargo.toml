@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = [
-    "tests/interop/mtcp",
-]
+exclude = ["tests/interop/mtcp"]
 members = [
     "async",
     "bibe",
@@ -22,6 +20,7 @@ members = [
     "eid-patterns/fuzz",
     "file-cla",
     "localdisk-storage",
+    "metrics",
     "otel",
     "s3-storage",
     "proto",
