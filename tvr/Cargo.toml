@@ -35,7 +35,7 @@ time = { version = "0.3", features = ["parsing"] }
 chumsky = "0.13"
 humantime = "2"
 flume = "0.12"
-metrics = "0.24"
+metrics = { package = "hardy-metrics", version = "0.1", path = "../metrics", default-features = false }
 tonic = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"
