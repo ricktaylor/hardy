@@ -29,7 +29,7 @@ tracing = { version = "0.1", default-features = false }
 tokio = { version = "1", features = ["macros", "time", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tower = { version = "0.5", features = ["util", "limit"] }
-metrics = "0.24"
+metrics = { package = "hardy-metrics", version = "0.1", path = "../metrics", default-features = false }
 trace-err = "1"
 thiserror = "2"
 futures = "0.3"
@@ -38,6 +38,11 @@ rustls = "0.23"
 tokio-rustls = "0.26"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = [
+  "macros",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
 rcgen = "0.14"
 tempfile = "3"
