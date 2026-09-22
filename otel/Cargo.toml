@@ -24,7 +24,9 @@ opentelemetry-appender-tracing = "0.32"
 opentelemetry-semantic-conventions = { version = "0.32", features = ["semconv_experimental"] }
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-metrics = "0.24"
+metrics = { package = "hardy-metrics", version = "0.1", path = "../metrics", default-features = false, features = [
+  "metrics",
+] }
 dashmap = "6"
 
 [dev-dependencies]

@@ -12,7 +12,7 @@ exclude = ["docs/"]
 description = "Bundle Processing Agent library implementing RFC 9171"
 
 [features]
-default = ["rfc9173", "tokio"]
+default = ["rfc9173", "tokio", "metrics"]
 rfc9173 = ["hardy-bpv7/rfc9173"]
 no-rfc9171-autoregister = []
 tokio = ["std", "hardy-async/tokio"]
@@ -41,6 +41,7 @@ std = [
   "foldhash/std",
 ]
 instrument = ["tracing/attributes"]
+metrics = ["metrics/metrics"]
 
 [lib]
 path = "src/lib.rs"

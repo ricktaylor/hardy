@@ -10,7 +10,8 @@ publish = false
 
 [features]
 default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]
-otel = ["dep:hardy-otel"]
+metrics = ["hardy-bpa/metrics", "hardy-tcpclv4?/metrics"]
+otel = ["dep:hardy-otel", "metrics"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 postgres-storage = ["dep:hardy-postgres-storage", "dep:humantime"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
