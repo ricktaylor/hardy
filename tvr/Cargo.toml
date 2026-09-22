@@ -14,7 +14,8 @@ path = "src/main.rs"
 
 [features]
 default = []
-otel = ["dep:hardy-otel"]
+metrics = ["metrics/metrics", "hardy-bpa/metrics"]
+otel = ["dep:hardy-otel", "metrics"]
 instrument = ["hardy-async/instrument"]
 
 [dependencies]
