@@ -1899,10 +1899,10 @@ dependencies = [
  "hardy-bpv7",
  "hardy-cbor",
  "hardy-eid-patterns",
+ "hardy-metrics",
  "hashbrown 0.17.1",
  "hex-literal",
  "lru",
- "metrics",
  "portable-atomic",
  "rand 0.10.2",
  "serde",
@@ -2138,6 +2138,13 @@ dependencies = [
  "trace-err",
  "tracing",
  "winapi",
+]
+
+[[package]]
+name = "hardy-metrics"
+version = "0.1.0"
+dependencies = [
+ "metrics",
 ]
 
 [[package]]
