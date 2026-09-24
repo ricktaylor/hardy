@@ -41,6 +41,8 @@ jobs:
           mode: "code-change"
           sanitizer: ${{ matrix.sanitizer }}
           output-sarif: false
-          # PR runs start from the corpus accumulated by batch fuzzing.
-          storage-repo: https://${{ secrets.FUZZ_CORPUS_ACCESS_TOKEN }}@github.com/ricktaylor/hardy-fuzz-corpus.git
+          # PR runs start from the corpus accumulated by batch fuzzing. The
+          # corpus repo is public and code-change mode only reads it, so no
+          # token: PR-built code never sees a credential that can write it.
+          storage-repo: https://github.com/ricktaylor/hardy-fuzz-corpus.git
           storage-repo-branch: main

@@ -34,7 +34,7 @@ cargo +nightly fuzz run --fuzz-dir bpv7/fuzz random_bundles
 
 Corpus lives in a sibling repo, [`ricktaylor/hardy-fuzz-corpus`](https://github.com/ricktaylor/hardy-fuzz-corpus). CFLite's git filestore reads/writes each fuzzer's corpus under `corpus/<fuzz_target>/`, and publishes coverage reports to the `gh-pages` branch — both wired up in `cflite-pr.yml` (PR runs start from the accumulated corpus) and `cflite-cron.yml` (batch grows it, prune minimises it, coverage reports on it).
 
-**One secret is required:** add a `FUZZ_CORPUS_ACCESS_TOKEN` repo secret to the hardy repo, holding a token with `contents: write` on `hardy-fuzz-corpus`. Without it the storage-repo URL won't authenticate and the runs can't push.
+**One secret is required:** add a `FUZZ_CORPUS_ACCESS_TOKEN` repo secret to the hardy repo, holding a token with `contents: write` on `hardy-fuzz-corpus`. Only `cflite-cron.yml` uses it, since only batch, prune and coverage push. Without it the storage-repo URL won't authenticate and the runs can't push. The cron job runs only in `ricktaylor/hardy`, so forks, which never have the secret, skip it. `cflite-pr.yml` reads the public corpus repo without a token, so PRs from forks get the same corpus as PRs from branches.
 
 The repo was seeded once from local fuzzing (the `corpus/<target>/` directories); CFLite's `prune` mode minimises it from there. To re-seed or top up later, copy any `*/fuzz/corpus/<target>/` into `corpus/<target>/` of the corpus repo and push.
 

@@ -12,6 +12,9 @@ env:
 
 jobs:
   Fuzz:
+    # Forks have no FUZZ_CORPUS_ACCESS_TOKEN and must not push to the corpus
+    # repo, so scheduled and manual runs there are skipped rather than failed.
+    if: github.repository == 'ricktaylor/hardy'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
