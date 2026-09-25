@@ -294,7 +294,7 @@ Implementing crate: `s3-storage` — [coverage report](../s3-storage/docs/test_c
 | **9.1.3** | Configurable discard mechanism at S3 capacity | Not implemented |
 | **9.1.4** | Use common S3 APIs (not implementor-specific) | Done |
 
-Note: LLR 9.1.1 is verified by the storage-harness setup — every run supplies the endpoint and access credentials via configuration, and CI runs the suite against MinIO. LLR 9.1.2/9.1.3 enforcement is in the BPA layer. LLR 9.1.4 is verified by design (uses `aws-sdk-s3`).
+Note: LLR 9.1.1 is verified by the storage-harness setup — every run supplies the endpoint and access credentials via configuration, and CI runs the suite against RustFS. LLR 9.1.2/9.1.3 enforcement is in the BPA layer. LLR 9.1.4 is verified by design (uses `aws-sdk-s3`).
 
 ### OpenTelemetry (19.1)
 
