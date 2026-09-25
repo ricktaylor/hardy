@@ -856,6 +856,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "bytes-utils"
@@ -2024,6 +2027,31 @@ dependencies = [
  "humantime",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "hardy-btpu"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "futures-core",
+ "portable-atomic",
+ "rand 0.10.2",
+ "rand_core 0.10.1",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tower",
+]
+
+[[package]]
+name = "hardy-btpu-fuzz"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "hardy-btpu",
+ "libfuzzer-sys",
 ]
 
 [[package]]
