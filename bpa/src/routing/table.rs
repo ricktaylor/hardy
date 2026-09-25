@@ -2,6 +2,7 @@ use core::cmp::Ordering;
 
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
+use smallvec::{SmallVec, smallvec};
 use tracing::trace;
 
 #[cfg(feature = "instrument")]
@@ -194,7 +195,7 @@ impl RouteTable {
     ) -> Option<LookupResult<'a>> {
         trace!("Looking for route for {to}");
 
-        let mut peers: Vec<(u32, &'a Eid)> = Vec::new();
+        let mut peers: SmallVec<[(u32, &'a Eid); 4]> = smallvec![];
         for entries in self.routes.values() {
             for (pattern, actions) in entries {
                 if pattern.matches(to) {
@@ -255,7 +256,7 @@ impl RouteTable {
                             let (peer, next_hop) = peers.remove(0);
                             return Some(LookupResult::Forward(peer, next_hop));
                         }
-                        _ => return Some(LookupResult::ForwardEcmp(peers)),
+                        _ => return Some(LookupResult::ForwardEcmp(peers.into_vec())),
                     }
                 }
             }
@@ -289,7 +290,7 @@ impl RouteTable {
     }
 }
 
-fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
+fn sorted_insert<'a>(peers: &mut SmallVec<[(u32, &'a Eid); 4]>, peer: u32, next_hop: &'a Eid) {
     if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
         peers.insert(idx, (peer, next_hop));
     }
