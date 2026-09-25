@@ -22,7 +22,7 @@ The simplest deployment runs everything in a single container. This is
 suitable for development, testing, and small single-node deployments.
 
 The repository includes a ready-to-use Compose file with persistent
-storage (PostgreSQL for metadata, MinIO for bundles):
+storage (PostgreSQL for metadata, RustFS for bundles):
 
 ```bash
 docker compose up -d
@@ -31,7 +31,7 @@ docker compose up -d
 This starts:
 
 - **PostgreSQL 17** -- metadata storage with a named volume
-- **MinIO** -- S3-compatible bundle storage with a named volume
+- **RustFS** -- S3-compatible bundle storage with a named volume
 - **Hardy BPA** -- configured via [`bpa-server/config.yaml`](https://github.com/ricktaylor/hardy/blob/main/bpa-server/config.yaml)
 
 For a lightweight setup with in-memory storage (no external dependencies):
@@ -104,7 +104,7 @@ The default deployment runs the BPA with an embedded TCPCLv4 CLA:
 graph LR
     PEERS["DTN peers"] <-->|:4556| BPA["bpa-server<br/>(embedded TCPCLv4)"]
     BPA --- DB["PostgreSQL"]
-    BPA --- S3["MinIO (S3)"]
+    BPA --- S3["RustFS (S3)"]
     BPA --- OTEL["OTEL Collector"]
 ```
 
