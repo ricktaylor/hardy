@@ -93,6 +93,9 @@ impl<'a> ExtensionEditor<'a> {
         crc_type: CrcType,
         data: Box<[u8]>,
     ) -> Result<u64> {
+        // Canonicalized so an `Unrecognised` alias of a reserved code is
+        // refused here as the reserved type it encodes, not further down.
+        let block_type = block_type.canonicalize();
         if matches!(
             block_type,
             Type::Primary | Type::Payload | Type::BlockIntegrity | Type::BlockSecurity

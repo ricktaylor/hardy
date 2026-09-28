@@ -707,21 +707,30 @@ fn make_signed_extension() -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
 fn extension_editor_refuses_reserved_insert_types() {
     let (bundle, data) = make_bundle();
     let mut editor = ExtensionEditor::new(&bundle, &data);
-    for reserved in [
-        block::Type::Primary,
-        block::Type::Payload,
-        block::Type::BlockIntegrity,
-        block::Type::BlockSecurity,
+    // Each reserved type, named and as the `Unrecognised` alias of its wire
+    // code: the alias is refused as the reserved type it encodes.
+    for (requested, reserved) in [
+        (block::Type::Primary, block::Type::Primary),
+        (block::Type::Payload, block::Type::Payload),
+        (block::Type::BlockIntegrity, block::Type::BlockIntegrity),
+        (block::Type::BlockSecurity, block::Type::BlockSecurity),
+        (block::Type::Unrecognised(0), block::Type::Primary),
+        (block::Type::Unrecognised(1), block::Type::Payload),
+        (block::Type::Unrecognised(11), block::Type::BlockIntegrity),
+        (block::Type::Unrecognised(12), block::Type::BlockSecurity),
     ] {
-        assert!(matches!(
-            editor.insert(
-                reserved,
-                block::Flags::default(),
-                crc::CrcType::None,
-                b"x".as_slice().into(),
+        assert!(
+            matches!(
+                editor.insert(
+                    requested,
+                    block::Flags::default(),
+                    crc::CrcType::None,
+                    b"x".as_slice().into(),
+                ),
+                Err(extension_editor::Error::ReservedType(t)) if t == reserved
             ),
-            Err(extension_editor::Error::ReservedType(t)) if t == reserved
-        ));
+            "{requested:?} must be refused as ReservedType({reserved:?})"
+        );
     }
     assert!(!editor.is_modified(), "refusals must not count as edits");
 }
