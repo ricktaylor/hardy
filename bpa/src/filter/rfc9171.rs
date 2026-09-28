@@ -28,7 +28,8 @@ const DEFAULT_BUNDLE_AGE_REQUIRED: bool = true;
 ///
 /// This filter is auto-registered at the Ingress hook unless the
 /// `no-rfc9171-autoregister` feature is enabled; the auto-registered
-/// instance enables all checks.
+/// instance takes its checks from the builder's `primary_block_integrity`
+/// and `bundle_age_required` flags (strict by default).
 ///
 /// To customize the checks, chain the setter for each check to override:
 ///

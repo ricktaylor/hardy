@@ -141,9 +141,12 @@ async fn cla_cli_02_dispatch_bundle() {
     let sink = cla.take_sink().expect("CLA should have a sink");
 
     let mut bundle_data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00\x82\x01\x00");
-    sink.dispatch(None, None, &mut bundle_data)
-        .await
-        .expect("dispatch should succeed");
+    assert_eq!(
+        sink.dispatch(None, None, &mut bundle_data)
+            .await
+            .expect("dispatch should succeed"),
+        hardy_bpa::cla::Acceptance::Accepted
+    );
 
     // Clean up
     sink.unregister().await;

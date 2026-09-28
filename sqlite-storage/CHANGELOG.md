@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - Migration `02_poll_pending_index`: the covering index `idx_bundles_status_received (status_code, status_param1, status_param2, received_at, status_param3)` serves the `poll_pending` page query in index order — previously every drain page top-K-sorted the entire matching backlog through a temp B-tree, an O(B²) drain under sustained overload, on the node-wide dispatch queue and every per-service delivery queue. The superseded `idx_bundles_status` and `idx_bundles_status_peer` (both strict prefixes of the new index) are dropped, and a plan pin test asserts the poll shape never sorts out of index.
+- Migration `03_forward_pending_repark`: a `forward_pending` row now persists its resolved adjacency in `status_param3` (matched back per row by the queue poll, not filtered on). A row without one predates the change and has no recoverable queue assignment, so the migration re-parks it to `waiting` — letting it surface adjacency-less would drop it as garbage and destroy the bundle at the restart sweep; the next dispatch pass re-routes it instead.
 - `forward_ack_pending` status encoding (code 6), the `reset_peer_ack_pending` sweep, and the status-conditioned `swap_status`/`tombstone_if`, for the deferred CLA transfer-outcome extension.
 - `dispatch_pending` (code 7), `deliver_pending` (code 8), and `delivery_ack_pending` (code 9) status encodings and the `reset_service_queue` sweep, for the BPA's dispatch/delivery queue rationalisation.
 

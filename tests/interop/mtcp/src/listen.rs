@@ -62,12 +62,17 @@ async fn receive_loop<S>(
             result = framed.next() => match result {
                 Some(Ok(mut bundle)) => {
                     debug!(%remote_addr, len = bundle.len(), "Received bundle");
-                    if let Err(e) = sink
-                        .dispatch(None, peer_addr.as_ref(), &mut bundle)
-                        .await
-                    {
-                        warn!(%remote_addr, "Dispatch failed: {e:?}");
-                        return;
+                    // MTCP has no transfer acknowledgements, so a refusal has
+                    // nothing to withhold: log it and carry on.
+                    match sink.dispatch(None, peer_addr.as_ref(), &mut bundle).await {
+                        Ok(hardy_bpa::cla::Acceptance::Accepted) => {}
+                        Ok(hardy_bpa::cla::Acceptance::Refused) => {
+                            warn!(%remote_addr, "Bundle refused by the BPA");
+                        }
+                        Err(e) => {
+                            warn!(%remote_addr, "Dispatch failed: {e:?}");
+                            return;
+                        }
                     }
                 }
                 Some(Err(e)) => {

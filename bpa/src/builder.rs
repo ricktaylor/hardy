@@ -1,10 +1,12 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
+use hardy_eid_patterns::EidPattern;
+
 use crate::{
     Arc,
     bpa::Bpa,
     cla::{Cla, ClaInit, registry::ClaRegistryBuilder},
-    dispatcher::Dispatcher,
+    dispatcher::{self, Dispatcher},
     filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
     keys::KeyProvider,
     node_ids::NodeIds,
@@ -34,6 +36,9 @@ pub struct BpaBuilder {
     lru_capacity: Option<NonZeroUsize>,
     max_cached_bundle_size: Option<NonZeroUsize>,
     max_bundle_size: Option<NonZeroU64>,
+    primary_block_integrity: bool,
+    bundle_age_required: bool,
+    ipn_legacy_peers: Vec<EidPattern>,
     cache_disabled: bool,
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
@@ -69,21 +74,6 @@ impl BpaBuilder {
             )
             .expect("Failed to register bundle validity filter");
 
-        // Auto-register RFC9171 validity filter unless disabled
-        #[cfg(not(feature = "no-rfc9171-autoregister"))]
-        {
-            use crate::filter::rfc9171::Rfc9171ValidityFilter;
-
-            filter_engine
-                .register(
-                    Hook::Ingress,
-                    "rfc9171-validity",
-                    &[],
-                    Filter::Read(Arc::new(Rfc9171ValidityFilter::default())),
-                )
-                .expect("Failed to register RFC9171 validity filter");
-        }
-
         let poll_channel_depth = NonZeroUsize::new(16).unwrap();
         let processing_pool_size =
             NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
@@ -97,6 +87,9 @@ impl BpaBuilder {
             lru_capacity: None,
             max_cached_bundle_size: None,
             max_bundle_size: None,
+            primary_block_integrity: true,
+            bundle_age_required: true,
+            ipn_legacy_peers: Vec::new(),
             cache_disabled: false,
             node_ids: NodeIds::default(),
             metadata_storage: None,
@@ -140,18 +133,42 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets the maximum size of a single reassembled bundle at ingress.
+    /// Sets the maximum accepted bundle size, in bytes (private 64 MiB
+    /// default).
     ///
     /// Streamed dispatch and streamed service origination accumulate
     /// segments until the bundle is complete; this bound stops a runaway or
-    /// hostile producer growing BPA memory without limit. Streams exceeding
-    /// it are rejected with an error to the producer. Defaults privately at
-    /// the point of use. A cap beyond the target's addressable bound
-    /// (`isize::MAX`, relevant on 32-bit targets) is clamped to it — the
-    /// clamped value is both enforced and advertised to CLAs at
-    /// registration.
+    /// hostile producer growing BPA memory without limit. An over-cap CLA
+    /// transfer is answered [`Acceptance::Refused`](crate::cla::Acceptance)
+    /// (the CLA withholds its acknowledgement); an over-cap origination
+    /// fails with a size error to the producer. A cap beyond the target's
+    /// addressable bound (`isize::MAX`, relevant on 32-bit targets) is
+    /// clamped to it — the clamped value is both enforced and advertised to
+    /// CLAs at registration.
     pub fn max_bundle_size(mut self, v: NonZeroU64) -> Self {
         self.max_bundle_size = Some(v);
+        self
+    }
+
+    /// Sets whether ingress requires primary-block integrity protection
+    /// (RFC 9171 §4.3.1). Strict by default.
+    pub fn primary_block_integrity(mut self, enabled: bool) -> Self {
+        self.primary_block_integrity = enabled;
+        self
+    }
+
+    /// Sets whether ingress requires a Bundle Age block on bundles from
+    /// clockless sources (RFC 9171 §4.4.2). Strict by default.
+    pub fn bundle_age_required(mut self, enabled: bool) -> Self {
+        self.bundle_age_required = enabled;
+        self
+    }
+
+    /// Declares peers whose next hop requires legacy 2-element IPN EID
+    /// encoding in the per-hop rewrite stage. Empty by default (the rewrite
+    /// stage is inert).
+    pub fn ipn_legacy_peers(mut self, peers: Vec<EidPattern>) -> Self {
+        self.ipn_legacy_peers = peers;
         self
     }
 
@@ -242,6 +259,25 @@ impl BpaBuilder {
 
     /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
+        // Auto-register the RFC 9171 validity filter unless disabled: built
+        // here, from the final flag values, so this seat and the dispatcher's
+        // pre-drain gate enforce the same policy.
+        #[cfg(not(feature = "no-rfc9171-autoregister"))]
+        {
+            use crate::filter::rfc9171::Rfc9171ValidityFilter;
+
+            self.filter_engine.register(
+                Hook::Ingress,
+                "rfc9171-validity",
+                &[],
+                Filter::Read(Arc::new(
+                    Rfc9171ValidityFilter::new()
+                        .primary_block_integrity(self.primary_block_integrity)
+                        .bundle_age_required(self.bundle_age_required),
+                )),
+            )?;
+        }
+
         let metadata_storage = self
             .metadata_storage
             .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(None)));
@@ -270,10 +306,15 @@ impl BpaBuilder {
         let filter_engine = self.filter_engine;
 
         let (dispatcher, start_dispatcher) = Dispatcher::new(
-            self.status_reports,
-            self.poll_channel_depth,
-            self.processing_pool_size,
-            self.max_bundle_size,
+            dispatcher::Config {
+                status_reports: self.status_reports,
+                poll_channel_depth: self.poll_channel_depth,
+                processing_pool_size: self.processing_pool_size,
+                max_bundle_size: self.max_bundle_size,
+                primary_block_integrity: self.primary_block_integrity,
+                bundle_age_required: self.bundle_age_required,
+                ipn_legacy_peers: self.ipn_legacy_peers,
+            },
             node_ids.clone(),
             store.clone(),
             rib.clone(),

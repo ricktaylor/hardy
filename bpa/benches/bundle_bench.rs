@@ -179,14 +179,17 @@ fn throughput_benchmark(c: &mut Criterion) {
                 .unwrap();
 
             rt.block_on(async {
-                state
-                    .cla
-                    .sink
-                    .get()
-                    .unwrap()
-                    .dispatch(None, None, &mut Bytes::from(data))
-                    .await
-                    .unwrap();
+                assert_eq!(
+                    state
+                        .cla
+                        .sink
+                        .get()
+                        .unwrap()
+                        .dispatch(None, None, &mut Bytes::from(data))
+                        .await
+                        .unwrap(),
+                    cla::Acceptance::Accepted
+                );
                 state.arrival_rx.recv_async().await.unwrap();
             });
         })
