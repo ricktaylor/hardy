@@ -847,14 +847,13 @@ fn extension_editor_refuses_bcb_covered_targets() {
 }
 
 #[test]
-fn extension_editor_refuses_unprovable_coverage() {
+fn extension_editor_refuses_hidden_targets_not_bystanders() {
     // Encrypting a signed block also encrypts its covering BIB (and, per
     // the RFC 9172 cascade, the BIB's other targets). The parser then
-    // cannot read the encrypted BIB's target list, so it conservatively
-    // sweeps every non-security block it cannot prove uncovered to
-    // BibCoverage::Maybe — the actual hidden targets (which the cascade
-    // also gave a BCB) and innocent bystanders (which have none) alike.
-    // Both shapes are conformant wire, and both must refuse.
+    // cannot read the encrypted BIB's target list, so it sweeps the
+    // BCB-covered blocks — the only ones a conformant encrypted BIB can
+    // target — to BibCoverage::Maybe, and those refuse. A bystander no BCB
+    // covers cannot be a hidden target: it stays uncovered and editable.
     let (bundle, data, ext) = make_bundle_with_extension();
 
     // The bystander: a second extension block nobody signs or encrypts.
@@ -925,12 +924,11 @@ fn extension_editor_refuses_unprovable_coverage() {
         matches!(ext_block.bib, block::BibCoverage::Maybe) && ext_block.bcb.is_some(),
         "the encrypted BIB's real target is swept to Maybe and BCB-covered"
     );
-    // The bystander: Maybe with no BCB at all — unprovable coverage on an
-    // otherwise untouched extension block.
+    // The bystander: no BCB, so no conformant encrypted BIB can target it.
     let bystander_block = encrypted.blocks.get(&bystander).unwrap();
     assert!(
-        matches!(bystander_block.bib, block::BibCoverage::Maybe) && bystander_block.bcb.is_none(),
-        "the sweep must mark the bystander Maybe without any BCB"
+        matches!(bystander_block.bib, block::BibCoverage::None) && bystander_block.bcb.is_none(),
+        "the sweep must leave a block no BCB covers uncovered"
     );
 
     let mut editor = ExtensionEditor::new(&encrypted, &encrypted_bytes);
@@ -938,14 +936,27 @@ fn extension_editor_refuses_unprovable_coverage() {
         editor.replace(ext, b"x".as_slice().into()),
         Err(extension_editor::Error::Covered(n)) if n == ext
     ));
-    assert!(matches!(
-        editor.replace(bystander, b"x".as_slice().into()),
-        Err(extension_editor::Error::Covered(n)) if n == bystander
-    ));
-    assert!(matches!(
-        editor.remove(bystander),
-        Err(extension_editor::Error::Covered(n)) if n == bystander
-    ));
+    editor
+        .replace(bystander, b"x".as_slice().into())
+        .expect("a bystander is editable");
+    let (_, chunks) = editor.finish().expect("materialise").expect("edited");
+    let new_data = Chunk::flatten(chunks, &encrypted_bytes);
+    let reparsed = reparse(&new_data);
+    assert_eq!(
+        reparsed
+            .blocks
+            .get(&bystander)
+            .unwrap()
+            .payload(&new_data)
+            .expect("resident"),
+        b"x"
+    );
+    // The hidden target keeps its protection through the bystander edit.
+    let ext_after = reparsed.blocks.get(&ext).unwrap();
+    assert!(
+        matches!(ext_after.bib, block::BibCoverage::Maybe) && ext_after.bcb.is_some(),
+        "the encrypted BIB's real target is still BCB-covered and Maybe"
+    );
 }
 
 #[test]
@@ -1135,9 +1146,10 @@ fn insert_block_replace_refuses_an_encrypted_bib() {
     let encrypted = reparse(&encrypted_bytes);
 
     // A structural (keyless) parse cannot prove what the encrypted BIB
-    // covers, so the hop count reads as Maybe — and the replace refuses on
-    // unprovable coverage, exactly as update_block does. (BibIsEncrypted is
-    // the verify-stamped shape, where coverage is known to be Some.)
+    // covers, and the hop count is BCB-covered, so it may be a hidden
+    // target: it reads as Maybe, and the replace refuses on unprovable
+    // coverage, exactly as update_block does. (BibIsEncrypted is the
+    // verify-stamped shape, where coverage is known to be Some.)
     let result = Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount);
     assert!(
         matches!(
@@ -1154,9 +1166,11 @@ fn insert_block_replace_refuses_an_encrypted_bib() {
 }
 
 #[test]
-fn insert_block_replace_refuses_unprovable_coverage() {
-    // The bystander shape: the hop count is swept to BibCoverage::Maybe by
-    // someone else's encrypted BIB, without being a target itself.
+fn insert_block_replace_proceeds_on_a_bystander() {
+    // The forwarder's shape: the payload is signed then encrypted (so its
+    // BIB is encrypted too), and the relay must rewrite a hop count no BCB
+    // covers. A conformant encrypted BIB cannot target it, so the replace
+    // goes ahead and leaves every BPSec block exactly as it found it.
     let (bundle, data) = make_bundle_with_hop_count();
     let hop = bundle
         .blocks
@@ -1209,25 +1223,51 @@ fn insert_block_replace_refuses_unprovable_coverage() {
         .rebuild()
         .expect("rebuild encrypted");
     let encrypted = reparse(&encrypted_bytes);
+    let hop_block = encrypted.blocks.get(&hop).unwrap();
     assert!(
-        matches!(
-            encrypted.blocks.get(&hop).unwrap().bib,
-            block::BibCoverage::Maybe
-        ),
-        "the sweep must leave the hop count's coverage unprovable"
+        matches!(hop_block.bib, block::BibCoverage::None) && hop_block.bcb.is_none(),
+        "the sweep must leave a hop count no BCB covers uncovered"
     );
 
-    let result = Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount);
-    assert!(
-        matches!(
-            result,
-            Err((
-                _,
-                Error::Builder(builder::Error::InternalError(hardy_bpv7::Error::InvalidBPSec(
-                    hardy_bpv7::bpsec::Error::MaybeHasBib(n)
-                )))
-            )) if n == hop
-        ),
-        "replacing a Maybe-covered block must refuse with MaybeHasBib, as update_block does"
-    );
+    let new_data =
+        ok(Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount))
+            .with_data(
+                hardy_cbor::encode::emit(&hop_info::HopInfo {
+                    limit: NonZeroU8::new(30).unwrap(),
+                    count: 1,
+                })
+                .0
+                .into(),
+            )
+            .rebuild()
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &encrypted_bytes))
+            .expect("the bystander replace rebuilds");
+    let replaced = reparse(&new_data);
+    let hop_info = replaced
+        .blocks
+        .get(&hop)
+        .unwrap()
+        .extract::<hop_info::HopInfo>(&new_data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 1);
+
+    // Every block the encrypted BIB or a BCB protects or occupies — the
+    // payload, the BIB, the BCBs — is byte-identical after the replace.
+    for (n, before) in encrypted.blocks.iter().filter(|(_, b)| {
+        b.bcb.is_some()
+            || matches!(
+                b.block_type,
+                block::Type::BlockIntegrity | block::Type::BlockSecurity
+            )
+    }) {
+        let after = replaced.blocks.get(n).expect("the block survives");
+        assert_eq!(after.block_type, before.block_type);
+        assert_eq!(
+            after.payload(&new_data),
+            before.payload(&encrypted_bytes),
+            "block {n} must be untouched by the bystander replace"
+        );
+    }
 }

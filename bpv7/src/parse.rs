@@ -450,8 +450,8 @@ pub struct BundleParser {
     /// aren't BCB-protected get parsed and validated (body range
     /// recovered from `bundle.blocks[n].extent + .data`); BCB-protected
     /// BIBs are skipped and trigger a `BibCoverage::Maybe` sweep on
-    /// the remaining blocks. Empty (no allocation) for bundles with
-    /// no BIBs.
+    /// the remaining BCB-covered blocks. Empty (no allocation) for
+    /// bundles with no BIBs.
     pending_bibs: SmallVec<[u64; 4]>,
 
     /// Parsed BCB OperationSets for every BCB encountered, keyed by
@@ -625,7 +625,7 @@ impl BundleParser {
     /// first so each block's BCB-coverage is known, then BIBs (skipping any
     /// that are BCB-encrypted — their bodies are ciphertext and we can't
     /// decode the OperationSet without keys). BCB-protected BIBs trigger a
-    /// `BibCoverage::Maybe` sweep on the remaining blocks.
+    /// `BibCoverage::Maybe` sweep on the remaining BCB-covered blocks.
     ///
     /// All errors map to existing `bpsec::Error` variants — no new
     /// error surface. As a side effect, populates `Block::bib` and
@@ -728,15 +728,23 @@ impl BundleParser {
             bibs.insert(bib_block_number, ops);
         }
 
-        // Encrypted BIBs whose targets we couldn't read: every non-
-        // security block whose BIB coverage is still `None` becomes
-        // `Maybe`.
+        // Encrypted BIBs whose targets we couldn't read: every BCB-covered
+        // non-security block whose BIB coverage is still `None` becomes
+        // `Maybe`. A block no BCB covers stays `None`: RFC 9172 §3.9 makes
+        // a BIB whose targets a new BCB matches be encrypted, and splits a
+        // partially matched one so only the matched results move to an
+        // encrypted BIB, so a conformant encrypted BIB targets only blocks
+        // a BCB also covers. A non-conformant sender that hides a BCB-less
+        // target has that signature broken if the block is later edited,
+        // which fails closed at the downstream key-holder.
         if has_undecryptable_bibs {
             for block in bundle.blocks.values_mut() {
-                if !matches!(
-                    block.block_type,
-                    block::Type::BlockIntegrity | block::Type::BlockSecurity
-                ) && matches!(block.bib, block::BibCoverage::None)
+                if block.bcb.is_some()
+                    && !matches!(
+                        block.block_type,
+                        block::Type::BlockIntegrity | block::Type::BlockSecurity
+                    )
+                    && matches!(block.bib, block::BibCoverage::None)
                 {
                     block.bib = block::BibCoverage::Maybe;
                 }

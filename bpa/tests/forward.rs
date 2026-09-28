@@ -738,3 +738,206 @@ async fn non_legacy_peer_keeps_canonical_encoding() {
     assert!(events_rx.is_empty());
     bpa.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Relaying BPSec-protected bundles (the per-hop rewrite stage)
+// ---------------------------------------------------------------------------
+
+/// A keyless relay forwards a bundle whose payload was signed then
+/// encrypted (so its BIB is encrypted too) and which already carries a
+/// PreviousNode and a HopCount from earlier hops: both per-hop rewrites go
+/// ahead, and the payload, BIB and BCBs leave byte-identical, so the
+/// payload still decrypts under the original key downstream.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyless_relay_forwards_a_signed_then_encrypted_bundle() {
+    use core::num::NonZeroU8;
+
+    use hardy_bpv7::{
+        block,
+        bpsec::{
+            DecryptingReader,
+            encryptor::{self, Encryptor},
+            key::{EncAlgorithm, Key, KeyAlgorithm, KeySet, Operation, Type},
+            rfc9173::ScopeFlags,
+            signer::{self, Signer},
+        },
+        builder::Builder,
+        creation_timestamp::CreationTimestamp,
+        hop_info::HopInfo,
+    };
+    use rand::{TryRng, rngs::SysRng};
+
+    let node = |node_number| IpnNodeId {
+        allocator_id: 1,
+        node_number,
+    };
+    // Immaterial key values: generated per the no-literal-keys rule.
+    let random_key = |len| {
+        let mut k = vec![0u8; len];
+        SysRng.try_fill_bytes(&mut k).unwrap();
+        k
+    };
+    let sign_key = Key {
+        key_type: Type::octet_sequence(random_key(32)),
+        key_algorithm: Some(KeyAlgorithm::HS256),
+        enc_algorithm: None,
+        operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
+        id: None,
+        key_use: None,
+    };
+    let enc_key = Key {
+        key_type: Type::octet_sequence(random_key(32)),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+
+    // The source signs then encrypts the payload; an earlier relay has
+    // already stamped PreviousNode and bumped the hop count.
+    let source: Eid = "ipn:1.3.1".parse().unwrap();
+    let (_, data) = Builder::new(source.clone(), "ipn:1.2.99".parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .add_extension_block(block::Type::PreviousNode)
+        .expect("add the PreviousNode block")
+        .build(hardy_cbor::encode::emit(&Eid::from(node(4))).0.into())
+        .with_payload(b"relay me".as_slice().into())
+        .build(CreationTimestamp::now())
+        .expect("build the bundle");
+    let built = hardy_bpv7::parse::parse(Bytes::from(data)).unwrap();
+    let signed = hardy_bpv7::parse::parse(Bytes::from(
+        Signer::new(&built.bundle, &built.data)
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                source.clone(),
+                &sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the payload")
+            .rebuild()
+            .expect("rebuild the signed bundle"),
+    ))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let received = hardy_bpv7::parse::parse(Bytes::from(
+        Encryptor::new(&signed.bundle, &signed.data)
+            .encrypt_block(1, encryptor::Context::AES_GCM(flags), source, &enc_key)
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload (and so its covering BIB)")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+
+    let bpa = Bpa::builder()
+        .node_ids(
+            hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node(1))].as_slice()).unwrap(),
+        )
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (ingress, _) = BufferedCla::new();
+    bpa.register_cla(
+        "ingress".to_string(),
+        ingress.clone(),
+        None,
+        ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let (egress, events_rx) = BufferedCla::new();
+    bpa.register_cla(
+        "egress".to_string(),
+        egress.clone(),
+        None,
+        ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    egress
+        .sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(node(2))],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        ingress
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut received.data.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // The timeout only bounds a regression: a relay that refuses the
+    // per-hop rewrite parks the bundle and never offers it to the peer.
+    let Event::Forward(forwarded) = recv_event(&events_rx, 5).await else {
+        panic!("Expected the relay to forward the bundle");
+    };
+    let out = hardy_bpv7::parse::parse(forwarded).expect("the forwarded bundle parses");
+
+    let extension = |block_type: block::Type| {
+        out.bundle
+            .blocks
+            .values()
+            .find(|b| b.block_type == block_type)
+            .expect("the per-hop block is present")
+    };
+    let hop_info = extension(block::Type::HopCount)
+        .extract::<HopInfo>(&out.data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 2, "the relay bumps the hop count");
+    let previous = extension(block::Type::PreviousNode)
+        .extract::<Eid>(&out.data)
+        .expect("the previous node decodes")
+        .expect("the previous node is resident");
+    assert_eq!(previous, Eid::from(node(1)), "the relay names itself");
+
+    for (n, before) in received.bundle.blocks.iter().filter(|(_, b)| {
+        b.bcb.is_some()
+            || matches!(
+                b.block_type,
+                block::Type::BlockIntegrity | block::Type::BlockSecurity
+            )
+    }) {
+        let after = out.bundle.blocks.get(n).expect("the block survives");
+        assert_eq!(after.block_type, before.block_type);
+        assert_eq!(
+            after.payload(&out.data),
+            before.payload(&received.data),
+            "block {n} must leave the relay untouched"
+        );
+    }
+
+    let keys = KeySet::new(vec![enc_key]);
+    let payload = DecryptingReader::new(&out.bundle.blocks, &out.data, &out.bcbs, &keys)
+        .block_data(1)
+        .expect("the payload decrypts downstream")
+        .expect("the payload is resident");
+    assert_eq!(payload.as_ref(), b"relay me");
+
+    assert!(events_rx.is_empty());
+    bpa.shutdown().await;
+}
