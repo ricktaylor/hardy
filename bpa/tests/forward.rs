@@ -2,6 +2,8 @@
 //! `stream::buffer_stream`, the whole-buffer convenience used by CLAs that
 //! need a contiguous bundle.
 
+#[cfg(feature = "rfc9173")]
+use core::num::NonZeroU8;
 use core::num::NonZeroU64;
 use std::sync::{
     Arc,
@@ -16,6 +18,22 @@ use hardy_bpa::{
     stream::{Receiver, Segment},
 };
 use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
+#[cfg(feature = "rfc9173")]
+use hardy_bpv7::{
+    block,
+    bpsec::{
+        DecryptingReader,
+        encryptor::{self, Encryptor},
+        key::{EncAlgorithm, Key, KeyAlgorithm, KeySet, Operation, Type},
+        rfc9173::ScopeFlags,
+        signer::{self, Signer},
+    },
+    builder::Builder,
+    creation_timestamp::CreationTimestamp,
+    hop_info::HopInfo,
+};
+#[cfg(feature = "rfc9173")]
+use rand::{TryRng, rngs::SysRng};
 
 // ---------------------------------------------------------------------------
 // Events observed by the mock CLAs
@@ -743,31 +761,14 @@ async fn non_legacy_peer_keeps_canonical_encoding() {
 // Relaying BPSec-protected bundles (the per-hop rewrite stage)
 // ---------------------------------------------------------------------------
 
-/// A keyless relay forwards a bundle whose payload was signed then
-/// encrypted (so its BIB is encrypted too) and which already carries a
-/// PreviousNode and a HopCount from earlier hops: both per-hop rewrites go
-/// ahead, and the payload, BIB and BCBs leave byte-identical, so the
-/// payload still decrypts under the original key downstream.
+// A keyless relay forwards a bundle whose payload was signed then
+// encrypted (so its BIB is encrypted too) and which already carries a
+// PreviousNode and a HopCount from earlier hops: both per-hop rewrites go
+// ahead, and the payload, BIB and BCBs leave byte-identical, so the
+// payload still decrypts under the original key downstream.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn keyless_relay_forwards_a_signed_then_encrypted_bundle() {
-    use core::num::NonZeroU8;
-
-    use hardy_bpv7::{
-        block,
-        bpsec::{
-            DecryptingReader,
-            encryptor::{self, Encryptor},
-            key::{EncAlgorithm, Key, KeyAlgorithm, KeySet, Operation, Type},
-            rfc9173::ScopeFlags,
-            signer::{self, Signer},
-        },
-        builder::Builder,
-        creation_timestamp::CreationTimestamp,
-        hop_info::HopInfo,
-    };
-    use rand::{TryRng, rngs::SysRng};
-
     let node = |node_number| IpnNodeId {
         allocator_id: 1,
         node_number,
@@ -938,6 +939,8 @@ async fn keyless_relay_forwards_a_signed_then_encrypted_bundle() {
         .expect("the payload is resident");
     assert_eq!(payload.as_ref(), b"relay me");
 
-    assert!(events_rx.is_empty());
+    // shutdown() joins the pools, so anything the relay was going to offer
+    // has reached the CLA by the time it returns: nothing further arrived.
     bpa.shutdown().await;
+    assert!(events_rx.is_empty());
 }

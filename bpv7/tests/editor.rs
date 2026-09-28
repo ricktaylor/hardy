@@ -1357,8 +1357,8 @@ fn insert_block_replace_refuses_a_verified_encrypted_bib() {
         &mut HashMap::new(),
         &HashMap::new(),
     )
-    .expect("the keyed pass decrypts and validates the BIB");
-    assert!(failed.is_empty(), "the BIB must validate");
+    .expect("the keyed pass decrypts and structurally checks the BIB");
+    assert!(failed.is_empty(), "the BIB must decrypt");
     assert_eq!(
         bundle.blocks.get(&hop).unwrap().bib,
         block::BibCoverage::Some(bib),
