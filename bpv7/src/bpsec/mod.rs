@@ -238,12 +238,8 @@ impl<'a> DecryptingReader<'a> {
     /// block's plaintext comes back as an owned `Payload::Decrypted` —
     /// never a borrow of this reader's cache — so the result can outlive
     /// the reader's other borrows and feed zero-copy `Bytes` construction.
-    ///
-    /// The contract matches [`block_data`]: `Err(MissingBlock)` for an
-    /// absent block, `Err` carrying the BPSec cause for no-key and
-    /// decrypt-failure, `Err(Altered)` when the coverage index and
-    /// `bcb_ops` disagree — plus `Ok(None)` when the block's extents lie
-    /// beyond the resident bytes (the headers-only or streaming case).
+    /// A block whose extents lie beyond the resident bytes (the
+    /// headers-only or streaming case) returns `Ok(None)`.
     ///
     /// Shares the memo cells with the [`Reader`] impl: a cached plaintext
     /// is cloned out, a cached no-key replays without touching the key
@@ -251,6 +247,16 @@ impl<'a> DecryptingReader<'a> {
     /// error carries the exact cause. A caller reading one block and then
     /// dropping the reader uses [`into_block_data`](Self::into_block_data)
     /// instead, which moves the plaintext out rather than cloning it.
+    ///
+    /// # Errors
+    ///
+    /// - [`MissingBlock`](crate::Error::MissingBlock) for a block number
+    ///   not in the bundle.
+    /// - [`InvalidBPSec`](crate::Error::InvalidBPSec) carrying the BPSec
+    ///   cause for a covered block with no usable key, or whose decrypt
+    ///   fails.
+    /// - [`Altered`](crate::Error::Altered) when the coverage index and
+    ///   `bcb_ops` disagree (mismatched parse products).
     pub fn block_data(
         &self,
         block_number: u64,

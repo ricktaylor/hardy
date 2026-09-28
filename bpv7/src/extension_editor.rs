@@ -4,9 +4,9 @@
 //! [`ExtensionEditor`] wraps an [`Editor`] it never exposes. Some owner
 //! privileges are absent by construction — there are no primary-field
 //! setters and no way to add or manage a BIB or BCB — and the target gates
-//! refuse the rest at call time with a typed [`Error`]: the primary and
-//! payload blocks, the reserved block types, and security blocks as
-//! targets. A caller's no-match path is an `Err`, never a review
+//! refuse the rest at call time with a typed [`Error`](enum@Error): the
+//! primary and payload blocks, the reserved block types, and security
+//! blocks as targets. A caller's no-match path is an `Err`, never a review
 //! convention. Editing a block under existing BPSec coverage is
 //! refused outright (the full [`Editor`] instead strips the target from
 //! its coverage — an owner decision this handle deliberately cannot make),

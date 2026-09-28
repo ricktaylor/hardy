@@ -392,4 +392,6 @@ Open items from the `refactor/bpv7-parse` deep review (`references/reviews/bpv7-
 
 **Idiomatics (E11 a/d).** `BibCoverage` derives `Clone` but not `Copy` (forcing `.clone()` noise); staged BIB plaintext is copied out of `Zeroizing` into a plain `Vec` in `bpsec::edit` step 3 (contrast `remove_encryption`'s `mem::take`).
 
-**`insert_block` Keep-reuse bypasses the cascade (E12, pre-existing).** Reusing an existing same-type block builds a fresh template with neither the security cascade nor the `bib`/`bcb` metadata `update_block_inner` preserves — replacing a signed PreviousNode via `insert_block` leaves a stale BIB signature over the new body. Pre-dates the parse refactor; fold into the next editor-cascade pass.
+## bpv7-reader-editor review ledger (2026-09-28)
+
+**Pre-existing broken intra-doc links, and no `cargo doc` gate (review 2.9).** `RUSTDOCFLAGS="-D warnings" cargo doc -p hardy-bpv7 --no-deps --all-features` fails on two links older than the reader-editor work: `Block::payload`'s doc links `parse::parse`, which `block.rs` does not import, and `Builder::build`'s doc links `Bundle`, which `builder.rs` does not import (qualify both, e.g. `crate::parse::parse`). No workflow runs `cargo doc` (`docs.yml` builds only the mkdocs site), so nothing catches a new broken link either. Fix the two links, then add a workspace `cargo doc --no-deps --all-features` step with `RUSTDOCFLAGS="-D warnings"` to the CI checks job.

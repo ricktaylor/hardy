@@ -65,7 +65,7 @@ impl<'a> Availability<'a> {
     }
 }
 
-/// Provides access to bundle blocks by number, used during BPSec IPPT construction.
+/// Read access to a bundle's blocks — headers and payloads — by block number.
 pub trait Reader<'a> {
     /// Returns the block and its payload's [`Availability`] for the given
     /// block number, or `None` if the bundle has no such block.
@@ -115,8 +115,9 @@ impl<'a, R: Reader<'a> + ?Sized> ReaderExt<'a> for R {}
 /// The canonical [`Reader`] over a parsed bundle held wholly in memory:
 /// a blocks map plus the contiguous bundle bytes the offsets index into.
 /// Each block's payload is the raw wire body ([`Block::payload`]) —
-/// no decryption, no staged rewrites. This is the Reader to use when
-/// feeding the signer / encryptor for an in-memory bundle.
+/// no decryption, no staged rewrites. BPSec operations read their
+/// targets through it for IPPT/AAD construction, and it is the Reader to
+/// use for any in-memory bundle that needs no decryption.
 pub struct PlainReader<'a> {
     /// The bundle's blocks, keyed by block number (e.g. `Bundle::blocks`).
     pub blocks: &'a HashMap<u64, Block>,
