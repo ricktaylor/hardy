@@ -136,9 +136,10 @@ enum Decrypt {
 ///
 /// The `blocks` and `bcb_ops` given to [`new`](Self::new) MUST be products
 /// of the same parse of `source_data`: mixing parse products is a logic
-/// error. When a block's coverage index names a BCB whose OperationSet has
-/// no operation for it, the [`Reader`] impl panics (the lending door has no
-/// error channel), while the give doors return `Err(Altered)`.
+/// error. When a block's coverage index names a BCB that is absent from
+/// `bcb_ops`, or whose OperationSet has no operation for the block, the
+/// [`Reader`] impl panics (the lending door has no error channel), while the
+/// give doors return `Err(Altered)`.
 ///
 /// The memoisation uses interior mutability without locking, so the
 /// reader is not `Sync`; share it within one thread of work.
@@ -335,11 +336,12 @@ impl<'a> DecryptingReader<'a> {
 }
 
 impl<'a> Reader<'a> for DecryptingReader<'a> {
-    // Panics when a block's coverage index names a BCB with no operation
-    // for it. The parser derives the coverage index from the OperationSets
-    // themselves, so that means mismatched parse products (see the type
-    // doc) — a logic error, not a runtime state — and this infallible door
-    // has no error channel to report it through.
+    // Panics when a block's coverage index names a BCB absent from
+    // `bcb_ops`, or one with no operation for the block. The parser derives
+    // the coverage index from the OperationSets themselves, so either means
+    // mismatched parse products (see the type doc) — a logic error, not a
+    // runtime state — and this infallible door has no error channel to
+    // report it through.
     fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let block = self.blocks.get(&block_number)?;
         if !self.is_resident(block) {
@@ -363,7 +365,7 @@ impl<'a> Reader<'a> for DecryptingReader<'a> {
                 Ok(plaintext) => Decrypt::Plain(plaintext),
                 Err(crate::Error::InvalidBPSec(Error::NoKey)) => Decrypt::NoKey,
                 Err(crate::Error::Altered) => panic!(
-                    "block {block_number} is marked BCB-covered but its OperationSet has no operation for it — blocks and bcb_ops are not products of the same parse"
+                    "block {block_number} is marked BCB-covered but bcb_ops has no operation for it — blocks and bcb_ops are not products of the same parse"
                 ),
                 Err(_) => Decrypt::Failed,
             });
