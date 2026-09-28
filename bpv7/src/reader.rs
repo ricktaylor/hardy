@@ -120,6 +120,7 @@ impl<'a, R: Reader<'a> + ?Sized> ReaderExt<'a> for R {}
 /// no decryption, no staged rewrites. BPSec operations read their
 /// targets through it for IPPT/AAD construction, and it is the Reader to
 /// use for any in-memory bundle that needs no decryption.
+#[derive(Clone, Copy, Debug)]
 pub struct PlainReader<'a> {
     /// The bundle's blocks, keyed by block number (e.g. `Bundle::blocks`).
     pub blocks: &'a HashMap<u64, Block>,
