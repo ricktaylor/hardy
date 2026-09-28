@@ -15,7 +15,7 @@ use bytes::{Bytes, BytesMut};
 use hardy_cbor::decode::{Error as CborError, Head, Marker, Untagged};
 use smallvec::SmallVec;
 
-use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock};
+use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock, reader::PlainReader};
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
@@ -450,8 +450,8 @@ pub struct BundleParser {
     /// aren't BCB-protected get parsed and validated (body range
     /// recovered from `bundle.blocks[n].extent + .data`); BCB-protected
     /// BIBs are skipped and trigger a `BibCoverage::Maybe` sweep on
-    /// the remaining blocks. Empty (no allocation) for bundles with
-    /// no BIBs.
+    /// the remaining BCB-covered blocks. Empty (no allocation) for
+    /// bundles with no BIBs.
     pending_bibs: SmallVec<[u64; 4]>,
 
     /// Parsed BCB OperationSets for every BCB encountered, keyed by
@@ -625,7 +625,7 @@ impl BundleParser {
     /// first so each block's BCB-coverage is known, then BIBs (skipping any
     /// that are BCB-encrypted — their bodies are ciphertext and we can't
     /// decode the OperationSet without keys). BCB-protected BIBs trigger a
-    /// `BibCoverage::Maybe` sweep on the remaining blocks.
+    /// `BibCoverage::Maybe` sweep on the remaining BCB-covered blocks.
     ///
     /// All errors map to existing `bpsec::Error` variants — no new
     /// error surface. As a side effect, populates `Block::bib` and
@@ -655,7 +655,7 @@ impl BundleParser {
             // of truth shared with the post-decrypt keyed filter.
             ops.check(
                 *bcb_block_number,
-                &bpsec::PlainBlockSet {
+                &PlainReader {
                     blocks: &bundle.blocks,
                     source_data: data,
                 },
@@ -709,7 +709,7 @@ impl BundleParser {
             // of truth shared with the post-decrypt keyed filter.
             ops.check(
                 bib_block_number,
-                &bpsec::PlainBlockSet {
+                &PlainReader {
                     blocks: &bundle.blocks,
                     source_data: data,
                 },
@@ -728,15 +728,27 @@ impl BundleParser {
             bibs.insert(bib_block_number, ops);
         }
 
-        // Encrypted BIBs whose targets we couldn't read: every non-
-        // security block whose BIB coverage is still `None` becomes
-        // `Maybe`.
+        // Encrypted BIBs whose targets we couldn't read: every BCB-covered
+        // non-security block whose BIB coverage is still `None` becomes
+        // `Maybe`. A block no BCB covers stays `None`. As built under RFC
+        // 9172 §3.9 ("when adding a BCB"), an encrypted BIB targets only
+        // blocks a BCB also covers: a BIB whose targets a new BCB matches
+        // is encrypted with them, and a partially matched one is split so
+        // only the matched results move to an encrypted BIB. Two later
+        // states break that: a security acceptor that decrypts a target but
+        // not the BIB over it (RFC 9172 §5.1.1 permits partial acceptance,
+        // and `bpsec::edit::remove_encryption` does exactly this for one
+        // target), and a non-conformant sender. An edit to such a block
+        // breaks the hidden signature, which fails closed at the downstream
+        // key-holder.
         if has_undecryptable_bibs {
             for block in bundle.blocks.values_mut() {
-                if !matches!(
-                    block.block_type,
-                    block::Type::BlockIntegrity | block::Type::BlockSecurity
-                ) && matches!(block.bib, block::BibCoverage::None)
+                if block.bcb.is_some()
+                    && !matches!(
+                        block.block_type,
+                        block::Type::BlockIntegrity | block::Type::BlockSecurity
+                    )
+                    && matches!(block.bib, block::BibCoverage::None)
                 {
                     block.bib = block::BibCoverage::Maybe;
                 }

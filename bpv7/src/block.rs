@@ -223,7 +223,11 @@ impl FromCbor for Type {
 /// payload has been decrypted from a Block Confidentiality Block (BCB) and
 /// therefore does not correspond to a contiguous region of the original data.
 pub enum Payload<'a> {
-    /// A slice within the original bundle data.
+    /// A borrowed slice: the block's wire bytes within the original bundle
+    /// data, or — when lent by a caching reader such as
+    /// [`DecryptingReader`](crate::bpsec::DecryptingReader) — a decrypted
+    /// payload owned by the reader for its lifetime. Only take it as a
+    /// sub-slice of the bundle buffer where the lender guarantees that.
     Borrowed(&'a [u8]),
     /// An owned byte slice, typically holding a decrypted payload.
     Decrypted(zeroize::Zeroizing<Box<[u8]>>),
@@ -276,7 +280,11 @@ pub enum BibCoverage {
     /// A BIB at the given block number targets this block.
     Some(u64),
     /// There are encrypted BIBs that couldn't be decrypted during parsing;
-    /// it's unknown whether any of them target this block.
+    /// it's unknown whether any of them target this block. The parser
+    /// marks only BCB-covered blocks `Maybe`: as built under RFC 9172 §3.9,
+    /// an encrypted BIB targets only blocks a BCB also covers. A partial
+    /// acceptor that decrypts a target but not the BIB over it leaves a
+    /// block no BCB covers under an encrypted BIB; that block reads `None`.
     Maybe,
 }
 

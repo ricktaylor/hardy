@@ -430,35 +430,30 @@ fn dump_block(
         output.append_str("Signed by Integrity Block: Unknown (encrypted BIB)\n\n")?;
     }
 
+    let block_data = bpsec::DecryptingReader::new(blocks, data, &security.bcb_ops, &security.keys)
+        .into_block_data(block_number);
     let payload = if let Some(bcb) = block.bcb {
         output.append_str(format!("Encrypted by Security Block {bcb}: "))?;
 
-        match bpsec::block_data(
-            block_number,
-            blocks,
-            data,
-            &security.bcb_ops,
-            &security.keys,
-        ) {
+        match block_data {
             Err(e) => {
                 output.append_str(format!("Error {e}\n\n"))?;
                 None
             }
-            Ok(p) => {
+            Ok(None) => {
+                output.append_str(format!("Block {block_number} is not resident\n\n"))?;
+                None
+            }
+            Ok(Some(p)) => {
                 output.append_str("✔\n\n")?;
                 Some(p)
             }
         }
     } else {
         Some(
-            bpsec::block_data(
-                block_number,
-                blocks,
-                data,
-                &security.bcb_ops,
-                &security.keys,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to get block data: {e}"))?,
+            block_data
+                .map_err(|e| anyhow::anyhow!("Failed to get block data: {e}"))?
+                .ok_or_else(|| anyhow::anyhow!("Block {block_number} is not resident"))?,
         )
     };
 

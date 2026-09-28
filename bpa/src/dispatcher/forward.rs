@@ -280,6 +280,22 @@ impl Dispatcher {
         let report_on_failure =
             !bundle.primary().flags.is_admin_record && !bundle.id().source.is_null();
 
+        // The per-hop blocks below are replaced through `insert_block`, which
+        // strips a replaced block from any plaintext BIB that covers it. That
+        // is Hardy's relay policy, within the waypoint latitude of RFC 9172
+        // §3.1: this node must rewrite these blocks (RFC 9171 §5.4; the hop
+        // count's increment is a §4.4.3 SHOULD), and no operation over the
+        // old body survives the rewrite. Stripping keeps the sender's other
+        // results verifiable, where a stale result would fail verification
+        // downstream and cost the receiver the block or the whole bundle
+        // under its failure policy. Where this node is the operation's
+        // security acceptor and verified it at ingress, as for a hop-by-hop
+        // PreviousNode signature, the strip also discharges the RFC 9172
+        // §5.1.2 acceptor duty; elsewhere the node in effect acts as the
+        // acceptor of an operation it may not have verified. A block the
+        // editor cannot safely update (BCB-covered, so possibly under an
+        // encrypted BIB) refuses, and the caller parks the bundle.
+
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)

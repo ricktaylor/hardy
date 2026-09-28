@@ -322,7 +322,7 @@ mod tests {
     };
 
     use hardy_bpv7::{
-        bpsec::block_data,
+        bpsec::DecryptingReader,
         parse::{Parsed, parse},
     };
 
@@ -719,7 +719,7 @@ mod tests {
 
         // The decrypt key is withheld at delivery: NoKey, payload stays encrypted
         assert!(matches!(
-            block_data(1, &bundle.blocks, &data, &bcbs, &source),
+            DecryptingReader::new(&bundle.blocks, &data, &bcbs, &source).block_data(1),
             Err(hardy_bpv7::Error::InvalidBPSec(
                 hardy_bpv7::bpsec::Error::NoKey
             ))
@@ -733,8 +733,10 @@ mod tests {
 
         assert_eq!(count_bcbs(&bundle), 1);
 
-        let payload = block_data(1, &bundle.blocks, &data, &bcbs, &source)
-            .expect("acceptor must decrypt the payload");
+        let payload = DecryptingReader::new(&bundle.blocks, &data, &bcbs, &source)
+            .block_data(1)
+            .expect("acceptor must decrypt the payload")
+            .expect("the payload is resident");
         assert_eq!(payload.as_ref(), b"Ready to generate a 32-byte payload");
     }
 

@@ -10,6 +10,8 @@ This crate provides the building blocks for working with BPv7 bundles, including
 - [`checks`] / [`rewrite`]: Composable BPSec validation and rewrite primitives.
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.
 - [`editor`]: Offers an [`Editor`](editor::Editor) for modifying existing bundles.
+- [`extension_editor`]: An [`ExtensionEditor`](extension_editor::ExtensionEditor) for scoped extension-block editing, without the owner privileges.
+- [`reader`]: The [`Reader`](reader::Reader) block-read abstraction and its plain implementation; the decrypting one is [`bpsec::DecryptingReader`].
 - [`eid`]: Implements Endpoint Identifiers (EIDs) as defined in BPv7.
 - [`block`]: Defines the structure of blocks within a bundle.
 
@@ -111,10 +113,12 @@ pub mod creation_timestamp;
 pub mod dtn_time;
 pub mod editor;
 pub mod eid;
+pub mod extension_editor;
 pub mod hop_info;
 pub mod lifetime;
 pub mod parse;
 pub mod primary_block;
+pub mod reader;
 pub mod rewrite;
 pub mod status_report;
 

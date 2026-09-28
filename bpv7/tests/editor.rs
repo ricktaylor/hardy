@@ -1,19 +1,25 @@
-//! Integration tests for `hardy_bpv7::editor::Editor` — building, mutating,
+//! Integration tests for `hardy_bpv7::editor::Editor` and
+//! `hardy_bpv7::extension_editor::ExtensionEditor` — building, mutating,
 //! and rebuilding bundles through the public API.
 
 use core::{num::NonZeroU8, time::Duration};
+use std::collections::{HashMap, HashSet};
 
+use bytes::Bytes;
 use hardy_bpv7::{
     Bundle, block,
-    bpsec::{key, rfc9173::ScopeFlags, signer},
-    builder, crc, creation_timestamp,
+    bpsec::{encryptor, key, rfc9173::ScopeFlags, signer},
+    builder, checks, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
-    eid, hop_info, parse,
+    eid,
+    extension_editor::{self, ExtensionEditor},
+    hop_info, parse,
 };
-use std::collections::HashSet;
+use hardy_cbor::encode::emit;
 
 mod common;
 use self::common::rand_k;
+
 // Build a bundle, parse it, return (bundle, data) ready for editing.
 fn make_bundle() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -47,9 +53,7 @@ fn ok<T>(result: Result<T, (Editor, Error)>) -> T {
 
 // Edit a bundle, rebuild, re-parse, and return the parsed Bundle.
 fn reparse(data: &[u8]) -> Bundle {
-    parse::parse(bytes::Bytes::copy_from_slice(data))
-        .unwrap()
-        .bundle
+    parse::parse(Bytes::copy_from_slice(data)).unwrap().bundle
 }
 
 #[test]
@@ -644,4 +648,847 @@ fn add_extension_block_rejects_wire_code_zero() {
     let r = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .add_extension_block(block::Type::Unrecognised(0));
     assert!(matches!(r, Err(builder::Error::PrimaryBlock)));
+}
+
+// === ExtensionEditor: the scoped extension-block handle =================
+
+// A bundle with one Unrecognised(200) extension block, re-parsed to wire
+// extents: (bundle, data, extension block number).
+fn make_bundle_with_extension() -> (Bundle, Box<[u8]>, u64) {
+    let (bundle, data) = make_bundle();
+    let new_data = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+        .with_data(b"ext-data".as_slice().into())
+        .rebuild()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &data))
+        .unwrap();
+    let bundle = reparse(&new_data);
+    let ext = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::Unrecognised(200)))
+        .map(|(n, _)| *n)
+        .expect("the extension block is present");
+    (bundle, new_data, ext)
+}
+
+// The extension block signed with a BIB: (bundle, data, extension block
+// number, BIB block number, the signing key).
+fn make_signed_extension() -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
+    let (bundle, data, ext) = make_bundle_with_extension();
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            ext,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the extension block")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+    let bib = signed
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::BlockIntegrity))
+        .map(|(n, _)| *n)
+        .expect("the BIB is present");
+    (signed, signed_bytes, ext, bib, kek)
+}
+
+#[test]
+fn extension_editor_refuses_reserved_insert_types() {
+    let (bundle, data) = make_bundle();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    // Each reserved type, named and as the `Unrecognised` alias of its wire
+    // code: the alias is refused as the reserved type it encodes.
+    for (requested, reserved) in [
+        (block::Type::Primary, block::Type::Primary),
+        (block::Type::Payload, block::Type::Payload),
+        (block::Type::BlockIntegrity, block::Type::BlockIntegrity),
+        (block::Type::BlockSecurity, block::Type::BlockSecurity),
+        (block::Type::Unrecognised(0), block::Type::Primary),
+        (block::Type::Unrecognised(1), block::Type::Payload),
+        (block::Type::Unrecognised(11), block::Type::BlockIntegrity),
+        (block::Type::Unrecognised(12), block::Type::BlockSecurity),
+    ] {
+        assert!(
+            matches!(
+                editor.insert(
+                    requested,
+                    block::Flags::default(),
+                    crc::CrcType::None,
+                    b"x".as_slice().into(),
+                ),
+                Err(extension_editor::Error::ReservedType(t)) if t == reserved
+            ),
+            "{requested:?} must be refused as ReservedType({reserved:?})"
+        );
+    }
+    assert!(!editor.is_modified(), "refusals must not count as edits");
+}
+
+#[test]
+fn extension_editor_maps_singleton_duplicates_through() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    assert!(matches!(
+        editor.insert(
+            block::Type::HopCount,
+            block::Flags::default(),
+            crc::CrcType::None,
+            b"x".as_slice().into(),
+        ),
+        Err(extension_editor::Error::Editor(Error::IllegalDuplicate(
+            block::Type::HopCount
+        )))
+    ));
+    // A refusal from the inner editor is not an edit either.
+    assert!(!editor.is_modified());
+    assert!(
+        editor
+            .finish()
+            .expect("an untouched editor is not an error")
+            .is_none(),
+        "a refused insert materialises nothing"
+    );
+}
+
+#[test]
+fn extension_editor_reserves_primary_and_payload_targets() {
+    let (bundle, data) = make_bundle();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    for reserved in [0, 1] {
+        assert!(matches!(
+            editor.replace(reserved, b"x".as_slice().into()),
+            Err(extension_editor::Error::ReservedBlock(n)) if n == reserved
+        ));
+        assert!(matches!(
+            editor.remove(reserved),
+            Err(extension_editor::Error::ReservedBlock(n)) if n == reserved
+        ));
+    }
+
+    // The type refuses, not the mechanism: the full Editor replaces the
+    // payload under its owner semantics.
+    ok(Editor::new(&bundle, &data).update_block(1));
+}
+
+#[test]
+fn extension_editor_reports_missing_targets() {
+    let (bundle, data) = make_bundle();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    assert!(matches!(
+        editor.replace(99, b"x".as_slice().into()),
+        Err(extension_editor::Error::NoSuchBlock(99))
+    ));
+}
+
+#[test]
+fn extension_editor_refuses_security_blocks_and_covered_targets() {
+    let (signed, signed_bytes, ext, bib, _) = make_signed_extension();
+    let mut editor = ExtensionEditor::new(&signed, &signed_bytes);
+
+    // The BIB itself is out of scope...
+    assert!(matches!(
+        editor.replace(bib, b"x".as_slice().into()),
+        Err(extension_editor::Error::ReservedType(
+            block::Type::BlockIntegrity
+        ))
+    ));
+    // ...and so is its covered target, in both directions.
+    assert!(matches!(
+        editor.replace(ext, b"x".as_slice().into()),
+        Err(extension_editor::Error::Covered(n)) if n == ext
+    ));
+    assert!(matches!(
+        editor.remove(ext),
+        Err(extension_editor::Error::Covered(n)) if n == ext
+    ));
+
+    // The type refuses, not the mechanism: the full Editor edits the
+    // covered target by stripping it from the BIB — an owner decision.
+    ok(Editor::new(&signed, &signed_bytes).update_block(ext));
+}
+
+#[test]
+fn extension_editor_refuses_bcb_covered_targets() {
+    // BCB coverage alone (no BIB anywhere) also refuses.
+    let (bundle, data, ext) = make_bundle_with_extension();
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let encrypted_bytes = encryptor::Encryptor::new(&bundle, &data)
+        .encrypt_block(
+            ext,
+            encryptor::Context::AES_GCM(flags),
+            "ipn:2.1".parse().unwrap(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the extension block")
+        .rebuild()
+        .expect("rebuild encrypted");
+    let encrypted = reparse(&encrypted_bytes);
+    let ext_block = encrypted.blocks.get(&ext).unwrap();
+    assert!(
+        matches!(ext_block.bib, block::BibCoverage::None) && ext_block.bcb.is_some(),
+        "BCB-covered with no BIB in sight"
+    );
+
+    let mut editor = ExtensionEditor::new(&encrypted, &encrypted_bytes);
+    assert!(matches!(
+        editor.replace(ext, b"x".as_slice().into()),
+        Err(extension_editor::Error::Covered(n)) if n == ext
+    ));
+    assert!(matches!(
+        editor.remove(ext),
+        Err(extension_editor::Error::Covered(n)) if n == ext
+    ));
+}
+
+#[test]
+fn extension_editor_refuses_hidden_targets_not_bystanders() {
+    // Encrypting a signed block also encrypts its covering BIB (and, per
+    // the RFC 9172 cascade, the BIB's other targets). The parser then
+    // cannot read the encrypted BIB's target list, so it sweeps the
+    // BCB-covered blocks — the only ones a conformant encrypted BIB can
+    // target — to BibCoverage::Maybe, and those refuse. A bystander no BCB
+    // covers cannot be a hidden target: it stays uncovered and editable.
+    let (bundle, data, ext) = make_bundle_with_extension();
+
+    // The bystander: a second extension block nobody signs or encrypts.
+    let bystander_data = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(201)))
+        .with_data(b"bystander".as_slice().into())
+        .rebuild()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &data))
+        .unwrap();
+    let bundle = reparse(&bystander_data);
+    let bystander = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::Unrecognised(201)))
+        .map(|(n, _)| *n)
+        .expect("the bystander block is present");
+
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&bundle, &bystander_data)
+        .sign_block(
+            ext,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the extension block")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let encrypted_bytes = encryptor::Encryptor::new(&signed, &signed_bytes)
+        .encrypt_block(
+            ext,
+            encryptor::Context::AES_GCM(flags),
+            "ipn:2.1".parse().unwrap(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the signed extension block (and so its covering BIB)")
+        .rebuild()
+        .expect("rebuild encrypted");
+    let encrypted = reparse(&encrypted_bytes);
+
+    // The actual hidden target: Maybe, with the cascade's BCB.
+    let ext_block = encrypted.blocks.get(&ext).unwrap();
+    assert!(
+        matches!(ext_block.bib, block::BibCoverage::Maybe) && ext_block.bcb.is_some(),
+        "the encrypted BIB's real target is swept to Maybe and BCB-covered"
+    );
+    // The bystander: no BCB, so no conformant encrypted BIB can target it.
+    let bystander_block = encrypted.blocks.get(&bystander).unwrap();
+    assert!(
+        matches!(bystander_block.bib, block::BibCoverage::None) && bystander_block.bcb.is_none(),
+        "the sweep must leave a block no BCB covers uncovered"
+    );
+
+    let mut editor = ExtensionEditor::new(&encrypted, &encrypted_bytes);
+    assert!(matches!(
+        editor.replace(ext, b"x".as_slice().into()),
+        Err(extension_editor::Error::Covered(n)) if n == ext
+    ));
+    editor
+        .replace(bystander, b"x".as_slice().into())
+        .expect("a bystander is editable");
+    let (_, chunks) = editor.finish().expect("materialise").expect("edited");
+    let new_data = Chunk::flatten(chunks, &encrypted_bytes);
+    let reparsed = reparse(&new_data);
+    assert_eq!(
+        reparsed
+            .blocks
+            .get(&bystander)
+            .unwrap()
+            .payload(&new_data)
+            .expect("resident"),
+        b"x"
+    );
+    // The hidden target keeps its protection through the bystander edit.
+    let ext_after = reparsed.blocks.get(&ext).unwrap();
+    assert!(
+        matches!(ext_after.bib, block::BibCoverage::Maybe) && ext_after.bcb.is_some(),
+        "the encrypted BIB's real target is still BCB-covered and Maybe"
+    );
+}
+
+#[test]
+fn extension_editor_targets_its_own_inserts() {
+    let (bundle, data) = make_bundle();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+
+    let n = editor
+        .insert(
+            block::Type::Unrecognised(201),
+            block::Flags::default(),
+            crc::CrcType::None,
+            b"first".as_slice().into(),
+        )
+        .expect("insert an extension block");
+    editor
+        .replace(n, b"second".as_slice().into())
+        .expect("a fresh insert is a valid replace target");
+    editor
+        .remove(n)
+        .expect("a fresh insert is a valid remove target");
+
+    // Everything cancelled out, but edits were applied: the editor
+    // materialises, and the output holds no trace of the block.
+    assert!(editor.is_modified());
+    let (_, chunks) = editor
+        .finish()
+        .expect("materialise")
+        .expect("edits were applied");
+    let reparsed = reparse(&Chunk::flatten(chunks, &data));
+    assert!(
+        !reparsed
+            .blocks
+            .values()
+            .any(|b| matches!(b.block_type, block::Type::Unrecognised(201)))
+    );
+}
+
+#[test]
+fn extension_editor_materialises_inserts_and_skips_untouched() {
+    let (bundle, data) = make_bundle();
+
+    let untouched = ExtensionEditor::new(&bundle, &data);
+    assert!(!untouched.is_modified());
+    assert!(
+        untouched
+            .finish()
+            .expect("no edits is not an error")
+            .is_none(),
+        "an untouched editor materialises nothing"
+    );
+
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let n = editor
+        .insert(
+            block::Type::Unrecognised(202),
+            block::Flags::default(),
+            crc::CrcType::None,
+            b"materialised".as_slice().into(),
+        )
+        .expect("insert");
+    let (new_bundle, chunks) = editor.finish().expect("materialise").expect("edited");
+    let new_data = Chunk::flatten(chunks, &data);
+    let reparsed = reparse(&new_data);
+    let block = reparsed.blocks.get(&n).expect("the insert is on the wire");
+    assert!(matches!(block.block_type, block::Type::Unrecognised(202)));
+    assert_eq!(block.payload(&new_data).expect("resident"), b"materialised");
+    assert_eq!(new_bundle.blocks.len(), reparsed.blocks.len());
+}
+
+// === insert_block replace-by-type: BIB/BCB coverage parity =============
+
+// A bundle whose HopCount block is BIB-signed: (bundle, data, hop block
+// number, BIB block number, signing key).
+fn make_signed_hop_count() -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            hop,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the hop count block")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+    let bib = signed
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::BlockIntegrity))
+        .map(|(n, _)| *n)
+        .expect("the BIB is present");
+    (signed, signed_bytes, hop, bib, kek)
+}
+
+#[test]
+fn insert_block_replace_strips_bib_coverage_like_update_block() {
+    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count();
+
+    // Replace the signed hop count via the replace-by-type door.
+    let (rebuilt, chunks) =
+        ok(Editor::new(&signed, &signed_bytes).insert_block(block::Type::HopCount))
+            .with_data(
+                emit(&hop_info::HopInfo {
+                    limit: NonZeroU8::new(30).unwrap(),
+                    count: 1,
+                })
+                .0
+                .into(),
+            )
+            .rebuild()
+            .rebuild_bundle()
+            .expect("rebuild the replaced bundle");
+
+    // In-memory and wire agree: no BIB claims the replaced block.
+    assert!(
+        matches!(
+            rebuilt.blocks.get(&hop).unwrap().bib,
+            block::BibCoverage::None
+        ),
+        "the rebuilt Bundle must not report BIB coverage on the replaced block"
+    );
+    let new_data = Chunk::flatten(chunks, &signed_bytes);
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&new_data)).expect("the emitted wire form parses");
+    assert!(
+        parsed
+            .bibs
+            .values()
+            .all(|ops| !ops.operations().contains_key(&hop)),
+        "no BIB on the wire may still target the block whose body was replaced"
+    );
+    assert!(
+        matches!(
+            parsed.bundle.blocks.get(&hop).unwrap().bib,
+            block::BibCoverage::None
+        ),
+        "a reparse agrees the replaced block is uncovered"
+    );
+}
+
+#[test]
+fn insert_block_replace_refuses_an_encrypted_bib() {
+    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count();
+
+    // Encrypt the signed hop count: the cascade also encrypts its BIB.
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let encrypted_bytes = encryptor::Encryptor::new(&signed, &signed_bytes)
+        .encrypt_block(
+            hop,
+            encryptor::Context::AES_GCM(flags),
+            "ipn:2.1".parse().unwrap(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the signed hop count")
+        .rebuild()
+        .expect("rebuild encrypted");
+    let encrypted = reparse(&encrypted_bytes);
+
+    // A structural (keyless) parse cannot prove what the encrypted BIB
+    // covers, and the hop count is BCB-covered, so it may be a hidden
+    // target: it reads as Maybe, and the replace refuses on unprovable
+    // coverage, exactly as update_block does. (BibIsEncrypted is the
+    // verify-stamped shape, where coverage is known to be Some.)
+    let result = Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount);
+    assert!(
+        matches!(
+            result,
+            Err((
+                _,
+                Error::Builder(builder::Error::InternalError(hardy_bpv7::Error::InvalidBPSec(
+                    hardy_bpv7::bpsec::Error::MaybeHasBib(n)
+                )))
+            )) if n == hop
+        ),
+        "replacing a block under an encrypted BIB must refuse, as update_block does"
+    );
+}
+
+#[test]
+fn insert_block_replace_proceeds_on_a_bystander() {
+    // The forwarder's shape: the payload is signed then encrypted (so its
+    // BIB is encrypted too), and the relay must rewrite a hop count no BCB
+    // covers. A conformant encrypted BIB cannot target it, so the replace
+    // goes ahead and leaves every BPSec block exactly as it found it.
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the payload")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let encrypted_bytes = encryptor::Encryptor::new(&signed, &signed_bytes)
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(flags),
+            "ipn:2.1".parse().unwrap(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the payload (and so its covering BIB)")
+        .rebuild()
+        .expect("rebuild encrypted");
+    let encrypted = reparse(&encrypted_bytes);
+    let hop_block = encrypted.blocks.get(&hop).unwrap();
+    assert!(
+        matches!(hop_block.bib, block::BibCoverage::None) && hop_block.bcb.is_none(),
+        "the sweep must leave a hop count no BCB covers uncovered"
+    );
+
+    let new_data =
+        ok(Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount))
+            .with_data(
+                emit(&hop_info::HopInfo {
+                    limit: NonZeroU8::new(30).unwrap(),
+                    count: 1,
+                })
+                .0
+                .into(),
+            )
+            .rebuild()
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &encrypted_bytes))
+            .expect("the bystander replace rebuilds");
+    let replaced = reparse(&new_data);
+    let hop_info = replaced
+        .blocks
+        .get(&hop)
+        .unwrap()
+        .extract::<hop_info::HopInfo>(&new_data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 1);
+
+    // Every block the encrypted BIB or a BCB protects or occupies — the
+    // payload, the BIB, the BCBs — is byte-identical after the replace.
+    for (n, before) in encrypted.blocks.iter().filter(|(_, b)| {
+        b.bcb.is_some()
+            || matches!(
+                b.block_type,
+                block::Type::BlockIntegrity | block::Type::BlockSecurity
+            )
+    }) {
+        let after = replaced.blocks.get(n).expect("the block survives");
+        assert_eq!(after.block_type, before.block_type);
+        assert_eq!(
+            after.payload(&new_data),
+            before.payload(&encrypted_bytes),
+            "block {n} must be untouched by the bystander replace"
+        );
+    }
+}
+
+// An AES-GCM key for the encryption fixtures below; its value is
+// immaterial, so it is generated.
+fn aes_key() -> key::Key {
+    serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap()
+}
+
+// Encrypt block `n` of (bundle, data) with `key`, returning the reparsed
+// bundle and its bytes. The security header stays out of the AAD, as in the
+// other encryption fixtures here.
+fn encrypt(bundle: &Bundle, data: &[u8], n: u64, key: &key::Key) -> (Bundle, Box<[u8]>) {
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let bytes = encryptor::Encryptor::new(bundle, data)
+        .encrypt_block(
+            n,
+            encryptor::Context::AES_GCM(flags),
+            "ipn:2.1".parse().unwrap(),
+            key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the block")
+        .rebuild()
+        .expect("rebuild encrypted");
+    (reparse(&bytes), bytes)
+}
+
+#[test]
+fn insert_block_replace_refuses_a_verified_encrypted_bib() {
+    // A keyed node resolves the encrypted BIB's targets: the signed-then-
+    // encrypted hop count is stamped as covered by a BIB that is itself
+    // BCB-encrypted, and the replace refuses with BibIsEncrypted — the
+    // target cannot be stripped from the BIB's ciphertext.
+    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count();
+    let enc_key = aes_key();
+    let (_, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
+
+    let parse::Parsed {
+        data,
+        mut bundle,
+        bcbs,
+        mut bibs,
+    } = parse::parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
+    // Decrypting the BIB is all it takes to learn its targets; the signing
+    // key stays out, since KeySet serves the first key whose operations
+    // match and the HS256+A128KW key would answer the BCB's unwrap.
+    let keys = key::KeySet::new(vec![enc_key]);
+    let failed = checks::decrypt_and_validate_covered_bibs(
+        &data,
+        &keys,
+        &mut bundle.blocks,
+        &bcbs,
+        &mut bibs,
+        &mut HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("the keyed pass decrypts and structurally checks the BIB");
+    assert!(failed.is_empty(), "the BIB must decrypt");
+    assert_eq!(
+        bundle.blocks.get(&hop).unwrap().bib,
+        block::BibCoverage::Some(bib),
+        "the keyed pass stamps the hop count's real coverage"
+    );
+    assert!(
+        bundle.blocks.get(&bib).unwrap().bcb.is_some(),
+        "the covering BIB is itself encrypted"
+    );
+
+    assert!(matches!(
+        Editor::new(&bundle, &data).insert_block(block::Type::HopCount),
+        Err((_, Error::BibIsEncrypted(n))) if n == hop
+    ));
+}
+
+#[test]
+fn insert_block_replace_of_a_bcb_only_block_needs_fresh_data() {
+    // An encrypted hop count no BIB covers: the replace strips it from its
+    // BCB and hands back a builder with no data, its body being ciphertext.
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+    let (encrypted, encrypted_bytes) = encrypt(&bundle, &data, hop, &aes_key());
+    let hop_block = encrypted.blocks.get(&hop).unwrap();
+    assert!(
+        hop_block.bcb.is_some() && matches!(hop_block.bib, block::BibCoverage::None),
+        "the hop count is BCB-covered and nothing else"
+    );
+
+    // Flags alone leave the builder data-less, and the rebuild refuses.
+    let result = ok(Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount))
+        .with_flags(block::Flags::default())
+        .rebuild()
+        .rebuild();
+    assert!(matches!(
+        result,
+        Err(Error::Builder(builder::Error::NoBlockData))
+    ));
+
+    // Fresh data rebuilds, and neither the rebuilt bundle nor the wire
+    // keeps the block under its old BCB.
+    let new_body = emit(&hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 1,
+    })
+    .0;
+    let (rebuilt, chunks) =
+        ok(Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount))
+            .with_data(new_body.clone().into())
+            .rebuild()
+            .rebuild_bundle()
+            .expect("rebuild with fresh data");
+    assert!(rebuilt.blocks.get(&hop).unwrap().bcb.is_none());
+    let new_data = Chunk::flatten(chunks, &encrypted_bytes);
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&new_data)).expect("the emitted wire form parses");
+    assert!(
+        parsed
+            .bcbs
+            .values()
+            .all(|ops| !ops.operations().contains_key(&hop)),
+        "no BCB on the wire may still target the replaced block"
+    );
+    let replaced = parsed.bundle.blocks.get(&hop).unwrap();
+    assert!(replaced.bcb.is_none());
+    assert_eq!(replaced.payload(&new_data), Some(new_body.as_slice()));
+}
+
+#[test]
+fn insert_block_replace_keeps_an_uncovered_blocks_flags_and_crc() {
+    // The common forwarding case: an uncovered hop count with non-default
+    // flags and a CRC. Replacing its data keeps both, and the rebuilt
+    // bundle agrees with a reparse.
+    let flags = block::Flags {
+        must_replicate: true,
+        report_on_failure: true,
+        delete_block_on_failure: true,
+        ..Default::default()
+    };
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .add_extension_block(block::Type::HopCount)
+        .expect("add the hop count")
+        .with_flags(flags.clone())
+        .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+        .build(
+            emit(&hop_info::HopInfo {
+                limit: NonZeroU8::new(30).unwrap(),
+                count: 0,
+            })
+            .0
+            .into(),
+        )
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let bundle = reparse(&data);
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+
+    let (rebuilt, chunks) = ok(Editor::new(&bundle, &data).insert_block(block::Type::HopCount))
+        .with_data(
+            emit(&hop_info::HopInfo {
+                limit: NonZeroU8::new(30).unwrap(),
+                count: 1,
+            })
+            .0
+            .into(),
+        )
+        .rebuild()
+        .rebuild_bundle()
+        .expect("rebuild the replaced bundle");
+    let new_data = Chunk::flatten(chunks, &data);
+    assert_rebuild_matches_parse(&rebuilt, &new_data);
+
+    let replaced = reparse(&new_data);
+    let hop_block = replaced.blocks.get(&hop).unwrap();
+    assert_eq!(hop_block.flags, flags);
+    assert_eq!(hop_block.crc_type, crc::CrcType::CRC32_CASTAGNOLI);
+    let hop_info = hop_block
+        .extract::<hop_info::HopInfo>(&new_data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 1);
 }

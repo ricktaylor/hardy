@@ -690,10 +690,10 @@ Each step is a `mac.update()` or AAD accumulation call. The stage provides these
 
 **What is removed:**
 
-- `BlockSet` trait — replaced by the Transformer's internal state capturing block data as it streams past
+- `Reader` trait — replaced by the Transformer's internal state capturing block data as it streams past
 - `Signer` struct — orchestration dissolves into the integrity stage
 - `Encryptor` struct — orchestration dissolves into the confidentiality stage
-- `EditorBlockSet` — no longer needed without `BlockSet`
+- `EditorReader` — no longer needed without `Reader`
 
 ### 6.2. CLA Egress: Cla::forward and Cla::write
 
@@ -778,7 +778,7 @@ pub struct PrimaryBlock {
 }
 ```
 
-Each extension `Block` records structural metadata only: byte extent in the wire data (`Range<u64>`), block type, flags, CRC type, BPSec coverage state (BIB / BCB references), and data range within the block extent. `u64` (rather than `usize`) is used so offsets remain valid on 32-bit targets where bundle storage may exceed `usize::MAX`. There is no `dyn Bundle` trait, no `BlockSet` trait, and no multiple implementations — a single concrete representation is used everywhere (parser output, Editor input, Transformer output).
+Each extension `Block` records structural metadata only: byte extent in the wire data (`Range<u64>`), block type, flags, CRC type, BPSec coverage state (BIB / BCB references), and data range within the block extent. `u64` (rather than `usize`) is used so offsets remain valid on 32-bit targets where bundle storage may exceed `usize::MAX`. There is no `dyn Bundle` trait, no `Reader` trait, and no multiple implementations — a single concrete representation is used everywhere (parser output, Editor input, Transformer output).
 
 `BundleMetadata` is the BPA's pipeline-state structure, separate from `Bundle`. It carries the metadata partition of `filter_subsystem_design.md`: provenance / wire cache / classification / infrastructure groups with per-group visibility (`WritableMetadata` and `flow_label` are gone — classification replaced them). `status` is a field of the BPA's bundle record outside the metadata (queue assignment, interim shape), and the resolved next hop rides the `ForwardPending` queue-assignment record. Decoded primary-block fields are read from `Bundle::primary`, never duplicated in metadata.
 
