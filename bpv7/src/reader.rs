@@ -88,7 +88,9 @@ pub trait Reader<'a> {
 /// `&dyn Reader`.
 pub trait ReaderExt<'a>: Reader<'a> {
     /// CBOR-decodes a block's payload into `T`, requiring the whole
-    /// payload to be consumed.
+    /// payload to be consumed: the [`Reader`] analogue of
+    /// [`Block::extract`], reading through whichever payload source the
+    /// reader provides.
     ///
     /// `Ok(None)` when the block is absent or its payload is in any
     /// unavailable [`Availability`] state — callers that respond

@@ -575,7 +575,11 @@ impl<'a> Editor<'a> {
     /// body change), and the replace is refused with
     /// [`BibIsEncrypted`](Error::BibIsEncrypted) /
     /// [`MaybeHasBib`](bpsec::Error::MaybeHasBib) where the coverage cannot
-    /// be safely updated.
+    /// be safely updated. As with `update_block`, a replaced block that was
+    /// BCB-covered comes back with no data (its body was ciphertext), so
+    /// the caller must supply fresh data with
+    /// [`with_data`](BlockBuilder::with_data); rebuilding without it fails
+    /// with [`NoBlockData`](builder::Error::NoBlockData).
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
@@ -632,7 +636,11 @@ impl<'a> Editor<'a> {
     /// This will return a `BlockBuilder` that can be used to manipulate the
     /// existing block. If the block is a security target of a BIB or BCB, it
     /// will be automatically removed from those target lists first (since the
-    /// signature/encryption would be invalid after modification).
+    /// signature/encryption would be invalid after modification). A block
+    /// that was BCB-covered comes back with no data (its body was
+    /// ciphertext), so the caller must supply fresh data with
+    /// [`with_data`](BlockBuilder::with_data); rebuilding without it fails
+    /// with [`NoBlockData`](builder::Error::NoBlockData).
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]

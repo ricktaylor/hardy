@@ -105,7 +105,10 @@ impl<'a> ExtensionEditor<'a> {
             return Err(Error::ReservedType(block_type));
         }
 
-        let editor = self.editor.take().expect("editor taken re-entrantly");
+        let editor = self
+            .editor
+            .take()
+            .expect("the editor is present between operations");
         match editor.push_block(block_type) {
             Ok(builder) => {
                 let block_number = builder.block_number();
@@ -131,7 +134,10 @@ impl<'a> ExtensionEditor<'a> {
     pub fn replace(&mut self, block_number: u64, data: Box<[u8]>) -> Result<()> {
         self.check_target(block_number)?;
 
-        let editor = self.editor.take().expect("editor taken re-entrantly");
+        let editor = self
+            .editor
+            .take()
+            .expect("the editor is present between operations");
         match editor.update_block(block_number) {
             Ok(builder) => {
                 self.editor = Some(builder.with_data(Cow::Owned(data.into_vec())).rebuild());
@@ -149,7 +155,10 @@ impl<'a> ExtensionEditor<'a> {
     pub fn remove(&mut self, block_number: u64) -> Result<()> {
         self.check_target(block_number)?;
 
-        let editor = self.editor.take().expect("editor taken re-entrantly");
+        let editor = self
+            .editor
+            .take()
+            .expect("the editor is present between operations");
         match editor.remove_block(block_number) {
             Ok(editor) => {
                 self.editor = Some(editor);
@@ -170,7 +179,10 @@ impl<'a> ExtensionEditor<'a> {
         if block_number <= 1 {
             return Err(Error::ReservedBlock(block_number));
         }
-        let editor = self.editor.as_ref().expect("editor taken re-entrantly");
+        let editor = self
+            .editor
+            .as_ref()
+            .expect("the editor is present between operations");
         let Some((block, _)) = editor.block(block_number) else {
             return Err(Error::NoSuchBlock(block_number));
         };
@@ -198,7 +210,7 @@ impl<'a> ExtensionEditor<'a> {
             return Ok(None);
         }
         self.editor
-            .expect("editor taken re-entrantly")
+            .expect("the editor is present between operations")
             .rebuild_bundle()
             .map(Some)
             .map_err(Error::Editor)
