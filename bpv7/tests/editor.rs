@@ -1,21 +1,25 @@
-//! Integration tests for `hardy_bpv7::editor::Editor` — building, mutating,
+//! Integration tests for `hardy_bpv7::editor::Editor` and
+//! `hardy_bpv7::extension_editor::ExtensionEditor` — building, mutating,
 //! and rebuilding bundles through the public API.
 
 use core::{num::NonZeroU8, time::Duration};
+use std::collections::{HashMap, HashSet};
 
+use bytes::Bytes;
 use hardy_bpv7::{
     Bundle, block,
     bpsec::{encryptor, key, rfc9173::ScopeFlags, signer},
-    builder, crc, creation_timestamp,
+    builder, checks, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
-    eid, extension_editor,
-    extension_editor::ExtensionEditor,
+    eid,
+    extension_editor::{self, ExtensionEditor},
     hop_info, parse,
 };
-use std::collections::HashSet;
+use hardy_cbor::encode::emit;
 
 mod common;
 use self::common::rand_k;
+
 // Build a bundle, parse it, return (bundle, data) ready for editing.
 fn make_bundle() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -49,9 +53,7 @@ fn ok<T>(result: Result<T, (Editor, Error)>) -> T {
 
 // Edit a bundle, rebuild, re-parse, and return the parsed Bundle.
 fn reparse(data: &[u8]) -> Bundle {
-    parse::parse(bytes::Bytes::copy_from_slice(data))
-        .unwrap()
-        .bundle
+    parse::parse(Bytes::copy_from_slice(data)).unwrap().bundle
 }
 
 #[test]
@@ -750,6 +752,15 @@ fn extension_editor_maps_singleton_duplicates_through() {
             block::Type::HopCount
         )))
     ));
+    // A refusal from the inner editor is not an edit either.
+    assert!(!editor.is_modified());
+    assert!(
+        editor
+            .finish()
+            .expect("an untouched editor is not an error")
+            .is_none(),
+        "a refused insert materialises nothing"
+    );
 }
 
 #[test]
@@ -1085,7 +1096,7 @@ fn insert_block_replace_strips_bib_coverage_like_update_block() {
     let (rebuilt, chunks) =
         ok(Editor::new(&signed, &signed_bytes).insert_block(block::Type::HopCount))
             .with_data(
-                hardy_cbor::encode::emit(&hop_info::HopInfo {
+                emit(&hop_info::HopInfo {
                     limit: NonZeroU8::new(30).unwrap(),
                     count: 1,
                 })
@@ -1105,8 +1116,8 @@ fn insert_block_replace_strips_bib_coverage_like_update_block() {
         "the rebuilt Bundle must not report BIB coverage on the replaced block"
     );
     let new_data = Chunk::flatten(chunks, &signed_bytes);
-    let parsed = hardy_bpv7::parse::parse(bytes::Bytes::copy_from_slice(&new_data))
-        .expect("the emitted wire form parses");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&new_data)).expect("the emitted wire form parses");
     assert!(
         parsed
             .bibs
@@ -1241,7 +1252,7 @@ fn insert_block_replace_proceeds_on_a_bystander() {
     let new_data =
         ok(Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount))
             .with_data(
-                hardy_cbor::encode::emit(&hop_info::HopInfo {
+                emit(&hop_info::HopInfo {
                     limit: NonZeroU8::new(30).unwrap(),
                     count: 1,
                 })
@@ -1279,4 +1290,205 @@ fn insert_block_replace_proceeds_on_a_bystander() {
             "block {n} must be untouched by the bystander replace"
         );
     }
+}
+
+// An AES-GCM key for the encryption fixtures below; its value is
+// immaterial, so it is generated.
+fn aes_key() -> key::Key {
+    serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap()
+}
+
+// Encrypt block `n` of (bundle, data) with `key`, returning the reparsed
+// bundle and its bytes. The security header stays out of the AAD, as in the
+// other encryption fixtures here.
+fn encrypt(bundle: &Bundle, data: &[u8], n: u64, key: &key::Key) -> (Bundle, Box<[u8]>) {
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let bytes = encryptor::Encryptor::new(bundle, data)
+        .encrypt_block(
+            n,
+            encryptor::Context::AES_GCM(flags),
+            "ipn:2.1".parse().unwrap(),
+            key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the block")
+        .rebuild()
+        .expect("rebuild encrypted");
+    (reparse(&bytes), bytes)
+}
+
+#[test]
+fn insert_block_replace_refuses_a_verified_encrypted_bib() {
+    // A keyed node resolves the encrypted BIB's targets: the signed-then-
+    // encrypted hop count is stamped as covered by a BIB that is itself
+    // BCB-encrypted, and the replace refuses with BibIsEncrypted — the
+    // target cannot be stripped from the BIB's ciphertext.
+    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count();
+    let enc_key = aes_key();
+    let (_, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
+
+    let parse::Parsed {
+        data,
+        mut bundle,
+        bcbs,
+        mut bibs,
+    } = parse::parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
+    // Decrypting the BIB is all it takes to learn its targets; the signing
+    // key stays out, since KeySet serves the first key whose operations
+    // match and the HS256+A128KW key would answer the BCB's unwrap.
+    let keys = key::KeySet::new(vec![enc_key]);
+    let failed = checks::decrypt_and_validate_covered_bibs(
+        &data,
+        &keys,
+        &mut bundle.blocks,
+        &bcbs,
+        &mut bibs,
+        &mut HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("the keyed pass decrypts and validates the BIB");
+    assert!(failed.is_empty(), "the BIB must validate");
+    assert_eq!(
+        bundle.blocks.get(&hop).unwrap().bib,
+        block::BibCoverage::Some(bib),
+        "the keyed pass stamps the hop count's real coverage"
+    );
+    assert!(
+        bundle.blocks.get(&bib).unwrap().bcb.is_some(),
+        "the covering BIB is itself encrypted"
+    );
+
+    assert!(matches!(
+        Editor::new(&bundle, &data).insert_block(block::Type::HopCount),
+        Err((_, Error::BibIsEncrypted(n))) if n == hop
+    ));
+}
+
+#[test]
+fn insert_block_replace_of_a_bcb_only_block_needs_fresh_data() {
+    // An encrypted hop count no BIB covers: the replace strips it from its
+    // BCB and hands back a builder with no data, its body being ciphertext.
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+    let (encrypted, encrypted_bytes) = encrypt(&bundle, &data, hop, &aes_key());
+    let hop_block = encrypted.blocks.get(&hop).unwrap();
+    assert!(
+        hop_block.bcb.is_some() && matches!(hop_block.bib, block::BibCoverage::None),
+        "the hop count is BCB-covered and nothing else"
+    );
+
+    // Flags alone leave the builder data-less, and the rebuild refuses.
+    let result = ok(Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount))
+        .with_flags(block::Flags::default())
+        .rebuild()
+        .rebuild();
+    assert!(matches!(
+        result,
+        Err(Error::Builder(builder::Error::NoBlockData))
+    ));
+
+    // Fresh data rebuilds, and neither the rebuilt bundle nor the wire
+    // keeps the block under its old BCB.
+    let new_body = emit(&hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 1,
+    })
+    .0;
+    let (rebuilt, chunks) =
+        ok(Editor::new(&encrypted, &encrypted_bytes).insert_block(block::Type::HopCount))
+            .with_data(new_body.clone().into())
+            .rebuild()
+            .rebuild_bundle()
+            .expect("rebuild with fresh data");
+    assert!(rebuilt.blocks.get(&hop).unwrap().bcb.is_none());
+    let new_data = Chunk::flatten(chunks, &encrypted_bytes);
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&new_data)).expect("the emitted wire form parses");
+    assert!(
+        parsed
+            .bcbs
+            .values()
+            .all(|ops| !ops.operations().contains_key(&hop)),
+        "no BCB on the wire may still target the replaced block"
+    );
+    let replaced = parsed.bundle.blocks.get(&hop).unwrap();
+    assert!(replaced.bcb.is_none());
+    assert_eq!(replaced.payload(&new_data), Some(new_body.as_slice()));
+}
+
+#[test]
+fn insert_block_replace_keeps_an_uncovered_blocks_flags_and_crc() {
+    // The common forwarding case: an uncovered hop count with non-default
+    // flags and a CRC. Replacing its data keeps both, and the rebuilt
+    // bundle agrees with a reparse.
+    let flags = block::Flags {
+        must_replicate: true,
+        report_on_failure: true,
+        delete_block_on_failure: true,
+        ..Default::default()
+    };
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .add_extension_block(block::Type::HopCount)
+        .expect("add the hop count")
+        .with_flags(flags.clone())
+        .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+        .build(
+            emit(&hop_info::HopInfo {
+                limit: NonZeroU8::new(30).unwrap(),
+                count: 0,
+            })
+            .0
+            .into(),
+        )
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let bundle = reparse(&data);
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+
+    let (rebuilt, chunks) = ok(Editor::new(&bundle, &data).insert_block(block::Type::HopCount))
+        .with_data(
+            emit(&hop_info::HopInfo {
+                limit: NonZeroU8::new(30).unwrap(),
+                count: 1,
+            })
+            .0
+            .into(),
+        )
+        .rebuild()
+        .rebuild_bundle()
+        .expect("rebuild the replaced bundle");
+    let new_data = Chunk::flatten(chunks, &data);
+    assert_rebuild_matches_parse(&rebuilt, &new_data);
+
+    let replaced = reparse(&new_data);
+    let hop_block = replaced.blocks.get(&hop).unwrap();
+    assert_eq!(hop_block.flags, flags);
+    assert_eq!(hop_block.crc_type, crc::CrcType::CRC32_CASTAGNOLI);
+    let hop_info = hop_block
+        .extract::<hop_info::HopInfo>(&new_data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 1);
 }
