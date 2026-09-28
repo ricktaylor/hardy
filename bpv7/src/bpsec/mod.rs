@@ -111,12 +111,15 @@ enum Decrypt {
 /// block's outcome for the reader's lifetime.
 ///
 /// Uncovered blocks read as borrowed wire slices, exactly like
-/// [`PlainReader`]. A covered block is decrypted at most once: the first
-/// request runs the BCB operation (with [`PlainReader`] serving the AAD
-/// lookups) and caches the outcome — plaintext, no-usable-key, or
-/// decrypt-failure — and every later request replays the cached state.
-/// Cached plaintext is zeroized when the reader drops, so its lifetime
-/// bounds how long decrypted bytes stay in memory.
+/// [`PlainReader`]. A covered block's first request runs the BCB operation
+/// (with [`PlainReader`] serving the AAD lookups) and caches the outcome —
+/// plaintext, no-usable-key, or decrypt-failure. Through the [`Reader`]
+/// impl every later request replays the cached state, so a covered block
+/// is decrypted at most once. The give doors replay a cached plaintext or
+/// no-key the same way but re-run a cached failure, since the cache
+/// records that a decrypt failed, not why, and they return the exact
+/// cause. Cached plaintext is zeroized when the reader drops, so its
+/// lifetime bounds how long decrypted bytes stay in memory.
 ///
 /// The two read doors serve different possession needs:
 ///
