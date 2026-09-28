@@ -27,12 +27,13 @@ use crate::{
 /// The outcome of asking a [`Reader`] for a block's payload.
 ///
 /// A present block's payload can be unavailable for three distinct reasons,
-/// and a caller's correct response differs for each — a policy filter may
-/// treat an undecryptable block as tampering evidence while passing over one
-/// it merely holds no key for — so the states are never conflated into a
-/// bare `None`. This is the *outcome* axis only: how available bytes are
-/// held (borrowed slice vs owned decrypted buffer) remains [`Payload`]'s
-/// concern, wrapped in [`Available`](Self::Available).
+/// and a caller's correct response differs for each — a non-resident block
+/// can be read once its bytes arrive, one this node holds no key for is not
+/// its to read, and one it tried and failed to decrypt has a cause worth
+/// examining — so the states are never conflated into a bare `None`. This
+/// is the *outcome* axis only: how available bytes are held (borrowed slice
+/// vs owned decrypted buffer) remains [`Payload`]'s concern, wrapped in
+/// [`Available`](Self::Available).
 #[derive(Debug)]
 pub enum Availability<'a> {
     /// The payload bytes are available.
@@ -42,7 +43,11 @@ pub enum Availability<'a> {
     NotResident,
     /// The block is BCB-covered and no usable key is held.
     NoKey,
-    /// The block is BCB-covered and decryption was attempted and failed.
+    /// The block is BCB-covered and this node cannot produce its plaintext
+    /// despite trying: the ciphertext failed to authenticate, or the BCB's
+    /// security context or parameters are ones this node does not support.
+    /// Not by itself evidence of tampering; the give doors of
+    /// [`DecryptingReader`](crate::bpsec::DecryptingReader) report the cause.
     NotDecryptable,
 }
 
