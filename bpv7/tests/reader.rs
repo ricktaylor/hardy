@@ -3,25 +3,28 @@
 //! and the memoisation of decrypt outcomes.
 
 use core::cell::Cell;
+use std::collections::HashMap;
 
+use bytes::Bytes;
 use hardy_bpv7::{
-    block::Payload,
+    Error,
+    block::{Block, Payload},
     bpsec::{self, DecryptingReader, encryptor, key, rfc9173::ScopeFlags},
     builder::Builder,
     creation_timestamp::CreationTimestamp,
     eid::Eid,
-    parse,
+    parse::{Parsed, parse},
     reader::{Availability, Reader, ReaderExt},
 };
-use std::collections::HashMap;
+use hardy_cbor::encode::emit;
 
 mod common;
 use self::common::rand_k;
 
 const PAYLOAD: &[u8] = b"reader memoisation plaintext";
 
-/// A key source that counts lookups, for asserting decrypt attempts
-/// deterministically: a memoised outcome must not consult the keys again.
+// A key source that counts lookups, for asserting decrypt attempts
+// deterministically: a memoised outcome must not consult the keys again.
 struct CountingKeys<'a> {
     inner: &'a key::KeySet,
     hits: Cell<usize>,
@@ -59,14 +62,14 @@ fn enc_key() -> key::Key {
     .unwrap()
 }
 
-/// A parsed bundle whose payload block (1) is BCB-encrypted with `key`:
-/// the bundle bytes, the blocks, and the decoded BCB OperationSets.
+// A parsed bundle whose payload block (1) is BCB-encrypted with `key`:
+// the bundle bytes, the blocks, and the decoded BCB OperationSets.
 #[allow(clippy::type_complexity)]
 fn encrypted_bundle(
     key: &key::Key,
 ) -> (
-    bytes::Bytes,
-    HashMap<u64, hardy_bpv7::block::Block>,
+    Bytes,
+    HashMap<u64, Block>,
     HashMap<u64, bpsec::bcb::OperationSet>,
 ) {
     let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
@@ -74,7 +77,7 @@ fn encrypted_bundle(
         .build(CreationTimestamp::now())
         .unwrap();
 
-    let raw = parse::parse(bytes::Bytes::copy_from_slice(&bundle_bytes))
+    let raw = parse(Bytes::copy_from_slice(&bundle_bytes))
         .expect("parse")
         .bundle;
     // Exclude the security header from AAD to avoid mismatches due to BCB
@@ -94,9 +97,9 @@ fn encrypted_bundle(
         .expect("encrypt payload block");
     let encrypted_bytes = encryptor.rebuild().expect("rebuild encrypted bundle");
 
-    let parse::Parsed {
+    let Parsed {
         data, bundle, bcbs, ..
-    } = parse::parse(bytes::Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
+    } = parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
     (data, bundle.blocks, bcbs)
 }
 
@@ -196,14 +199,61 @@ fn into_block_data_decrypts_an_uncached_block() {
 }
 
 #[test]
+fn give_door_primes_the_lending_door() {
+    let key = enc_key();
+    let keys = key::KeySet::new(vec![key.clone()]);
+    let (data, blocks, bcbs) = encrypted_bundle(&key);
+
+    let counting = CountingKeys::new(&keys);
+    let reader = DecryptingReader::new(&blocks, &data, &bcbs, &counting);
+
+    let given = reader
+        .block_data(1)
+        .expect("the payload decrypts")
+        .expect("resident");
+    assert_eq!(given.as_ref(), PAYLOAD);
+    let after_give = counting.hits();
+    assert!(after_give >= 1, "the first read must consult the keys");
+
+    let (_, availability) = reader.block(1).expect("payload block exists");
+    let Availability::Available(lent) = availability else {
+        panic!("the give door's plaintext must serve the lending door, got {availability:?}");
+    };
+    assert_eq!(lent.as_ref(), PAYLOAD);
+    assert_eq!(
+        counting.hits(),
+        after_give,
+        "the lending door replays the plaintext the give door cached"
+    );
+}
+
+#[test]
+fn absent_block_is_missing() {
+    let key = enc_key();
+    let keys = key::KeySet::new(vec![key.clone()]);
+    let (data, blocks, bcbs) = encrypted_bundle(&key);
+
+    let reader = DecryptingReader::new(&blocks, &data, &bcbs, &keys);
+    assert!(reader.block(99).is_none(), "no block to lend");
+    assert!(matches!(
+        reader.block_data(99),
+        Err(Error::MissingBlock(99))
+    ));
+    assert!(matches!(
+        reader.into_block_data(99),
+        Err(Error::MissingBlock(99))
+    ));
+}
+
+#[test]
 fn uncovered_block_borrows_the_wire() {
     let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
         .with_payload(PAYLOAD.into())
         .build(CreationTimestamp::now())
         .unwrap();
-    let parse::Parsed {
+    let Parsed {
         data, bundle, bcbs, ..
-    } = parse::parse(bytes::Bytes::copy_from_slice(&bundle_bytes)).expect("parse");
+    } = parse(Bytes::copy_from_slice(&bundle_bytes)).expect("parse");
 
     let keys = key::KeySet::EMPTY;
     let reader = DecryptingReader::new(&bundle.blocks, &data, &bcbs, &keys);
@@ -216,11 +266,17 @@ fn uncovered_block_borrows_the_wire() {
     assert_eq!(payload.as_ref(), PAYLOAD);
 
     let payload = reader.block_data(1).expect("uncovered").expect("resident");
+    let Payload::Borrowed(body) = payload else {
+        panic!("uncovered plaintext is a wire slice on both doors");
+    };
+    assert_eq!(body, PAYLOAD);
+    // The give doors' promise that `Bytes::slice_ref` consumers rely on: a
+    // borrowed payload lies inside the source buffer.
+    let (wire, body) = (data.as_ptr_range(), body.as_ptr_range());
     assert!(
-        matches!(payload, Payload::Borrowed(_)),
-        "uncovered plaintext is a wire slice on both doors"
+        wire.start <= body.start && body.end <= wire.end,
+        "a borrowed payload must be a sub-slice of source_data"
     );
-    assert_eq!(payload.as_ref(), PAYLOAD);
 
     let payload = reader
         .into_block_data(1)
@@ -249,6 +305,7 @@ fn no_key_is_a_replayed_state() {
         ));
         counting.hits()
     };
+    assert!(after_first >= 1, "the first read must consult the keys");
     for _ in 0..2 {
         assert!(matches!(
             reader.block(1).expect("payload block exists").1,
@@ -264,7 +321,7 @@ fn no_key_is_a_replayed_state() {
     // Inherent parity: the same state as a typed error, also from the cache.
     assert!(matches!(
         reader.block_data(1),
-        Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
+        Err(Error::InvalidBPSec(bpsec::Error::NoKey))
     ));
     assert_eq!(
         counting.hits(),
@@ -274,7 +331,7 @@ fn no_key_is_a_replayed_state() {
 
     assert!(matches!(
         reader.into_block_data(1),
-        Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
+        Err(Error::InvalidBPSec(bpsec::Error::NoKey))
     ));
     assert_eq!(
         counting.hits(),
@@ -289,14 +346,11 @@ fn non_resident_extent_is_not_resident() {
     let keys = key::KeySet::new(vec![key.clone()]);
     let (data, blocks, bcbs) = encrypted_bundle(&key);
 
-    // Cut into the payload block's extent: the blocks were parsed from the
-    // full buffer, the reader sees a truncated one (the headers-only or
-    // streaming case).
-    let truncated = &data[..data.len() - 2];
-    assert!(
-        blocks.get(&1).unwrap().payload_range().end > truncated.len() as u64,
-        "the truncation must cut the payload extent"
-    );
+    // Cut one byte into the payload block's extent: the blocks were parsed
+    // from the full buffer, the reader sees a truncated one (the
+    // headers-only or streaming case).
+    let payload_end = usize::try_from(blocks.get(&1).unwrap().payload_range().end).unwrap();
+    let truncated = &data[..payload_end - 1];
 
     let reader = DecryptingReader::new(&blocks, truncated, &bcbs, &keys);
     assert!(matches!(
@@ -348,9 +402,7 @@ fn corrupted_ciphertext_is_not_decryptable() {
     // Inherent parity: re-runs the decrypt to surface the exact cause.
     assert!(matches!(
         reader.block_data(1),
-        Err(hardy_bpv7::Error::InvalidBPSec(
-            bpsec::Error::DecryptionFailed
-        ))
+        Err(Error::InvalidBPSec(bpsec::Error::DecryptionFailed))
     ));
     assert!(
         counting.hits() > after_first,
@@ -360,9 +412,7 @@ fn corrupted_ciphertext_is_not_decryptable() {
     let after_give = counting.hits();
     assert!(matches!(
         reader.into_block_data(1),
-        Err(hardy_bpv7::Error::InvalidBPSec(
-            bpsec::Error::DecryptionFailed
-        ))
+        Err(Error::InvalidBPSec(bpsec::Error::DecryptionFailed))
     ));
     assert!(
         counting.hits() > after_give,
@@ -392,26 +442,20 @@ fn mismatched_parse_products_error_on_the_inherent_door() {
 
     let no_ops = HashMap::new();
     let reader = DecryptingReader::new(&blocks, &data, &no_ops, &keys);
-    assert!(matches!(
-        reader.block_data(1),
-        Err(hardy_bpv7::Error::Altered)
-    ));
-    assert!(matches!(
-        reader.into_block_data(1),
-        Err(hardy_bpv7::Error::Altered)
-    ));
+    assert!(matches!(reader.block_data(1), Err(Error::Altered)));
+    assert!(matches!(reader.into_block_data(1), Err(Error::Altered)));
 }
 
 #[test]
 fn extract_decodes_an_available_payload() {
     // A payload that is itself canonical CBOR: extract() decodes it.
     let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
-        .with_payload(hardy_cbor::encode::emit(&42u64).0.into())
+        .with_payload(emit(&42u64).0.into())
         .build(CreationTimestamp::now())
         .unwrap();
-    let parse::Parsed {
+    let Parsed {
         data, bundle, bcbs, ..
-    } = parse::parse(bytes::Bytes::copy_from_slice(&bundle_bytes)).expect("parse");
+    } = parse(Bytes::copy_from_slice(&bundle_bytes)).expect("parse");
 
     let keys = key::KeySet::EMPTY;
     let reader = DecryptingReader::new(&bundle.blocks, &data, &bcbs, &keys);
@@ -442,6 +486,26 @@ fn extract_flattens_unavailable_and_reports_decode_failures() {
     assert!(
         reader
             .extract::<u64>(1)
-            .is_err_and(|e| matches!(e, hardy_bpv7::Error::InvalidCBOR(_)))
+            .is_err_and(|e| matches!(e, Error::InvalidCBOR(_)))
     );
+
+    // Not resident: flattens to None.
+    let payload = blocks.get(&1).unwrap().payload_range();
+    let payload_end = usize::try_from(payload.end).unwrap();
+    let reader = DecryptingReader::new(&blocks, &data[..payload_end - 1], &bcbs, &keys);
+    assert!(matches!(
+        reader.block(1).expect("payload block exists").1,
+        Availability::NotResident
+    ));
+    assert_eq!(reader.extract::<u64>(1).expect("unavailable is None"), None);
+
+    // Not decryptable (one ciphertext byte flipped): flattens to None.
+    let mut corrupt = data.to_vec();
+    corrupt[usize::try_from(payload.start).unwrap()] ^= 0x01;
+    let reader = DecryptingReader::new(&blocks, &corrupt, &bcbs, &keys);
+    assert!(matches!(
+        reader.block(1).expect("payload block exists").1,
+        Availability::NotDecryptable
+    ));
+    assert_eq!(reader.extract::<u64>(1).expect("unavailable is None"), None);
 }
