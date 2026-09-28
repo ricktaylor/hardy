@@ -280,6 +280,17 @@ impl Dispatcher {
         let report_on_failure =
             !bundle.primary().flags.is_admin_record && !bundle.id().source.is_null();
 
+        // The per-hop blocks below are replaced through `insert_block`, which
+        // strips a replaced block from any BIB that covers it. A sender that
+        // signed a block this node must rewrite (RFC 9171 §4.4.3, §5.4) keeps
+        // its other signatures valid; a stale result over the new body would
+        // instead fail verification downstream, costing the receiver the
+        // block or the whole bundle under its failure policy. For a
+        // hop-by-hop PreviousNode signature the strip is also the RFC 9172
+        // §5.1.2 acceptor duty: the consumed operation leaves with the block
+        // it covered. Coverage the editor cannot safely update (an encrypted
+        // BIB over the block) refuses, and the caller parks the bundle.
+
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
