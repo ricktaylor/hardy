@@ -281,8 +281,10 @@ pub enum BibCoverage {
     Some(u64),
     /// There are encrypted BIBs that couldn't be decrypted during parsing;
     /// it's unknown whether any of them target this block. The parser
-    /// marks only BCB-covered blocks `Maybe`: RFC 9172 §3.9 confines an
-    /// encrypted BIB's targets to blocks a BCB also covers.
+    /// marks only BCB-covered blocks `Maybe`: as built under RFC 9172 §3.9,
+    /// an encrypted BIB targets only blocks a BCB also covers. A partial
+    /// acceptor that decrypts a target but not the BIB over it leaves a
+    /// block no BCB covers under an encrypted BIB; that block reads `None`.
     Maybe,
 }
 

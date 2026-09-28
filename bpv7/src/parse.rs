@@ -730,13 +730,17 @@ impl BundleParser {
 
         // Encrypted BIBs whose targets we couldn't read: every BCB-covered
         // non-security block whose BIB coverage is still `None` becomes
-        // `Maybe`. A block no BCB covers stays `None`: RFC 9172 §3.9 makes
-        // a BIB whose targets a new BCB matches be encrypted, and splits a
-        // partially matched one so only the matched results move to an
-        // encrypted BIB, so a conformant encrypted BIB targets only blocks
-        // a BCB also covers. A non-conformant sender that hides a BCB-less
-        // target has that signature broken if the block is later edited,
-        // which fails closed at the downstream key-holder.
+        // `Maybe`. A block no BCB covers stays `None`. As built under RFC
+        // 9172 §3.9 ("when adding a BCB"), an encrypted BIB targets only
+        // blocks a BCB also covers: a BIB whose targets a new BCB matches
+        // is encrypted with them, and a partially matched one is split so
+        // only the matched results move to an encrypted BIB. Two later
+        // states break that: a security acceptor that decrypts a target but
+        // not the BIB over it (RFC 9172 §5.1.1 permits partial acceptance,
+        // and `bpsec::edit::remove_encryption` does exactly this for one
+        // target), and a non-conformant sender. An edit to such a block
+        // breaks the hidden signature, which fails closed at the downstream
+        // key-holder.
         if has_undecryptable_bibs {
             for block in bundle.blocks.values_mut() {
                 if block.bcb.is_some()
