@@ -132,21 +132,20 @@ enum Decrypt {
 ///   [`into_block_data`](Self::into_block_data) gives by move, for a
 ///   caller that reads one block and is then done with the reader.
 ///
-/// `blocks` and `bcb_ops` MUST be products of the same parse of
-/// `source_data`; mixing parse products is a logic error (see the
-/// [`Reader`] impl's panic note).
+/// The `blocks` and `bcb_ops` given to [`new`](Self::new) MUST be products
+/// of the same parse of `source_data`; mixing parse products is a logic
+/// error (see the [`Reader`] impl's panic note).
 ///
 /// The memoisation uses interior mutability without locking, so the
 /// reader is not `Sync`; share it within one thread of work.
 pub struct DecryptingReader<'a> {
-    /// The bundle's blocks, keyed by block number (e.g. `Bundle::blocks`).
-    pub blocks: &'a HashMap<u64, block::Block>,
-    /// The complete, contiguous bundle byte stream the offsets index into.
-    pub source_data: &'a [u8],
-    /// The bundle's decoded BCB OperationSets, keyed by BCB block number.
-    pub bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
-    /// The key source consulted for BCB decryption.
-    pub keys: &'a dyn key::KeySource,
+    // Private, with the cache derived from them at construction: replacing
+    // any of them afterwards would pair the memoised outcomes with other
+    // blocks, bytes or keys.
+    blocks: &'a HashMap<u64, block::Block>,
+    source_data: &'a [u8],
+    bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
+    keys: &'a dyn key::KeySource,
     // One cell per BCB-covered block, memoising its decrypt outcome.
     cache: HashMap<u64, OnceCell<Decrypt>>,
 }
