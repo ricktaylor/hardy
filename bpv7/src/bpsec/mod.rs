@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use core::cell::OnceCell;
+use core::{cell::OnceCell, ops::ControlFlow};
 
 use hardy_cbor::{
     decode::FromCbor,
@@ -125,7 +125,9 @@ enum Decrypt {
 ///   one reader wants.
 /// - [`block_data`](Self::block_data) **gives**: available plaintext comes
 ///   back owned (never a cache borrow), and failures come back as typed
-///   errors carrying the diagnostic cause.
+///   errors carrying the diagnostic cause. Its consuming twin
+///   [`into_block_data`](Self::into_block_data) gives by move, for a
+///   caller that reads one block and is then done with the reader.
 ///
 /// `blocks` and `bcb_ops` MUST be products of the same parse of
 /// `source_data`; mixing parse products is a logic error (see the
@@ -203,6 +205,30 @@ impl<'a> DecryptingReader<'a> {
         .map_err(crate::Error::InvalidBPSec)
     }
 
+    // The shared front of the give doors: `Break` carries the finished
+    // answer for a non-resident or uncovered block, `Continue` the number
+    // of the BCB covering the block, leaving the decrypt to the caller.
+    fn wire_or_covering_bcb(
+        &self,
+        block_number: u64,
+    ) -> Result<ControlFlow<Option<block::Payload<'a>>, u64>, crate::Error> {
+        let target = self
+            .blocks
+            .get(&block_number)
+            .ok_or(crate::Error::MissingBlock(block_number))?;
+        if !self.is_resident(target) {
+            return Ok(ControlFlow::Break(None));
+        }
+        match target.bcb {
+            Some(bcb_num) => Ok(ControlFlow::Continue(bcb_num)),
+            // Unencrypted — the raw wire body is the plaintext.
+            None => target
+                .payload(self.source_data)
+                .map(|payload| ControlFlow::Break(Some(block::Payload::Borrowed(payload))))
+                .ok_or(crate::Error::Altered),
+        }
+    }
+
     /// Block `block_number`'s plaintext, owned: `Payload::Borrowed` only
     /// ever slices `source_data` (the uncovered case), and a covered
     /// block's plaintext comes back as an owned `Payload::Decrypted` —
@@ -218,25 +244,16 @@ impl<'a> DecryptingReader<'a> {
     /// Shares the memo cells with the [`Reader`] impl: a cached plaintext
     /// is cloned out, a cached no-key replays without touching the key
     /// source, and a cached failure re-runs the decrypt so the returned
-    /// error carries the exact cause.
+    /// error carries the exact cause. A caller reading one block and then
+    /// dropping the reader uses [`into_block_data`](Self::into_block_data)
+    /// instead, which moves the plaintext out rather than cloning it.
     pub fn block_data(
         &self,
         block_number: u64,
     ) -> Result<Option<block::Payload<'a>>, crate::Error> {
-        let target = self
-            .blocks
-            .get(&block_number)
-            .ok_or(crate::Error::MissingBlock(block_number))?;
-        if !self.is_resident(target) {
-            return Ok(None);
-        }
-        let Some(bcb_num) = target.bcb else {
-            // Unencrypted — the raw wire body is the plaintext.
-            return target
-                .payload(self.source_data)
-                .map(block::Payload::Borrowed)
-                .map(Some)
-                .ok_or(crate::Error::Altered);
+        let bcb_num = match self.wire_or_covering_bcb(block_number)? {
+            ControlFlow::Break(answer) => return Ok(answer),
+            ControlFlow::Continue(bcb_num) => bcb_num,
         };
 
         let cell = self
@@ -272,6 +289,35 @@ impl<'a> DecryptingReader<'a> {
                     Err(e)
                 }
             },
+        }
+    }
+
+    /// Block `block_number`'s plaintext, consuming the reader: the one-shot
+    /// form of [`block_data`](Self::block_data), with the same contract. A
+    /// covered block's plaintext moves out of its memo cell, or straight
+    /// out of the decrypt, instead of being cloned, so a caller that reads
+    /// one block holds a single plaintext copy.
+    pub fn into_block_data(
+        mut self,
+        block_number: u64,
+    ) -> Result<Option<block::Payload<'a>>, crate::Error> {
+        let bcb_num = match self.wire_or_covering_bcb(block_number)? {
+            ControlFlow::Break(answer) => return Ok(answer),
+            ControlFlow::Continue(bcb_num) => bcb_num,
+        };
+
+        match self
+            .cache
+            .remove(&block_number)
+            .and_then(OnceCell::into_inner)
+        {
+            Some(Decrypt::Plain(plaintext)) => Ok(Some(block::Payload::Decrypted(plaintext))),
+            Some(Decrypt::NoKey) => Err(crate::Error::InvalidBPSec(Error::NoKey)),
+            // Uncached, or a cached failure: run the decrypt, as the
+            // borrowing door does, for the plaintext or the exact cause.
+            Some(Decrypt::Failed) | None => self
+                .decrypt_target(block_number, bcb_num)
+                .map(|plaintext| Some(block::Payload::Decrypted(plaintext))),
         }
     }
 }

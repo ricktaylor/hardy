@@ -1,6 +1,6 @@
 //! Public-API tests for `bpsec::DecryptingReader`: the four `Availability`
-//! states, the lend (trait) / give (inherent) split, and the memoisation of
-//! decrypt outcomes.
+//! states, the lend (trait) / give (inherent) split and its consuming give,
+//! and the memoisation of decrypt outcomes.
 
 use core::cell::Cell;
 
@@ -151,6 +151,48 @@ fn covered_block_decrypts_once_and_lends() {
         after_first,
         "the inherent path reuses the cached plaintext"
     );
+
+    // The consuming door moves the cached plaintext out, still without a
+    // key lookup: the buffer it returns is the cache's own allocation.
+    let cached_at = {
+        let (_, availability) = reader.block(1).expect("payload block exists");
+        let Availability::Available(payload) = availability else {
+            panic!("repeat reads replay the cached plaintext");
+        };
+        payload.as_ref().as_ptr()
+    };
+    let payload = reader
+        .into_block_data(1)
+        .expect("cached plaintext")
+        .expect("resident");
+    assert!(matches!(payload, Payload::Decrypted(_)));
+    assert_eq!(payload.as_ref(), PAYLOAD);
+    assert_eq!(
+        payload.as_ref().as_ptr(),
+        cached_at,
+        "the consuming door moves the cached plaintext, never copies it"
+    );
+    assert_eq!(
+        counting.hits(),
+        after_first,
+        "the consuming door moves the cached plaintext"
+    );
+}
+
+#[test]
+fn into_block_data_decrypts_an_uncached_block() {
+    let key = enc_key();
+    let keys = key::KeySet::new(vec![key.clone()]);
+    let (data, blocks, bcbs) = encrypted_bundle(&key);
+
+    let counting = CountingKeys::new(&keys);
+    let payload = DecryptingReader::new(&blocks, &data, &bcbs, &counting)
+        .into_block_data(1)
+        .expect("the payload decrypts")
+        .expect("resident");
+    assert!(matches!(payload, Payload::Decrypted(_)));
+    assert_eq!(payload.as_ref(), PAYLOAD);
+    assert!(counting.hits() >= 1, "an uncached block consults the keys");
 }
 
 #[test]
@@ -177,6 +219,16 @@ fn uncovered_block_borrows_the_wire() {
     assert!(
         matches!(payload, Payload::Borrowed(_)),
         "uncovered plaintext is a wire slice on both doors"
+    );
+    assert_eq!(payload.as_ref(), PAYLOAD);
+
+    let payload = reader
+        .into_block_data(1)
+        .expect("uncovered")
+        .expect("resident");
+    assert!(
+        matches!(payload, Payload::Borrowed(_)),
+        "the consuming door gives the same wire slice"
     );
     assert_eq!(payload.as_ref(), PAYLOAD);
 }
@@ -219,6 +271,16 @@ fn no_key_is_a_replayed_state() {
         after_first,
         "the cached no-key replays without a key lookup"
     );
+
+    assert!(matches!(
+        reader.into_block_data(1),
+        Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
+    ));
+    assert_eq!(
+        counting.hits(),
+        after_first,
+        "the consuming door replays the cached no-key too"
+    );
 }
 
 #[test]
@@ -244,6 +306,10 @@ fn non_resident_extent_is_not_resident() {
     assert!(
         reader.block_data(1).expect("not an error").is_none(),
         "the inherent door reports non-residency as Ok(None)"
+    );
+    assert!(
+        reader.into_block_data(1).expect("not an error").is_none(),
+        "so does the consuming door"
     );
 }
 
@@ -290,6 +356,18 @@ fn corrupted_ciphertext_is_not_decryptable() {
         counting.hits() > after_first,
         "the give door re-runs a cached failure for its cause"
     );
+
+    let after_give = counting.hits();
+    assert!(matches!(
+        reader.into_block_data(1),
+        Err(hardy_bpv7::Error::InvalidBPSec(
+            bpsec::Error::DecryptionFailed
+        ))
+    ));
+    assert!(
+        counting.hits() > after_give,
+        "the consuming door re-runs a cached failure for its cause too"
+    );
 }
 
 // The coverage index says block 1 is BCB-covered, but the OperationSet map
@@ -316,6 +394,10 @@ fn mismatched_parse_products_error_on_the_inherent_door() {
     let reader = DecryptingReader::new(&blocks, &data, &no_ops, &keys);
     assert!(matches!(
         reader.block_data(1),
+        Err(hardy_bpv7::Error::Altered)
+    ));
+    assert!(matches!(
+        reader.into_block_data(1),
         Err(hardy_bpv7::Error::Altered)
     ));
 }

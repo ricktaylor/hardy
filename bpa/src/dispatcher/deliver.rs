@@ -151,7 +151,7 @@ impl Dispatcher {
                             &bcb_ops,
                             &*key_source,
                         )
-                        .block_data(1)
+                        .into_block_data(1)
                         .and_then(|p| p.ok_or(Bpv7Error::Altered))
                         {
                             Ok(Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),

@@ -43,7 +43,7 @@ impl Dispatcher {
                     &bcb_ops,
                     &*key_source,
                 )
-                .block_data(1)
+                .into_block_data(1)
                 .and_then(|p| p.ok_or(hardy_bpv7::Error::Altered))
                 {
                     Ok(hardy_bpv7::block::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),

@@ -41,7 +41,7 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
         let payload = DecryptingReader::new(&bundle.blocks, &data, &bcb_ops, &key_store)
-            .block_data(self.block)
+            .into_block_data(self.block)
             .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?
             .ok_or_else(|| anyhow::anyhow!("Block {} is not resident", self.block))?;
 
