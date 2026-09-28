@@ -3,12 +3,11 @@
 # Start before running postgres/s3 tests:
 #
 #   docker compose -f tests/storage/compose.storage-tests.yml up -d --wait
-#   docker compose -f tests/storage/compose.storage-tests.yml exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
-#   docker compose -f tests/storage/compose.storage-tests.yml exec minio mc mb --ignore-existing local/hardy-test
+#   docker compose -f tests/storage/compose.storage-tests.yml run --rm rustfs-init
 #   TEST_POSTGRES_URL=postgresql://hardy:hardy@localhost:5432 \
 #   TEST_S3_ENDPOINT=http://localhost:9000 \
-#   AWS_ACCESS_KEY_ID=minioadmin \
-#   AWS_SECRET_ACCESS_KEY=minioadmin \
+#   AWS_ACCESS_KEY_ID=rustfsadmin \
+#   AWS_SECRET_ACCESS_KEY=rustfsadmin \
 #     cargo test -p storage-tests --features postgres,s3
 
 services:
@@ -27,17 +26,31 @@ services:
       timeout: 3s
       retries: 10
 
-  minio:
-    image: quay.io/minio/minio:latest
-    command: server /data --console-address ":9001"
+  rustfs:
+    image: rustfs/rustfs:1.0.0
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
     ports:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:9000/health"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # One-shot that creates the test bucket; creating an existing bucket succeeds.
+  # The profile keeps it out of `up --wait`, which expects long-running services.
+  rustfs-init:
+    image: amazon/aws-cli:2.37.4
+    profiles: ["init"]
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["aws", "--endpoint-url", "http://rustfs:9000", "s3api", "create-bucket", "--bucket"]
+    command: ["hardy-test"]

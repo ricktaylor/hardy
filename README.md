@@ -123,13 +123,13 @@ From source:
 ./target/release/hardy-bpa-server -c bpa-server/config.yaml
 ```
 
-Via Docker Compose (with PostgreSQL + MinIO):
+Via Docker Compose (with PostgreSQL + RustFS):
 
 ```bash
 docker compose up --build -d
 ```
 
-For a lightweight setup with in-memory storage (no PostgreSQL/MinIO):
+For a lightweight setup with in-memory storage (no PostgreSQL/RustFS):
 
 ```bash
 docker compose --profile debug up --build hardy-debug

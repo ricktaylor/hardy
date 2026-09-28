@@ -15,7 +15,7 @@ docker compose up --build -d
 ```
 
 This builds and starts a BPA server with PostgreSQL metadata storage,
-S3 bundle storage (MinIO), and:
+S3 bundle storage (RustFS), and:
 
 - **Node ID**: `ipn:1.0`
 - **TCPCLv4**: listening on port 4556

@@ -101,7 +101,7 @@ This Strategy is the parent document. Verification is executed according to the 
 Docker Compose is used for integration and interop testing with multiple nodes and storage backends.
 
 * **Topology:** Hardy node(s) with echo service, peer implementation nodes (ION, HDTN, etc.) connected via TCPCLv4, MTCP, or STCP.
-* **Storage backends:** SQLite + local filesystem (default), PostgreSQL + MinIO (full stack).
+* **Storage backends:** SQLite + local filesystem (default), PostgreSQL + RustFS (full stack).
 * **Observability:** Grafana LGTM stack for OpenTelemetry verification.
 
 ### 4.3 Interoperability Environment

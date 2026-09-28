@@ -15,7 +15,7 @@ backend's own crate.
 | SQLite | Metadata | *(default)* | None |
 | Local disk | Bundle | *(default)* | None |
 | PostgreSQL | Metadata | `postgres` | PostgreSQL 13+ |
-| S3-compatible | Bundle | `s3` | MinIO or AWS S3 |
+| S3-compatible | Bundle | `s3` | RustFS or AWS S3 |
 
 ## Running
 
@@ -40,22 +40,21 @@ TEST_POSTGRES_URL=postgresql://hardy:hardy@localhost:5432 \
   cargo test -p storage-tests --features postgres
 ```
 
-### S3 / MinIO
+### S3 / RustFS
 
-Start MinIO and create the test bucket:
+Start RustFS and create the test bucket:
 
 ```sh
 docker compose -f tests/storage/compose.storage-tests.yml up -d --wait
-docker compose -f tests/storage/compose.storage-tests.yml exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
-docker compose -f tests/storage/compose.storage-tests.yml exec minio mc mb --ignore-existing local/hardy-test
+docker compose -f tests/storage/compose.storage-tests.yml run --rm rustfs-init
 ```
 
 AWS credentials are read from the standard environment variables. Each test uses a unique key prefix within the `hardy-test` bucket for isolation.
 
 ```sh
 TEST_S3_ENDPOINT=http://localhost:9000 \
-AWS_ACCESS_KEY_ID=minioadmin \
-AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=rustfsadmin \
+AWS_SECRET_ACCESS_KEY=rustfsadmin \
   cargo test -p storage-tests --features s3
 ```
 
@@ -63,13 +62,12 @@ AWS_SECRET_ACCESS_KEY=minioadmin \
 
 ```sh
 docker compose -f tests/storage/compose.storage-tests.yml up -d --wait
-docker compose -f tests/storage/compose.storage-tests.yml exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
-docker compose -f tests/storage/compose.storage-tests.yml exec minio mc mb --ignore-existing local/hardy-test
+docker compose -f tests/storage/compose.storage-tests.yml run --rm rustfs-init
 
 TEST_POSTGRES_URL=postgresql://hardy:hardy@localhost:5432 \
 TEST_S3_ENDPOINT=http://localhost:9000 \
-AWS_ACCESS_KEY_ID=minioadmin \
-AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=rustfsadmin \
+AWS_SECRET_ACCESS_KEY=rustfsadmin \
   cargo test -p storage-tests --features postgres,s3
 ```
 

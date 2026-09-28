@@ -21,7 +21,7 @@ Trait-level contract testing (save, load, delete, recovery scan) is covered by t
 | Ref | Description | Verified By |
 | :--- | :--- | :--- |
 | **9.1** | Store bundles on a remote system supporting the Amazon S3 API | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite D (BLOB-01..04) |
-| **9.1.1** | Configurable location and access credentials for the S3 instance | Harness setup (§5) — every run supplies the endpoint and credentials via configuration (`TEST_S3_ENDPOINT`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`); CI runs against MinIO |
+| **9.1.1** | Configurable location and access credentials for the S3 instance | Harness setup (§5) — every run supplies the endpoint and credentials via configuration (`TEST_S3_ENDPOINT`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`); CI runs against RustFS |
 | **9.1.2** | Configurable maximum total for all bundle data stored on S3 | Not tested |
 | **9.1.4** | Use common S3 APIs, avoiding provider-specific extensions | By design (`aws-sdk-s3`) |
 | **9.2** | Restart the system and recover state from S3 | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) BLOB-04 |
@@ -32,7 +32,7 @@ This backend is registered in the storage harness with `storage_blob_tests_async
 
 - Suite D: Payload Operations (BLOB-01..04)
 
-Requires `--features s3` and a running S3-compatible endpoint (default: MinIO at `http://localhost:9000`, bucket `hardy-test`).
+Requires `--features s3` and a running S3-compatible endpoint (default: RustFS at `http://localhost:9000`, bucket `hardy-test`).
 
 ## 4. Backend-Specific Test Rationale
 
@@ -43,9 +43,9 @@ If backend-specific integration tests are needed in future (e.g. for multipart u
 ## 5. Execution
 
 ```sh
-# Generic harness (covers trait contract — requires running S3/MinIO)
+# Generic harness (covers trait contract — requires running S3/RustFS)
 TEST_S3_ENDPOINT=http://localhost:9000 \
-AWS_ACCESS_KEY_ID=minioadmin \
-AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=rustfsadmin \
+AWS_SECRET_ACCESS_KEY=rustfsadmin \
   cargo test -p storage-tests --features s3
 ```

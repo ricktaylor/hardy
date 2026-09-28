@@ -93,25 +93,21 @@ jobs:
       - name: Add protoc to PATH
         run: echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"
 
-      - name: Start postgres and minio
-        run: docker compose up -d --wait postgres minio
+      - name: Start postgres and rustfs
+        run: docker compose up -d --wait postgres rustfs
 
       - name: Create S3 test bucket
-        run: |
-          docker compose exec minio \
-            mc alias set local http://localhost:9000 minioadmin minioadmin
-          docker compose exec minio \
-            mc mb --ignore-existing local/hardy-test
+        run: docker compose run --rm rustfs-init hardy-test
 
       - name: Run tests
         env:
           TEST_POSTGRES_URL: postgresql://hardy:hardy@localhost:5432
           TEST_S3_ENDPOINT: http://localhost:9000
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_ACCESS_KEY_ID: rustfsadmin
+          AWS_SECRET_ACCESS_KEY: rustfsadmin
         run: cargo test --locked --all-features --workspace
 
-      - name: Stop postgres and minio
+      - name: Stop postgres and rustfs
         if: always()
         run: docker compose down -v
 

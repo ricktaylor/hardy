@@ -79,7 +79,7 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | :--- | :--- | :--- |
 | *(default)* | Memory, SQLite, Local disk | None |
 | `postgres` | + PostgreSQL | PostgreSQL 13+ (see `compose.storage-tests.yml`) |
-| `s3` | + S3/MinIO | MinIO or AWS S3 (see `compose.storage-tests.yml`) |
+| `s3` | + S3/MinIO | RustFS or AWS S3 (see `compose.storage-tests.yml`) |
 
 ### 3.5 Registered Backends
 
