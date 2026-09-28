@@ -1,12 +1,13 @@
 //! Scoped extension-block editing: insert/replace/remove of *extension*
-//! blocks only, with every owner privilege absent by construction.
+//! blocks only, with every owner privilege either absent or refused.
 //!
-//! [`ExtensionEditor`] wraps an [`Editor`] it never exposes. The wrapper's
-//! op set cannot name the primary block, the payload, BIB/BCB blocks, or
-//! the primary-field setters — those methods simply do not exist here —
-//! and the target gates refuse the remaining reserved cases at call time
-//! with a typed [`Error`], so a caller's no-match path is an `Err`, never
-//! a review convention. Editing a block under existing BPSec coverage is
+//! [`ExtensionEditor`] wraps an [`Editor`] it never exposes. Some owner
+//! privileges are absent by construction — there are no primary-field
+//! setters and no way to add or manage a BIB or BCB — and the target gates
+//! refuse the rest at call time with a typed [`Error`]: the primary and
+//! payload blocks, the reserved block types, and security blocks as
+//! targets. A caller's no-match path is an `Err`, never a review
+//! convention. Editing a block under existing BPSec coverage is
 //! refused outright (the full [`Editor`] instead strips the target from
 //! its coverage — an owner decision this handle deliberately cannot make),
 //! and unprovable coverage (undecryptable BIBs) refuses conservatively.
