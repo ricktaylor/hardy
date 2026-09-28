@@ -27,7 +27,8 @@ use crate::{
     block::{BibCoverage, Flags, Type},
     bundle::Bundle,
     crc::CrcType,
-    editor::{Chunk, Editor},
+    // Aliased: this module's own `Error` is the refusal enum below.
+    editor::{Chunk, Editor, Error as EditorError},
 };
 
 /// Errors from scoped editing — each refused operation names its reason,
@@ -56,7 +57,7 @@ pub enum Error {
     /// A structural editing failure reported by the underlying editor
     /// (illegal duplicate of a singleton type, block numbers exhausted, …).
     #[error(transparent)]
-    Editor(#[from] crate::editor::Error),
+    Editor(#[from] EditorError),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

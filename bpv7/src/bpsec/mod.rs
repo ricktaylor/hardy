@@ -40,6 +40,8 @@ pub mod encryptor;
 #[cfg(feature = "bpsec")]
 pub mod signer;
 
+// `crate::Error` is written qualified throughout, deliberately: this
+// module's own `Error` (re-exported above) takes the bare name.
 use crate::{
     HashMap, block, bundle,
     error::CaptureFieldErr,
