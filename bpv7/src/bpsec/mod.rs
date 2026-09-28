@@ -133,8 +133,10 @@ enum Decrypt {
 ///   caller that reads one block and is then done with the reader.
 ///
 /// The `blocks` and `bcb_ops` given to [`new`](Self::new) MUST be products
-/// of the same parse of `source_data`; mixing parse products is a logic
-/// error (see the [`Reader`] impl's panic note).
+/// of the same parse of `source_data`: mixing parse products is a logic
+/// error. When a block's coverage index names a BCB whose OperationSet has
+/// no operation for it, the [`Reader`] impl panics (the lending door has no
+/// error channel), while the give doors return `Err(Altered)`.
 ///
 /// The memoisation uses interior mutability without locking, so the
 /// reader is not `Sync`; share it within one thread of work.
@@ -325,14 +327,11 @@ impl<'a> DecryptingReader<'a> {
 }
 
 impl<'a> Reader<'a> for DecryptingReader<'a> {
-    /// # Panics
-    ///
-    /// Panics if a block's coverage index names a BCB whose OperationSet
-    /// has no operation for it. The parser derives the coverage index
-    /// from the OperationSets themselves, so this cannot happen for
-    /// `blocks` and `bcb_ops` taken from one parse of `source_data`; it
-    /// means the reader was constructed from mismatched parse products —
-    /// a logic error, not a runtime state.
+    // Panics when a block's coverage index names a BCB with no operation
+    // for it. The parser derives the coverage index from the OperationSets
+    // themselves, so that means mismatched parse products (see the type
+    // doc) — a logic error, not a runtime state — and this infallible door
+    // has no error channel to report it through.
     fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let block = self.blocks.get(&block_number)?;
         if !self.is_resident(block) {
