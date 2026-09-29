@@ -56,6 +56,7 @@ portable-atomic = { version = "1", default-features = false, features = ["fallba
 thiserror = { version = "2", default-features = false }
 arc-swap = "1"
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
+smallvec = "1"
 serde = { version = "1", default-features = false, features = ["derive","rc","alloc"], optional = true }
 base64 = { version = "0.23", default-features = false, features = ["alloc"], optional = true }
 
