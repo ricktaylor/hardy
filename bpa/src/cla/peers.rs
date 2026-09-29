@@ -254,16 +254,16 @@ impl Drop for Reservation<'_> {
 mod tests {
     // use super::*;
 
-    // // TODO: Implement test for 'Queue Selection' (Verify Policy maps to correct CLA queue)
+    // // TODO: Implement test for 'Queue Selection' (Verify the controller's queue_for() selects the peer queue)
     // #[test]
     // fn test_queue_selection() {
-    //     todo!("Verify Policy maps to correct CLA queue");
+    //     todo!("Verify the controller's queue_for() selects the peer queue");
     // }
 
-    // // TODO: Implement test for 'Queue Fallback' (Verify fallback to default queue on invalid index)
+    // // TODO: Implement test for 'Queue Fallback' (Verify an out-of-range queue index is clamped to queue 0)
     // #[test]
     // fn test_queue_fallback() {
-    //     todo!("Verify fallback to default queue on invalid index");
+    //     todo!("Verify an out-of-range queue index is clamped to queue 0");
     // }
 
     use super::*;
