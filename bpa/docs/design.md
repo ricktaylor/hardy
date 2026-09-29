@@ -30,28 +30,28 @@ The `Bpa` struct coordinates the major subsystems:
 - **Store** coordinates data and metadata persistence with caching
 - **RIB** maintains routing rules and triggers re-evaluation on changes
 - **Dispatcher** the central processing hub (see below)
-- **Registries** manage CLAs, services, and keys; the filter chains are frozen at construction
+- **Registries** manage CLAs and services; the key provider and the filter chains are fixed at construction
 
 ### Dispatcher as Central Hub
 
-The `Dispatcher` is the central coordinator that orchestrates all bundle processing. It holds references to every registry and subsystem, routing bundles through the appropriate stages based on their state and destination.
+The `Dispatcher` is the central coordinator that orchestrates all bundle processing. It holds the storage, routing, CLA, filter, and key-provider subsystems — registered services are reached through the RIB's local-delivery entries — and routes bundles through the appropriate stages based on their state and destination.
 
 ```
                               ┌────────────────────────────────────┐
                               │            Dispatcher              │
                               │                                    │
    CLA Ingress ──────────────►│  ┌─────────┐      ┌─────────────┐  │
-                              │  │ Filter  │      │   Service   │  │
-   Service Egress ───────────►│  │ Chains  │      │  Registry   │  │
+                              │  │ Filter  │      │  Node IDs   │  │
+   Service Egress ───────────►│  │ Chains  │      │             │  │
                               │  └─────────┘      └─────────────┘  │
                               │                                    │
                               │  ┌─────────┐      ┌─────────────┐  │
-   Storage ◄─────────────────►│  │  Store  │      │     RIB     │  │
-                              │  └─────────┘      └─────────────┘  │
-                              │                                    │
+   Storage ◄─────────────────►│  │  Store  │      │ RIB: routes │  │
+                              │  └─────────┘      │ + services  │  │
+                              │                   └─────────────┘  │
                               │  ┌─────────┐      ┌─────────────┐  │
-   CLA Egress ◄───────────────┤  │   CLA   │      │    Keys     │  │
-                              │  │Registry │      │  Registry   │  │
+   CLA Egress ◄───────────────┤  │   CLA   │      │     Key     │  │
+                              │  │Registry │      │  Provider   │  │
                               │  └─────────┘      └─────────────┘  │
                               └────────────────────────────────────┘
 ```
@@ -79,7 +79,7 @@ Failed bundles generate status reports where requested and permitted.
 The BPA's complexity is distributed across several subsystems, each documented separately:
 
 - **[Storage Subsystem](storage_subsystem_design.md)** - Dual storage model with separate data and metadata backends, LRU caching, crash recovery, and expiration monitoring
-- **[Bundle State Machine](bundle_state_machine_design.md)** - Bundle lifecycle states and transitions that serve as crash recovery checkpoints
+- **`BundleStatus`** (rustdoc in `bpa/src/bundle/status.rs`) - Bundle lifecycle states and transitions that serve as crash recovery checkpoints; recovery itself is in [Storage Subsystem Design](storage_subsystem_design.md#crash-recovery)
 - **[Routing](routing_subsystem_design.md)** - RIB structure, pattern matching, route priorities, and forwarding decisions
 - **[Filter Subsystem](filter_subsystem_design.md)** - Hook points, filter ordering, and traffic modification
 - **[Policy Subsystem](policy_subsystem_design.md)** - Egress queue management, traffic classification, and rate limiting
@@ -110,7 +110,7 @@ See the storage backend packages for production implementations:
 
 Both bundle input doors accept a bundle as a pull-driven stream of `stream::Segment`s: `cla::Sink::dispatch` (CLA ingress) and `services::ServiceSink::send` (service origination); the application door streams its payload the same way (`services::ApplicationSink::send_streamed`, with a declared `total_len`), and the BPA builds the bundle around it as it flows. A caller holding a whole buffer passes it directly — `Bytes` implements `stream::Receiver`, draining as a single `Segment::Final` through the same path — so each door has one pipeline.
 
-Completion is explicit: `Final` marks a clean end, and a producer that drops its sender earlier has truncated the bundle — the door surfaces `StreamCancelled` rather than success, so a CLA withholds its transfer acknowledgement and the peer retransmits. Reassembly currently accumulates in memory (`stream::concat_stream`) bounded by `BpaBuilder::max_bundle_size` (default 64 MiB, `max-bundle-size` in bpa-server configuration) — a custody-admission bound sized for the in-memory interim. Registration liveness is enforced per segment: a CLA or service that unregisters mid-stream fails the next pull and never lands its bundle.
+Completion is explicit: `Final` marks a clean end, and a producer that drops its sender earlier has truncated the bundle — the CLA door answers `Acceptance::Refused` (the service door fails with `StreamCancelled`) rather than success, so a CLA withholds its transfer acknowledgement and the peer retransmits. Reassembly currently accumulates in memory (`stream::concat_stream`) bounded by `BpaBuilder::max_bundle_size` (default 64 MiB, `max-bundle-size` in bpa-server configuration) — a custody-admission bound sized for the in-memory interim. Registration liveness is enforced per segment: a CLA or service that unregisters mid-stream fails the next pull and never lands its bundle.
 
 ### Application vs Service APIs
 
@@ -122,7 +122,7 @@ Two levels of service integration exist:
 
 ### Component Registry and Sink Pattern
 
-External components (CLAs, services, future routing agents) are managed through a consistent architectural pattern combining Registries with paired traits.
+External components (CLAs, services, routing agents) are managed through a consistent architectural pattern combining Registries with paired traits.
 
 #### Registry Pattern
 
@@ -130,11 +130,12 @@ Each component type has a dedicated Registry that manages registration, lifecycl
 
 | Registry | Component Trait | Sink Trait | Purpose |
 |----------|-----------------|------------|---------|
-| `cla::registry::Registry` | `Cla` | `cla::Sink` | Convergence layer adapters |
-| `services::registry::Registry` | `Service` | `ServiceSink` | Low-level bundle services |
-| `services::registry::Registry` | `Application` | `ApplicationSink` | High-level payload services |
-| `keys::registry::Registry` | `KeyProvider` | — | BPSec key management |
-| `rib::Rib` (via `rib::agent`) | `RoutingAgent` | `RoutingSink` | Dynamic routing protocols |
+| `cla::registry::ClaRegistry` | `Cla` | `cla::Sink` | Convergence layer adapters |
+| `services::registry::ServiceRegistry` | `Service` | `ServiceSink` | Low-level bundle services |
+| `services::registry::ServiceRegistry` | `Application` | `ApplicationSink` | High-level payload services |
+| `routing::Rib` (via `routing::agent`) | `RoutingAgent` | `RoutingSink` | Dynamic routing protocols |
+
+BPSec key management is not a registry: the embedding application injects a single `KeyProvider` through `BpaBuilder::key_provider`.
 
 #### Bidirectional Sink Pattern
 
@@ -186,22 +187,22 @@ sequenceDiagram
 
 `Sent` and `NoNeighbour` keep their terminal semantics: deferral is a per-transfer choice made by the CLA on each forward — fire-and-forget CLAs like `file-cla` are untouched, and there is no registration-level capability flag or proxy negotiation state. A BPA that predates the extension maps the unknown `accepted` variant to a call error and re-queues the bundle, so version skew degrades safely. The reverse direction is a version floor, not a degradation: the proto CLA client requires `bundle_id` on every forward and rejects requests without one, so a CLA built against the extension requires a BPA that sends it.
 
-**The correlation key is the bundle ID** — the same `hardy_bpv7::bundle::Id` the Application trait already uses for status notifications, with the same key encoding on the wire. RFC 9171 bundle IDs are globally unique (fragments included), and a bundle in `ForwardAckPending` is not eligible for re-dispatch until its outcome resolves, so the BPA never has more than one transfer of a bundle outstanding. `forward` passes the ID alongside the bundle bytes for the CLA to echo back opaquely; a CLA-minted transfer ID would only add mint-and-map bookkeeping on both sides that a store lookup replaces.
+**The correlation key is the bundle ID** — the same `hardy_bpv7::bundle::Id` the Application trait already uses for status notifications, with the same key encoding on the wire. RFC 9171 bundle IDs are globally unique (fragments included), and a bundle in `ForwardAckPending` is not eligible for re-dispatch until its outcome resolves, so the BPA never has more than one transfer of a bundle outstanding. `forward` passes the ID alongside the bundle bytes for the CLA to echo back opaquely; a CLA-minted transfer ID would only add mint-and-map bookkeeping on both sides that a store lookup replaces. Three other alternatives were rejected. A failure-only signal, with no `Completed`, would force the BPA to retain every forwarded bundle until lifetime expiry — the success leg is what makes retention affordable. Reusing the proxy's RPC correlation `msg_id` would tie bundle accounting to transport plumbing: those IDs are connection-internal, per-parity, and released when a response lands. An unbounded or configurable proxy handler pool treats the symptom, not the semantics: the BPA would still delete on `Sent`, so a late failure could not be reported at all.
 
-Every `Accepted` resolves in exactly one of four ways:
+Every `Accepted` resolves in exactly one of three ways:
 
 - **`Completed`** — what `Sent` does today: report forwarded, delete.
-- **`Failed`** — re-enqueued to Dispatch for a fresh routing decision, per-bundle: a deferred failure is bundle-scoped evidence about one transfer, not link-scoped evidence about the peer, so it does not reset the peer queue. A deferred failure does not assert non-delivery — the far end may hold the bundle with only the acknowledgment lost — and receiver-side deduplication absorbs the re-forward.
+- **`Failed`** — re-enqueued to Dispatch for a fresh routing decision, per-bundle: a deferred failure is bundle-scoped evidence about one transfer, not link-scoped evidence about the peer, so it does not reset the peer queue. A deferred failure does not assert non-delivery — the far end may hold the bundle with only the acknowledgment lost — and receiver-side deduplication absorbs the re-forward. It targets Dispatch rather than `Waiting`, whose meaning is "routed and found nowhere to go" — not this bundle's situation — and parking there would need the RIB gate fired, re-sweeping every waiting bundle for one failure.
 - **CLA unregistration** (including gRPC stream teardown) — every unresolved transfer is outcome-unknown, reset to `Waiting` and re-forwarded at the next opportunity.
-- **Bundle lifetime expiry** — expiry wins, as everywhere else in the store.
+- **Bundle lifetime expiry** — expiry wins, as everywhere else in the store: because an accepted transfer cannot be recalled from the wire, the reaper defers a `ForwardAckPending` bundle and a lifetime that expires mid-transfer is enforced when the outcome arrives.
 
 The deferred `Failed` retry loop is deliberately un-damped. An unreachable-but-routed peer cycles accept → probe → `Failed` → re-dispatch at the convergence layer's failure-discovery latency (for `tcpclv4`, a full dial cycle), bounded only by bundle lifetime. This is store-and-forward liveness for deployments without contact knowledge: with no route change and no inbound contact to wake `Waiting`, the loop is the only unilateral contact probe a plan-less static route has, and receiver-side deduplication absorbs any re-forwards it produces. Deployments with contact knowledge (contact plans, TVR) never run it — withdrawing the route parks the queue quietly. The churn is isolated per peer by the CLA's admission bound, and its pacing is a policy concern: retry damping is deferred to the policy subsystem with the rest of retry policy, and peer-health evidence feeding the RIB is routing-redesign work. The wrong-queue signal is unaffected: an address the CLA does not serve is still refused synchronously with `NoNeighbour` (whole-queue reset), and a removed peer's queues are swept event-driven at removal — dial exhaustion is the one case that moved, from link-scoped `NoNeighbour` to bundle-scoped `Failed`, because it is a probe result, not a queue-assignment error.
 
-An outcome is honoured only if the named bundle is currently `ForwardAckPending` via a peer of the reporting CLA; anything else — already resolved, expired, another CLA's transfer — is logged and dropped. The check is enforced with a status-conditioned compare-and-swap on the persisted status (`MetadataStorage::swap_status`; the terminal `Completed` arm uses the conditional-tombstone form, `tombstone_if`, so a resolving bundle never transits a status another queue's poller could recover), so an outcome racing the peer sweep, the expiry reaper, or a duplicate of itself loses the swap and is dropped. There is deliberately no BPA-side guard timer for CLAs that never resolve a transfer: bundle lifetime bounds retention, unregistration sweeps the rest, and a CLA that sits on transfers merely converts them to visible, attributable expiry drops.
+An outcome is honoured only if the named bundle is currently `ForwardAckPending` via a peer of the reporting CLA; anything else — already resolved, expired, another CLA's transfer — is logged and dropped. The check is enforced with a status-conditioned compare-and-swap on the persisted status (`MetadataStorage::swap_status`; the terminal `Completed` arm uses the conditional-tombstone form, `tombstone_if`, so a resolving bundle never transits a status another queue's poller could recover), so an outcome racing the peer sweep, the expiry reaper, or a duplicate of itself loses the swap and is dropped. Bundle lifetime is meant to bound retention even for a CLA that never resolves a transfer: a BPA-side guard timer times such a transfer out as outcome-unknown once its lifetime plus a grace period has passed, returning it to `Waiting`, where the dispatch expiry checkpoint drops it as a visible, attributable expiry. The guard timer is not yet built ([`TODO.md`](TODO.md)); until it is, a CLA that sits on a transfer holds it until its peer is removed or it unregisters, when the sweep resets it to `Waiting`.
 
-`ForwardAckPending { peer }` is persisted metadata status like any other, and is a holding state, not a queue (see [queue_architecture.md](queue_architecture.md)): bundles leave it only via the keyed outcome, a sweep (peer loss, or restart replay resetting it to `Waiting` exactly as `ForwardPending`, since registrations do not survive a restart), or the reaper. The persisted status is the only state — outcome resolution is a metadata lookup by bundle ID. The retention cost is explicit: a bundle stays in the store from acceptance to outcome, bounded by the transfer duration and hard-capped by bundle lifetime — the price of honest reliability accounting, and how BP/LTP stacks already behave. So is a per-forward write cost: the claim persists `ForwardAckPending` before every offer, for every CLA — one extra metadata write per bundle even on the non-deferring path (a terminal `Sent` deletes it moments later) — unavoidable because an outcome can arrive before `forward` returns.
+`ForwardAckPending { peer }` is persisted metadata status like any other, and is a holding state, not a queue (see [queue_architecture.md](queue_architecture.md)): bundles leave it only via the keyed outcome or a sweep (peer loss, or restart replay resetting it to `Waiting` exactly as `ForwardPending`, since registrations do not survive a restart) — the reaper defers it, because an accepted transfer cannot be recalled from the wire. The persisted status is the only state — outcome resolution is a metadata lookup by bundle ID. The retention cost is explicit: a bundle stays in the store from acceptance to outcome, bounded by the transfer duration and, for a CLA that never resolves it, by the life of the peer's registration — the price of honest reliability accounting, and how BP/LTP stacks already behave. So is a per-forward write cost: the claim persists `ForwardAckPending` before every offer, for every CLA — one extra metadata write per bundle even on the non-deferring path (a terminal `Sent` deletes it moments later) — unavoidable because an outcome can arrive before `forward` returns.
 
-Verdict timing doubles as flow control: a CLA at admission capacity simply withholds its next verdict. Each peer queue is drained by a single egress poller, so one withheld verdict pauses that peer's drain at the cost of a single pool slot while every accepted transfer pipelines — depth is governed by the CLA's admission policy, with no BPA-side concurrency changes. `tcpclv4` adopts exactly this shape (`max-outstanding-transfers`), and the TestCla tool's reliable channel emulation is the design's motivating consumer ([`docs/test-cla-design.md`](../../docs/test-cla-design.md) §4.3).
+Verdict timing doubles as flow control: a CLA at admission capacity simply withholds its next verdict. Each peer queue is drained by a single egress poller, so one withheld verdict pauses that peer's drain at the cost of a single pool slot while every accepted transfer pipelines — depth is governed by the CLA's admission policy, with no BPA-side concurrency changes. `tcpclv4` adopts exactly this shape (`max-outstanding-transfers`), and the TestCla tool's reliable channel emulation is the design's motivating consumer ([`docs/test-cla-design.md`](../../docs/test-cla-design.md) §4.3). BTP-U-based CLAs need it most: a gated, intermittent link can stall emission for long periods, so holding a call per transfer is untenable, and accepting to a staging depth then withholding the next verdict while the link is dark is exactly this flow-control idiom.
 
 The wire mirror lives in `cla.proto`: `ForwardBundleRequest.bundle_id` (the RFC 9171 key form, opaque to the CLA), an `accepted` result variant, and the CLA→BPA `TransferOutcomeRequest` whose `failed` arm carries a `google.rpc.Status` so a failure reason travels opaquely.
 
@@ -241,7 +242,7 @@ This design provides:
 - **Bounded memory usage**: Queue depth is limited regardless of bundle arrival rate
 - **Crash recovery**: Queued bundles survive restarts via their persisted status
 - **Backpressure**: Storage insertion rate naturally limits ingress when overwhelmed
-- **Low latency**: Fast path avoids storage I/O for normal operation
+- **Low latency**: the fast path hands a bundle over in memory, saving the storage re-read (every send still pays its status write)
 
 See [Policy Subsystem Design](policy_subsystem_design.md#hybrid-channel-architecture) for implementation details.
 
@@ -275,14 +276,14 @@ This separation keeps the BPA library independent of specific observability back
 
 ## Configuration
 
-The `Config` struct controls BPA behaviour:
+`BpaBuilder` setters control BPA behaviour:
 
 | Option | Default | Purpose |
 |--------|---------|---------|
 | `status_reports` | `false` | Enable RFC 9171 bundle status report generation |
 | `poll_channel_depth` | 16 | Capacity of internal dispatch channels before falling back to storage |
 | `processing_pool_size` | 4 × CPU cores | Maximum concurrent bundle processing tasks |
-| `storage_config` | — | LRU cache settings (capacity, max cached bundle size) |
+| `lru_capacity`, `max_cached_bundle_size` | 1024 entries, 16 KiB | Bundle-data LRU cache settings (`no_cache` disables the cache) |
 | `node_ids` | — | Local node identifiers (IPN and/or DTN schemes) |
 
 Storage backends (`metadata_storage`, `bundle_storage`) are injected programmatically rather than configured, allowing the embedding application to select appropriate backends for its deployment context.
@@ -291,9 +292,8 @@ Storage backends (`metadata_storage`, `bundle_storage`) are injected programmati
 
 ### Key Provider Infrastructure
 
-The `keys` module provides a `KeyProvider` trait and registry for BPSec key management. The current implementation aggregates keys from registered providers but lacks configuration-driven key loading. Future work includes:
+The `keys` module provides the `KeyProvider` trait for BPSec key management; the embedding application injects a single provider through `BpaBuilder::key_provider` (the default supplies no keys). hardy-bpa-server implements it over configuration-driven EID-pattern key bindings that hot-reload while bundles are processed. Future work includes:
 
-- Loading keys from configuration files
 - Integration with external key management systems (HSMs, Vault)
 - Key rotation and expiration handling
 
@@ -303,7 +303,7 @@ When storage capacity is exhausted, bundles must be evicted. The planned shape i
 
 ## Dependencies
 
-The library is `no_std` compatible with a heap allocator, though full support is currently blocked by `flume` and `metrics` which require `std`. See the crate documentation for embedded target requirements.
+The library is written for `no_std` with a heap allocator, though full support is currently blocked by `metrics`, which requires `std`. See the crate documentation for embedded target requirements.
 
 Feature flags control optional functionality:
 
