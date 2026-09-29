@@ -105,6 +105,7 @@ UNIT_CRATES=(
     hardy-bpa
     hardy-proto
     hardy-tcpclv4
+    hardy-btpu
     hardy-otel
     hardy-async
     hardy-ipn-legacy-filter
