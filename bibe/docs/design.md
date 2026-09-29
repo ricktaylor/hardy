@@ -82,7 +82,7 @@ Tunnel destinations are encoded as CBOR-serialized EIDs within `ClaAddress::Priv
 
 ## Standards Compliance
 
-- RFC 9171 Section 5.6 (Bundle-in-Bundle Encapsulation)
+- RFC 9171 Section 3.2 (bundles tunnelled through encapsulating bundles)
 - draft-ietf-dtn-bibect (BIBE Convergence Layer)
 
 ## Integration
@@ -98,7 +98,7 @@ Virtual peers are registered via `add_tunnel()` which calls `sink.add_peer()`.
 
 ### With hardy-bpa-server
 
-When the `bibe` feature is enabled, the server initializes BIBE from configuration and registers it with the BPA. Tunnel destinations are configured in the server config.
+hardy-bpa-server does not integrate BIBE: it has no `bibe` feature or configuration section. An embedder builds a `Bibe` from a `bibe::Config` (tunnel source, decap service id, tunnels) and calls `Bibe::register`.
 
 ---
 
@@ -323,137 +323,6 @@ ipn:500.* via dtn://tunnel-c    # Tunnel to ipn:202.12
 
 ---
 
-## RIB Infrastructure Analysis
-
-Before finalizing the architecture, we examined how the BPA's routing and peer infrastructure works.
-
-### Current RIB Flow
-
-```mermaid
-flowchart TB
-    RT["Route Table\npattern -> Via(Eid)"] -->|"recursive lookup"| LT["Local Table\nEid -> Forward(peer_id)"]
-    LT --> FR["FindResult::Forward(peer_id)"]
-    FR --> EQ["EgressQueue\n(ClaAddress stored in Shared struct)"]
-    EQ --> FWD["cla.forward(queue, cla_addr, data)"]
-```
-
-**Key structures:**
-
-```rust
-// Route actions (routes.rs)
-pub enum Action {
-    Drop(Option<ReasonCode>),
-    Reflect,
-    Via(Eid),  // Recursive lookup - NO ClaAddress here
-}
-
-// Local actions (local.rs)
-pub enum Action {
-    AdminEndpoint,
-    Local(Option<Arc<Service>>),
-    Forward(u32),  // peer_id only - NO ClaAddress here
-}
-
-// ClaAddress is captured at peer registration (egress_queue.rs)
-struct Shared {
-    cla: Arc<dyn Cla>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
-    peer: u32,
-    cla_addr: ClaAddress,  // ← Stored here, not in RIB
-}
-```
-
-### The Limitation
-
-**Routes don't store ClaAddress** - they resolve to `peer_id`, and the ClaAddress is captured during peer registration.
-
-The hybrid approach originally assumed routes could specify a CLA address directly:
-
-```
-# Hypothetical static_routes syntax (DOES NOT EXIST)
-ipn:200.* via bibe addr="ipn:100.12"
-```
-
-But the RIB has no per-route `addr` field. The ClaAddress comes from `add_peer()`, not route config.
-
-### Options Considered
-
-#### Option A: Virtual Peers per Tunnel Destination
-
-Register a "peer" for each tunnel destination:
-
-```rust
-// For each tunnel destination
-let cbor_eid = hardy_cbor::encode::emit(&decap_endpoint);
-bibe_cla_sink.add_peer(
-    gateway_node_id,                          // NodeId of gateway
-    ClaAddress::Private(cbor_eid.into())      // Tunnel dest as CBOR-encoded EID
-)?;
-```
-
-**Route config:**
-
-```
-# static_routes file
-ipn:200.* via dtn://tunnel1    # Resolves to BIBE peer via local table
-```
-
-**Flow:**
-
-1. Route: `ipn:200.*` → `Via(dtn://tunnel1)`
-2. Local: `dtn://tunnel1` → `Forward(peer_id)`
-3. EgressQueue retrieves `ClaAddress::Private(<CBOR-encoded EID>)`
-4. `bibe_cla.forward(queue, cla_addr, data)` decodes CBOR to get outer destination
-
-**Pros:**
-
-- Works with existing RIB infrastructure
-- ClaAddress passed to forward() as expected
-- Peer lifecycle maps to tunnel lifecycle
-
-**Cons:**
-
-- Must register peer per tunnel destination
-- "Peer" is really a tunnel endpoint (slight semantic stretch)
-
-#### Option B: Extend RIB with Per-Route Address
-
-Add optional ClaAddress to route entries:
-
-```rust
-pub enum Action {
-    Drop(Option<ReasonCode>),
-    Reflect,
-    Via(Eid),
-    ViaCla { cla: String, addr: ClaAddress },  // NEW
-}
-```
-
-**Rejected:** Invasive change to RIB, affects storage, config parsing, and route table structure.
-
-#### Option C: Via(Eid) with Fixed Peer Address
-
-Use Via mechanism but peer has fixed ClaAddress.
-
-**Rejected:** Can't vary tunnel destination per route - ClaAddress is fixed at peer registration.
-
-#### Option D: Fall Back to Service+CLA
-
-Accept Deliver filters on encap path.
-
-**Still viable:** Simpler integration, but less ideal filter semantics.
-
-### Decision: Virtual Peers (Option A)
-
-For the hybrid approach, **virtual peers** is the viable mechanism:
-
-- Register a peer for each tunnel destination
-- `ClaAddress::Private(bytes)` encodes the outer bundle destination EID
-- Peer registration = tunnel configuration
-- Works with existing RIB without modifications
-
----
-
 ## Linux NHRP/DMVPN Parallel
 
 The virtual peers approach closely mirrors how Linux handles multipoint GRE tunnels with NHRP (Next Hop Resolution Protocol), as used in DMVPN deployments.
@@ -532,128 +401,6 @@ This parallel validates the virtual peers approach:
 
 ---
 
-## Implementation Detail
-
-### Components
-
-```mermaid
-graph TB
-    subgraph BIBE["BIBE Package"]
-        subgraph CLA["BibeCla"]
-            C1["forward(addr, bundle)"] --> C2["encapsulate"]
-            C2 --> C3["Parse addr for outer dest"]
-            C3 --> C4["Build outer bundle"]
-            C4 --> C5["Inject via dispatch()"]
-        end
-        subgraph SVC["DecapService"]
-            S1["on_deliver(bundle)"] --> S2["decapsulate"]
-            S2 --> S3["Extract payload (inner bundle)"]
-            S3 --> S4["Validate inner bundle"]
-            S4 --> S5["Inject via CLA dispatch()"]
-        end
-    end
-```
-
-### CLA Address Format
-
-The CLA address encodes the outer bundle destination using `ClaAddress::Private` with CBOR-encoded EID bytes:
-
-```rust
-// Store EID as CBOR (compact, no string parsing needed)
-let eid: Eid = "ipn:100.12".parse()?;
-let cbor_bytes = hardy_cbor::encode::emit(&eid);
-ClaAddress::Private(cbor_bytes.into())
-```
-
-The `forward()` implementation decodes this address to determine the outer bundle's destination EID:
-
-```rust
-async fn forward(&self, _queue: Option<u32>, cla_addr: &ClaAddress, bundle: Bytes)
-    -> Result<ForwardBundleResult>
-{
-    let ClaAddress::Private(dest_bytes) = cla_addr else {
-        return Err(Error::InvalidAddress);
-    };
-
-    // Decode EID from CBOR bytes
-    let outer_dest: Eid = hardy_cbor::decode::parse(dest_bytes)?;
-
-    // Encapsulate and dispatch
-    let outer = self.encapsulate(bundle, outer_dest)?;
-    self.sink.dispatch(outer, None, None).await?;
-
-    Ok(ForwardBundleResult::Sent)
-}
-```
-
-### Registration and Tunnel Configuration
-
-```rust
-// In bpa-server initialization
-let bibe = bibe::Bibe::new(config);
-
-// Register CLA
-bpa.register_cla("bibe", bibe.cla()).await?;
-
-// Register decap service at well-known endpoint
-bpa.register_service(
-    Some(config.decap_service_id),  // e.g., ipn service 12
-    bibe.decap_service(),
-).await?;
-
-// Register virtual peers for each tunnel destination
-// This is what enables routing to the tunnel
-for tunnel in config.tunnels {
-    // tunnel.tunnel_id = NodeId (e.g., "dtn://tunnel1")
-    // tunnel.decap_endpoint = Eid (e.g., "ipn:100.12")
-    bibe.add_tunnel(tunnel.tunnel_id, tunnel.decap_endpoint).await?;
-}
-```
-
-Internally, `add_tunnel()` registers a peer with the CLA:
-
-```rust
-impl Bibe {
-    pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<()> {
-        // Encode the decap endpoint as CBOR in ClaAddress::Private
-        let cbor_bytes = hardy_cbor::encode::emit(&decap_endpoint);
-        let cla_addr = ClaAddress::Private(cbor_bytes.into());
-
-        // Register as a peer - this creates the local route entry
-        self.sink.add_peer(tunnel_id, cla_addr).await?;
-
-        Ok(())
-    }
-}
-```
-
-### Route Configuration
-
-With virtual peers, routes use standard `via` syntax:
-
-```
-# static_routes file
-
-# Traffic to remote site (ipn:200.*) routes via tunnel (BIBE virtual peer)
-ipn:200.* via dtn://tunnel1
-
-# The outer bundle needs a route to the decap endpoint's node
-# (Assuming tcpclv4 peer registered for ipn:100 node)
-ipn:100.* via ipn:100
-```
-
-**How it works:**
-
-1. Route lookup: `ipn:200.*` → `Via(dtn://tunnel1)`
-2. Local table: `dtn://tunnel1` → `Forward(bibe_peer_id)`
-3. EgressQueue has `ClaAddress::Private(<CBOR: ipn:100.12>)`
-4. `bibe_cla.forward(queue, cla_addr, bundle)` decodes and encapsulates
-5. Outer bundle dispatched with destination `ipn:100.12`
-6. Route lookup: `ipn:100.*` → `Via(ipn:100)` → tcpclv4 peer
-7. Outer bundle transmitted via tcpclv4
-
----
-
 ## Data Flow: Complete Example
 
 ### Encapsulation
@@ -721,7 +468,7 @@ ipn:100.* via ipn:100
 
 6. Inner bundle enters BPA via Ingress:
    - Ingress filters run on inner bundle
-   - ingress_cla = "bibe" (identifies tunnel traffic)
+   - origin CLA = "bibe" (identifies tunnel traffic)
 
 7. BPA routes inner bundle:
    - Destination: ipn:200.1
@@ -749,8 +496,10 @@ This separation allows:
 Filters can identify tunnel traffic:
 
 ```rust
-// In a filter
-if metadata.read_only.ingress_cla.as_deref() == Some("bibe") {
+// In a filter (`metadata` is the bundle's `BundleMetadata`)
+if let Origin::Ingress { cla, .. } = metadata.origin()
+    && &**cla == "bibe"
+{
     // This bundle came from BIBE decapsulation
 }
 ```
@@ -804,7 +553,7 @@ When segmentation is implemented, the fields will be used as follows:
 ### Outer Bundle Flags
 
 - `is_admin_record`: false (BIBE bundles are not administrative records)
-- Other flags: inherited from inner bundle or configured
+- Other flags: the `Builder` defaults; only the lifetime is inherited from the inner bundle
 
 ---
 
@@ -812,9 +561,8 @@ When segmentation is implemented, the fields will be used as follows:
 
 1. **Fragmentation handling**: What if outer bundle exceeds path MTU?
 2. **Status report generation**: Tunnel-level failure reports
-3. **Payload schema**: Define CBOR array structure
-4. **Multi-hop tunnels**: Nested encapsulation
-5. **Tunnel metrics**: Performance monitoring
+3. **Multi-hop tunnels**: Nested encapsulation
+4. **Tunnel metrics**: Performance monitoring
 
 ---
 
@@ -830,4 +578,4 @@ Would require using ServiceSink.send() for injecting processed bundles. This wor
 
 - send() is for bundles originating from the service
 - dispatch() (CLA) is semantically correct for bundles entering from "outside"
-- CLA provides ingress_cla metadata for filter identification
+- CLA ingress records the receiving CLA (`Origin::Ingress { cla, .. }`) for filter identification
