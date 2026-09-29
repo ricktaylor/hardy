@@ -47,6 +47,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Keyed header verify: BIB verify, BCB decrypt for extraction, NoKey liveness | read (reject) | keys already via KeyProvider/KeySource |
 | Extension fields → metadata wire cache | write (meta) | no |
 | Pre-drain gate: lifetime / hop exhaustion (`gate_reason`) + the config-gated RFC 9171 checks (`rfc9171_gate_reason`) | read (reject) | no — spec/config |
+| Early duplicate probe (`seen_recently` — a recently committed id settles before any filter or route work; reception is still reported) | read (reject) | no |
 | **★ Ingress hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (headers + metadata, no payload) |
 | Route lookup at the gate — the decision of record (an explicit Drop route rejects before the drain) | read (reject) | already — RoutingAgent |
 | Payload drain/spool through `ValidatingReceiver` (payload CRC, breaks, deferred block-1 BIB digests) | write (accumulate), read (reject) | no — parser/BPSec owns |
@@ -58,16 +59,19 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 
 | Processing point | R/W | Pluggable? |
 |---|---|---|
-| Build via `Builder`, or parse + validate raw bytes (same parser — security boundary), inline lifetime/hop admission check on the raw path | write (create) / read (reject) | already — Service trait |
-| **★ Originate hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (pre-store, in-memory; a Drop returns its reason to the originating service) |
-| Store + dedup | write | no |
-| Enqueue to Dispatch | queue op | no |
+| Streamed build via `Builder::build_stream` (the payload CRC computed as the payload flows), or the raw door's header pass (`parse_headers` — the same parser and keyed header verify as CLA ingress; a security boundary) | write (create) / read (reject) | already — Service trait |
+| Raw-door admission: source check, fragment rejection, lifetime / hop exhaustion (`gate_reason`) + the config-gated RFC 9171 checks (`rfc9171_gate_reason`), early duplicate probe | read (reject) | no — spec/config |
+| **★ Originate hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (pre-spool, pre-store, on the resident header prefix; a Drop returns its reason to the originating service) |
+| Route lookup at the door — the decision of record (an explicit Drop route rejects to the caller) | read (reject) | already — RoutingAgent |
+| Spool (`Store::save_stream`; the raw door's `ValidatingReceiver` settles the stream verdict) | write (accumulate), read (reject) | no |
+| Single metadata write + dedup (`insert_metadata`) | write | no |
+| Execute the routing decision directly (no dispatch-queue transit) | queue op | no |
 
 **The middle** (Dispatch block):
 
 | Processing point | R/W | Pluggable? |
 |---|---|---|
-| Routing decision → Drop / AdminEndpoint / Deliver / Forward(peer, next hop) / Wait — a fresh CLA arrival executes the ingress gate's decision of record; every other entry looks up here | write (queue assignment) | already — RoutingAgent |
+| Routing decision → Drop / AdminEndpoint / Deliver / Forward(peer, next hop) / Wait — a fresh bundle executes its input gate's decision of record (CLA ingress or the originate door); re-dispatch (parks, polls, sweeps, restart, transfer outcomes) looks up here | write (queue assignment) | already — RoutingAgent |
 | Admin records → Admin block (no Deliver hook — see below) | — | already — AdminRecord registry |
 | Fragments → Reassemble block → re-enter Ingest processing | write | no |
 | Peer-seat FlowController (egress scheduling) | read (schedule) | no — a fixed point (tc/qdisc in the netfilter analogy, not iptables) |
@@ -127,7 +131,7 @@ The Rewriter's execution model is **in-memory, per transmission attempt** — ex
 | Hook | Processing block | Position | Verifier | Classifier | Rewriter |
 |---|---|---|:--:|:--:|:--:|
 | **Ingress** | Ingest | pre-drain, pre-store (at the gate) | ✓ | ✓ | — |
-| **Originate** | Originate | pre-store, in-memory | ✓ | ✓ | — |
+| **Originate** | Originate | pre-spool, pre-store (at the door's gate) | ✓ | ✓ | — |
 | **Egress** | ClaSend | after per-hop rewrite, before BPSec | ✓ | — | ✓ |
 | **Deliver** | Deliver | before payload decrypt | ✓ | — | ✓ (transport-block strip) |
 
@@ -256,7 +260,7 @@ What re-runs, precisely:
 - **The config-gated built-ins join the same pass.** The config is as restart-locked as the chain, so a tightened `primary_block_integrity` applies to stored bundles by the same rule — and those checks read the structural index, so they are equally metadata-only.
 - **Fragments** re-cross the full Ingest processing via the reassembly path, unchanged — today once per fragment; the draft [fragment reassembly redesign](fragment_reassembly_redesign.md) runs the chain once per ADU, at the first fragment.
 
-The payload-free kinds are what keep this affordable: re-admission never loads a payload. A Classifier that reads block bodies (or a payload peek) still gets them, because the engine supplies the invocation `data` by a **bounded head read** from `BundleStorage` — the persisted extents say how much is needed, and no new storage primitive is required: the engine calls the ordinary sequential `load` and drops its receiver once it has those bytes, which the backend observes and stops (`streaming_pipeline_design.md`). One bounded read per stale bundle, paid lazily: the seat is a **per-bundle stamp checked at the Dispatch block**, which every re-entering bundle flows through; a fresh CLA arrival routed at the ingress gate needs no check, because its classification was computed moments earlier under the current policy. The stamp is a **policy epoch**, not a boot id: a restart bumps it, and so does a runtime class-policy push from a centralized policy manager (policy *data* flows at runtime through the component tier; only policy *code* rides the restart boundary) — the same mechanism re-derives classification in both cases, which an eager restart-time walk could never do for pushes. A filter's behaviour can change without its construction wiring changing shape (same registration code, new binary), so change detection is impossible — every restart conservatively re-admits everything. Accepted cost: a tightened Verifier purges a Waiting bundle only when a sweep next moves it; a background walk can close that gap if storage-pressure purging matters.
+The payload-free kinds are what keep this affordable: re-admission never loads a payload. A Classifier that reads block bodies (or a payload peek) still gets them, because the engine supplies the invocation `data` by a **bounded head read** from `BundleStorage` — the persisted extents say how much is needed, and no new storage primitive is required: the engine calls the ordinary sequential `load` and drops its receiver once it has those bytes, which the backend observes and stops (`streaming_pipeline_design.md`). One bounded read per stale bundle, paid lazily: the seat is a **per-bundle stamp checked at the Dispatch block**, which every re-entering bundle flows through; a fresh CLA arrival routed at the ingress gate, or an origination routed at its door, needs no check, because its classification was computed moments earlier under the current policy. The stamp is a **policy epoch**, not a boot id: a restart bumps it, and so does a runtime class-policy push from a centralized policy manager (policy *data* flows at runtime through the component tier; only policy *code* rides the restart boundary) — the same mechanism re-derives classification in both cases, which an eager restart-time walk could never do for pushes. A filter's behaviour can change without its construction wiring changing shape (same registration code, new binary), so change detection is impossible — every restart conservatively re-admits everything. Accepted cost: a tightened Verifier purges a Waiting bundle only when a sweep next moves it; a background walk can close that gap if storage-pressure purging matters.
 
 ## `MetadataDelta` and the traffic class
 

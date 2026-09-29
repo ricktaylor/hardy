@@ -11,7 +11,7 @@ graph LR
     CLA([CLA]) --> Ingest[Ingest]
     Service([Service]) --> Originate[Originate]
     Ingest -->|inline| Dispatch[Dispatch]
-    Originate -->|MPSC| Dispatch
+    Originate -->|inline| Dispatch
     Dispatch -->|MPSC per peer| EgressCtl[EgressController]
     EgressCtl -->|MPSC per peer| ClaSend[ClaSend]
     Dispatch --> Deliver[Deliver]
@@ -42,7 +42,7 @@ graph LR
 
 **Active queues** have continuous consumers with storage-backed hybrid channels (fast in-memory path with storage-backed slow path for backpressure):
 
-- **Dispatch** (`Dispatching`) — MPSC. Multiple producers (local origination, status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes, restart); fresh CLA arrivals and reassembled bundles execute their gate routing decision directly and never transit it. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
+- **Dispatch** (`Dispatching`) — MPSC. Multiple producers (status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes, restart); fresh CLA arrivals, reassembled bundles, and local originations execute their gate routing decision directly and never transit it. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
 - **Egress** (`ForwardPending { peer, queue }`) — MPSC per peer per policy queue. Any dispatch worker can produce. Single poller per queue feeds the CLA
 
 **Gated queues** are structurally the same as active queues — ordered, storage-backed — but their consumer blocks on a side-channel signal. The consumer only polls when the signal indicates conditions have changed and draining may be productive:
