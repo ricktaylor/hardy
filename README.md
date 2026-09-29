@@ -177,7 +177,7 @@ docker run --rm --network host ghcr.io/ricktaylor/hardy/hardy-tools:latest \
   bp ping ipn:2.7 192.168.1.1:4556
 ```
 
-See the [bp-ping man page](./tools/docs/bp-ping.1.md), [bpv7-tools README](./bpv7/tools/README.md), and [cbor-tools README](./cbor/tools/README.md) for full documentation.
+See the [tools README](./tools/README.md), [bpv7-tools README](./bpv7/tools/README.md), and [cbor-tools README](./cbor/tools/README.md) for full documentation.
 
 ## Interoperability
 
