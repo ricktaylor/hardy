@@ -6,7 +6,7 @@
 
 ## Motivation
 
-Peer feedback names a real hard-coding: Hardy is destination-based — the RIB lookup key is the destination EID, welded in at `rib.find(&mut bundle)`. Three pressures converge on the same redesign:
+Peer feedback names a real hard-coding: Hardy is destination-based — the RIB lookup key is the destination EID, welded in at `rib.find(&bundle)`. Three pressures converge on the same redesign:
 
 - **Not everything routes on destination.** Segment routing (route on a label-stack top), policy routing (route by traffic class), and multi-topology routing all need a lookup key or table that is not simply "the destination".
 - **DTN EIDs match badly.** `ipn` EIDs are numeric — RFC 9758's fully-qualified node number is a u64 — but `dtn` EIDs are free-text names, and routing on names via glob patterns ordered by a specificity metric (the DPP draft's approach) imposes a total order on something with no natural hierarchy, and pays for it per bundle.

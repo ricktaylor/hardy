@@ -4,7 +4,7 @@
 
 **Scope:** `hardy-bpa-server` (and by extension `hardy-bpa`), `hardy-proto` (docs only — no schema change), all gRPC clients of the BPA (CLAs, services, routing agents)
 
-**Related:** `test-cla-design.md` (first exerciser; consumes this, does not define it)
+**Related:** [`docs/test-cla-design.md`](../../docs/test-cla-design.md) (first exerciser; consumes this, does not define it)
 
 ---
 
@@ -133,7 +133,7 @@ A bearer token is only as strong as the channel it crosses. Doctrine:
 
 ## 8. Testing
 
-The TestCla is the natural first exerciser (see `test-cla-design.md`); these join its Phase 0/1 suite as cheap scenarios:
+The TestCla is the natural first exerciser (see [`docs/test-cla-design.md`](../../docs/test-cla-design.md)); these join its Phase 0/1 suite as cheap scenarios:
 
 1. **Wrong token** ⇒ refused, `UNAUTHENTICATED`, client backs off, auth failure event emitted.
 2. **Right token, wrong claimed name** ⇒ refused (the impersonation case).
