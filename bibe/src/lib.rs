@@ -1,7 +1,7 @@
 /*!
 Bundle-in-Bundle Encapsulation (BIBE) for the Hardy BPA.
 
-This crate implements Bundle-in-Bundle Encapsulation (RFC 9171 Appendix B concept),
+This crate implements Bundle-in-Bundle Encapsulation (draft-ietf-dtn-bibect),
 enabling bundles to be tunneled through intermediate DTN networks by wrapping an
 inner bundle inside the payload of an outer bundle. It uses a hybrid CLA/Service
 architecture: encapsulation is performed by a [`Cla`](hardy_bpa::cla::Cla)
