@@ -267,7 +267,7 @@ flowchart TD
     A["RIB::add() or RIB::remove()"] --> B["Find impacted peers (via find_peers)"]
     B --> C["Store::reset_peer_queue(peer)"]
     C --> D["ForwardPending { peer, _ } → Waiting"]
-    D --> E["poll_waiting_notify.notify()"]
+    D --> E["Rib::request_poll()"]
     E --> F["Dispatcher::poll_waiting()"]
     F --> G["Re-run process_bundle() with new routes"]
 ```
@@ -360,4 +360,4 @@ Remote routing agents connect via `routing.proto` (bidirectional streaming), wit
 
 ### Notification Flow
 
-Route changes trigger re-routing through a notification mechanism. When `add_route()` or `remove_route()` is called, affected peers have their queues reset via `reset_peer_queue()`, and the `poll_waiting_notify` signal wakes the background task. The dispatcher's `poll_waiting()` then re-evaluates bundles with the updated routes.
+Route changes trigger re-routing through a notification mechanism. When `add_route()` or `remove_route()` is called, affected peers have their queues reset via `reset_peer_queue()`, and `Rib::request_poll()` counts the request and wakes the background task. The dispatcher's `poll_waiting()` then re-evaluates bundles with the updated routes. The task reads the request count before each poll, so a wakeup whose requests an earlier poll already covered — the permit `Notify` stores for a request landing between that poll's wakeup and its read — skips the redundant scan.
