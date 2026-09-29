@@ -6,29 +6,29 @@ Bundle Protocol version 7 implementation per [RFC 9171](https://www.rfc-editor.o
 
 - **Zero-copy parsing.** Bundle data is parsed in place, with structures holding byte ranges into the source buffer rather than copied data. This enables efficient payload access and CRC computation without duplication.
 
-- **Deterministic encoding.** The library always produces deterministic CBOR output per RFC 8949 §4.2.1 (sometimes called "canonical" encoding), but reports whether the input required transformation. Callers can implement their own policy (accept, reject, log) based on this information.
+- **Deterministic encoding.** The library always produces deterministic CBOR output per RFC 8949 §4.2.1 (sometimes called "canonical" encoding) and rejects input that violates it, accepting only the indefinite-length items RFC 9171 §4.1 permits.
 
 - **Type-safe EID representation.** Endpoint identifiers are represented as distinct enum variants reflecting their semantic differences, not just string parsing. `LocalNode` is a separate variant because [RFC 9758](https://www.rfc-editor.org/rfc/rfc9758.html) defines it as a distinct concept.
 
-- **Separation of mechanism and policy.** The library performs parsing, validation, and transformation but doesn't impose policies. Key providers, canonicalization responses, and block handling are all caller decisions.
+- **Separation of mechanism and policy.** The library performs parsing, validation, and transformation but doesn't impose policies. Key providers, BPSec failure handling, and block handling are all caller decisions.
 
 - **`no_std` compatibility.** The core library works on embedded platforms with only a heap allocator, though some features (system clock, serde) require `std`.
 
 ## Parsing Modes and Trust Boundaries
 
-The library provides three parsing modes reflecting different trust levels and processing requirements.
+Parsing is layered rather than moded, so each caller composes exactly the processing it needs; the [Parse & Validation Pipeline Design](parser_design.md) is the full reference.
 
-**RewrittenBundle** is for untrusted input arriving from Convergence Layer Adaptors. It performs full processing: canonicalization, BPSec decryption and verification, and removal of unrecognised blocks per RFC 9171. Even when parsing fails, it attempts to extract enough bundle metadata to generate a status report back to the source. This mode returns a three-variant enum: `Valid` (no changes needed), `Rewritten` (canonical output differs from input), or `Invalid` (bundle unusable, but metadata available for status reporting).
+The **structural parse** (`parse::parse`, or `parse::BundleParser` driven incrementally over a stream) is keyless: it decodes the primary block, the block map, and the BPSec OperationSets, verifies CRCs, and rejects malformed or non-deterministically encoded input. A streamed parse can stop once the header blocks are resident and hand back a `PayloadTail` continuation that validates the payload's CRC and trailer as the remaining bytes arrive.
 
-**CheckedBundle** is for semi-trusted input from local application services. These bundles shouldn't contain invalid blocks (the local service created them), but may need canonicalization. This mode validates and canonicalizes but doesn't remove blocks.
+**Keyed validation** (`checks`) layers BPSec on top: keyless classification of the blocks the node cannot process, then decryption and verification with a caller-supplied `KeySource`, composed by `checks::verify`. The helpers report facts — decrypted, no key, decryption failed, coverage — and never decide accept-or-reject themselves.
 
-**ParsedBundle** is for quick inspection without modification. It parses the bundle and reports whether canonicalization would be needed, but doesn't transform anything. Useful for routing decisions or when the bundle will be forwarded unchanged.
+**Rewrite application** (`rewrite::apply_rewrites`) applies the block removals and canonical re-emits the caller has decided on, through the BPSec-aware editor cascade.
 
-The separation ensures that untrusted network input receives full scrutiny while locally-originated bundles avoid unnecessary processing.
+The policy that distinguishes trust levels — which failures reject a bundle, whether to honour a block-removal request — lives in the caller, so the BPA, the CLI tools, and the fuzz harness share one implementation.
 
 ## Zero-Copy Architecture
 
-Bundles are parsed in place with structures holding `Range<usize>` values pointing into the source byte array. A `Block` doesn't contain its payload - it contains the byte range where the payload lives.
+Bundles are parsed in place with structures holding `Range<u64>` values — bundle-absolute byte offsets — into the source byte stream. A `Block` doesn't contain its payload - it contains the byte range where the payload lives.
 
 This design serves several purposes. First, large payloads aren't copied during parsing. Second, CRC validation can hash the exact byte ranges without reassembly. Third, and importantly, Range values are "recipes" rather than views - they describe where data lives without requiring it to be in memory. This creates future capability for lazy loading where only portions of a bundle are fetched from storage as needed. Only the payload body may be large: the parser bounds everything before it — every extension block and the payload block's header — to 256 MiB, rejecting a longer declaration from the block lengths alone. This is an implementation limit, not an RFC one: real header chains are kilobytes, the pre-payload region must be resident for verification, and a fixed bound keeps accept/reject decisions identical on every node regardless of pointer width.
 
@@ -50,10 +50,9 @@ The library implements RFC 9172 (Bundle Protocol Security) with a pluggable arch
 
 ### Pluggable Security Contexts
 
-Security processing is built around the concept of pluggable security context providers. When processing BIBs and BCBs, the library calls out to registered providers that implement the actual cryptographic operations. This separation allows:
+Security contexts are compiled in: each is a feature-gated variant of the BIB and BCB operation enums, and an operation whose context this build does not include parses as `Unrecognised` and is classified as unsupported rather than failing the parse. Key management is the pluggable part: when processing BIBs and BCBs, the library asks a caller-supplied `KeySource` for the key for each operation. This separation allows:
 
 - Different deployments to use different key management systems
-- Security contexts to be added without modifying the core library
 - Feature-flagged inclusion of specific contexts (e.g., RFC 9173 default contexts)
 
 The library exposes a common key representation based on JWK (JSON Web Key) format, providing flexible data types for managing keychains.
@@ -68,15 +67,17 @@ An operation can cover the primary block without targeting it: RFC 9173's defaul
 
 ### Processing Order
 
-Bundle security processing follows a specific order to give key providers maximum information for their decisions.
+Bundle security processing follows a fixed order, because verification reads plaintext that decryption recovers.
 
-First, all blocks are parsed and BCB targets are marked. At this point, the key provider knows the bundle structure and which blocks are encrypted, but hasn't been asked for decryption keys yet.
+First, all blocks are parsed and BCB targets are marked. Without keys the parser cannot read the target list of a BCB-encrypted BIB, so it marks every block such a BIB might cover as "maybe covered".
 
-Second, Block Integrity Blocks (BIBs) are verified. Now the key provider can see which blocks have integrity protection.
+Second, BCB-encrypted BIBs are decrypted and validated, replacing the "maybe" marks with their real coverage.
 
-Third, remaining encrypted blocks are decrypted. The key provider now has full visibility into the bundle's decrypted content.
+Third, BCB-protected Previous Node, Bundle Age, and Hop Count blocks are decrypted.
 
-This progressive disclosure supports sophisticated key policies. A key provider might release certain keys only if the bundle has integrity protection, or select different keys based on decrypted header content. The library doesn't impose a key policy - it just ensures maximum information is available at each decision point.
+Fourth, every BIB is verified. A BIB may cover a block that was encrypted, so verification has to follow decryption; `checks::verify` composes the three keyed steps in this order so no caller has to re-stitch it. A BIB whose payload target is not resident when the headers are verified is deferred to the payload drain.
+
+The payload's own BCB is not part of this pass: the payload stays encrypted until the consumer decrypts it at delivery (`bpsec::DecryptingReader`).
 
 ### Future Work: COSE Security Contexts
 
@@ -107,15 +108,15 @@ The separate `NodeId` and `Service` types reflect the routing distinction: nodes
 
 ## Deterministic Encoding Strategy
 
-RFC 9171 requires bundles to conform to the core deterministic encoding requirements of RFC 8949 §4.2.1 (sometimes referred to as "canonical" encoding). The library's approach is:
+RFC 9171 §4.1 requires the CBOR encodings of all fields in all blocks to conform to the core deterministic encoding requirements of RFC 8949 §4.2.1 (sometimes referred to as "canonical" encoding), "except that indefinite-length items are not prohibited". The library's approach is:
 
 1. Always produce deterministic output
-2. Report whether transformation was needed
-3. Let the caller decide the policy response
+2. Reject non-deterministic input as a hard parse error (`Error::NotCanonical`) rather than repairing it: a non-shortest integer or length, or a tag where the grammar permits none, fails the parse
+3. Accept the indefinite-length items §4.1 permits
 
-This separation means the library handles the mechanical transformation while applications implement their own policies. A strict deployment might reject non-conformant input. A permissive deployment might accept and log. A monitoring system might track non-conformant sources for analysis.
+Rejecting rather than repairing keeps every byte a node relays identical to the bytes it received and verified. BPSec computes integrity over canonical forms (RFC 9172 §4), so repairing non-deterministic input in place would forward bytes that differ from what arrived and was checked; and silently reserialising another implementation's bundle would hide that implementation's encoder bugs from its sender, where a rejection surfaces them.
 
-The `shortest` flag from hardy-cbor propagates through parsing, and the library tracks whether any block required rewriting. For `RewrittenBundle`, the distinction between `Valid` and `Rewritten` variants tells the caller exactly what happened.
+The primary block records whether it arrived in canonical form, so BPSec can re-emit that form when computing over it (RFC 9172 §4). Extension-block bodies whose fields the consumer decodes can still be queued for a canonical re-emit through `rewrite::apply_rewrites`.
 
 ## Block Handling
 
@@ -123,7 +124,7 @@ Extension blocks use the same zero-copy approach as the primary block. Each `Blo
 
 The `BibCoverage` enum tracks integrity protection state: `None` (no BIB covers this block), `Some(block_number)` (protected by a specific BIB), or `Maybe` (encrypted BIBs couldn't be decrypted, so coverage is unknown). This three-state model allows code to distinguish between "definitely unprotected" and "unknown protection status."
 
-Unrecognised blocks are handled per RFC 9171 rules. In `RewrittenBundle` mode, blocks marked with "delete on failure" flags are removed. The library rewrites BIBs and BCBs that targeted removed blocks, potentially removing security blocks entirely if all their targets are gone.
+Unrecognised blocks are handled per RFC 9171 rules. The keyless classification (`checks::classify_unsupported`) reports the unprocessable blocks flagged "delete block if block can't be processed", and fails the bundle for any flagged "delete bundle"; the caller decides whether to honour the removals, which `rewrite::apply_rewrites` applies. The library rewrites BIBs and BCBs that targeted removed blocks, potentially removing security blocks entirely if all their targets are gone.
 
 ## Utility Types
 
@@ -141,7 +142,7 @@ The library builds on hardy-cbor's wire-format parsing. It uses closure-based ar
 
 ### With hardy-bpa
 
-The Bundle Processing Agent uses all three parsing modes depending on bundle origin. CLA input uses `RewrittenBundle` for full validation. Service input uses `CheckedBundle` for canonicalization without block removal. Quick routing decisions might use `ParsedBundle` for inspection without transformation.
+The Bundle Processing Agent composes the structural parser, `checks`, and `rewrite` with its own policy — which failures reject a bundle, the NoKey disposition, the status-report reason mapping — in its `bundle::parse` module. At ingress it parses the header blocks off the arriving stream, verifies them before anything is stored, and drains the payload through the `PayloadTail` continuation.
 
 ### CLI Tools
 

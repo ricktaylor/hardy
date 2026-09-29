@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposal -- partially implemented (assessed 2026-07-08). The current `sqlite-storage` has the read-connection pool and the serialized writer (`src/storage.rs` `ConnectionPool`), but not the dedicated IO threads or INSERT batching described below; the Overview describes the proposed architecture, not the current code.
+Proposal -- partially implemented (assessed 2026-07-08). The current `sqlite-storage` has the read-connection pool and the serialized writer (`src/pool.rs` `ConnectionPool`), but not the dedicated IO threads or INSERT batching described below; the Overview describes the proposed architecture, not the current code.
 
 ## Revisited 2026-07-08 — impact of the streaming pipeline
 
