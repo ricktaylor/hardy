@@ -133,8 +133,12 @@ impl<'a> Builder<'a> {
     /// Builds the bundle with the given timestamp, returning the parsed
     /// [`Bundle`] view (primary block + blocks map) alongside
     /// the encoded wire bytes.
+    ///
+    /// An administrative record or null-source bundle is built with
+    /// `report_on_failure` clear on every block (RFC 9171 §4.2.3-4/-5),
+    /// whatever the block templates asked for.
     pub fn build(
-        self,
+        mut self,
         timestamp: creation_timestamp::CreationTimestamp,
     ) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
         let primary = primary_block::PrimaryBlock {
@@ -149,6 +153,14 @@ impl<'a> Builder<'a> {
             report_to: self.report_to.unwrap_or(self.source),
             lifetime: self.lifetime,
         };
+
+        // Normalised rather than refused, like the fragment flag: the parser
+        // rejects the combination, so the builder never emits it.
+        if primary.forbids_report_on_failure() {
+            for template in self.extensions.iter_mut().chain([&mut self.payload]) {
+                template.block.flags.report_on_failure = false;
+            }
+        }
 
         let mut blocks = HashMap::new();
         let data = hardy_cbor::encode::try_emit_array(None, |a| {

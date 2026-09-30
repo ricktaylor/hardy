@@ -15,7 +15,10 @@ use hardy_bpv7::{
     extension_editor::{self, ExtensionEditor},
     hop_info, parse,
 };
-use hardy_cbor::encode::emit;
+// Aliased: the parser's error, beside the editor's `Error` imported above.
+use hardy_bpv7::Error as Bpv7Error;
+// Aliased: the CBOR codec's error, beside the two above.
+use hardy_cbor::{decode::Error as CborError, encode::emit};
 
 mod common;
 use self::common::rand_k;
@@ -746,7 +749,7 @@ fn extension_editor_maps_singleton_duplicates_through() {
             block::Type::HopCount,
             block::Flags::default(),
             crc::CrcType::None,
-            b"x".as_slice().into(),
+            hop_count_body(),
         ),
         Err(extension_editor::Error::Editor(Error::IllegalDuplicate(
             block::Type::HopCount
@@ -1045,6 +1048,194 @@ fn extension_editor_materialises_inserts_and_skips_untouched() {
     assert!(matches!(block.block_type, block::Type::Unrecognised(202)));
     assert_eq!(block.payload(&new_data).expect("resident"), b"materialised");
     assert_eq!(new_bundle.blocks.len(), reparsed.blocks.len());
+}
+
+// === ExtensionEditor: the parser's accept-set at call time =============
+
+// A well-formed Hop Count body.
+fn hop_count_body() -> Box<[u8]> {
+    emit(&hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 0,
+    })
+    .0
+    .into()
+}
+
+// A parsed bundle built with the given source and bundle flags.
+fn make_bundle_from(source: &str, flags: hardy_bpv7::bundle::Flags) -> (Bundle, Box<[u8]>) {
+    let (_, data) = builder::Builder::new(source.parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_flags(flags)
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let bundle = reparse(&data);
+    (bundle, data)
+}
+
+// Insert an Unrecognised(200) block with `report_on_failure` set.
+fn insert_reporting_block(editor: &mut ExtensionEditor) -> extension_editor::Result<u64> {
+    editor.insert(
+        block::Type::Unrecognised(200),
+        block::Flags {
+            report_on_failure: true,
+            ..Default::default()
+        },
+        crc::CrcType::None,
+        b"ext-data".as_slice().into(),
+    )
+}
+
+#[test]
+fn extension_editor_refuses_report_on_failure_the_bundle_forbids() {
+    // RFC 9171 §4.2.3-4/-5: a null-source bundle (which must also be
+    // unfragmentable) and an administrative record both forbid the flag.
+    let null_source = make_bundle_from(
+        "dtn:none",
+        hardy_bpv7::bundle::Flags {
+            do_not_fragment: true,
+            ..Default::default()
+        },
+    );
+    let admin_record = make_bundle_from(
+        "ipn:1.0",
+        hardy_bpv7::bundle::Flags {
+            is_admin_record: true,
+            ..Default::default()
+        },
+    );
+    for (bundle, data) in [&null_source, &admin_record] {
+        assert!(bundle.primary.forbids_report_on_failure());
+        let mut editor = ExtensionEditor::new(bundle, data);
+        assert!(matches!(
+            insert_reporting_block(&mut editor),
+            Err(extension_editor::Error::Invalid(Bpv7Error::InvalidFlags))
+        ));
+        assert!(!editor.is_modified(), "a refusal is not an edit");
+    }
+
+    // Control: an ordinary bundle takes the same insert, and the rewrite
+    // re-parses.
+    let (bundle, data) = make_bundle();
+    assert!(!bundle.primary.forbids_report_on_failure());
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let inserted = insert_reporting_block(&mut editor).expect("the insert is accepted");
+    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let rewritten = reparse(&Chunk::flatten(chunks, &data));
+    assert!(rewritten.blocks[&inserted].flags.report_on_failure);
+}
+
+#[test]
+fn extension_editor_refuses_an_unrecognised_crc_type() {
+    let (bundle, data) = make_bundle();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    assert!(matches!(
+        editor.insert(
+            block::Type::Unrecognised(200),
+            block::Flags::default(),
+            crc::CrcType::Unrecognised(5),
+            b"ext-data".as_slice().into(),
+        ),
+        Err(extension_editor::Error::Invalid(Bpv7Error::InvalidCrc(
+            crc::Error::InvalidType(5)
+        )))
+    ));
+    assert!(!editor.is_modified());
+}
+
+// Insert `body` as `block_type` into a fresh bundle, expecting a refusal;
+// returns the parser error the refusal carries.
+fn refused_insert(block_type: block::Type, body: &[u8]) -> Bpv7Error {
+    let (bundle, data) = make_bundle();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let result = editor.insert(
+        block_type,
+        block::Flags::default(),
+        crc::CrcType::None,
+        body.into(),
+    );
+    assert!(!editor.is_modified(), "a refusal is not an edit");
+    match result {
+        Err(extension_editor::Error::Invalid(e)) => e,
+        other => panic!("{block_type:?} must be refused as Invalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn extension_editor_refuses_undecodable_well_known_insert_bodies() {
+    // Each type's body decoder rejects a CBOR text string ("bad") with its
+    // own error, and the refusal carries exactly that error.
+    let bad = b"\x63bad".as_slice();
+    assert!(matches!(
+        refused_insert(block::Type::PreviousNode, bad),
+        Bpv7Error::InvalidEid(eid::Error::InvalidCBOR(CborError::IncorrectType(..)))
+    ));
+    assert!(matches!(
+        refused_insert(block::Type::BundleAge, bad),
+        Bpv7Error::InvalidCBOR(CborError::IncorrectType(..))
+    ));
+    assert!(matches!(
+        refused_insert(block::Type::HopCount, bad),
+        Bpv7Error::InvalidCBOR(CborError::IncorrectType(..))
+    ));
+    // The `Unrecognised` alias of Hop Count's code is validated as a Hop
+    // Count: a bare integer is not the Hop Count array.
+    assert!(matches!(
+        refused_insert(block::Type::Unrecognised(10), &[0x00]),
+        Bpv7Error::InvalidCBOR(CborError::IncorrectType(..))
+    ));
+
+    // Control: a valid body of each type is accepted and re-parses.
+    let valid_bodies: [(block::Type, Box<[u8]>); 3] = [
+        (
+            block::Type::PreviousNode,
+            emit(&"ipn:3.0".parse::<eid::Eid>().unwrap()).0.into(),
+        ),
+        (block::Type::BundleAge, emit(&0u64).0.into()),
+        (block::Type::HopCount, hop_count_body()),
+    ];
+    for (block_type, valid) in valid_bodies {
+        let (bundle, data) = make_bundle();
+        let mut editor = ExtensionEditor::new(&bundle, &data);
+        let inserted = editor
+            .insert(
+                block_type,
+                block::Flags::default(),
+                crc::CrcType::None,
+                valid,
+            )
+            .expect("a valid body is accepted");
+        let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+        let rewritten = reparse(&Chunk::flatten(chunks, &data));
+        assert_eq!(rewritten.blocks[&inserted].block_type, block_type);
+    }
+}
+
+#[test]
+fn extension_editor_refuses_an_undecodable_well_known_replacement() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count is present");
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    // Well-formed CBOR, but a hop limit of 0 is outside RFC 9171 §4.4.3's
+    // 1..=255: the semantic check refuses it, not just the shape check.
+    assert!(matches!(
+        editor.replace(hop, [0x82, 0x00, 0x00].as_slice().into()),
+        Err(extension_editor::Error::Invalid(
+            Bpv7Error::InvalidHopLimit(0)
+        ))
+    ));
+    assert!(!editor.is_modified());
+
+    editor
+        .replace(hop, hop_count_body())
+        .expect("a valid body is accepted");
+    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    reparse(&Chunk::flatten(chunks, &data));
 }
 
 // === insert_block replace-by-type: BIB/BCB coverage parity =============

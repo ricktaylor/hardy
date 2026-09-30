@@ -219,4 +219,14 @@ impl PrimaryBlock {
             ..Default::default()
         }
     }
+
+    /// Whether this bundle forbids the `report_on_failure` block flag: RFC
+    /// 9171 §4.2.3-4/-5 require it clear on every block of an
+    /// administrative-record or null-source bundle, since the receiver has
+    /// nowhere meaningful to report to. The one statement of that rule —
+    /// the parser rejects the combination and every block-writing door
+    /// consults it.
+    pub fn forbids_report_on_failure(&self) -> bool {
+        self.flags.is_admin_record || self.id.source.is_null()
+    }
 }

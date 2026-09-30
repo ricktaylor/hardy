@@ -6,7 +6,7 @@
 use core::{iter::repeat_n, num::NonZeroU8};
 
 use bytes::Bytes;
-use hardy_bpv7::{Error, block, builder, crc, creation_timestamp, hop_info, parse};
+use hardy_bpv7::{Error, block, builder, bundle, crc, creation_timestamp, hop_info, parse};
 // Aliased: collides with the bpv7 `Error` imported above.
 use hardy_cbor::decode::Error as CborError;
 use hex_literal::hex;
@@ -77,6 +77,64 @@ fn invalid_flags() {
         parse::parse(Bytes::from_static(BUNDLE)),
         Err(Error::InvalidFlags)
     ));
+}
+
+// A bundle that forbids `report_on_failure` (RFC 9171 §4.2.3-4/-5) is built
+// with the flag clear on every block — the Hop Count block's default and a
+// caller-set flag alike — so it parses; an ordinary bundle keeps both.
+#[test]
+fn builder_clears_report_on_failure_on_a_forbidding_bundle() {
+    let hop_info = hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 0,
+    };
+    for (source, flags) in [
+        (
+            "dtn:none",
+            bundle::Flags {
+                do_not_fragment: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "ipn:1.0",
+            bundle::Flags {
+                is_admin_record: true,
+                ..Default::default()
+            },
+        ),
+        ("ipn:1.0", bundle::Flags::default()),
+    ] {
+        let (built, data) =
+            builder::Builder::new(source.parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .with_flags(flags)
+                .with_hop_count(&hop_info)
+                .add_extension_block(block::Type::Unrecognised(200))
+                .unwrap()
+                .with_flags(block::Flags {
+                    report_on_failure: true,
+                    ..Default::default()
+                })
+                .build(b"ext-data".as_slice().into())
+                .with_payload("Hello".as_bytes().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+        let forbidden = built.primary.forbids_report_on_failure();
+        let parsed = parse::parse(Bytes::from(data))
+            .unwrap_or_else(|e| panic!("{source} bundle must parse: {e:?}"))
+            .bundle;
+        for block_type in [block::Type::HopCount, block::Type::Unrecognised(200)] {
+            let block = parsed
+                .blocks
+                .values()
+                .find(|b| b.block_type == block_type)
+                .expect("the block is present");
+            assert_eq!(
+                block.flags.report_on_failure, !forbidden,
+                "{source}: {block_type:?} reports on failure exactly when the bundle allows it"
+            );
+        }
+    }
 }
 
 // NOTE: LLR 1.1.33 (Bundle Age required when Creation Time is zero) is enforced

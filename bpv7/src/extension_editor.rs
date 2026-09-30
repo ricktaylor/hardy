@@ -16,19 +16,29 @@
 //! `replace`/`remove`: a fresh insert is by definition an uncovered
 //! extension block, so every gate above still holds.
 //!
+//! What [`finish`](ExtensionEditor::finish) or a re-parse of the rewritten
+//! bytes would reject is refused at call time instead, with the error the
+//! parser raises: a `report_on_failure` flag the bundle forbids, an
+//! unrecognised CRC type, and well-known extension block data that does
+//! not decode as its type.
+//!
 //! Edits accumulate in memory; nothing is materialised until
 //! [`finish`](ExtensionEditor::finish).
 
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 
+use hardy_cbor::decode::parse_exact;
 use thiserror::Error;
 
 use crate::{
     block::{BibCoverage, Flags, Type},
     bundle::Bundle,
-    crc::CrcType,
+    bundle_age::BundleAge,
+    crc::{self, CrcType},
     // Aliased: this module's own `Error` is the refusal enum below.
     editor::{Chunk, Editor, Error as EditorError},
+    eid::Eid,
+    hop_info::HopInfo,
 };
 
 /// Errors from scoped editing — each refused operation names its reason,
@@ -54,6 +64,15 @@ pub enum Error {
     #[error("Block {0} is under BPSec coverage and cannot be edited")]
     Covered(u64),
 
+    /// The edit would produce a bundle the parser rejects, refused at call
+    /// time with the error the parser (or `finish`) would raise:
+    /// `InvalidFlags` for a `report_on_failure` flag the bundle forbids
+    /// (RFC 9171 §4.2.3-4/-5), `InvalidCrc` for an unrecognised CRC type,
+    /// or the decode error for a Previous Node, Bundle Age, or Hop Count
+    /// body that does not decode as its type.
+    #[error(transparent)]
+    Invalid(#[from] crate::Error),
+
     /// A structural editing failure reported by the underlying editor
     /// (illegal duplicate of a singleton type, block numbers exhausted, …).
     #[error(transparent)]
@@ -72,6 +91,9 @@ pub struct ExtensionEditor<'a> {
     // operation. `None` only transiently inside an operation.
     editor: Option<Editor<'a>>,
     edited: bool,
+    // The primary block is out of scope, so its verdict is fixed at
+    // construction.
+    forbids_report_on_failure: bool,
 }
 
 impl<'a> ExtensionEditor<'a> {
@@ -80,6 +102,7 @@ impl<'a> ExtensionEditor<'a> {
         Self {
             editor: Some(Editor::new(original, source_data)),
             edited: false,
+            forbids_report_on_failure: original.primary.forbids_report_on_failure(),
         }
     }
 
@@ -88,6 +111,8 @@ impl<'a> ExtensionEditor<'a> {
     /// Inserting a second instance of a singleton type (Previous Node,
     /// Bundle Age, Hop Count) is refused by the underlying editor; multiple
     /// instances of an [`Unrecognised`](Type::Unrecognised) type are legal.
+    /// A `report_on_failure` flag the bundle forbids, an unrecognised CRC
+    /// type, and a well-known type's undecodable data are refused.
     pub fn insert(
         &mut self,
         block_type: Type,
@@ -104,6 +129,13 @@ impl<'a> ExtensionEditor<'a> {
         ) {
             return Err(Error::ReservedType(block_type));
         }
+        if flags.report_on_failure && self.forbids_report_on_failure {
+            return Err(crate::Error::InvalidFlags.into());
+        }
+        if let CrcType::Unrecognised(code) = crc_type {
+            return Err(crate::Error::InvalidCrc(crc::Error::InvalidType(code)).into());
+        }
+        check_body(block_type, &data)?;
 
         let editor = self
             .editor
@@ -130,9 +162,10 @@ impl<'a> ExtensionEditor<'a> {
     }
 
     /// Replaces an extension block's block-specific data, keeping its flags
-    /// and CRC type.
+    /// and CRC type. A well-known type's undecodable data is refused.
     pub fn replace(&mut self, block_number: u64, data: Box<[u8]>) -> Result<()> {
-        self.check_target(block_number)?;
+        let block_type = self.check_target(block_number)?;
+        check_body(block_type, &data)?;
 
         let editor = self
             .editor
@@ -174,8 +207,8 @@ impl<'a> ExtensionEditor<'a> {
 
     // The scoped refusals for an edit target, checked against the editor's
     // current view — so a block inserted by this editor is a valid target,
-    // and a block already removed is not.
-    fn check_target(&self, block_number: u64) -> Result<()> {
+    // and a block already removed is not. Returns the target's type.
+    fn check_target(&self, block_number: u64) -> Result<Type> {
         if block_number <= 1 {
             return Err(Error::ReservedBlock(block_number));
         }
@@ -194,7 +227,7 @@ impl<'a> ExtensionEditor<'a> {
         if !matches!(block.bib, BibCoverage::None) || block.bcb.is_some() {
             return Err(Error::Covered(block_number));
         }
-        Ok(())
+        Ok(block.block_type)
     }
 
     /// Whether any operation has been applied since construction.
@@ -215,4 +248,18 @@ impl<'a> ExtensionEditor<'a> {
             .map(Some)
             .map_err(Error::Editor)
     }
+}
+
+// A well-known extension block's data must decode as its type, exactly as
+// the receive path decodes it: the structural parser never looks inside
+// these bodies, so a malformed one would otherwise ship. Other types are
+// opaque here.
+fn check_body(block_type: Type, data: &[u8]) -> core::result::Result<(), crate::Error> {
+    match block_type {
+        Type::PreviousNode => parse_exact::<Eid>(data).map(drop)?,
+        Type::BundleAge => parse_exact::<BundleAge>(data).map(drop)?,
+        Type::HopCount => parse_exact::<HopInfo>(data).map(drop)?,
+        _ => {}
+    }
+    Ok(())
 }
