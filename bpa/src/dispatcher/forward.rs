@@ -273,12 +273,10 @@ impl Dispatcher {
             ..
         } = hardy_bpv7::parse::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
 
-        // RFC 9171 §4.2.3-4/-5: report_on_failure MUST NOT be set on any block
-        // of an admin-record or anonymous bundle — the receiver has nowhere
-        // meaningful to report to, and a conformant parser (ours included)
-        // rejects the combination.
-        let report_on_failure =
-            !bundle.primary().flags.is_admin_record && !bundle.id().source.is_null();
+        // RFC 9171 §4.2.3-4/-5: an admin-record or anonymous bundle's blocks
+        // may not request a report on failure, and a conformant parser (ours
+        // included) rejects the combination.
+        let report_on_failure = !bundle.primary().forbids_report_on_failure();
 
         // The per-hop blocks below are replaced through `insert_block`, which
         // strips a replaced block from any plaintext BIB that covers it. That
