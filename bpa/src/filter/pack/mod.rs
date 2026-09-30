@@ -77,7 +77,8 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// node-wide payload peek at `build()`; the base methods declare 0. The
 /// declaration is recorded but not yet wired (Phase 3,
 /// `filter_subsystem_design.md`): both input chains run on the resident
-/// header prefix, so a peeking filter reads a not-yet-resident payload as
+/// prefix — the whole bundle when it was already resident at the header
+/// pass, else the headers alone — so a peeking filter may find the payload
 /// absent.
 pub struct FilterPack {
     name: Arc<str>,
@@ -120,8 +121,9 @@ impl FilterPack {
     /// the slot goes through; a filter pair shares state by sharing the
     /// handle. Writes are not checked against the frozen slot table (the
     /// cooperative model the [slots module](crate::filter::slots) states).
-    /// `max_size` bounds the encoded value: larger writes are dropped
-    /// (with a warning) when the delta is applied. Registering the
+    /// `max_size` bounds the encoded value: larger writes are dropped when
+    /// the delta is applied, counted (`bpa.filter.slot.oversized`) and
+    /// logged at debug. Registering the
     /// same name twice in one pack is rejected loudly by
     /// [`build()`](crate::builder::BpaBuilder::build).
     pub fn annotation_slot<T: SlotValue>(
@@ -147,7 +149,7 @@ impl FilterPack {
     ///
     /// Recorded but inert until the peek is wired (Phase 3,
     /// `filter_subsystem_design.md`): the Ingress chain runs on the resident
-    /// header prefix.
+    /// prefix, which may stop short of the payload.
     pub fn ingress_verifier_with_peek(
         &mut self,
         label: &str,
@@ -173,7 +175,7 @@ impl FilterPack {
     ///
     /// Recorded but inert until the peek is wired (Phase 3,
     /// `filter_subsystem_design.md`): the Originate chain runs on the
-    /// resident header prefix.
+    /// resident prefix, which may stop short of the payload.
     pub fn originate_verifier_with_peek(
         &mut self,
         label: &str,
@@ -219,7 +221,7 @@ impl FilterPack {
     ///
     /// Recorded but inert until the peek is wired (Phase 3,
     /// `filter_subsystem_design.md`): the Ingress chain runs on the resident
-    /// header prefix.
+    /// prefix, which may stop short of the payload.
     pub fn ingress_classifier_with_peek(
         &mut self,
         label: &str,
@@ -246,7 +248,7 @@ impl FilterPack {
     ///
     /// Recorded but inert until the peek is wired (Phase 3,
     /// `filter_subsystem_design.md`): the Originate chain runs on the
-    /// resident header prefix.
+    /// resident prefix, which may stop short of the payload.
     pub fn originate_classifier_with_peek(
         &mut self,
         label: &str,

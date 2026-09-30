@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use hardy_bpv7::{
     block::BibCoverage, bpsec::bcb, crc::CrcType, eid::NodeId, status_report::ReasonCode,
 };
-use tracing::{debug, error};
+use tracing::debug;
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -457,18 +457,19 @@ impl Dispatcher {
             return GateVerdict::Disposed;
         }
 
-        // Ingress chain at the pre-drain gate, on the resident header prefix.
-        // It runs synchronously on the record and returns it in every
-        // outcome, so a Classifier's metadata deltas survive. A filter
-        // reading the not-yet-resident payload gets the reader's
+        // Ingress chain at the pre-drain gate, on the resident prefix (the
+        // whole bundle when it was already resident at the header pass, else
+        // the headers alone). It runs synchronously on the record and returns
+        // it in every outcome, so a Classifier's metadata deltas survive. A
+        // filter reading a payload that is not resident gets the reader's
         // `NotResident`.
         let bundle = if self.filters.has_ingress() {
             match self
                 .filters
                 .run_ingress(bundle, headers, bcb_ops, &*self.key_provider)
             {
-                Ok(filter::ChainOutcome::Continue(bundle, _)) => bundle,
-                Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
+                filter::ChainOutcome::Continue(bundle, _) => bundle,
+                filter::ChainOutcome::Drop(bundle, reason) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     count_received_dropped(&label);
                     self.report_bundle_reception(
@@ -476,20 +477,6 @@ impl Dispatcher {
                         bundle.metadata.received_at(),
                         report,
                         reason,
-                    )
-                    .await;
-                    return GateVerdict::Disposed;
-                }
-                Err((bundle, e)) => {
-                    // The resident prefix failed the chain's own decode pass —
-                    // an internal inconsistency, since it parsed at reception.
-                    error!("Ingress filter chain failed: {e}");
-                    count_received_dropped(&ReasonCode::BlockUnintelligible);
-                    self.report_bundle_reception(
-                        &bundle.bpv7,
-                        bundle.metadata.received_at(),
-                        report,
-                        Some(ReasonCode::BlockUnintelligible),
                     )
                     .await;
                     return GateVerdict::Disposed;

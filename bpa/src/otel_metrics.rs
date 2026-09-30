@@ -97,6 +97,11 @@ pub fn init() {
         metrics::Unit::Count,
         "Filter execution errors (by hook)"
     );
+    metrics::describe_counter!(
+        "bpa.filter.slot.oversized",
+        metrics::Unit::Count,
+        "Annotation-slot writes dropped for exceeding their registered bound"
+    );
 
     // -- F. Administrative Records --
     metrics::describe_counter!(

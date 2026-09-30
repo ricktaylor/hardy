@@ -1,6 +1,9 @@
 pub(crate) mod registry;
 
-use core::time::Duration;
+use core::{
+    fmt::{self, Display, Formatter},
+    time::Duration,
+};
 
 use hardy_async::async_trait;
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -82,10 +85,11 @@ pub enum Error {
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
-    /// The bundle was dropped before it was stored — by an Originate filter
-    /// or by the origination gate (an expired lifetime or an exhausted hop
-    /// limit) — with an optional reason code.
-    #[error("Bundle dropped: {0:?}")]
+    /// The bundle was dropped before it was stored — by an Originate filter,
+    /// an origination gate check (an expired lifetime, an exhausted hop
+    /// limit, or a failed RFC 9171 validity check), or an explicit Drop
+    /// route — with an optional reason code.
+    #[error("Bundle dropped{}", DroppedReason(.0))]
     Dropped(Option<ReasonCode>),
 
     /// A bundle with the same identity already exists in storage.
@@ -99,6 +103,19 @@ pub enum Error {
     /// An internal error from an underlying subsystem.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
+}
+
+// The `Dropped` message's tail: the reason code when the drop gave one,
+// nothing otherwise.
+struct DroppedReason<'a>(&'a Option<ReasonCode>);
+
+impl Display for DroppedReason<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(reason) => write!(f, " ({reason:?})"),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The kind of bundle status event being reported to a service.

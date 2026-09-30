@@ -9,7 +9,7 @@ use hardy_cbor::decode::{Head, Marker, parse, parse_exact};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use tracing::warn;
+use tracing::debug;
 
 use crate::{
     Arc,
@@ -66,8 +66,11 @@ struct Provenance {
 ///
 /// A cache, not a source of truth: produced by the parse pipelines
 /// (`bundle::parse`) and recorded here whenever the bundle's bytes are parsed
-/// — at ingress, on local build, or on re-parse. The sites that rewrite the
-/// bytes re-record it; nothing re-validates it after the fact.
+/// — at ingress, on local build, or on re-parse. It mirrors the *stored*
+/// bytes, which stay as received: the per-attempt rewrites at Egress and
+/// Deliver (the per-hop update, a Rewriter's edits) never touch it, and
+/// must not — the expiry arithmetic reads the as-received Bundle Age.
+/// Nothing re-validates it after the fact.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ExtensionFields {
@@ -317,13 +320,16 @@ impl BundleMetadata {
     ///
     /// Per-slot and per-field last-writer-wins: a `Some` routing field
     /// writes, `None` expresses no opinion and preserves the stored value. A
-    /// slot value exceeding its registered size bound is dropped with a
-    /// warning — never stored — keeping metadata stores honest; an
-    /// already-stored value survives the dropped write.
+    /// slot value exceeding its registered size bound is dropped — never
+    /// stored — keeping metadata stores honest; an already-stored value
+    /// survives the dropped write. A misconfigured Classifier drops at line
+    /// rate, so each drop is counted (`bpa.filter.slot.oversized`) and
+    /// logged at debug, not warned.
     pub(crate) fn apply(&mut self, delta: MetadataDelta) {
         for write in delta.slots {
             if write.value.len() > write.max_size.get() {
-                warn!(
+                metrics::counter!("bpa.filter.slot.oversized").increment(1);
+                debug!(
                     "Annotation slot '{}' write of {} bytes exceeds its registered bound of {}; dropped",
                     write.name,
                     write.value.len(),
@@ -356,9 +362,8 @@ impl BundleMetadata {
 mod tests {
     use core::num::NonZeroUsize;
 
-    use crate::filter::slots::{Blob, state::SlotRegistry};
-
     use super::*;
+    use crate::filter::slots::{Blob, state::SlotRegistry};
 
     fn handle<T: SlotValue>(name: &str, max_size: usize) -> SlotHandle<T> {
         SlotRegistry::default().register(name, NonZeroUsize::new(max_size).unwrap())

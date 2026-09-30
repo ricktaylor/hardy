@@ -24,7 +24,7 @@ use hardy_bpv7::{
     eid::Eid,
     status_report::ReasonCode,
 };
-use tracing::{debug, error};
+use tracing::debug;
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -424,7 +424,7 @@ impl Dispatcher {
     }
 
     // The gate decisions for an originated record: the Originate chain on
-    // the resident header prefix, then the route lookup — the decision of
+    // the resident prefix, then the route lookup — the decision of
     // record, mirroring `decide_at_gate` at CLA ingress. Runs before the
     // payload spools; an `Err` returns with nothing spooled or persisted,
     // so a rejected bundle never awaits its payload.
@@ -443,23 +443,19 @@ impl Dispatcher {
     > {
         // The Originate chain runs synchronously on the record; a
         // Classifier's metadata deltas survive into the persisted record. A
-        // filter reading a not-yet-resident payload gets the reader's
-        // not-resident `None`.
+        // filter reading a payload that is not resident — always, for an ADU
+        // origination — gets the reader's `NotResident`.
         let bundle = if self.filters.has_originate() {
             match self
                 .filters
                 .run_originate(bundle, head, bcbs, &*self.key_provider)
             {
-                Ok(filter::ChainOutcome::Continue(bundle, _)) => bundle,
-                Ok(filter::ChainOutcome::Drop(_, reason)) => {
+                filter::ChainOutcome::Continue(bundle, _) => bundle,
+                filter::ChainOutcome::Drop(_, reason) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
                     debug!("Originate filter chain dropped the bundle: {label:?}");
                     return Err(services::Error::Dropped(reason));
-                }
-                Err((_, e)) => {
-                    error!("Originate filter chain failed: {e}");
-                    return Err(services::Error::Internal(e));
                 }
             }
         } else {

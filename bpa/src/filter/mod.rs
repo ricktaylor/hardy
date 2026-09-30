@@ -35,16 +35,21 @@
 //! # Failure and Drop contract
 //!
 //! A [`Verdict::Drop`] is policy, never a failure. Its disposition per
-//! hook, and the pipeline's recovery when a chain *fails* (the engine
-//! could not run its decode pass over the stored bytes — never a
-//! filter's verdict):
+//! hook, and the pipeline's recovery when an output chain *fails* (the
+//! engine could not decode the stored bytes — never a filter's verdict;
+//! the input chains decode nothing themselves, so they cannot fail):
 //!
 //! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
 //! |---|---|---|---|
-//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | `services::Error::Internal` to the caller; nothing was stored |
+//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | none — like Ingress, the chain runs on the door's own header decode |
 //! | Ingress | dropped before anything is stored, with one reception + deletion report per the bundle's request flags | the same, without the deletion assertion even when the flags request one (a requested reception report is still sent) | none — the chain decodes nothing itself: it runs on the gate's header decode, whose failures are the header pass's |
 //! | Egress | dropped with a flag-gated deletion report; the transmission attempt ends | deleted silently | the claim returns to `Waiting` for a fresh routing decision |
 //! | Deliver | dropped with a flag-gated deletion report | deleted silently | parked `WaitingForService`, recovered by the next (re-)registration |
+//!
+//! At Egress the chain runs on the per-hop rewrite's output, and that
+//! rewrite decodes the stored bytes first (an undecodable stored bundle
+//! parks `Waiting` there, before the chain runs), so an Egress chain
+//! failure means the BPA's own rebuild produced bytes that do not decode.
 //!
 //! `bpa.filter.filtered` counts every Drop, `bpa.filter.modified` every
 //! applied rewrite, and `bpa.filter.error` every chain failure, all by
@@ -55,7 +60,10 @@
 //! that was meant to work and has not leaves every subsequent processing
 //! step undefined, so the engine panics naming the failing link's
 //! pack-prefixed label, and the panic aborts the process — the fail-fast
-//! rule, applied by analogy with a storage fault. The [`ExtensionEditor`]
+//! rule, applied by analogy with a storage fault. The bundle stays stored
+//! and restart recovery re-queues it, so a deterministic failure recurs on
+//! every restart: the node crash-loops until the bundle is removed, the
+//! accepted cost of failing fast. The [`ExtensionEditor`]
 //! refuses at call time the edits it knows a receiver would reject, so a
 //! Rewriter that treats refusals as its no-match path meets those as
 //! refusals.
@@ -108,7 +116,10 @@ pub enum Verdict<T = ()> {
 /// headers through `bundle`, block bodies (plaintext or BCB-decrypted)
 /// through `reader` — and the BPA-local record state through the separate
 /// `metadata` argument (provenance, extension-field cache, annotation
-/// slots; expiry via [`BundleMetadata::expiry`]). See
+/// slots; expiry via [`BundleMetadata::expiry`]). The extension-field
+/// cache holds the values as received: at Egress and Deliver, this
+/// attempt's Previous Node, Hop Count, and Bundle Age — and any preceding
+/// Rewriter's edits — are read through the reader, never the cache. See
 /// [reading the bundle](self#reading-the-bundle).
 pub trait Verifier: Send + Sync {
     /// Inspect the bundle and return [`Verdict::Continue`] to accept or
@@ -168,6 +179,10 @@ pub trait Classifier: Send + Sync {
 /// at Egress the fixed per-hop rewrite has already run, so a Rewriter that
 /// removes a clockless bundle's Bundle Age transmits a bundle a strict next
 /// hop rejects.
+///
+/// Per-attempt facts — this attempt's per-hop blocks and its predecessors'
+/// edits — come from the reader: `metadata.extensions` holds the values as
+/// received.
 ///
 /// An [`ExtensionEditor`] refusal is the Rewriter's no-match path. A block
 /// the Rewriter inserted is a valid target for its own later `replace` or

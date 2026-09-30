@@ -107,7 +107,9 @@ impl Dispatcher {
         // - Edits are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
         //   route to a different peer, so Egress runs again with fresh context
-        // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
+        // - The BPSec seam (BIB/BCB per egress policy, possibly per peer)
+        //   belongs after the Egress Verifiers: designed, not yet built —
+        //   nothing is signed or encrypted on the way out
         // - `metadata.extensions` still carries the as-received decode (it
         //   mirrors the stored bytes); this attempt's bumped hop count / age
         //   live only in the (bundle, data) pair handed down the chain
