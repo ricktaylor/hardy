@@ -121,6 +121,12 @@ impl FromCbor for Flags {
 impl Flags {
     /// The processing-control flags for a primary block (RFC 9171 §4.2.3):
     /// must-replicate, report-on-failure, and delete-bundle-on-failure set.
+    ///
+    /// Nominal: the primary block has no flags field on the wire, so these
+    /// describe block 0's entry in a bundle's block map and are never
+    /// encoded — a bundle that forbids `report_on_failure` on its blocks
+    /// (see [`PrimaryBlock::forbids_report_on_failure`](crate::primary_block::PrimaryBlock::forbids_report_on_failure))
+    /// still shows it here.
     pub fn primary() -> Self {
         Self {
             must_replicate: true,
@@ -355,7 +361,7 @@ impl Block {
     ///
     /// `source` MUST be the complete, contiguous bundle byte stream the
     /// block's offsets were parsed against (the `Bytes` returned by
-    /// [`parse::parse`], or the
+    /// [`parse::parse`](crate::parse::parse), or the
     /// buffer a `Builder`/`Editor` produced) — the offsets are
     /// bundle-absolute. Returns `None` if they fall outside `source`.
     ///

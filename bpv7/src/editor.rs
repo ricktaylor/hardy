@@ -38,6 +38,12 @@ pub enum Error {
     #[error("Security blocks (BIB/BCB) must be managed via Signer/Encryptor, not the Editor")]
     SecurityBlock,
 
+    /// A block carries `report_on_failure` on a bundle whose final primary
+    /// forbids it (RFC 9171 §4.2.3-4/-5); refused when the bundle is rebuilt,
+    /// naming the lowest such block.
+    #[error("Block {0} requests report_on_failure, which the bundle forbids")]
+    ReportOnFailureForbidden(u64),
+
     #[error(transparent)]
     Builder(#[from] builder::Error),
 }
@@ -1034,7 +1040,15 @@ impl<'a> Editor<'a> {
     /// - The public API prevents adding/updating security blocks
     /// - Cascade deletes preserve or remove security block references
     /// - Signer/Encryptor set bib/bcb overrides explicitly
+    ///
+    /// # Errors
+    ///
+    /// [`ReportOnFailureForbidden`](Error::ReportOnFailureForbidden) when the
+    /// final primary forbids `report_on_failure` (RFC 9171 §4.2.3-4/-5) and
+    /// a block carries it, whether an edit set the flag or a kept block
+    /// carried it under the primary the edits replaced.
     pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Vec<Chunk>), Error> {
+        self.check_report_on_failure()?;
         let mut blocks_out: HashMap<u64, block::Block> = HashMap::new();
 
         let primary_block = self.blocks.remove(&0).expect("No primary block!");
@@ -1135,7 +1149,13 @@ impl<'a> Editor<'a> {
     /// `Chunk::Unchanged` references ranges in the original `source_data`,
     /// `Chunk::New` contains freshly encoded bytes. Use `Chunk::flatten()`
     /// to concatenate into contiguous bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`ReportOnFailureForbidden`](Error::ReportOnFailureForbidden), as
+    /// [`rebuild_bundle`](Self::rebuild_bundle) refuses it.
     pub fn rebuild(mut self) -> Result<Vec<Chunk>, Error> {
+        self.check_report_on_failure()?;
         let primary_block = self.blocks.remove(&0).expect("No primary block!");
 
         // Build primary chunk
@@ -1178,6 +1198,40 @@ impl<'a> Editor<'a> {
             (1, payload_chunk),
             None,
         ))
+    }
+
+    // RFC 9171 §4.2.3-4/-5 against the final primary: checked when the
+    // bundle is rebuilt, not at the setters, since the primary can change
+    // after a block flag is set. Block 0's flags are nominal and skipped.
+    // The lowest flagged block is named, so the error does not depend on
+    // the map's iteration order.
+    fn check_report_on_failure(&self) -> Result<(), Error> {
+        let primary = self.primary.as_ref().unwrap_or(&self.original.primary);
+        if !primary.forbids_report_on_failure() {
+            return Ok(());
+        }
+        let flagged = self
+            .blocks
+            .iter()
+            .filter(|&(&block_number, template)| {
+                block_number != 0
+                    && match template {
+                        BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
+                            template.block.flags.report_on_failure
+                        }
+                        BlockTemplate::Keep(_) => self
+                            .original
+                            .blocks
+                            .get(&block_number)
+                            .is_some_and(|block| block.flags.report_on_failure),
+                    }
+            })
+            .map(|(&block_number, _)| block_number)
+            .min();
+        match flagged {
+            Some(block_number) => Err(Error::ReportOnFailureForbidden(block_number)),
+            None => Ok(()),
+        }
     }
 
     fn build_chunk(
