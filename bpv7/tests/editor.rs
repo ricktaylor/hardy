@@ -1172,6 +1172,23 @@ fn extension_editor_refuses_an_unrecognised_crc_type() {
         )))
     ));
     assert!(!editor.is_modified());
+
+    // Control: each recognised CRC type is accepted and the inserted block
+    // carries it — the re-parse checks the CRC value too.
+    for crc_type in [crc::CrcType::CRC16_X25, crc::CrcType::CRC32_CASTAGNOLI] {
+        let mut editor = ExtensionEditor::new(&bundle, &data);
+        let inserted = editor
+            .insert(
+                block::Type::Unrecognised(200),
+                block::Flags::default(),
+                crc_type,
+                b"ext-data".as_slice().into(),
+            )
+            .expect("a recognised CRC type is accepted");
+        let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+        let rewritten = reparse(&Chunk::flatten(chunks, &data));
+        assert_eq!(rewritten.blocks[&inserted].crc_type, crc_type);
+    }
 }
 
 // Insert `body` as `block_type` into a fresh bundle, expecting a refusal;
@@ -1262,11 +1279,27 @@ fn extension_editor_refuses_an_undecodable_well_known_replacement() {
     ));
     assert!(!editor.is_modified());
 
+    // Control: a valid body is accepted, and the replace changes the data
+    // alone — the block keeps its flags and CRC type.
+    let replacement = hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 1,
+    };
     editor
-        .replace(hop, hop_count_body())
+        .replace(hop, emit(&replacement).0.into())
         .expect("a valid body is accepted");
     let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
-    reparse(&Chunk::flatten(chunks, &data));
+    let rewritten_data = Chunk::flatten(chunks, &data);
+    let rewritten = reparse(&rewritten_data);
+    let (original, replaced) = (&bundle.blocks[&hop], &rewritten.blocks[&hop]);
+    assert_eq!(replaced.flags, original.flags);
+    assert_eq!(replaced.crc_type, original.crc_type);
+    assert_eq!(
+        replaced
+            .extract::<hop_info::HopInfo>(&rewritten_data)
+            .unwrap(),
+        Some(replacement)
+    );
 }
 
 // === insert_block replace-by-type: BIB/BCB coverage parity =============
