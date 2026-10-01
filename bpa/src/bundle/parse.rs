@@ -541,12 +541,12 @@ fn verify_headers(
         // BCB's OperationSet and drops the BCB only once it empties. A shared BCB
         // with a surviving co-target must stay — the payload is decrypted only at
         // delivery, so it always survives here, and naming the BCB itself in the
-        // request would strand its ciphertext (`StrandsCiphertext`) and panic
-        // `apply_rewrites`. §C8 never decrypts the payload and a payload BCB is
-        // decrypted at delivery, so the block-1 branch is defensive. A corrupt
-        // liveness-critical target can't be stripped-and-forwarded — see
-        // `is_liveness_critical` — so it's fatal, exactly as its undecipherable
-        // counterpart is below.
+        // request would strand its ciphertext (`StrandsCiphertext`), which the
+        // output doors' removal cascade refuses on every attempt. §C8 never
+        // decrypts the payload and a payload BCB is decrypted at delivery, so
+        // the block-1 branch is defensive. A corrupt liveness-critical target
+        // can't be stripped-and-forwarded — see `is_liveness_critical` — so
+        // it's fatal, exactly as its undecipherable counterpart is below.
         let is_clocked = hv.bundle.primary.id.timestamp.is_clocked();
         for &target in &facts.failed {
             if target == 1
@@ -674,8 +674,8 @@ mod tests {
     // Corrupting the BIB's ciphertext must failure-drop only the BIB: the
     // §E cascade shrinks the shared BCB to the payload and the bundle
     // survives. Queuing the shared BCB itself would strand the payload
-    // ciphertext (`StrandsCiphertext`) and panic `apply_rewrites` in the
-    // ingress task.
+    // ciphertext (`StrandsCiphertext`), which the output doors' removal
+    // cascade refuses on every attempt.
     #[cfg(feature = "rfc9173")]
     #[tokio::test]
     async fn multi_target_bcb_failure_drop_survives_ingress() {
