@@ -46,10 +46,10 @@ struct Admitted {
 // The outcome of the shared receive pipeline, for the three in-feeds.
 //
 // `Dispatched` and `Disposed` are both *acceptance* (the bundle ran the
-// Ingress chain and its routing decision was executed, or it was dropped
-// internally with reports); `Refused` is the one non-acceptance outcome — the
-// transfer could not be taken at all (truncation, the size cap) and its
-// custodian keeps responsibility.
+// Ingress chain and its routing decision was executed or queued for
+// dispatch, or it was dropped internally with reports); `Refused` is the one
+// non-acceptance outcome — the transfer could not be taken at all
+// (truncation, the size cap) and its custodian keeps responsibility.
 pub(super) enum Received {
     /// Admitted: the bundle ran the Ingress chain, was written once to the
     /// metadata store, and had the gate's routing decision executed (or
@@ -128,8 +128,8 @@ impl Dispatcher {
     // counted, and dropped with status reports where possible (`Disposed`);
     // only truncation and the size cap refuse (`Refused`). An admitted
     // bundle runs the Ingress chain, is written once to the metadata store
-    // (the P1 checkpoint), and has its gate routing decision executed
-    // (`Dispatched`).
+    // (the P1 checkpoint), and has its gate routing decision executed or
+    // queued for dispatch (`Dispatched`).
     //
     // Every caller hands the bundle as a segment stream — a caller holding
     // whole bytes passes them directly (`Bytes` is a `Receiver<Segment>`) —

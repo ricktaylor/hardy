@@ -70,8 +70,11 @@ impl Dispatcher {
     /// | `Deliver` (service gone) | Wait for a service | `Dispatching` → `WaitingForService` |
     /// | `Forward` | Queue to CLA peer | `Dispatching` → `ForwardPending` |
     /// | `Forward` (peer gone) | Wait for route | `Dispatching` → `Waiting` |
-    /// | `None` (local destination) | Wait for a service | `Dispatching` → `WaitingForService` |
-    /// | `None` | Wait for route | `Dispatching` → `Waiting` |
+    /// | `None` (local lookup EID, default table) | Wait for a service | `Dispatching` → `WaitingForService` |
+    /// | `None` (otherwise) | Wait for route | `Dispatching` → `Waiting` |
+    ///
+    /// The lookup EID is the bundle's route key, else its destination; a
+    /// table other than the default waits for a route whatever the EID.
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
