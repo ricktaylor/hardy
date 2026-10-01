@@ -50,12 +50,17 @@ pub struct Flags {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     /// A bitmask of any unrecognized flags encountered during parsing.
+    /// Encoding ignores the bits of the named flags above: each named field
+    /// alone decides its bit.
     pub unrecognised: Option<u64>,
 }
 
 impl From<&Flags> for u64 {
     fn from(value: &Flags) -> Self {
-        let mut flags = value.unrecognised.unwrap_or(0);
+        // Only the bits the decoder leaves unrecognised pass through, so the
+        // wire never sets a named flag its field leaves clear.
+        const NAMED: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4);
+        let mut flags = value.unrecognised.unwrap_or(0) & !NAMED;
         if value.must_replicate {
             flags |= 1 << 0;
         }

@@ -1125,6 +1125,37 @@ fn extension_editor_refuses_report_on_failure_the_bundle_forbids() {
     assert!(rewritten.blocks[&inserted].flags.report_on_failure);
 }
 
+// A named flag's bit follows its field alone: `report_on_failure`'s bit
+// smuggled through `unrecognised` reaches neither the wire nor the parser's
+// rejection, while a genuinely unrecognised bit passes through.
+#[test]
+fn extension_editor_insert_keeps_named_bits_out_of_unrecognised_flags() {
+    let (bundle, data) = make_bundle_from(
+        "ipn:1.0",
+        hardy_bpv7::bundle::Flags {
+            is_admin_record: true,
+            ..Default::default()
+        },
+    );
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let inserted = editor
+        .insert(
+            block::Type::Unrecognised(200),
+            block::Flags {
+                unrecognised: Some((1 << 1) | (1 << 8)),
+                ..Default::default()
+            },
+            crc::CrcType::None,
+            b"ext-data".as_slice().into(),
+        )
+        .expect("no named flag is set, so the insert is accepted");
+    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let rewritten = reparse(&Chunk::flatten(chunks, &data));
+    let flags = &rewritten.blocks[&inserted].flags;
+    assert!(!flags.report_on_failure);
+    assert_eq!(flags.unrecognised, Some(1 << 8));
+}
+
 #[test]
 fn extension_editor_refuses_an_unrecognised_crc_type() {
     let (bundle, data) = make_bundle();

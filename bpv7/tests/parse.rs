@@ -137,6 +137,66 @@ fn builder_clears_report_on_failure_on_a_forbidding_bundle() {
     }
 }
 
+// A named flag's bit follows its field alone, at both flag levels, so a
+// hand-built `unrecognised` cannot carry a bit past the normalisation above:
+// the admin-record bit leaves an ordinary bundle ordinary on the wire, and
+// `report_on_failure`'s bit does not reach an admin record's block. A
+// genuinely unrecognised bit passes through.
+#[test]
+fn builder_keeps_named_bits_out_of_unrecognised_flags() {
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_flags(bundle::Flags {
+            unrecognised: Some(1 << 1),
+            ..Default::default()
+        })
+        .with_hop_count(&hop_info::HopInfo {
+            limit: NonZeroU8::new(30).unwrap(),
+            count: 0,
+        })
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let parsed = parse::parse(Bytes::from(data))
+        .expect("the bundle is not an administrative record on the wire")
+        .bundle;
+    assert!(!parsed.primary.flags.is_admin_record);
+    let hop_count = parsed
+        .blocks
+        .values()
+        .find(|b| b.block_type == block::Type::HopCount)
+        .expect("the Hop Count block is present");
+    assert!(
+        hop_count.flags.report_on_failure,
+        "an ordinary bundle keeps the Hop Count default"
+    );
+
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_flags(bundle::Flags {
+            is_admin_record: true,
+            ..Default::default()
+        })
+        .add_extension_block(block::Type::Unrecognised(200))
+        .unwrap()
+        .with_flags(block::Flags {
+            unrecognised: Some((1 << 1) | (1 << 8)),
+            ..Default::default()
+        })
+        .build(b"ext-data".as_slice().into())
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let parsed = parse::parse(Bytes::from(data))
+        .expect("no block of the administrative record requests a report")
+        .bundle;
+    let block = parsed
+        .blocks
+        .values()
+        .find(|b| b.block_type == block::Type::Unrecognised(200))
+        .expect("the extension block is present");
+    assert!(!block.flags.report_on_failure);
+    assert_eq!(block.flags.unrecognised, Some(1 << 8));
+}
+
 // NOTE: LLR 1.1.33 (Bundle Age required when Creation Time is zero) is enforced
 // by the BPA rfc9171-filter, not the parser. The parser accepts such bundles for
 // compatibility with RFC 9173 test vectors.
