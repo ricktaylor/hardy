@@ -16,11 +16,13 @@
 //! `replace`/`remove`: a fresh insert is by definition an uncovered
 //! extension block, so every gate above still holds.
 //!
-//! What [`finish`](ExtensionEditor::finish) or a re-parse of the rewritten
-//! bytes would reject is refused at call time instead, with the error the
-//! parser raises: a `report_on_failure` flag the bundle forbids, an
-//! unrecognised CRC type, and well-known extension block data that does
-//! not decode as its type.
+//! An edit that would fail at [`finish`](ExtensionEditor::finish) or yield
+//! bytes a receiver rejects is refused at call time instead, carrying the
+//! error the rejecting check raises. The parser rejects a
+//! `report_on_failure` flag the bundle forbids and an unrecognised CRC
+//! type. It never decodes Previous Node, Bundle Age, or Hop Count data, but
+//! a receiving BPA does, with the same decoders, so data that does not
+//! decode as its type is refused with that decode error.
 //!
 //! Edits accumulate in memory; nothing is materialised until
 //! [`finish`](ExtensionEditor::finish).
@@ -30,12 +32,13 @@ use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use hardy_cbor::decode::parse_exact;
 use thiserror::Error;
 
+// Aliased `Error`s: this module's own `Error` is the refusal enum below.
 use crate::{
+    Error as Bpv7Error,
     block::{BibCoverage, Flags, Type},
     bundle::Bundle,
     bundle_age::BundleAge,
-    crc::{self, CrcType},
-    // Aliased: this module's own `Error` is the refusal enum below.
+    crc::{CrcType, Error as CrcError},
     editor::{Chunk, Editor, Error as EditorError},
     eid::Eid,
     hop_info::HopInfo,
@@ -64,14 +67,14 @@ pub enum Error {
     #[error("Block {0} is under BPSec coverage and cannot be edited")]
     Covered(u64),
 
-    /// The edit would produce a bundle the parser rejects, refused at call
-    /// time with the error the parser (or `finish`) would raise:
+    /// The edit would produce a bundle a receiver rejects, refused at call
+    /// time with the error the rejecting check raises: the parser's
     /// `InvalidFlags` for a `report_on_failure` flag the bundle forbids
-    /// (RFC 9171 §4.2.3-4/-5), `InvalidCrc` for an unrecognised CRC type,
-    /// or the decode error for a Previous Node, Bundle Age, or Hop Count
-    /// body that does not decode as its type.
+    /// (RFC 9171 §4.2.3-4/-5) and `InvalidCrc` for an unrecognised CRC
+    /// type, or the type's own decode error for Previous Node, Bundle Age,
+    /// or Hop Count data that does not decode as its type.
     #[error(transparent)]
-    Invalid(#[from] crate::Error),
+    Invalid(#[from] Bpv7Error),
 
     /// A structural editing failure reported by the underlying editor
     /// (illegal duplicate of a singleton type, block numbers exhausted, …).
@@ -93,7 +96,7 @@ pub struct ExtensionEditor<'a> {
     edited: bool,
     // The primary block is out of scope, so its verdict is fixed at
     // construction.
-    forbids_report_on_failure: bool,
+    report_on_failure_forbidden: bool,
 }
 
 impl<'a> ExtensionEditor<'a> {
@@ -102,7 +105,7 @@ impl<'a> ExtensionEditor<'a> {
         Self {
             editor: Some(Editor::new(original, source_data)),
             edited: false,
-            forbids_report_on_failure: original.primary.forbids_report_on_failure(),
+            report_on_failure_forbidden: original.primary.forbids_report_on_failure(),
         }
     }
 
@@ -129,11 +132,11 @@ impl<'a> ExtensionEditor<'a> {
         ) {
             return Err(Error::ReservedType(block_type));
         }
-        if flags.report_on_failure && self.forbids_report_on_failure {
-            return Err(crate::Error::InvalidFlags.into());
+        if flags.report_on_failure && self.report_on_failure_forbidden {
+            return Err(Bpv7Error::InvalidFlags.into());
         }
         if let CrcType::Unrecognised(code) = crc_type {
-            return Err(crate::Error::InvalidCrc(crc::Error::InvalidType(code)).into());
+            return Err(Bpv7Error::InvalidCrc(CrcError::InvalidType(code)).into());
         }
         check_body(block_type, &data)?;
 
@@ -254,7 +257,7 @@ impl<'a> ExtensionEditor<'a> {
 // the receive path decodes it: the structural parser never looks inside
 // these bodies, so a malformed one would otherwise ship. Other types are
 // opaque here.
-fn check_body(block_type: Type, data: &[u8]) -> core::result::Result<(), crate::Error> {
+fn check_body(block_type: Type, data: &[u8]) -> core::result::Result<(), Bpv7Error> {
     match block_type {
         Type::PreviousNode => parse_exact::<Eid>(data).map(drop)?,
         Type::BundleAge => parse_exact::<BundleAge>(data).map(drop)?,
