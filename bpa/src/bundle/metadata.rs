@@ -369,6 +369,33 @@ mod tests {
         SlotRegistry::default().register(name, NonZeroUsize::new(max_size).unwrap())
     }
 
+    // Populated metadata survives the serde path both SQL backends persist
+    // records through, and a row written before `WritableMetadata` was
+    // removed — carrying `"flow_label":null` — still loads.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn populated_metadata_round_trips_through_serde() {
+        let mut metadata = BundleMetadata::originated();
+        let mut delta = MetadataDelta::default();
+        delta.set(&handle::<u32>("vendor.mark", 16), &7);
+        delta.route_table = Some(3);
+        delta.route_key = Some("ipn:9.0".parse().unwrap());
+        metadata.apply(delta);
+        metadata.to_remove = vec![4, 5];
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let loaded: BundleMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, metadata);
+
+        let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .insert("flow_label".into(), serde_json::Value::Null);
+        let loaded: BundleMetadata = serde_json::from_value(legacy).unwrap();
+        assert_eq!(loaded, metadata);
+    }
+
     #[test]
     fn slot_round_trips_through_delta_apply() {
         let h = handle::<u32>("vendor.x", 16);

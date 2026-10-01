@@ -456,6 +456,37 @@ mod tests {
         assert_eq!(bundle.metadata.slot(&slot), Some(7));
     }
 
+    // Chain order is registration order across packs too: a Classifier in
+    // the first pack writes the slot an expecter in the second requires, so
+    // the pair passes frozen in that order and drops frozen the other way.
+    #[test]
+    fn chain_order_spans_packs_in_registration_order() {
+        let packs = || {
+            let mut writer = FilterPack::new("writer");
+            let slot = writer.annotation_slot::<u32>("mark", NonZeroUsize::new(16).unwrap());
+            writer.ingress_classifier("writer", SlotWriter(slot.clone(), 7));
+            let mut expecter = FilterPack::new("expecter");
+            expecter.ingress_classifier("expecter", SlotExpecter(slot, 7));
+            (writer, expecter)
+        };
+
+        let (writer, expecter) = packs();
+        let chains = FilterChains::freeze(vec![writer, expecter]).unwrap().0;
+        let (bundle, data, bcbs) = test_bundle();
+        assert!(matches!(
+            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider),
+            ChainOutcome::Continue(..)
+        ));
+
+        let (writer, expecter) = packs();
+        let chains = FilterChains::freeze(vec![expecter, writer]).unwrap().0;
+        let (bundle, data, bcbs) = test_bundle();
+        assert!(matches!(
+            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider),
+            ChainOutcome::Drop(_, Some(ReasonCode::NoAdditionalInformation))
+        ));
+    }
+
     struct DropVerifier;
 
     impl Verifier for DropVerifier {

@@ -6,7 +6,10 @@
 //! bundle whose primary block forbids its edit: the flags are the sender's
 //! choice, so an abort there would hand any peer a node-kill.
 
-use core::num::NonZeroU64;
+use core::{
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -18,7 +21,11 @@ use hardy_bpa::{
     builder::BpaBuilder,
     bundle::{Bundle, BundleMetadata, BundleStatus},
     cla,
-    filter::{RewriteContext, Rewriter, Verdict, Verifier, pack::FilterPack},
+    filter::{
+        Classifier, RewriteContext, Rewriter, Verdict, Verifier,
+        pack::FilterPack,
+        slots::{MetadataDelta, SlotHandle},
+    },
     node_ids::NodeIds,
     services,
     storage::{
@@ -61,14 +68,23 @@ enum InsertOutcome {
     Other(String),
 }
 
-// Inserts one extension block flagged `report_on_failure` — as bpv7's
-// own `Builder::with_hop_count` flags its block — and treats a refusal as
-// its no-match path, recording every outcome.
-struct ReportingInserter {
+// Inserts one extension block with `flags` and treats a refusal as its
+// no-match path, recording every outcome.
+struct FlaggedInserter {
+    flags: BlockFlags,
     outcomes: Arc<Mutex<Vec<InsertOutcome>>>,
 }
 
-impl Rewriter for ReportingInserter {
+// Requests a status report on failure — as bpv7's own
+// `Builder::with_hop_count` flags its block.
+fn report_on_failure() -> BlockFlags {
+    BlockFlags {
+        report_on_failure: true,
+        ..Default::default()
+    }
+}
+
+impl Rewriter for FlaggedInserter {
     fn rewrite<'a>(
         &self,
         _bundle: &Bpv7Bundle,
@@ -79,10 +95,7 @@ impl Rewriter for ReportingInserter {
     ) -> Verdict {
         let outcome = match editor.insert(
             INSERTED,
-            BlockFlags {
-                report_on_failure: true,
-                ..Default::default()
-            },
+            self.flags.clone(),
             CrcType::None,
             b"inserted".as_slice().into(),
         ) {
@@ -290,6 +303,77 @@ impl MetadataStorage for ObservedMetadata {
     }
 }
 
+// Writes a registered annotation slot at the Ingress hook.
+struct SlotWriter(SlotHandle<u32>, u32);
+
+impl Classifier for SlotWriter {
+    fn classify<'a>(
+        &self,
+        _bundle: &Bpv7Bundle,
+        _reader: &'a dyn Reader<'a>,
+        _metadata: &BundleMetadata,
+    ) -> Verdict<MetadataDelta> {
+        let mut delta = MetadataDelta::default();
+        delta.set(&self.0, &self.1);
+        Verdict::Continue(delta)
+    }
+}
+
+// Reports the slot's value as the hook it is registered at sees it.
+struct SlotReader {
+    handle: SlotHandle<u32>,
+    seen_tx: flume::Sender<Option<u32>>,
+}
+
+impl Verifier for SlotReader {
+    fn verify<'a>(
+        &self,
+        _bundle: &Bpv7Bundle,
+        _reader: &'a dyn Reader<'a>,
+        metadata: &BundleMetadata,
+    ) -> Verdict {
+        let _ = self.seen_tx.send(metadata.slot(&self.handle));
+        Verdict::Continue(())
+    }
+}
+
+// An application that only sends.
+struct SendingApp {
+    // Held: dropping the sink unregisters the application.
+    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+}
+
+#[async_trait]
+impl services::Application for SendingApp {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn on_deliver(
+        &self,
+        _bundle_id: &Id,
+        _expiry: time::OffsetDateTime,
+        _ack_requested: bool,
+        total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        buffer_stream(stream, total_len).await?;
+        Ok(())
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &Id,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+    }
+}
+
 struct CapturingCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
     forwarded_tx: flume::Sender<Bytes>,
@@ -475,11 +559,20 @@ fn report_requested() -> BundleFlags {
     }
 }
 
-// A BPA with status reports on, observed storage, and a Verifier at the
-// given output hook that drops the bundles addressed to `destination` with
-// `reason`: (bpa, cla, forwarded, drops, storage, metadata).
+// The filter hooks, for registering a test Verifier at one of them.
+#[derive(Clone, Copy)]
+enum Hook {
+    Ingress,
+    Originate,
+    Egress,
+    Deliver,
+}
+
+// A BPA with status reports on, observed storage, and a Verifier at `hook`
+// that drops the bundles addressed to `destination` with `reason`:
+// (bpa, cla, forwarded, drops, storage, metadata).
 async fn dropping_setup(
-    deliver: bool,
+    hook: Hook,
     destination: &str,
     reason: Option<ReasonCode>,
 ) -> (
@@ -497,11 +590,12 @@ async fn dropping_setup(
         dropped_tx,
     };
     let mut pack = FilterPack::new("test");
-    if deliver {
-        pack.deliver_verifier("dropper", dropper);
-    } else {
-        pack.egress_verifier("dropper", dropper);
-    }
+    match hook {
+        Hook::Ingress => pack.ingress_verifier("dropper", dropper),
+        Hook::Originate => pack.originate_verifier("dropper", dropper),
+        Hook::Egress => pack.egress_verifier("dropper", dropper),
+        Hook::Deliver => pack.deliver_verifier("dropper", dropper),
+    };
     let storage = ObservedStorage::new(false);
     let metadata = Arc::new(MetadataMemStorage::new(None));
     let (bpa, cla, forwarded_rx) = setup(
@@ -525,7 +619,8 @@ async fn egress_rewriter_meets_a_refusal_on_an_admin_record() {
     let mut pack = FilterPack::new("test");
     pack.egress_rewriter(
         "inserter",
-        ReportingInserter {
+        FlaggedInserter {
+            flags: report_on_failure(),
             outcomes: outcomes.clone(),
         },
     );
@@ -558,7 +653,8 @@ async fn deliver_rewriter_meets_a_refusal_on_a_null_source() {
     let mut pack = FilterPack::new("test");
     pack.deliver_rewriter(
         "inserter",
-        ReportingInserter {
+        FlaggedInserter {
+            flags: report_on_failure(),
             outcomes: outcomes.clone(),
         },
     );
@@ -584,12 +680,52 @@ async fn deliver_rewriter_meets_a_refusal_on_a_null_source() {
     );
 }
 
+/// The flag encoders keep a named bit out of `unrecognised`: a Rewriter that
+/// carries `report_on_failure`'s bit in the raw mask on an anonymous bundle
+/// is accepted with the bit dropped, and the bundle is delivered — the
+/// re-parse that once aborted the node never sees the bit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deliver_rewriter_raw_report_bit_is_dropped_on_a_null_source() {
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let mut pack = FilterPack::new("test");
+    pack.deliver_rewriter(
+        "inserter",
+        FlaggedInserter {
+            flags: BlockFlags {
+                unrecognised: Some(1 << 1),
+                ..Default::default()
+            },
+            outcomes: outcomes.clone(),
+        },
+    );
+    let (bpa, cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+    let (_service, delivered_rx) = register_service(&bpa).await;
+
+    let anonymous = BundleFlags {
+        do_not_fragment: true,
+        ..Default::default()
+    };
+    arrive(&cla, "dtn:none", anonymous, LOCAL).await;
+    let parsed = parse(next(&delivered_rx).await).expect("the delivered bundle must parse");
+    let inserted = parsed
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == INSERTED)
+        .expect("the insert was accepted");
+    assert!(!inserted.flags.report_on_failure);
+    assert_eq!(inserted.flags.unrecognised, None);
+
+    bpa.shutdown().await;
+    assert_eq!(*outcomes.lock().unwrap(), [InsertOutcome::Inserted]);
+}
+
 /// Egress `Drop(Some(reason))`: one deletion report carrying the filter's
 /// reason; the bundle is not transmitted and its record is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_drop_with_a_reason_reports_once() {
     let (bpa, cla, forwarded_rx, _dropped_rx, storage, metadata) =
-        dropping_setup(false, REMOTE, Some(ReasonCode::TrafficPared)).await;
+        dropping_setup(Hook::Egress, REMOTE, Some(ReasonCode::TrafficPared)).await;
 
     let id = arrive(&cla, SOURCE, report_requested(), REMOTE).await;
     let report = next_report(&forwarded_rx).await;
@@ -613,7 +749,7 @@ async fn egress_drop_with_a_reason_reports_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_drop_without_a_reason_is_silent() {
     let (bpa, cla, forwarded_rx, dropped_rx, storage, metadata) =
-        dropping_setup(false, REMOTE, None).await;
+        dropping_setup(Hook::Egress, REMOTE, None).await;
 
     let id = arrive(&cla, SOURCE, report_requested(), REMOTE).await;
     next(&dropped_rx).await;
@@ -631,7 +767,7 @@ async fn egress_drop_without_a_reason_is_silent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deliver_drop_with_a_reason_reports_once() {
     let (bpa, cla, forwarded_rx, _dropped_rx, storage, metadata) =
-        dropping_setup(true, LOCAL, Some(ReasonCode::TrafficPared)).await;
+        dropping_setup(Hook::Deliver, LOCAL, Some(ReasonCode::TrafficPared)).await;
     let (_service, delivered_rx) = register_service(&bpa).await;
 
     let id = arrive(&cla, SOURCE, report_requested(), LOCAL).await;
@@ -656,7 +792,7 @@ async fn deliver_drop_with_a_reason_reports_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deliver_drop_without_a_reason_is_silent() {
     let (bpa, cla, forwarded_rx, dropped_rx, storage, metadata) =
-        dropping_setup(true, LOCAL, None).await;
+        dropping_setup(Hook::Deliver, LOCAL, None).await;
     let (_service, delivered_rx) = register_service(&bpa).await;
 
     let id = arrive(&cla, SOURCE, report_requested(), LOCAL).await;
@@ -703,12 +839,13 @@ async fn undecodable_setup(
     (bpa, cla, forwarded_rx, parked_rx, metadata)
 }
 
-/// Egress, stored bytes that do not decode: the claim returns to `Waiting`
-/// for a fresh routing decision and nothing is transmitted. (The fixed
-/// per-hop rewrite ahead of the chain decodes the stored bytes first, so
-/// this is its park; the engine's own decode arm stays defensive.)
+/// Egress, stored bytes that do not decode: the fixed per-hop rewrite ahead
+/// of the chain decodes them first and returns the claim to `Waiting` for a
+/// fresh routing decision; nothing is transmitted. This pins the rewrite's
+/// park, not an Egress chain failure: the engine's own decode arm is
+/// unreachable from storage and stays defensive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn undecodable_stored_bundle_parks_waiting_at_egress() {
+async fn undecodable_stored_bundle_parks_waiting_in_the_per_hop_rewrite() {
     let (bpa, cla, forwarded_rx, parked_rx, metadata) = undecodable_setup(false).await;
 
     let id = arrive(&cla, SOURCE, BundleFlags::default(), REMOTE).await;
@@ -749,4 +886,193 @@ async fn undecodable_stored_bundle_parks_waiting_for_service_at_deliver() {
         metadata.get(&id).await.unwrap().is_some(),
         "the record is kept"
     );
+}
+
+// Registers a sending application at `LOCAL` and sends one report-requesting
+// payload to `REMOTE`, returning the send's outcome.
+async fn originate(bpa: &Bpa) -> services::Result<Id> {
+    let app = Arc::new(SendingApp {
+        sink: hardy_async::sync::spin::Once::new(),
+    });
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let options = services::SendOptions {
+        notify_reception: true,
+        notify_deletion: true,
+        ..Default::default()
+    };
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            REMOTE.parse().unwrap(),
+            Bytes::from_static(b"payload"),
+            Duration::from_secs(3600),
+            Some(options),
+        )
+        .await
+}
+
+fn reception_and_deletion_requested() -> BundleFlags {
+    BundleFlags {
+        receipt_report_requested: true,
+        delete_report_requested: true,
+        ..Default::default()
+    }
+}
+
+/// Ingress `Drop(Some(reason))`: disposed of at the pre-drain gate — the
+/// arrival is never stored — with one combined reception + deletion report
+/// carrying the filter's reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ingress_drop_with_a_reason_reports_before_storing() {
+    let (bpa, cla, forwarded_rx, _dropped_rx, storage, _metadata) =
+        dropping_setup(Hook::Ingress, REMOTE, Some(ReasonCode::TrafficPared)).await;
+
+    let id = arrive(&cla, SOURCE, reception_and_deletion_requested(), REMOTE).await;
+    let report = next_report(&forwarded_rx).await;
+    assert_eq!(report.bundle_id, id);
+    assert!(report.received.is_some());
+    assert!(report.deleted.is_some());
+    assert_eq!(report.reason, ReasonCode::TrafficPared);
+
+    // The completed shutdown is the barrier proving the absences.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the bundle is not forwarded");
+    assert_eq!(
+        storage.saves(),
+        1,
+        "the report only: the arrival was never stored"
+    );
+}
+
+/// Ingress `Drop(None)`: no deletion assertion even though the bundle asks
+/// for one, but a requested reception report is still sent; the arrival is
+/// never stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ingress_drop_without_a_reason_reports_reception_only() {
+    let (bpa, cla, forwarded_rx, _dropped_rx, storage, _metadata) =
+        dropping_setup(Hook::Ingress, REMOTE, None).await;
+
+    let id = arrive(&cla, SOURCE, reception_and_deletion_requested(), REMOTE).await;
+    let report = next_report(&forwarded_rx).await;
+    assert_eq!(report.bundle_id, id);
+    assert!(report.received.is_some());
+    assert!(
+        report.deleted.is_none(),
+        "a silent drop asserts no deletion"
+    );
+
+    // The completed shutdown is the barrier proving the absences.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the bundle is not forwarded");
+    assert_eq!(
+        storage.saves(),
+        1,
+        "the report only: the arrival was never stored"
+    );
+}
+
+/// Originate `Drop(Some(reason))`: the reason returns to the sender as
+/// `services::Error::Dropped`; nothing is stored and no report is sent,
+/// though the send requested them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originate_drop_with_a_reason_returns_it_to_the_sender() {
+    let (bpa, _cla, forwarded_rx, _dropped_rx, storage, _metadata) =
+        dropping_setup(Hook::Originate, REMOTE, Some(ReasonCode::TrafficPared)).await;
+
+    assert!(matches!(
+        originate(&bpa).await,
+        Err(services::Error::Dropped(Some(ReasonCode::TrafficPared)))
+    ));
+
+    // The completed shutdown is the barrier proving the absences.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing leaves the node");
+    assert_eq!(
+        storage.saves(),
+        0,
+        "nothing is stored, no report originated"
+    );
+}
+
+/// Originate `Drop(None)`: the sender gets `services::Error::Dropped(None)`;
+/// nothing is stored and no report is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originate_drop_without_a_reason_returns_none_to_the_sender() {
+    let (bpa, _cla, forwarded_rx, _dropped_rx, storage, _metadata) =
+        dropping_setup(Hook::Originate, REMOTE, None).await;
+
+    assert!(matches!(
+        originate(&bpa).await,
+        Err(services::Error::Dropped(None))
+    ));
+
+    // The completed shutdown is the barrier proving the absences.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing leaves the node");
+    assert_eq!(
+        storage.saves(),
+        0,
+        "nothing is stored, no report originated"
+    );
+}
+
+/// A slot an Ingress Classifier writes is persisted with the record and read
+/// by an Egress filter after the store checkpoint: the bundle parks for want
+/// of a route, so the Egress hook can only see what the store kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ingress_slot_reaches_egress_across_the_store() {
+    let mut pack = FilterPack::new("test");
+    let slot = pack.annotation_slot::<u32>("mark", NonZeroUsize::new(16).unwrap());
+    pack.ingress_classifier("writer", SlotWriter(slot.clone(), 7));
+    let (seen_tx, seen_rx) = flume::unbounded();
+    pack.egress_verifier(
+        "reader",
+        SlotReader {
+            handle: slot.clone(),
+            seen_tx,
+        },
+    );
+    let (parked_tx, parked_rx) = flume::unbounded();
+    let metadata = Arc::new(ObservedMetadata {
+        inner: MetadataMemStorage::new(None),
+        parked_tx,
+    });
+    let (bpa, cla, forwarded_rx) = setup(
+        Bpa::builder()
+            .add_filters(pack)
+            .metadata_storage(metadata.clone()),
+    )
+    .await;
+
+    // No peer serves ipn:0.4 yet.
+    let id = arrive(&cla, SOURCE, BundleFlags::default(), "ipn:0.4.99").await;
+    assert_eq!(next(&parked_rx).await, BundleStatus::Waiting);
+    let stored = metadata
+        .get(&id)
+        .await
+        .unwrap()
+        .expect("the record is stored");
+    assert_eq!(
+        stored.metadata.slot(&slot),
+        Some(7),
+        "the slot is persisted"
+    );
+
+    // A route appears: the parked record re-enters from the store.
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer4".as_bytes().into()),
+            &[node(4)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(next(&seen_rx).await, Some(7), "Egress sees the stored slot");
+    next(&forwarded_rx).await;
+
+    bpa.shutdown().await;
 }
