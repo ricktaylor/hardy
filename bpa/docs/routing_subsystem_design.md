@@ -167,7 +167,7 @@ Route table: NodeId pattern → Forward(peer_id) at priority 0
    - An unresolvable next-hop — no matching route, or a loop detected by the trail set — is skipped, and the lookup falls through to less-specific patterns and lower priorities (see "Unresolvable next-hops" below)
 
 3. **ECMP selection** (if multiple peers)
-   - Hash of: bundle source + destination + flow_label
+   - Hash of: bundle source + destination (the flow label rejoins the hash when the policy tranche derives it from classification)
    - Uses a per-instance `RandomState` (seeded once at RIB creation) for deterministic peer selection within a BPA instance
 
 ### Specificity Scoring
@@ -223,10 +223,8 @@ A `Via` whose next-hop resolves to a **terminal** action (`Drop`, `Deliver`, `Ad
 The bundle status tracks where a bundle is in the processing pipeline. See [Bundle State Machine Design](bundle_state_machine_design.md) for complete state transition details and crash recovery semantics.
 
 ```
-         ┌─────────┐
-         │   New   │  ← Ingress filter runs here (ingress_bundle)
-         └────┬────┘
-              │ checkpoint after Ingress filter
+              │ arrival: Ingress chain at the pre-drain gate (in memory)
+              │ single insert — the first persisted status
               ▼
        ┌─────────────┐
        │ Dispatching │
@@ -253,9 +251,9 @@ The bundle status tracks where a bundle is in the processing pipeline. See [Bund
 
 When `FindResult::Forward(peer_id)` is returned, the bundle enters the policy subsystem. See [Policy Subsystem Design](policy_subsystem_design.md) for full details.
 
-1. Policy classifies bundle → queue_id (based on flow_label)
+1. Policy classifies bundle → queue_id (classification arrives with the policy tranche; today every bundle takes the default queue)
 2. Bundle sent to queue channel (fast path) or storage (slow path with backpressure)
-3. Status: `ForwardPending { peer, queue }`
+3. Status: `ForwardPending { peer, queue, next_hop }` — the resolved adjacency rides the queue-assignment record
 4. Queue poller receives bundle
 5. **Egress filters run** (see [Filter Subsystem Design](filter_subsystem_design.md))
 6. CLA forwards to peer
@@ -269,7 +267,7 @@ flowchart TD
     A["RIB::add() or RIB::remove()"] --> B["Find impacted peers (via find_peers)"]
     B --> C["Store::reset_peer_queue(peer)"]
     C --> D["ForwardPending { peer, _ } → Waiting"]
-    D --> E["poll_waiting_notify.notify()"]
+    D --> E["Rib::request_poll()"]
     E --> F["Dispatcher::poll_waiting()"]
     F --> G["Re-run process_bundle() with new routes"]
 ```
@@ -282,7 +280,7 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
 1. INGRESS
    Bundle arrives via tcpclv4
    Destination: ipn:200.42
-   Status: New → Dispatching (after Ingress filter checkpoint)
+   Ingress chain at the pre-drain gate (in memory); the single insert persists it as Dispatching
 
 2. ROUTE LOOKUP (process_bundle)
    RIB::find() searches unified table:
@@ -295,17 +293,17 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
 
 4. ECMP
    Only one peer, select peer_id=5
-   Set metadata.next_hop = dtn://tunnel1
+   Resolved next hop: dtn://tunnel1
 
 5. QUEUE ASSIGNMENT
-   Policy: flow_label=None → queue=None (default)
+   Policy: no classification → queue=None (default)
    Send to peer 5's default queue
-   Status: ForwardPending { peer: 5, queue: None }
+   Status: ForwardPending { peer: 5, queue: None, next_hop: dtn://tunnel1 }
 
 6. QUEUE POLLER (forward_bundle)
    Dequeue bundle
    Update: Previous Node, Hop Count, Bundle Age
-   Run Egress filters (BPSec, validation, etc.)
+   Run the Egress chain (registered Rewriters, then Verifiers)
 
 7. CLA FORWARD
    Lookup ClaAddress for peer 5
@@ -362,4 +360,4 @@ Remote routing agents connect via `routing.proto` (bidirectional streaming), wit
 
 ### Notification Flow
 
-Route changes trigger re-routing through a notification mechanism. When `add_route()` or `remove_route()` is called, affected peers have their queues reset via `reset_peer_queue()`, and the `poll_waiting_notify` signal wakes the background task. The dispatcher's `poll_waiting()` then re-evaluates bundles with the updated routes.
+Route changes trigger re-routing through a notification mechanism. When `add_route()` or `remove_route()` is called, affected peers have their queues reset via `reset_peer_queue()`, and `Rib::request_poll()` counts the request and wakes the background task. The dispatcher's `poll_waiting()` then re-evaluates bundles with the updated routes. The task reads the request count before each poll, so a wakeup whose requests an earlier poll already covered — the permit `Notify` stores for a request landing between that poll's wakeup and its read — skips the redundant scan.

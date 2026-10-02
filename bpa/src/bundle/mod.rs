@@ -2,8 +2,9 @@ mod metadata;
 mod status;
 
 pub(crate) mod parse;
+pub(crate) mod tail;
 
-pub use self::metadata::{BundleMetadata, ExtensionFields, Origin, WritableMetadata};
+pub use self::metadata::{BundleMetadata, ExtensionFields, Origin};
 pub use self::status::BundleStatus;
 
 use hardy_bpv7::{

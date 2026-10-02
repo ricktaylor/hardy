@@ -13,7 +13,7 @@ The `MetadataStorage` trait contract is verified by the shared storage harness (
 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
-| 8.1 | Metadata storage | **Pass** | META-01..17 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
+| 8.1 | Metadata storage | **Pass** | META-01..16 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
 | 8.2 | Recovery after restart | **Pass** | META-05 (confirm_exists) + META-12 (start_recovery) + META-13 (remove_unconfirmed) |
 
 ## 2. Test Inventory

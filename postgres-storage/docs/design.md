@@ -263,9 +263,9 @@ WHERE b.bundle_id = $bundle_id
 
 Returns `None` for unknown or tombstoned identities.
 
-### `replace(bundle)`
+### `swap_status(bundle_id, expected, status)`
 
-Updates the `metadata` row in place. Typed projection columns are updated alongside the JSONB blob to keep indexes current:
+A compare-and-swap on the typed status columns: the row moves to `status` only if its status columns still equal `expected`, and the result reports whether the swap happened. The blob is not rewritten — the processing status lives only in the typed columns:
 
 ```sql
 UPDATE metadata
@@ -276,8 +276,11 @@ SET status      = $status,
     adu_ts_ms   = $adu_ts_ms,
     adu_ts_seq  = $adu_ts_seq,
     service_eid = $service_eid,
-    bundle      = $bundle
+    next_hop    = $next_hop
 WHERE id = (SELECT id FROM bundles WHERE bundle_id = $bundle_id)
+  AND status = $expected_status
+  AND peer_id     IS NOT DISTINCT FROM $expected_peer_id
+  -- ... likewise for the remaining parameter columns
 ```
 
 ### `tombstone(bundle_id)`
@@ -383,7 +386,7 @@ If a checksum mismatches on startup, the storage refuses to open. The `upgrade` 
 graph LR
     poll["MetadataStorage::poll_waiting()"] --> sel["SELECT metadata"] --> snap1["MVCC snapshot"] --> ret["Returns"]
     ins["MetadataStorage::insert()"] --> insB["INSERT bundles\nINSERT metadata"] --> snap2["MVCC snapshot"] --> com1["Commit (CTE, atomic)"]
-    rep["MetadataStorage::replace()"] --> upd["UPDATE metadata"] --> snap3["MVCC snapshot"] --> com2["Commit"]
+    rep["MetadataStorage::swap_status()"] --> upd["UPDATE metadata (conditional)"] --> snap3["MVCC snapshot"] --> com2["Commit"]
     tomb["MetadataStorage::tombstone()"] --> del["DELETE metadata"] --> snap4["MVCC snapshot"] --> com3["Commit"]
 ```
 
@@ -397,7 +400,7 @@ All operations run under `READ COMMITTED` isolation except:
 | Scenario | Outcome |
 |----------|---------|
 | Two concurrent `insert()` calls for the same `bundle_id` | `ON CONFLICT DO NOTHING` ensures exactly one row lands in `bundles`; the loser's `metadata` insert sees no `ins_bundle` row and returns `false`. |
-| `poll_waiting()` concurrent with `replace()` | `poll_waiting` holds a `REPEATABLE READ` snapshot; status changes committed after the snapshot started are invisible for that poll cycle. |
+| `poll_waiting()` concurrent with `swap_status()` | `poll_waiting` holds a `REPEATABLE READ` snapshot; status changes committed after the snapshot started are invisible for that poll cycle. |
 | `tombstone()` concurrent with `get()` | `get()` may return `None` if `tombstone()` commits first; this is the correct observable state. |
 | `tombstone()` followed by `insert()` for same `bundle_id` | `ON CONFLICT DO NOTHING` in `insert()` finds the existing `bundles` row and returns `false`. Resurrection is prevented. |
 
@@ -426,7 +429,7 @@ The server instantiates the storage via `PostgresStorage::builder()` and injects
 
 Key test scenarios:
 
-- **PG-01 Basic CRUD**: insert, get, replace, tombstone round-trip.
+- **PG-01 Basic CRUD**: insert, get, swap_status, tombstone round-trip.
 - **PG-02 Idempotent insert**: two concurrent inserts for the same `bundle_id` both return without error; exactly one row exists.
 - **PG-03 Recovery**: insert a bundle, call `start_recovery()`, skip `confirm_exists` for it, call `remove_unconfirmed`; verify the orphan is streamed and tombstoned.
 - **PG-04 poll_waiting snapshot**: insert bundle, start poll, update bundle status mid-poll; verify snapshot excludes the update.

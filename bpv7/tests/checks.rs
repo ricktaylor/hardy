@@ -933,7 +933,8 @@ mod cascade_reencryption_tests {
 // On a headers-only buffer (oversized payload not yet drained), `verify` can't
 // check a BIB that targets the payload, so it drains that op-set out of
 // `bib_ops` and hands it over owned in `deferred_bibs`; the gate re-checks the
-// handed-over map with `verify_payload` once the full bundle is resident.
+// handed-over map with `begin_payload_verification`, feeding each verifier the
+// payload as it streams.
 #[cfg(all(feature = "rfc9173", feature = "serde"))]
 mod deferred_payload_bib_tests {
     use super::*;
@@ -1037,35 +1038,40 @@ mod deferred_payload_bib_tests {
             "verify hands the deferred op-set over owned — drained out of bib_ops"
         );
 
-        // The gate passes the handed-over map straight to the payload pass
-        // against the full (now-resident) bundle.
-        checks::verify_payload(
-            &full,
-            &keys,
-            &raw.blocks,
-            &facts.deferred_bibs,
-            &decrypted,
-            &no_updates,
-        )
-        .expect("deferred payload BIB verifies against the full bundle");
+        // The gate feeds each deferred verifier the now-resident payload and
+        // settles it — the streaming drain does the same, segment by segment.
+        // (A tampered-payload failure is the `_incremental_tamper_fails` twin
+        // below.)
+        for (_, mut verifier) in
+            checks::begin_payload_verification(&full, &keys, &raw.blocks, &facts.deferred_bibs)
+                .expect("verifier construction needs only header material")
+        {
+            let payload = raw.blocks.get(&1).unwrap().payload(&full).unwrap();
+            verifier.update(payload);
+            verifier
+                .finish()
+                .expect("deferred payload BIB verifies against the full bundle");
+        }
     }
 
-    // A tampered payload body fails the deferred BIB at the `verify_payload` pass.
-    #[test]
-    fn payload_bib_tamper_fails() {
-        let (full, keys) = signed_payload_and_keys();
-
+    // Run the header pass on the headers-only buffer and hand back the
+    // pieces the streaming-verifier tests need: the consumed prefix, the
+    // structural bundle, and the deferred op-set map.
+    fn deferred_setup(
+        full: &[u8],
+        keys: &bpsec::key::KeySet,
+    ) -> (Bytes, hardy_bpv7::bundle::Bundle, checks::VerifyFacts) {
         let Parsed {
             data: consumed,
             bundle: mut raw,
             bcbs: bcb_ops,
             bibs: mut bib_ops,
-        } = parse_headers_only(&full);
+        } = parse_headers_only(full);
         let mut decrypted = HashMap::new();
         let no_updates = HashMap::new();
         let facts = checks::verify(
             &consumed,
-            &keys,
+            keys,
             &mut raw.blocks,
             &bcb_ops,
             &mut bib_ops,
@@ -1073,23 +1079,93 @@ mod deferred_payload_bib_tests {
             &no_updates,
         )
         .unwrap();
+        (consumed, raw, facts)
+    }
 
-        // Flip a byte in the middle of the 50 KB payload body.
-        let mut tampered = full.to_vec();
-        tampered[full.len() / 2] ^= 0xFF;
-        let err = checks::verify_payload(
-            &tampered,
-            &keys,
-            &raw.blocks,
-            &facts.deferred_bibs,
-            &decrypted,
-            &no_updates,
-        )
-        .expect_err("tampered payload must fail the deferred BIB");
+    // The streamed twin of `payload_bib_deferred_then_verified`: the
+    // deferred op-set becomes an incremental verifier constructed from the
+    // headers-only buffer, fed the payload's block-type-specific data in
+    // awkward chunk sizes, and settles Ok — no resident payload anywhere.
+    #[test]
+    fn payload_bib_verifies_incrementally() {
+        let (full, keys) = signed_payload_and_keys();
+        let (consumed, raw, facts) = deferred_setup(&full, &keys);
+        let bib_block = *facts.deferred_bibs.keys().next().expect("a deferred BIB");
+
+        let mut verifiers =
+            checks::begin_payload_verification(&consumed, &keys, &raw.blocks, &facts.deferred_bibs)
+                .expect("verifier construction needs only header material");
+        assert_eq!(verifiers.len(), 1);
+        let (got_bib, mut verifier) = verifiers.pop().unwrap();
+        assert_eq!(
+            got_bib, bib_block,
+            "failure attribution rides the BIB number"
+        );
+
+        // Feed exactly the payload's block-type-specific data, as the drain
+        // would: in deliberately awkward chunk sizes. `payload_range` is the
+        // bundle-absolute window (`data` alone is extent-relative).
+        let data_range = raw.blocks.get(&1).unwrap().payload_range();
+        let btsd = &full[data_range.start as usize..data_range.end as usize];
+        for chunk in btsd.chunks(7) {
+            verifier.update(chunk);
+        }
+        verifier.finish().expect("streamed payload BIB verifies");
+    }
+
+    // A tampered streamed byte fails at finish() with IntegrityCheckFailed —
+    // the streamed twin of `payload_bib_tamper_fails`.
+    #[test]
+    fn payload_bib_incremental_tamper_fails() {
+        let (full, keys) = signed_payload_and_keys();
+        let (consumed, raw, facts) = deferred_setup(&full, &keys);
+
+        let mut verifiers =
+            checks::begin_payload_verification(&consumed, &keys, &raw.blocks, &facts.deferred_bibs)
+                .unwrap();
+        let (_, mut verifier) = verifiers.pop().unwrap();
+
+        let data_range = raw.blocks.get(&1).unwrap().payload_range();
+        let mut btsd = full[data_range.start as usize..data_range.end as usize].to_vec();
+        let mid = btsd.len() / 2;
+        btsd[mid] ^= 0xFF;
+        for chunk in btsd.chunks(1024) {
+            verifier.update(chunk);
+        }
+        let err = verifier
+            .finish()
+            .expect_err("tampered streamed payload must fail");
         assert!(
-            matches!(err, Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed)),
+            matches!(err, bpsec::Error::IntegrityCheckFailed),
             "expected IntegrityCheckFailed, got {err:?}"
         );
+    }
+
+    // No usable key is a soft policy skip: construction yields no verifiers
+    // rather than an error.
+    #[test]
+    fn payload_bib_incremental_nokey_skips() {
+        let (full, keys) = signed_payload_and_keys();
+        let (consumed, raw, facts) = deferred_setup(&full, &keys);
+
+        let empty_keys = bpsec::key::KeySet::new(vec![]);
+        let verifiers = checks::begin_payload_verification(
+            &consumed,
+            &empty_keys,
+            &raw.blocks,
+            &facts.deferred_bibs,
+        )
+        .expect("NoKey is a soft skip, not an error");
+        assert!(verifiers.is_empty());
+    }
+
+    // The verifier must be able to cross await points and task boundaries:
+    // it deliberately owns its key material (the recorded exception to the
+    // header pass's key-handling rule).
+    #[test]
+    fn bib_verifier_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<bpsec::bib::Verifier>();
     }
 
     // The `DeferredBibs` accessors must report the deferred set truthfully on
