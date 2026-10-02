@@ -6,12 +6,13 @@
 use core::{iter::repeat_n, num::NonZeroU8};
 
 use bytes::Bytes;
-use hardy_bpv7::{Error, block, builder, crc, creation_timestamp, hop_info, parse};
+use hardy_bpv7::{Error, block, builder, bundle, crc, creation_timestamp, hop_info, parse};
 // Aliased: collides with the bpv7 `Error` imported above.
 use hardy_cbor::decode::Error as CborError;
 use hex_literal::hex;
 
 mod common;
+use self::common::{insert_after_primary, make_block};
 
 // Build a minimal valid bundle and return its serialised bytes.
 fn build_minimal_bundle() -> Box<[u8]> {
@@ -77,6 +78,68 @@ fn invalid_flags() {
         parse::parse(Bytes::from_static(BUNDLE)),
         Err(Error::InvalidFlags)
     ));
+}
+
+// RFC 9171 §4.2.3-4/-5 at the parser: a block requesting a report on
+// failure is rejected in a null-source bundle and in an administrative
+// record, and accepted in an ordinary bundle. The block is spliced into the
+// wire bytes, since the builder never emits the forbidden combination; the
+// same splice without the flag parses, so a rejection is the flag's alone.
+#[test]
+fn parser_rejects_report_on_failure_where_the_bundle_forbids_it() {
+    for (label, source, flags, rejected) in [
+        (
+            "null source",
+            "dtn:none",
+            bundle::Flags {
+                do_not_fragment: true,
+                ..Default::default()
+            },
+            true,
+        ),
+        (
+            "admin record",
+            "ipn:1.0",
+            bundle::Flags {
+                is_admin_record: true,
+                ..Default::default()
+            },
+            true,
+        ),
+        ("ordinary", "ipn:1.0", bundle::Flags::default(), false),
+    ] {
+        let (_, data) = builder::Builder::new(source.parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_flags(flags)
+            .with_payload(b"Hello".as_slice().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+
+        let plain = insert_after_primary(&data, &[&make_block(200, 2, 0, b"ext-data")]);
+        parse::parse(Bytes::from(plain))
+            .unwrap_or_else(|e| panic!("{label}: the splice without the flag must parse: {e:?}"));
+
+        let reporting = insert_after_primary(&data, &[&make_block(200, 2, 1 << 1, b"ext-data")]);
+        match (rejected, parse::parse(Bytes::from(reporting))) {
+            (true, Err(Error::InvalidFlags)) => {}
+            (false, Ok(parsed)) => {
+                let block = parsed
+                    .bundle
+                    .blocks
+                    .values()
+                    .find(|b| b.block_type == block::Type::Unrecognised(200))
+                    .unwrap_or_else(|| panic!("{label}: the spliced block is present"));
+                assert!(
+                    block.flags.report_on_failure,
+                    "{label}: the flag arrives set"
+                );
+            }
+            (_, result) => panic!(
+                "{label}: expected {}, got {:?}",
+                if rejected { "InvalidFlags" } else { "a parse" },
+                result.map(drop)
+            ),
+        }
+    }
 }
 
 // NOTE: LLR 1.1.33 (Bundle Age required when Creation Time is zero) is enforced

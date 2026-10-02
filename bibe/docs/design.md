@@ -734,10 +734,10 @@ ipn:100.* via ipn:100
 
 ### BPSec Handling
 
-**BIBE does not apply BPSec directly.** Security is handled by filters:
+**BIBE does not apply BPSec directly.** Security is handled by the BPA:
 
 - **Inner bundle BPSec**: Preserved as-is (inner bundle is opaque payload)
-- **Outer bundle BPSec**: Applied by Egress filters if configured
+- **Outer bundle BPSec**: A matter for the BPA's fixed BPSec machinery at the egress boundary — designed but not yet built, so the BPA signs and encrypts nothing on the way out today — and never a registered filter: Egress Rewriters cannot create or edit BIBs or BCBs (see the bpa crate's [Filter Subsystem Design](../../bpa/docs/filter_subsystem_design.md#bpsec-roles-at-the-boundaries))
 
 This separation allows:
 

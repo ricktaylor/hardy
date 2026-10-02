@@ -11,6 +11,7 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     cla,
+    filter::{Verdict, Verifier, VerifyContext, pack::FilterPack},
     node_ids::NodeIds,
     services,
     storage::{MetadataMemStorage, MetadataStorage},
@@ -28,6 +29,7 @@ use hardy_bpv7::{
     },
     hop_info::HopInfo,
     parse::{Parsed, parse},
+    reader::{Availability, ReaderExt},
     status_report::ReasonCode,
 };
 use hardy_cbor::{
@@ -1874,37 +1876,47 @@ async fn forwarding_latency() {
 // ---------------------------------------------------------------------------
 
 /// Records any divergence between the Bundle's block extents and the wire
-/// data it is handed alongside.
-struct ExtentCheckFilter {
+/// data it is handed alongside, observed through the reader's extent-based
+/// block access: a stale block map over rewritten bytes reads back shifted
+/// garbage.
+struct ExtentCheckVerifier {
     mismatch: Arc<Mutex<Option<String>>>,
 }
 
-#[async_trait]
-impl hardy_bpa::filter::ReadFilter for ExtentCheckFilter {
-    async fn filter(
-        &self,
-        bundle: &hardy_bpa::bundle::Bundle,
-        data: &[u8],
-    ) -> Result<hardy_bpa::filter::ReadResult, hardy_bpa::Error> {
+impl Verifier for ExtentCheckVerifier {
+    fn verify(&self, ctx: &VerifyContext<'_>) -> Verdict {
+        let (bundle, reader) = (ctx.bundle(), ctx.reader());
         let mut mismatch = self.mismatch.lock().unwrap();
-        match parse(hardy_bpa::Bytes::copy_from_slice(data)) {
-            Err(e) => *mismatch = Some(format!("unparseable filter data: {e}")),
-            Ok(parsed) => {
-                for (number, block) in &parsed.bundle.blocks {
-                    match bundle.bpv7.blocks.get(number) {
-                        Some(b) if b.extent == block.extent => {}
-                        Some(b) => {
-                            *mismatch = Some(format!(
-                                "block {number}: extent {:?} != wire extent {:?}",
-                                b.extent, block.extent
-                            ))
-                        }
-                        None => *mismatch = Some(format!("block {number} missing from Bundle")),
-                    }
+
+        // The payload extent must index the rewritten bytes.
+        match reader.block(1) {
+            Some((_, Availability::Available(payload))) if payload.as_ref() == b"Hello remote" => {}
+            Some((_, Availability::Available(payload))) => {
+                *mismatch = Some(format!("payload extent skewed: {:?}", payload.as_ref()))
+            }
+            Some((_, unavailable)) => {
+                *mismatch = Some(format!("payload unavailable: {unavailable:?}"))
+            }
+            None => *mismatch = Some("no payload block".to_string()),
+        }
+
+        // The forward-time rewrite inserted a Previous Node block; its
+        // extent must decode as an EID from the same bytes.
+        let previous_node = bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == Type::PreviousNode)
+            .map(|(n, _)| *n);
+        match previous_node {
+            None => *mismatch = Some("no Previous Node block after the rewrite".to_string()),
+            Some(n) => {
+                if let Err(e) = reader.extract::<Eid>(n) {
+                    *mismatch = Some(format!("Previous Node extent skewed: {e}"));
                 }
             }
         }
-        Ok(hardy_bpa::filter::ReadResult::Continue)
+
+        Verdict::Continue(())
     }
 }
 
@@ -1914,18 +1926,14 @@ impl hardy_bpa::filter::ReadFilter for ExtentCheckFilter {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_filter_sees_consistent_extents() {
     let mismatch = Arc::new(Mutex::new(None));
-    let bpa = Bpa::builder()
-        .filter(
-            hardy_bpa::filter::Hook::Egress,
-            "extent-check",
-            &[],
-            hardy_bpa::filter::Filter::Read(Arc::new(ExtentCheckFilter {
-                mismatch: mismatch.clone(),
-            })),
-        )
-        .build()
-        .await
-        .unwrap();
+    let mut pack = FilterPack::new("test");
+    pack.egress_verifier(
+        "extent-check",
+        ExtentCheckVerifier {
+            mismatch: mismatch.clone(),
+        },
+    );
+    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
     bpa.start(false).await;
 
     // Register CLA and add a peer for the remote node (ipn:0.2)

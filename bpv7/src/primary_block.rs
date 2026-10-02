@@ -219,4 +219,20 @@ impl PrimaryBlock {
             ..Default::default()
         }
     }
+
+    /// Whether this bundle forbids the `report_on_failure` block flag.
+    ///
+    /// RFC 9171 §4.2.3-4/-5 require the flag clear on every block of an
+    /// administrative-record or null-source bundle, since the receiver has
+    /// nowhere meaningful to report to. This is the crate's one statement of
+    /// that block-flag rule: the parser rejects the combination,
+    /// [`Builder`](crate::builder::Builder) clears the flag,
+    /// [`ExtensionEditor`](crate::extension_editor::ExtensionEditor) refuses
+    /// it at call time, and the owner [`Editor`](crate::editor::Editor)
+    /// refuses it when it rebuilds — there, not at its setters, since the
+    /// primary can change after a block flag is set.
+    #[must_use]
+    pub fn forbids_report_on_failure(&self) -> bool {
+        self.flags.is_admin_record || self.id.source.is_null()
+    }
 }

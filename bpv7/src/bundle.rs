@@ -6,12 +6,19 @@ This module defines the core bundle data model: the [`Bundle`] structure
 [`crate::checks`] and [`crate::rewrite`].
 */
 
-use super::*;
-use crate::primary_block::PrimaryBlock;
 use alloc::collections::{BTreeMap, BTreeSet};
+use core::hash::{Hash, Hasher};
+
 use base64::prelude::*;
-use bpsec::{bcb, bib};
 use hardy_cbor::decode::{self, FromCbor};
+
+use super::*;
+#[cfg(feature = "serde")]
+use crate::block::is_zero;
+use crate::{
+    bpsec::{bcb, bib},
+    primary_block::PrimaryBlock,
+};
 
 /// A parsed BPv7 bundle: the primary block plus the extension and payload
 /// blocks keyed by block number. This is the crate's structural bundle
@@ -496,78 +503,158 @@ impl core::fmt::Display for Id {
 /// These flags, defined in RFC 9171 Section 4.2.3, control how a node should
 /// handle the bundle, such as whether it can be fragmented or if status reports
 /// are requested.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+///
+/// A bit carried in [`unrecognised`](Self::unrecognised) that names a flag
+/// is an alias of that flag: it encodes as the flag's bit, so the next
+/// parser reads the flag set. Equality and hashing compare what the value
+/// encodes, so an alias equals its named flag; code that reads the named
+/// fields must [`canonicalize`](Self::canonicalize) first. Parsed
+/// values are canonical, serde canonicalizes in both directions, and the
+/// methods that take bundle flags canonicalize them:
+/// [`Builder::with_flags`](crate::builder::Builder::with_flags) and
+/// [`Editor::with_bundle_flags`](crate::editor::Editor::with_bundle_flags).
+/// Direct field writes are not canonicalized.
+#[derive(Default, Debug, Clone)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(from = "FlagsRepr", into = "FlagsRepr")
+)]
 pub struct Flags {
     /// If set, this bundle is a fragment of a larger bundle.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub is_fragment: bool,
 
     /// If set, the payload is an administrative record.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub is_admin_record: bool,
 
     /// If set, the bundle must not be fragmented.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub do_not_fragment: bool,
 
     /// If set, the destination application is requested to send an acknowledgement.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub app_ack_requested: bool,
 
     /// If set, status reports should include the time of the reported event.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub report_status_time: bool,
 
     /// If set, a status report should be generated upon bundle reception.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub receipt_report_requested: bool,
 
     /// If set, a status report should be generated upon bundle forwarding.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub forward_report_requested: bool,
 
     /// If set, a status report should be generated upon bundle delivery.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub delivery_report_requested: bool,
 
     /// If set, a status report should be generated upon bundle deletion.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub delete_report_requested: bool,
 
-    /// A bitmask of any unrecognized flags encountered during parsing.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub unrecognised: Option<u64>,
+    /// A bitmask of the flag bits this implementation does not name; zero
+    /// when there are none.
+    ///
+    /// Encoding carries every bit set here; a parsed `Flags` never holds a
+    /// named bit in it.
+    pub unrecognised: u64,
+}
+
+impl PartialEq for Flags {
+    fn eq(&self, other: &Self) -> bool {
+        u64::from(self) == u64::from(other)
+    }
+}
+
+impl Eq for Flags {}
+
+impl Hash for Flags {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        u64::from(self).hash(state);
+    }
+}
+
+// The serde form: the same fields as `Flags`, so the stored shape is the
+// plain field list; `Flags` converts through it, canonicalizing both ways.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FlagsRepr {
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    is_fragment: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    is_admin_record: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    do_not_fragment: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    app_ack_requested: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    report_status_time: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    receipt_report_requested: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    forward_report_requested: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    delivery_report_requested: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    delete_report_requested: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    unrecognised: u64,
+}
+
+#[cfg(feature = "serde")]
+impl From<FlagsRepr> for Flags {
+    fn from(repr: FlagsRepr) -> Self {
+        Self {
+            is_fragment: repr.is_fragment,
+            is_admin_record: repr.is_admin_record,
+            do_not_fragment: repr.do_not_fragment,
+            app_ack_requested: repr.app_ack_requested,
+            report_status_time: repr.report_status_time,
+            receipt_report_requested: repr.receipt_report_requested,
+            forward_report_requested: repr.forward_report_requested,
+            delivery_report_requested: repr.delivery_report_requested,
+            delete_report_requested: repr.delete_report_requested,
+            unrecognised: repr.unrecognised,
+        }
+        .canonicalize()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Flags> for FlagsRepr {
+    fn from(flags: Flags) -> Self {
+        let flags = flags.canonicalize();
+        Self {
+            is_fragment: flags.is_fragment,
+            is_admin_record: flags.is_admin_record,
+            do_not_fragment: flags.do_not_fragment,
+            app_ack_requested: flags.app_ack_requested,
+            report_status_time: flags.report_status_time,
+            receipt_report_requested: flags.receipt_report_requested,
+            forward_report_requested: flags.forward_report_requested,
+            delivery_report_requested: flags.delivery_report_requested,
+            delete_report_requested: flags.delete_report_requested,
+            unrecognised: flags.unrecognised,
+        }
+    }
+}
+
+impl Flags {
+    /// Folds every bit of [`unrecognised`](Self::unrecognised) that names a
+    /// flag into its named field; genuinely unrecognised bits are kept.
+    ///
+    /// A hand-built `unrecognised` encodes bit for bit, so `1 << 1`
+    /// *is* `is_admin_record` to the next parser. Policy that reads the
+    /// named fields must canonicalize first, or it misreads the flags the
+    /// bytes carry.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        Self::from(u64::from(&self))
+    }
+
+    /// Whether no bit of [`unrecognised`](Self::unrecognised) names a flag —
+    /// the form [`canonicalize`](Self::canonicalize) returns. Equality
+    /// cannot tell an alias from its canonical form; this can.
+    #[must_use]
+    pub fn is_canonical(&self) -> bool {
+        Self::from(self.unrecognised).unrecognised == self.unrecognised
+    }
 }
 
 impl From<u64> for Flags {
@@ -612,16 +699,14 @@ impl From<u64> for Flags {
             unrecognised &= !(1 << 18);
         }
 
-        if unrecognised != 0 {
-            flags.unrecognised = Some(unrecognised);
-        }
+        flags.unrecognised = unrecognised;
         flags
     }
 }
 
 impl From<&Flags> for u64 {
     fn from(value: &Flags) -> Self {
-        let mut flags = value.unrecognised.unwrap_or(0);
+        let mut flags = value.unrecognised;
         if value.is_fragment {
             flags |= 1 << 0;
         }
