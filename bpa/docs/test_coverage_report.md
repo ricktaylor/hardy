@@ -187,7 +187,7 @@ cargo llvm-cov test --package hardy-bpa --lcov --output-path lcov.info --html
 
 Line coverage is for production code only (test modules excluded). Function count is inflated by generic monomorphisation. The pipeline integration tests (`tests/pipeline.rs`) contributed a 10 percentage point increase by exercising the dispatcher pipeline end-to-end.
 
-Per-file breakdown (from a previous detailed run; regenerate with `cargo llvm-cov test --html`). The run predates the filter redesign: the former `filters/` modules are gone, and the `filter/` modules that replace them (engine, packs, slots) have not been measured since:
+Per-file breakdown (from a previous detailed run; regenerate with `cargo llvm-cov test --html`). The run predates the filter redesign and later module moves: rows for files that no longer exist are omitted, and the modules that replace them — among them the `filter/` engine, packs, and slots — have not been measured since:
 
 | File | Covered | Total | Coverage | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -195,37 +195,28 @@ Per-file breakdown (from a previous detailed run; regenerate with `cargo llvm-co
 | `cla/egress_queue.rs` | 23 | 25 | 92% | Exercised via pipeline tests |
 | `policy/mod.rs` | 17 | 18 | 94% | Complete |
 | `node_ids.rs` | 126 | 135 | 93% | Complete |
-| `bundle/core.rs` | 71 | 78 | 91% | Complete |
 | `storage/bundle_mem.rs` | 79 | 88 | 90% | Eviction + config tests |
-| `rib/mod.rs` | 100 | 113 | 89% | Complete |
 | `cla/mod.rs` | 49 | 56 | 88% | Address parsing |
-| `rib/find.rs` | 251 | 287 | 87% | Route lookup (15 tests) |
 | `policy/null_policy.rs` | 13 | 15 | 87% | Classify + controller |
 | `cla/peers.rs` | 109 | 129 | 85% | Lifecycle + pipeline tests |
 | `storage/channel.rs` | 385 | 539 | 71% | 10 state machine tests |
 | `dispatcher/mod.rs` | 107 | 153 | 70% | Dispatcher setup + pipeline tests |
 | `otel_metrics.rs` | 47 | 70 | 67% | Metric init |
 | `builder.rs` | 72 | 109 | 66% | Exercised by `Bpa::builder()` tests |
-| `rib/local.rs` | 151 | 231 | 65% | Local routing + implicit routes |
 | `cla/registry.rs` | 230 | 380 | 61% | Registry tests + pipeline tests |
 | `bpa.rs` | 41 | 68 | 60% | Registration API |
 | `storage/adu_reassembly.rs` | 263 | 538 | 49% | 5 tests + reassembly pipeline |
 | `storage/reaper.rs` | 101 | 213 | 47% | Cache tests (async reaper untested) |
 | `storage/store.rs` | 208 | 454 | 46% | Store orchestration tests |
-| `keys/registry.rs` | 17 | 36 | 47% | Exercised via pipeline tests |
-| `dispatcher/local.rs` | 122 | 316 | 39% | Exercised via pipeline local delivery |
 | `dispatcher/forward.rs` | 56 | 152 | 37% | Exercised via pipeline forwarding |
 | `services/registry.rs` | 178 | 482 | 37% | 2 lifecycle tests + pipeline tests |
 | `storage/metadata_mem.rs` | 62 | 179 | 35% | Exercised indirectly via Store tests |
 | `dispatcher/dispatch.rs` | 111 | 387 | 29% | Exercised via pipeline tests |
-| `rib/route.rs` | 55 | 268 | 21% | Route entry tests (generic impls inflate total) |
-| `rib/agent.rs` | 12 | 90 | 13% | |
 | `dispatcher/report.rs` | 27 | 236 | 11% | Partially exercised via pipeline |
 | `dispatcher/admin.rs` | 0 | 99 | 0% | Admin records not exercised |
 | `dispatcher/reassemble.rs` | 0 | 49 | 0% | Reassembly pipeline not exercised (unit test covers logic) |
 | `dispatcher/restart.rs` | 0 | 256 | 0% | Recovery not exercised |
 | `storage/recover.rs` | 0 | 142 | 0% | Recovery not exercised |
-| `routes.rs` | 0 | 19 | 0% | Trait definitions only |
 
 **Note:** The above covers unit + pipeline tests only. The fuzz harness and interop tests exercise the dispatcher code that shows 0% here.
 

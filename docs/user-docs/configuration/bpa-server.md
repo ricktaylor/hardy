@@ -291,7 +291,7 @@ ipn-legacy-nodes:
 
 ## Complete Example
 
-A production-ready configuration:
+A production-ready configuration. Its PostgreSQL metadata and S3 bundle backends are not in a default build: build `hardy-bpa-server` with the `postgres-storage` and `s3-storage` features to load it.
 
 ```yaml
 log-level: info
