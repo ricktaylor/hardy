@@ -73,6 +73,18 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 | :--- | :--- | :--- | :--- |
 | **INT-BPA-03** | **Fragment Reassembly** | 1. Manually generate 2 fragments for a "Hello" bundle.<br>2. Place fragments into `file-cla` inbox.<br>3. Run `tools/ping` in receive mode. | 1. BPA accepts fragments.<br>2. BPA reassembles payload.<br>3. `ping` receives single "Hello" bundle. |
 
+### Suite D: Filter Dispositions
+
+*Objective: the filter module's failure and Drop contract holds through a running BPA (`bpa/tests/filter_dispositions.rs`, plus the extent-consistency test in `bpa/tests/pipeline.rs`).*
+
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-04** | **Deliver Drop contract** | 1. Register a Deliver Verifier dropping one destination, with and without a reason.<br>2. Deliver a report-requesting bundle to it via a CLA. | `Drop(Some(r))`: exactly one deletion report carrying `r`; `Drop(None)`: no report originated. Either way the bundle is not delivered, and its record is tombstoned. (Nothing at Egress drops a bundle.) |
+| **INT-BPA-06** | **Egress filter bundle/data consistency** | 1. Register an Egress Rewriter checking block extents against the bytes and inserting a block (`bpa/tests/pipeline.rs`).<br>2. Forward a locally-originated bundle, so the per-hop writes then insert a Previous Node block over the Rewriter's output. | The Rewriter sees the stored (bundle, data) pair consistently, and the transmitted bundle carries the Rewriter's insert, this node's Previous Node and the payload, each decoding from its own extent. |
+| **INT-BPA-13** | **Undecodable stored bytes** | — (no pipeline test). | Fatal at Egress and Deliver: the bytes were validated at ingress, so a decode failure in an output chain or the per-hop writes is a BPA bug or storage corruption. Pinned at function level ([unit plan](unit_test_plan.md) §3.14): a panic inside a running BPA aborts the test process. |
+| **INT-BPA-14** | **Editor refusals on attacker-chosen primaries** | 1. Register a Rewriter inserting a `report_on_failure` block.<br>2. Deliver an admin-record transit bundle (Egress) and a null-source local bundle (Deliver). | The insert is refused with `InvalidFlags` and the bundle passes unedited; the node does not abort. |
+| **INT-BPA-15** | **Per-hop writes supersede an Egress Rewriter** | 1. Register an Egress Rewriter removing the Hop Count and Bundle Age blocks.<br>2. Forward a bundle with no creation clock, carrying both, via a CLA. | The Rewriter's removals are accepted, and the transmitted bundle carries both blocks again as this hop writes them: the Hop Count incremented, the Bundle Age at least its received value. |
+
 ## 5. Performance Benchmarks (REQ-13)
 
 *Objective: Verify throughput requirements (>1000 bundles/sec).*

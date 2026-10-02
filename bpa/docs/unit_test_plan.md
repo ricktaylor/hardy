@@ -207,6 +207,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Undecodable Output Bytes** | An Egress or Deliver chain, or the per-hop writes after the Egress chain, whose bytes fail to decode panics: they were validated at ingress, so the failure is a BPA bug or storage corruption. | `src/filter/engine.rs`, `src/dispatcher/forward.rs` | Done |
 | **Key Derivation** | Output chains derive keys once without edits, and after an inserting Rewriter re-derive against the rebuilt block map; a BPSec-free input chain never consults the key provider. | `src/filter/engine.rs` | Done |
 | **Scope Refusals** | Primary/payload targets, BIB/BCB types, and absent blocks are refused through the engine, and the bundle passes unedited. | `src/filter/engine.rs` | Done |
+| **Editor Refusals** | The `ExtensionEditor`'s call-time refusals — BPSec-covered targets, the forbidden `report_on_failure` flag (RFC 9171 §4.2.3-4/-5), unrecognised CRC types, undecodable well-known bodies, reserved aliases — are bpv7's; the forbidden flag is also pinned end to end. | `bpv7/tests/editor.rs`, `tests/filter_dispositions.rs` | Done |
 | **Non-Resident Block** | A block beyond the resident bytes reads as `Availability::NotResident` through the `DecryptingReader`. | `bpv7/tests/reader.rs` | Done |
 | **Slot Names** | Same-named slots declared in different modules are distinct slots, each named by its declaring path. | `src/filter/slots/mod.rs` | Done |
 
