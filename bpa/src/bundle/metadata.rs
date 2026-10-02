@@ -113,14 +113,6 @@ struct Classification {
     epoch: PolicyEpoch,
 }
 
-/// Mutable annotations that filters may modify during bundle processing.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct WritableMetadata {
-    /// Optional flow label for QoS differentiation.
-    pub flow_label: Option<u32>,
-}
-
 /// A bundle's BPA-local processing metadata.
 ///
 /// Partitioned by write discipline: provenance (write-once arrival facts,
@@ -144,9 +136,6 @@ pub struct BundleMetadata {
     classification: Classification,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
-    /// Mutable annotations that filters may update during processing.
-    #[cfg_attr(feature = "serde", serde(flatten))]
-    pub writable: WritableMetadata,
 }
 
 impl BundleMetadata {
@@ -164,7 +153,6 @@ impl BundleMetadata {
             extensions: ExtensionFields::default(),
             classification: Classification::default(),
             storage_name: None,
-            writable: WritableMetadata::default(),
         }
     }
 

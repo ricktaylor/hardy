@@ -200,6 +200,15 @@ impl Dispatcher {
             }
         };
 
+        // Reserved primary-block flag bits have no protocol effect, but they are
+        // the only sign of a peer setting them: say so.
+        if let Some(u) = hv.bundle.primary.flags.unrecognised {
+            debug!(
+                bundle_id = %hv.bundle.primary.id,
+                "Bundle primary block has unrecognised flag bits set: {u:#x}"
+            );
+        }
+
         // Early-reject gate (lifetime / hop) before the payload is drained, so a
         // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
         // re-checks lifetime post-store in the ingress filter — a cheap, harmless
@@ -210,7 +219,8 @@ impl Dispatcher {
                 // A bundle that arrives already expired is treated as if it
                 // never arrived, not amplified into report traffic — §5.10
                 // deletion reports are for bundles that expire in custody (the
-                // validity filter and reaper paths). Dropping before anything
+                // dispatch, forward, and deliver expiry checkpoints and the
+                // reaper). Dropping before anything
                 // is stored also keeps expired traffic from churning the
                 // metadata store's dedup LRU.
                 debug!("Bundle arrived already expired; dropped");
@@ -382,21 +392,8 @@ impl Dispatcher {
     pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
 
-        // Ingress filter hook (includes bundle-validity: flags, lifetime, hop-count)
-        match self
-            .filter_engine
-            .exec(filter::Hook::Ingress, bundle, data, self.key_provider())
-            .await
-            // TODO: Recover gracefully once filter error handling is redesigned
-            .trace_expect("Ingress filter execution failed")
-        {
-            filter::ExecResult::Continue(mutation, mut bundle, data) => {
-                if mutation.data
-                    && let Some(storage_name) = &bundle.metadata.storage_name
-                {
-                    self.store.replace_data(storage_name, data.clone()).await;
-                }
-
+        match self.filters.run_ingress(bundle, data, &*self.key_provider) {
+            Ok(filter::ChainOutcome::Continue(mut bundle, _)) => {
                 // Always checkpoint to Dispatching (crash safety)
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
                 bundle.status = bundle::BundleStatus::Dispatching;
@@ -406,10 +403,19 @@ impl Dispatcher {
                 // Hand off to dispatch queue for fan-out via processing pool
                 self.dispatch_bundle(bundle).await
             }
-            filter::ExecResult::Drop(bundle, Some(reason)) => {
+            Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
                 self.drop_bundle(bundle, reason).await
             }
-            filter::ExecResult::Drop(bundle, None) => self.delete_bundle(bundle).await,
+            Ok(filter::ChainOutcome::Drop(bundle, None)) => self.delete_bundle(bundle).await,
+            Err((bundle, e)) => {
+                // The stored bytes failed the chain's own decode pass — an
+                // internal inconsistency, since they parsed at reception.
+                // Resolve the bundle as unintelligible rather than strand it
+                // in `New`.
+                error!("Ingress filter chain failed: {e}");
+                self.drop_bundle(bundle, ReasonCode::BlockUnintelligible)
+                    .await
+            }
         }
     }
 }
