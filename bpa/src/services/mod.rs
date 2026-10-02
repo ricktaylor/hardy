@@ -76,8 +76,10 @@ pub enum Error {
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
-    /// The bundle was dropped by a processing filter, with an optional reason code.
-    #[error("Bundle dropped by filter: {0:?}")]
+    /// The bundle was dropped before it was stored — by an Originate filter
+    /// or by the origination gate (an expired lifetime or an exhausted hop
+    /// limit) — with an optional reason code.
+    #[error("Bundle dropped: {0:?}")]
     Dropped(Option<ReasonCode>),
 
     /// A bundle with the same identity already exists in storage.

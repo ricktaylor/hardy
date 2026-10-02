@@ -6,12 +6,8 @@ use crate::{
     Arc,
     bpa::Bpa,
     cla::{Cla, ClaInit, registry::ClaRegistryBuilder},
-    dispatcher::{self, Dispatcher},
-    filter::{
-        Filter, FilterEngine, Hook,
-        pack::{FilterPack, chains::FilterChains},
-        validity::BundleValidityFilter,
-    },
+    dispatcher::{Config as DispatcherConfig, Dispatcher},
+    filter::pack::{FilterPack, chains::FilterChains},
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
@@ -41,45 +37,23 @@ pub struct BpaBuilder {
     lru_capacity: Option<NonZeroUsize>,
     max_cached_bundle_size: Option<NonZeroUsize>,
     max_bundle_size: Option<NonZeroU64>,
-    primary_block_integrity: bool,
-    bundle_age_required: bool,
-    ipn_legacy_peers: Vec<EidPattern>,
     cache_disabled: bool,
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
     bundle_storage: Option<Arc<dyn BundleStorage>>,
-    filter_engine: Arc<FilterEngine>,
     key_provider: Arc<dyn KeyProvider>,
     service_registry_builder: ServiceRegistryBuilder,
     cla_registry_builder: ClaRegistryBuilder,
     rib_builder: RibBuilder,
     filter_packs: Vec<FilterPack>,
+    primary_block_integrity: bool,
+    bundle_age_required: bool,
+    ipn_legacy_peers: Vec<EidPattern>,
 }
 
 impl BpaBuilder {
     // The one constructor: reachable only through Bpa::builder().
     pub(crate) fn new() -> Self {
-        let filter_engine = Arc::new(FilterEngine::new());
-
-        // Auto-register bundle validity filter (lifetime, hop-count)
-        let validity = Arc::new(BundleValidityFilter);
-        filter_engine
-            .register(
-                Hook::Ingress,
-                "bundle-validity",
-                &[],
-                Filter::Read(validity.clone()),
-            )
-            .expect("Failed to register bundle validity filter");
-        filter_engine
-            .register(
-                Hook::Originate,
-                "bundle-validity",
-                &[],
-                Filter::Read(validity),
-            )
-            .expect("Failed to register bundle validity filter");
-
         let poll_channel_depth = NonZeroUsize::new(16).unwrap();
         let processing_pool_size =
             NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
@@ -87,15 +61,11 @@ impl BpaBuilder {
         Self {
             poll_channel_depth,
             processing_pool_size,
-            filter_engine,
             key_provider: Arc::new(crate::keys::NullKeyProvider),
             status_reports: false,
             lru_capacity: None,
             max_cached_bundle_size: None,
             max_bundle_size: None,
-            primary_block_integrity: true,
-            bundle_age_required: true,
-            ipn_legacy_peers: Vec::new(),
             cache_disabled: false,
             node_ids: NodeIds::default(),
             metadata_storage: None,
@@ -104,6 +74,9 @@ impl BpaBuilder {
             cla_registry_builder: ClaRegistryBuilder::new(),
             rib_builder: RibBuilder::new(),
             filter_packs: Vec::new(),
+            primary_block_integrity: true,
+            bundle_age_required: true,
+            ipn_legacy_peers: Vec::new(),
         }
     }
 
@@ -140,8 +113,7 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets the maximum accepted bundle size, in bytes (private 64 MiB
-    /// default).
+    /// Sets the maximum size of a single reassembled bundle at ingress.
     ///
     /// Streamed dispatch and streamed service origination accumulate
     /// segments until the bundle is complete; this bound stops a runaway or
@@ -154,28 +126,6 @@ impl BpaBuilder {
     /// CLAs at registration.
     pub fn max_bundle_size(mut self, v: NonZeroU64) -> Self {
         self.max_bundle_size = Some(v);
-        self
-    }
-
-    /// Sets whether ingress requires primary-block integrity protection
-    /// (RFC 9171 §4.3.1). Strict by default.
-    pub fn primary_block_integrity(mut self, enabled: bool) -> Self {
-        self.primary_block_integrity = enabled;
-        self
-    }
-
-    /// Sets whether ingress requires a Bundle Age block on bundles from
-    /// clockless sources (RFC 9171 §4.4.2). Strict by default.
-    pub fn bundle_age_required(mut self, enabled: bool) -> Self {
-        self.bundle_age_required = enabled;
-        self
-    }
-
-    /// Declares peers whose next hop requires legacy 2-element IPN EID
-    /// encoding in the per-hop rewrite stage. Empty by default (the rewrite
-    /// stage is inert).
-    pub fn ipn_legacy_peers(mut self, peers: Vec<EidPattern>) -> Self {
-        self.ipn_legacy_peers = peers;
         self
     }
 
@@ -250,17 +200,35 @@ impl BpaBuilder {
         self
     }
 
-    /// Register a filter immediately.
-    pub fn filter(
-        self,
-        hook: Hook,
-        name: impl Into<String>,
-        after: &[&str],
-        filter: Filter,
-    ) -> Self {
-        self.filter_engine
-            .register(hook, &name.into(), after, filter)
-            .expect("Failed to register filter");
+    /// Sets whether the pre-drain gate requires the primary block to carry
+    /// integrity protection (a CRC, or BIB coverage). RFC 9171 §4.3.1;
+    /// strict by default. Disable for interoperability with peers that add
+    /// neither.
+    pub fn primary_block_integrity(mut self, enabled: bool) -> Self {
+        self.primary_block_integrity = enabled;
+        self
+    }
+
+    /// Sets whether the pre-drain gate requires a clockless bundle to carry
+    /// a Bundle Age block. RFC 9171 §4.4.2; strict by default. Disable for
+    /// compatibility with the RFC 9173 Appendix A test vectors.
+    pub fn bundle_age_required(mut self, enabled: bool) -> Self {
+        self.bundle_age_required = enabled;
+        self
+    }
+
+    /// Sets the peers that require legacy 2-element IPN EID encoding: a
+    /// bundle forwarded to a next hop matching any of `patterns` has its
+    /// `Ipn` source and destination re-encoded as `LegacyIpn` in the
+    /// per-hop rewrite stage. Wire adaptation only — the stored bundle and
+    /// its id are untouched. A bundle carrying a BPSec operation that covers
+    /// the primary block, as its target or through its scope (an encrypted
+    /// BIB counts whatever its scope, its ciphertext hiding it), cannot
+    /// survive the re-encode: it is deleted at such a next hop, not
+    /// re-routed, with `UnexpectedSecurityOperation` as the reason for any
+    /// deletion report.
+    pub fn ipn_legacy_peers(mut self, patterns: Vec<EidPattern>) -> Self {
+        self.ipn_legacy_peers = patterns;
         self
     }
 
@@ -276,28 +244,8 @@ impl BpaBuilder {
     /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
         // Freeze the filter packs first: the per-hook chains splice in call
-        // order, and P = the max declared payload peek. Nothing runs the
-        // frozen chains yet.
-        let _filter_chains = FilterChains::freeze(self.filter_packs);
-
-        // Auto-register the RFC 9171 validity filter unless disabled: built
-        // here, from the final flag values, so this seat and the dispatcher's
-        // pre-drain gate enforce the same policy.
-        #[cfg(not(feature = "no-rfc9171-autoregister"))]
-        {
-            use crate::filter::rfc9171::Rfc9171ValidityFilter;
-
-            self.filter_engine.register(
-                Hook::Ingress,
-                "rfc9171-validity",
-                &[],
-                Filter::Read(Arc::new(
-                    Rfc9171ValidityFilter::new()
-                        .primary_block_integrity(self.primary_block_integrity)
-                        .bundle_age_required(self.bundle_age_required),
-                )),
-            )?;
-        }
+        // order, and P = the max declared payload peek.
+        let filter_chains = FilterChains::freeze(self.filter_packs);
 
         let metadata_storage = self
             .metadata_storage
@@ -324,10 +272,9 @@ impl BpaBuilder {
             .rib_builder
             .build(node_ids.clone(), store.clone())
             .await?;
-        let filter_engine = self.filter_engine;
 
         let (dispatcher, start_dispatcher) = Dispatcher::new(
-            dispatcher::Config {
+            DispatcherConfig {
                 status_reports: self.status_reports,
                 poll_channel_depth: self.poll_channel_depth,
                 processing_pool_size: self.processing_pool_size,
@@ -340,7 +287,7 @@ impl BpaBuilder {
             store.clone(),
             rib.clone(),
             self.key_provider,
-            filter_engine.clone(),
+            filter_chains,
         );
 
         // Both registries park their configured registrations: activation
@@ -367,7 +314,6 @@ impl BpaBuilder {
             rib,
             cla_registry,
             service_registry,
-            filter_engine,
             dispatcher,
         ))
     }

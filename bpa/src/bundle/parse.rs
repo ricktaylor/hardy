@@ -238,8 +238,8 @@ pub struct HeaderVerify {
 
 impl HeaderVerify {
     /// Header-only early-reject reason, if any: the bundle is past its lifetime
-    /// (the shared [`expiry`] rule, so the gate and the post-store validity
-    /// filter agree), or a Hop Count block has reached its limit. Computed
+    /// (the shared [`expiry`] rule, so the gate and the post-store expiry
+    /// checkpoints agree), or a Hop Count block has reached its limit. Computed
     /// straight off the parsed primary + extracted extension fields, so the
     /// streaming gate can run it before the payload is drained.
     pub fn gate_reason(&self, received_at: OffsetDateTime) -> Option<ReasonCode> {

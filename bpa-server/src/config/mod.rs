@@ -126,12 +126,7 @@ impl From<WatchConfig> for Option<WatchMode> {
     }
 }
 
-// EID patterns for next hops requiring legacy 2-element IPN EID encoding,
-// applied by the BPA's built-in per-hop rewrite stage.
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct IpnLegacyNodes(pub Vec<EidPattern>);
-
-// The RFC9171 validity checks: absent keys defer to the BPA builder's own
+// The RFC9171 validity checks: absent keys defer to the BPA's own
 // defaults (all checks enabled).
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
@@ -225,9 +220,10 @@ pub struct Config {
     #[serde(default)]
     pub storage: storage::StorageConfig,
 
-    // IPN legacy node patterns for the egress per-hop re-encode.
+    // EID patterns for next hops requiring legacy 2-element IPN encoding
+    // (the BPA's per-hop re-encode built-in).
     #[serde(default)]
-    pub ipn_legacy_nodes: IpnLegacyNodes,
+    pub ipn_legacy_nodes: Vec<EidPattern>,
 
     // RFC9171 bundle validity checks.
     #[serde(default)]
@@ -358,6 +354,35 @@ admin-endpoints:
         assert_eq!(config.log_level, Level::DEBUG);
         assert_eq!(config.status_reports, Some(true));
         assert_eq!(config.poll_channel_depth.map(|v| v.get()), Some(32));
+    }
+
+    // The per-hop re-encode's peer patterns and the RFC 9171 check switches
+    // reach the config typed.
+    #[test]
+    #[serial]
+    fn ipn_legacy_nodes_and_rfc9171_validity_parse() {
+        let config = write_and_load(
+            "checks.yaml",
+            r#"
+admin-endpoints:
+  - "ipn:42.0"
+ipn-legacy-nodes:
+  - "ipn:10.*"
+  - "ipn:[100-199].*"
+rfc9171-validity:
+  primary-block-integrity: false
+  bundle-age-required: true
+"#,
+        );
+        assert_eq!(
+            config.ipn_legacy_nodes,
+            [
+                "ipn:10.*".parse::<EidPattern>().unwrap(),
+                "ipn:[100-199].*".parse().unwrap(),
+            ]
+        );
+        assert_eq!(config.rfc9171_validity.primary_block_integrity, Some(false));
+        assert_eq!(config.rfc9171_validity.bundle_age_required, Some(true));
     }
 
     // TOML config file works identically to YAML.
@@ -689,6 +714,22 @@ storage:
     fn example_config_parses() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.yaml");
         Config::load(Some(path)).expect("the shipped config.yaml must parse");
+    }
+
+    // The annotated reference config loads as shipped: every section whose
+    // keys are all commented out is commented out with them, since a key
+    // present with no value is not an absent key.
+    #[test]
+    #[serial]
+    #[cfg(all(
+        feature = "grpc",
+        feature = "sqlite-storage",
+        feature = "localdisk-storage",
+        feature = "tcpclv4"
+    ))]
+    fn examples_config_parses() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/config.yaml");
+        Config::load(Some(path)).expect("the shipped examples/config.yaml must parse");
     }
 
     // Admin endpoints can be a single string, and the legacy `node-ids`

@@ -1,3 +1,7 @@
+// `EditorError` keeps bpv7's editor error apart from this crate's `Error`,
+// in scope through the parent module.
+use hardy_bpv7::editor::Error as EditorError;
+
 use super::*;
 
 impl Dispatcher {
@@ -79,59 +83,44 @@ impl Dispatcher {
         lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
         next_hop: Eid,
-        mut bundle: bundle::Bundle,
+        bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // Increment Hop Count, etc... The rewrite shifts block extents, and
-        // the Egress filters below receive (bundle, data) as a consistent
-        // pair, so the rebuilt block map must replace the pre-rewrite one.
-        // The rewrite is in-memory only: parks persist status alone, and a
-        // re-dispatch re-enters from the persisted representation (see
-        // park_bundle), so no failure exit needs to restore the pre-rewrite
-        // map.
-        let data = match self.update_extension_blocks(&bundle, data, &next_hop) {
-            Err(e) => {
-                warn!("Failed to update extension blocks: {e}");
-                return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
-            }
+        // Egress chain: the registered Rewriters, on the stored wire form.
+        // Nothing at Egress drops a bundle, so the chain hands back the pair.
+        // - Runs after dequeue from ForwardPending, just before CLA send
+        // - Edits are in-memory only (like Deliver), NOT persisted
+        // - If send fails or peer goes down, bundle returns to Waiting and may
+        //   route to a different peer, so Egress runs again with fresh context
+        let (mut bundle, data) =
+            self.filters
+                .run_egress(bundle, data, &next_hop, &*self.key_provider);
+
+        // The per-hop writes follow the Rewriters, so they supersede any
+        // Rewriter edit to the blocks they write, and the BPSec blocks (BIB/
+        // BCB, possibly peer-specific) belong after them. The rewrite shifts
+        // block extents, so the rebuilt block map replaces the old one. It is
+        // in-memory only: parks persist status alone, and a re-dispatch
+        // re-enters from the persisted representation (see park_bundle), so
+        // no exit needs to restore the stored map.
+        let mut data = match self.update_extension_blocks(&bundle, data, &next_hop) {
             Ok((new_bundle, data)) => {
                 bundle.bpv7.blocks = new_bundle.blocks;
                 data
             }
-        };
-
-        // Egress filter hook:
-        // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Modifications are in-memory only (like Deliver), NOT persisted
-        // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress will run again with fresh context
-        // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        let bundle_id = bundle.id().clone();
-        let (bundle, mut data) = match self
-            .filter_engine
-            .exec(filter::Hook::Egress, bundle, data, self.key_provider())
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                return OfferOutcome::Dropped(bundle, reason);
+            Err(PerHopRefusal::ProtectedPrimary) => {
+                debug!(
+                    "Legacy next hop {next_hop} needs a re-encoded primary, which a BPSec operation covers"
+                );
+                return OfferOutcome::Dropped(
+                    bundle,
+                    Some(ReasonCode::UnexpectedSecurityOperation),
+                );
             }
-            Err(e) => {
-                error!("Egress filter execution failed: {e}");
-
-                // The filter consumed the claimed bundle, so re-fetch it and
-                // conditionally return the claim to Waiting for a fresh
-                // routing decision. A re-fetch that finds the bundle moved
-                // on means a sweep or the reaper resolved it first.
-                return match self.store.get_metadata(&bundle_id).await {
-                    Some(bundle)
-                        if bundle.status == (bundle::BundleStatus::ForwardAckPending { peer }) =>
-                    {
-                        OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
-                    }
-                    _ => OfferOutcome::Lost,
-                };
+            Err(PerHopRefusal::Covered(e)) => {
+                warn!("Failed to update extension blocks: {e}");
+                return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
             }
         };
 
@@ -252,26 +241,32 @@ impl Dispatcher {
         }
     }
 
+    // The per-hop rewrite, over the Egress Rewriters' output. Its bytes were
+    // validated at ingress, so any failure other than a PerHopRefusal is a
+    // BPA bug or storage corruption, and fatal.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
         next_hop: &Eid,
-    ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
+    ) -> Result<(hardy_bpv7::Bundle, Bytes), PerHopRefusal> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
-        // bumped values back: `forward_bundle` deletes the bundle on a successful
-        // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
-        // in-memory cache is never observed again after this rewrite.
+        // bumped values back: the rewrite is per-attempt and in-memory only, and
+        // the cache mirrors the stored bytes, which stay as received. The cache
+        // IS observed again after this rewrite: a park's reaper expiry watch
+        // reads `extensions.age`, and wants the original, un-bumped value.
         //
         // Editor needs a `&Bundle`, so re-parse structurally.
-        // `editor::Error` has several `From` impls so disambiguate explicitly.
         let hardy_bpv7::parse::Parsed {
             data: source_data,
             bundle: raw,
             ..
-        } = hardy_bpv7::parse::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
+        } = hardy_bpv7::parse::parse(source_data)
+            .trace_expect("The per-hop rewrite's bytes do not decode");
+
+        let legacy = self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop));
 
         // RFC 9171 §4.2.3-4/-5: an admin-record or anonymous bundle's blocks
         // may not request a report on failure, and a conformant parser (ours
@@ -290,14 +285,16 @@ impl Dispatcher {
         // security acceptor and verified it at ingress, as for a hop-by-hop
         // PreviousNode signature, the strip also discharges the RFC 9172
         // §5.1.2 acceptor duty; elsewhere the node in effect acts as the
-        // acceptor of an operation it may not have verified. A block the
-        // editor cannot safely update (BCB-covered, so possibly under an
-        // encrypted BIB) refuses, and the caller parks the bundle.
+        // acceptor of an operation it may not have verified. A Previous Node
+        // or Bundle Age block the editor cannot safely update (BCB-covered,
+        // so possibly under an encrypted BIB) refuses, and the caller parks
+        // the bundle: both writes are MUSTs (RFC 9171 §5.4).
+        let covered = |(_, e)| PerHopRefusal::Covered(e);
 
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
-            .map_err(|(_, e)| e)?
+            .map_err(covered)?
             .with_flags(hardy_bpv7::block::Flags {
                 report_on_failure,
                 ..Default::default()
@@ -313,25 +310,33 @@ impl Dispatcher {
             )
             .rebuild();
 
-        // Increment Hop Count
+        // Increment Hop Count, where the block can be updated. The increment
+        // is a SHOULD (RFC 9171 §4.4.3): a Hop Count block the editor refuses
+        // (BCB-covered beside an encrypted BIB that may cover it) travels
+        // unchanged, with its security operations, rather than holding the
+        // bundle back.
         if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
-            editor = editor
-                .insert_block(hardy_bpv7::block::Type::HopCount)
-                .map_err(|(_, e)| e)?
-                .with_flags(hardy_bpv7::block::Flags {
-                    report_on_failure,
-                    must_replicate: true,
-                    ..Default::default()
-                })
-                .with_data(
-                    hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
-                        limit: hop_count.limit,
-                        count: hop_count.count.saturating_add(1),
+            editor = match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
+                Ok(block) => block
+                    .with_flags(hardy_bpv7::block::Flags {
+                        report_on_failure,
+                        must_replicate: true,
+                        ..Default::default()
                     })
-                    .0
-                    .into(),
-                )
-                .rebuild();
+                    .with_data(
+                        hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
+                            limit: hop_count.limit,
+                            count: hop_count.count.saturating_add(1),
+                        })
+                        .0
+                        .into(),
+                    )
+                    .rebuild(),
+                Err((editor, e)) => {
+                    debug!("Hop Count block travels unchanged: {e}");
+                    editor
+                }
+            };
         }
 
         // Update Bundle Age, if required
@@ -344,7 +349,7 @@ impl Dispatcher {
 
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::BundleAge)
-                .map_err(|(_, e)| e)?
+                .map_err(covered)?
                 .with_flags(hardy_bpv7::block::Flags {
                     report_on_failure,
                     must_replicate: true,
@@ -360,38 +365,57 @@ impl Dispatcher {
         // the caller installs the rebuilt block map (extents index the
         // re-encoded bytes) but never the rebuilt primary — the record's
         // primary, and with it the bundle id every store operation is keyed
-        // on, keeps the canonical encoding.
-        if self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop)) {
+        // on, keeps the canonical encoding. The editor refuses the edit
+        // while a BIB targets the primary or a remaining operation's scope
+        // includes it, judged after the per-hop writes above have stripped
+        // the blocks they rewrote from their BIBs: an operation the
+        // re-encode would break, so the bundle cannot go to this next hop.
+        // bpv7 answers for each security context; the BPA reads none.
+        if legacy {
             if let Eid::Ipn {
                 fqnn,
                 service_number,
             } = &bundle.id().source
             {
-                editor = editor
-                    .with_source(Eid::LegacyIpn {
-                        fqnn: *fqnn,
-                        service_number: *service_number,
-                    })
-                    .map_err(|(_, e)| e)?;
+                editor = match editor.with_source(Eid::LegacyIpn {
+                    fqnn: *fqnn,
+                    service_number: *service_number,
+                }) {
+                    Err((
+                        _,
+                        EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
+                    )) => return Err(PerHopRefusal::ProtectedPrimary),
+                    result => result
+                        .map_err(|(_, e)| e)
+                        .trace_expect("The legacy re-encode of the source failed"),
+                };
             }
             if let Eid::Ipn {
                 fqnn,
                 service_number,
             } = &bundle.primary().destination
             {
-                editor = editor
-                    .with_destination(Eid::LegacyIpn {
-                        fqnn: *fqnn,
-                        service_number: *service_number,
-                    })
-                    .map_err(|(_, e)| e)?;
+                editor = match editor.with_destination(Eid::LegacyIpn {
+                    fqnn: *fqnn,
+                    service_number: *service_number,
+                }) {
+                    Err((
+                        _,
+                        EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
+                    )) => return Err(PerHopRefusal::ProtectedPrimary),
+                    result => result
+                        .map_err(|(_, e)| e)
+                        .trace_expect("The legacy re-encode of the destination failed"),
+                };
             }
         }
 
         // rebuild_bundle() returns a Bundle whose block extents index the
         // rewritten data, keeping the (bundle, data) pair consistent for the
-        // Egress filter chain
-        let (new_bundle, chunks) = editor.rebuild_bundle()?;
+        // CLA hand-off
+        let (new_bundle, chunks) = editor
+            .rebuild_bundle()
+            .trace_expect("The per-hop rewrite failed to rebuild the bundle");
 
         // Zero-copy in place if `source_data` uniquely owns; otherwise
         // allocates a fresh buffer.
@@ -402,18 +426,26 @@ impl Dispatcher {
     }
 }
 
+/// Why the per-hop rewrite produced no bundle for this attempt.
+enum PerHopRefusal {
+    /// The next hop needs legacy IPN encoding, and a BPSec operation covers
+    /// the primary block the re-encode would change, as its target or
+    /// through its scope: deterministic for this next hop.
+    ProtectedPrimary,
+    /// A per-hop block is under BPSec coverage the keyless rewrite cannot
+    /// safely update.
+    Covered(EditorError),
+}
+
 #[cfg(test)]
 mod tests {
-    use core::num::{NonZeroU64, NonZeroUsize};
+    use core::num::NonZeroU64;
 
-    use hardy_bpv7::{
-        bundle::Id,
-        eid::{IpnNodeId, NodeId},
-    };
+    use hardy_bpv7::{bundle::Id, eid::NodeId};
 
     use super::*;
     use crate::{
-        node_ids::NodeIds,
+        dispatcher::tests::dispatcher,
         storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     };
 
@@ -456,41 +488,7 @@ mod tests {
     async fn expired_queued_bundle_is_never_offered() {
         let metadata_store = Arc::new(MetadataMemStorage::new(None));
         let data_store = Arc::new(BundleMemStorage::new(None, None));
-        let store = Arc::new(storage::store::Store::new(
-            NonZeroUsize::new(16).unwrap(),
-            metadata_store.clone(),
-            data_store.clone(),
-        ));
-        let node_ids = Arc::new(
-            NodeIds::try_from(
-                [NodeId::Ipn(IpnNodeId {
-                    allocator_id: 0,
-                    node_number: 1,
-                })]
-                .as_slice(),
-            )
-            .unwrap(),
-        );
-        let rib = routing::RibBuilder::new()
-            .build(node_ids.clone(), store.clone())
-            .await
-            .unwrap();
-        let (dispatcher, _start) = Dispatcher::new(
-            Config {
-                status_reports: false,
-                poll_channel_depth: NonZeroUsize::new(16).unwrap(),
-                processing_pool_size: NonZeroUsize::new(4).unwrap(),
-                max_bundle_size: None,
-                primary_block_integrity: false,
-                bundle_age_required: false,
-                ipn_legacy_peers: Vec::new(),
-            },
-            node_ids,
-            store,
-            rib,
-            Arc::new(crate::keys::NullKeyProvider),
-            Arc::new(filter::FilterEngine::new()),
-        );
+        let dispatcher = dispatcher(metadata_store.clone(), data_store.clone()).await;
 
         // Seed the record exactly as the egress queue holds it: data
         // stored, metadata parked in ForwardPending, expired at build.
@@ -546,6 +544,44 @@ mod tests {
         assert!(
             metadata_store.get(&bundle_id).await.unwrap().is_none(),
             "the expired bundle is resolved terminally as LifetimeExpired"
+        );
+    }
+
+    /// The per-hop rewrite's bytes were validated at ingress and come back
+    /// from storage, so failing to decode them is a BPA bug or storage
+    /// corruption: fatal, never a park. Driven as a direct call because a
+    /// panic inside a running BPA aborts the test process.
+    #[tokio::test]
+    #[should_panic(expected = "The per-hop rewrite's bytes do not decode")]
+    async fn undecodable_per_hop_bytes_are_fatal() {
+        let dispatcher = dispatcher(
+            Arc::new(MetadataMemStorage::new(None)),
+            Arc::new(BundleMemStorage::new(None, None)),
+        )
+        .await;
+        let (_, data) = hardy_bpv7::builder::Builder::new(
+            "ipn:0.2.1".parse().unwrap(),
+            "ipn:0.3.2".parse().unwrap(),
+        )
+        .with_payload(b"truncated in storage".to_vec().into())
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+        let data = Bytes::from(data);
+        let bundle = bundle::Bundle {
+            bpv7: crate::bundle::parse::parse_validate_with_provider(
+                data.clone(),
+                hardy_bpv7::bpsec::no_keys,
+            )
+            .unwrap()
+            .bundle,
+            metadata: bundle::BundleMetadata::originated(),
+            status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
+        };
+
+        let _ = dispatcher.update_extension_blocks(
+            &bundle,
+            data.slice(..data.len() - 1),
+            &"ipn:0.3.0".parse().unwrap(),
         );
     }
 }

@@ -11,15 +11,17 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     cla,
+    filter::{RewriteContext, Rewriter, pack::FilterPack},
     node_ids::NodeIds,
     services,
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
-    block::Type,
+    block::{Flags as BlockFlags, Type},
     builder::Builder,
     bundle::{Flags, Id},
+    crc::CrcType,
     creation_timestamp::CreationTimestamp,
     dtn_time::DtnTime,
     editor::{Chunk, Editor},
@@ -28,6 +30,7 @@ use hardy_bpv7::{
     },
     hop_info::HopInfo,
     parse::{Parsed, parse},
+    reader::Availability,
     status_report::ReasonCode,
 };
 use hardy_cbor::{
@@ -1873,59 +1876,61 @@ async fn forwarding_latency() {
 // INT-BPA-06: Egress filter bundle/data consistency
 // ---------------------------------------------------------------------------
 
+// The block type the extent-checking Rewriter inserts.
+const INSERTED: Type = Type::Unrecognised(200);
+
 /// Records any divergence between the Bundle's block extents and the wire
-/// data it is handed alongside.
-struct ExtentCheckFilter {
+/// data it is handed alongside, observed through the reader's extent-based
+/// block access: a stale block map over the bytes reads back shifted
+/// garbage. Then inserts a block, shifting the payload extent the per-hop
+/// rewrite works over next.
+struct ExtentCheckRewriter {
     mismatch: Arc<Mutex<Option<String>>>,
 }
 
-#[async_trait]
-impl hardy_bpa::filter::ReadFilter for ExtentCheckFilter {
-    async fn filter(
-        &self,
-        bundle: &hardy_bpa::bundle::Bundle,
-        data: &[u8],
-    ) -> Result<hardy_bpa::filter::ReadResult, hardy_bpa::Error> {
+impl Rewriter for ExtentCheckRewriter {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+        let reader = ctx.reader();
         let mut mismatch = self.mismatch.lock().unwrap();
-        match parse(hardy_bpa::Bytes::copy_from_slice(data)) {
-            Err(e) => *mismatch = Some(format!("unparseable filter data: {e}")),
-            Ok(parsed) => {
-                for (number, block) in &parsed.bundle.blocks {
-                    match bundle.bpv7.blocks.get(number) {
-                        Some(b) if b.extent == block.extent => {}
-                        Some(b) => {
-                            *mismatch = Some(format!(
-                                "block {number}: extent {:?} != wire extent {:?}",
-                                b.extent, block.extent
-                            ))
-                        }
-                        None => *mismatch = Some(format!("block {number} missing from Bundle")),
-                    }
-                }
+
+        // The payload extent must index the bytes.
+        match reader.block(1) {
+            Some((_, Availability::Available(payload))) if payload.as_ref() == b"Hello remote" => {}
+            Some((_, Availability::Available(payload))) => {
+                *mismatch = Some(format!("payload extent skewed: {:?}", payload.as_ref()))
             }
+            Some((_, unavailable)) => {
+                *mismatch = Some(format!("payload unavailable: {unavailable:?}"))
+            }
+            None => *mismatch = Some("no payload block".to_string()),
         }
-        Ok(hardy_bpa::filter::ReadResult::Continue)
+
+        if let Err(e) = ctx.editor().insert(
+            INSERTED,
+            BlockFlags::default(),
+            CrcType::None,
+            emit(&42u64).0.into(),
+        ) {
+            *mismatch = Some(format!("the insert was refused: {e}"));
+        }
     }
 }
 
-/// Forwarding rewrites extension blocks (Previous Node insertion shifts every
-/// later block), and Egress filters receive (bundle, data) as a consistent
-/// pair: the Bundle's extents must index the rewritten bytes.
+/// The Egress Rewriters see the stored (bundle, data) pair consistently, and
+/// hand the per-hop rewrite a consistent rewritten pair: the transmitted
+/// bundle carries the Rewriter's insert, this node's Previous Node and the
+/// payload, each decoding from its own extent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_filter_sees_consistent_extents() {
     let mismatch = Arc::new(Mutex::new(None));
-    let bpa = Bpa::builder()
-        .filter(
-            hardy_bpa::filter::Hook::Egress,
-            "extent-check",
-            &[],
-            hardy_bpa::filter::Filter::Read(Arc::new(ExtentCheckFilter {
-                mismatch: mismatch.clone(),
-            })),
-        )
-        .build()
-        .await
-        .unwrap();
+    let mut pack = FilterPack::new("test");
+    pack.egress_rewriter(
+        "extent-check",
+        ExtentCheckRewriter {
+            mismatch: mismatch.clone(),
+        },
+    );
+    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
     bpa.start(false).await;
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
@@ -1952,10 +1957,11 @@ async fn egress_filter_sees_consistent_extents() {
         .unwrap();
 
     // Register an application and send a bundle to the remote node — a
-    // locally-originated bundle has no Previous Node block, so the
-    // forward-time rewrite inserts one and shifts the payload extent
+    // locally-originated bundle has no Previous Node block, so the per-hop
+    // rewrite inserts one after the Rewriter's insert
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let source = bpa
+        .register_application(Service::Ipn(42), app.clone())
         .await
         .unwrap();
     app.sink
@@ -1971,7 +1977,7 @@ async fn egress_filter_sees_consistent_extents() {
         .unwrap();
 
     // Event-driven wait; the timeout only bounds a regression.
-    tokio::time::timeout(
+    let forwarded = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         forwarded_rx.recv_async(),
     )
@@ -1983,6 +1989,38 @@ async fn egress_filter_sees_consistent_extents() {
         *mismatch.lock().unwrap(),
         None,
         "Egress filter saw an inconsistent (bundle, data) pair"
+    );
+
+    let out = parse(forwarded).expect("the transmitted bundle parses");
+    let block = |block_type: Type| {
+        out.bundle
+            .blocks
+            .values()
+            .find(|b| b.block_type == block_type)
+            .expect("the block is transmitted")
+    };
+    assert_eq!(
+        block(INSERTED).payload(&out.data),
+        Some(emit(&42u64).0.as_slice()),
+        "the Rewriter's insert"
+    );
+    let Eid::Ipn { fqnn, .. } = source else {
+        panic!("the node has an ipn identity");
+    };
+    assert_eq!(
+        block(Type::PreviousNode)
+            .extract::<Eid>(&out.data)
+            .expect("the Previous Node decodes")
+            .expect("the Previous Node is resident"),
+        Eid::Ipn {
+            fqnn,
+            service_number: 0
+        },
+        "this node's admin endpoint"
+    );
+    assert_eq!(
+        out.bundle.blocks[&1].payload(&out.data),
+        Some(b"Hello remote".as_slice())
     );
 
     bpa.shutdown().await;

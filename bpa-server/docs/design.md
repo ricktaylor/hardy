@@ -107,13 +107,13 @@ Operators can raise or lower this value to control whether routing rules from ag
 
 File-based static routing with hot-reload support. See [Static Routes Design](static_routes_design.md) for details.
 
-## Filter Configuration
+## Validity and Re-encode Configuration
 
-The server registers filters with the BPA based on configuration. Filters provide hook points for validation, policy enforcement, and bundle modification.
+These config sections map onto the BPA's own configuration-gated pipeline checks and built-ins (they are not registered filters — see the bpa crate's [Filter Subsystem Design](../../bpa/docs/filter_subsystem_design.md)).
 
-### RFC 9171 Validity Filter
+### RFC 9171 Validity Checks
 
-The server registers the RFC 9171 validity filter at the Ingress hook with configurable checks:
+The server maps the `rfc9171-validity` section onto the BPA's builder toggles, enforced at the ingress gate before anything is stored:
 
 ```yaml
 rfc9171-validity:
@@ -133,7 +133,7 @@ ipn-legacy-nodes:
   - "ipn:200.1"  # Specific endpoint
 ```
 
-This enables interoperability with older BPv6-era implementations that expect the legacy IPN format.
+This enables interoperability with older BPv6-era implementations that expect the legacy IPN format. A bundle carrying a BPSec operation that covers the primary block, as its target or through its scope (RFC 9173's default scope includes it, and an encrypted BIB counts whatever its scope, since its ciphertext hides it), cannot be re-encoded without breaking that operation, so it is deleted at a matching next hop, not re-routed, with a deletion status report giving "Unexpected security operation" if the bundle requests one and status reports are enabled. That is a misconfiguration of the system as a whole, since such a sender and a route through a legacy peer cannot both hold (RFC 9172 §7.1).
 
 ## Command Line Options
 

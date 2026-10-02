@@ -64,8 +64,11 @@ struct Provenance {
 ///
 /// A cache, not a source of truth: produced by the parse pipelines
 /// (`bundle::parse`) and recorded here whenever the bundle's bytes are parsed
-/// — at ingress, on local build, or on re-parse. The sites that rewrite the
-/// bytes re-record it; nothing re-validates it after the fact.
+/// — at ingress, on local build, or on re-parse. It mirrors the *stored*
+/// bytes, which stay as received: the per-attempt rewrites at Egress and
+/// Deliver (the per-hop update, a Rewriter's edits) never touch it, and
+/// must not — the expiry arithmetic reads the as-received Bundle Age.
+/// Nothing re-validates it after the fact.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ExtensionFields {
@@ -112,14 +115,6 @@ struct Classification {
     epoch: PolicyEpoch,
 }
 
-/// Mutable annotations that filters may modify during bundle processing.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct WritableMetadata {
-    /// Optional flow label for QoS differentiation.
-    pub flow_label: Option<u32>,
-}
-
 /// A bundle's BPA-local processing metadata.
 ///
 /// Partitioned by write discipline: provenance (write-once arrival facts,
@@ -143,9 +138,6 @@ pub struct BundleMetadata {
     classification: Classification,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
-    /// Mutable annotations that filters may update during processing.
-    #[cfg_attr(feature = "serde", serde(flatten))]
-    pub writable: WritableMetadata,
 }
 
 impl BundleMetadata {
@@ -163,7 +155,6 @@ impl BundleMetadata {
             extensions: ExtensionFields::default(),
             classification: Classification::default(),
             storage_name: None,
-            writable: WritableMetadata::default(),
         }
     }
 

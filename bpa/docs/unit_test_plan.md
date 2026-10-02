@@ -193,6 +193,23 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 **Note (Rev 3):** Unknown block handling (LLR 1.1.30) is implemented by the bpv7 parser and verified by `bpv7/src/bundle/parse.rs::unknown_block_discard` and the CLI integration test REWRITE-01 ([`COMP-BPV7-CLI-01`](../../bpv7/docs/component_test_plan.md)). The BPA delegates to the parser — no separate BPA tests are required.
 
+### 3.14 Filter Subsystem (Engine, Slots)
+
+*Objective: the filter chains run in their documented order and applying rules, a Rewriter's out-of-scope edits are refused through the engine, and annotation slots are named by their declaring path. The Rewriter's editor and the filters' reader are bpv7's `ExtensionEditor` and `DecryptingReader`, whose contracts bpv7's own suites pin. Pipeline-level dispositions are in the component plan (Suite D).*
+
+| Test Scenario | Description | Source File | Status |
+| ----- | ----- | ----- | ----- |
+| **Classifier Delta Order** | Each Classifier sees its predecessors' applied deltas; the result persists on the record. | `src/filter/engine.rs` | Done |
+| **Input Stage Order** | An input hook's Verifiers run before its Classifiers, whatever the registration order. | `src/filter/engine.rs` | Done |
+| **Verifier Drop Reason** | A Verifier's `Drop(Some(reason))` becomes the chain's drop reason. | `src/filter/engine.rs` | Done |
+| **Boxed and Shared Filters** | A boxed `Verifier` registers and runs; one instance behind an `Arc` serves two hooks. | `src/filter/engine.rs` | Done |
+| **Rewriter Edit Consistency** | A Rewriter's insert reaches the Deliver Verifier with consistent extents and the returned pair re-parses; the Egress chain returns a rewritten pair whose block map indexes its bytes. | `src/filter/engine.rs` | Done |
+| **Undecodable Output Bytes** | An Egress or Deliver chain, or the per-hop writes after the Egress chain, whose bytes fail to decode panics: they were validated at ingress, so the failure is a BPA bug or storage corruption. | `src/filter/engine.rs`, `src/dispatcher/forward.rs` | Done |
+| **Key Derivation** | Output chains derive keys once without edits, and after an inserting Rewriter re-derive against the rebuilt block map; a BPSec-free input chain never consults the key provider. | `src/filter/engine.rs` | Done |
+| **Scope Refusals** | Primary/payload targets, BIB/BCB types, and absent blocks are refused through the engine, and the bundle passes unedited. | `src/filter/engine.rs` | Done |
+| **Non-Resident Block** | A block beyond the resident bytes reads as `Availability::NotResident` through the `DecryptingReader`. | `bpv7/tests/reader.rs` | Done |
+| **Slot Names** | Same-named slots declared in different modules are distinct slots, each named by its declaring path. | `src/filter/slots/mod.rs` | Done |
+
 ## 4. Execution & Pass Criteria
 
 * **Command:** `cargo test -p hardy-bpa`

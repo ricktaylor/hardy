@@ -64,28 +64,28 @@ storage:
     # Whether to do a full fsync on each write.
     # fsync: true
 
-# RFC 9171 Validity Filter
+# RFC 9171 validity checks
 # Configures policy checks from RFC 9171. These are SHOULD requirements,
 # not structural validity, so they can be relaxed for interoperability.
-rfc9171-validity:
-  # Require the primary block to be protected by CRC or BIB.
-  # Disable for interoperability with implementations that omit CRCs (e.g., dtn7-rs).
-  # primary-block-integrity: true
+# rfc9171-validity:
+#   # Require the primary block to be protected by CRC or BIB.
+#   # Disable for interoperability with implementations that omit CRCs (e.g., dtn7-rs).
+#   primary-block-integrity: true
+#
+#   # Require a Bundle Age block when creation timestamp is zero (no clock).
+#   # Ensures bundles can be properly aged and expired.
+#   bundle-age-required: true
 
-  # Require a Bundle Age block when creation timestamp is zero (no clock).
-  # Ensures bundles can be properly aged and expired.
-  # bundle-age-required: true
-
-# IPN Legacy Filter (requires `ipn-legacy-filter` feature)
-# This filter rewrites IPN 3-element EIDs to legacy 2-element format
-# for peers that require the older encoding.
+# IPN legacy re-encode: rewrites IPN 3-element EIDs to legacy 2-element
+# format for peers that require the older encoding, as part of the BPA's
+# per-hop rewrite stage.
 #
 # EID patterns matching next-hop peers that require legacy encoding.
 # Bundles forwarded to matching peers will have their IPN EIDs rewritten.
-ipn-legacy-nodes:
-#  - "ipn:10.*"           # All endpoints on node 10
-#  - "ipn:20.0"           # Node 20's admin endpoint
-#  - "ipn:[100-199].*"    # Nodes 100-199 (range pattern)
+# ipn-legacy-nodes:
+#   - "ipn:10.*"           # All endpoints on node 10
+#   - "ipn:20.0"           # Node 20's admin endpoint
+#   - "ipn:[100-199].*"    # Nodes 100-199 (range pattern)
 
 # Built-in application services.
 # Each key is a service name; the value is a list of service identifiers to register on.
@@ -99,8 +99,9 @@ ipn-legacy-nodes:
 static-routes:
   # The path to the file containing static route definitions.
   routes-file: "/etc/hardy-bpa-server/static_routes.yaml"
-  # Whether to monitor the routes file for changes and automatically reload it.
-  # watch: true
+  # How to monitor the routes file for changes and reload it: "native"
+  # (OS file events), "poll" (periodic, works in Docker), or "none".
+  # watch: "native"
   # Default priority for routes loaded from this file.
   # priority: 100
   # Protocol identifier used when registering routes with the RIB.
