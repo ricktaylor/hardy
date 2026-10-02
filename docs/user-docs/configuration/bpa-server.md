@@ -166,7 +166,7 @@ service.
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `routes-file` | File path | *(none)* | Path to the static routes file. |
-| `watch` | `true`, `false` | `true` | Monitor the file for changes and reload automatically. |
+| `watch` | `native`, `poll`, `none` | `native` | Monitor the file for changes and reload automatically: `native` uses OS file events, `poll` checks periodically (works in Docker), `none` disables reloading. |
 | `priority` | Non-negative integer | `100` | Default priority for routes from this file. Lower values are preferred; `10` takes precedence over `100`. |
 | `protocol-id` | String | `static_routes` | Protocol identifier used when registering routes with the RIB. |
 
@@ -259,20 +259,22 @@ the `drop` rule at priority 2 is checked after registered services
 (priority 1 by default), but matches any service EID that no
 registered service has claimed.
 
-## `rfc9171-validity` — RFC 9171 Validity Filters
+## `rfc9171-validity` — RFC 9171 Validity Checks
 
 These control SHOULD-level requirements from RFC 9171 that can be
-relaxed for interoperability with other implementations.
+relaxed for interoperability with other implementations. They are the
+BPA's own configuration-gated checks, not registered filters.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `primary-block-integrity` | `true`, `false` | `true` | Require the primary block to be protected by CRC or BIB. Set `false` for interop with dtn7-rs and other implementations that omit CRCs. |
 | `bundle-age-required` | `true`, `false` | `true` | Require a Bundle Age block when creation timestamp is zero. Set `false` for peers without a clock that omit Bundle Age. |
 
-## `ipn-legacy-nodes` — IPN Legacy Filter
+## `ipn-legacy-nodes` — IPN Legacy Re-encode
 
 Rewrites 3-element IPN EIDs (RFC 9758) to legacy 2-element format for
-peers that require the older encoding.
+peers that require the older encoding: a built-in of the BPA's per-hop
+rewrite, applied to the transmitted wire form only.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
@@ -317,7 +319,7 @@ built-in-services:
 
 static-routes:
   routes-file: "/etc/hardy/routes"
-  watch: true
+  watch: native
   priority: 100
 
 clas:

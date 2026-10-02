@@ -5,7 +5,7 @@ This document describes the storage subsystem in the BPA, covering the dual stor
 ## Related Documents
 
 - **[Bundle State Machine Design](bundle_state_machine_design.md)**: Bundle status values stored in metadata
-- **[Filter Subsystem Design](filter_subsystem_design.md)**: Filter checkpoint persistence
+- **[Filter Subsystem Design](filter_subsystem_design.md)**: classification persistence (no filter mutation is ever persisted)
 - **[Policy Subsystem Design](policy_subsystem_design.md)**: Hybrid channels for queue management
 - **[Routing Design](routing_subsystem_design.md)**: Route changes trigger `reset_peer_queue()`
 
@@ -40,19 +40,20 @@ The storage subsystem provides persistent and cached storage for bundles, coordi
 │   BundleStorage     │  │ MetadataStorage │  │   Dispatcher        │
 │   (trait)           │  │ (trait)         │  │                     │
 ├─────────────────────┤  ├─────────────────┤  │  - drop_bundle()    │
-│ - localdisk-storage │  │ - sqlite-storage│  │  - ingress_bundle() │
+│ - localdisk-storage │  │ - sqlite-storage│  │  - restart_bundle() │
 │ - bundle_mem        │  │ - metadata_mem  │  │  - poll_waiting()   │
 └─────────────────────┘  └─────────────────┘  └─────────────────────┘
 ```
 
 ## Store Coordinator
 
-The `Store` struct is the central coordinator for all storage operations. It holds references to both storage backends, manages the LRU cache and reaper cache, and coordinates recovery.
+The `Store` struct is the central coordinator for all storage operations. It holds references to both storage backends — a configured bundle backend is usually wrapped in the `CachedBundleStorage` LRU decorator, which owns the bundle-data cache — manages the reaper cache and the recently-committed id cache behind the input gates' advisory duplicate probe, and coordinates recovery.
 
 **Lock Strategy:**
 
 - `spin::Mutex` for bundle_cache (O(1) operations, no blocking)
 - Standard `Mutex` for reaper_cache (requires O(n) iteration)
+- Standard `Mutex` for the recently-committed id cache (O(1) LRU operations)
 
 ## Storage Traits
 
@@ -66,7 +67,7 @@ The `BundleStorage` trait manages binary bundle data as opaque blobs. Implementa
 
 The `MetadataStorage` trait manages bundle lifecycle state with indexed queries. Key operations include:
 
-- **CRUD**: get, insert, replace, tombstone (prevents re-insertion)
+- **CRUD**: get, insert, tombstone (prevents re-insertion)
 - **Recovery**: start_recovery, confirm_exists, remove_unconfirmed
 - **Queue management**: reset_peer_queue (ForwardPending → Waiting)
 - **Polling**: poll_expiry, poll_waiting, poll_pending for background processing
@@ -106,7 +107,7 @@ Bundle data and metadata are stored separately:
 │  │  - Stored by blob key   │  │  - status (New, Waiting...)  │  │
 │  │                         │  │  - received_at               │  │
 │  │  Backend:               │  │  - ingress_peer_node/addr    │  │
-│  │  - localdisk-storage    │  │  - flow_label                │  │
+│  │  - localdisk-storage    │  │  - classification, epoch     │  │
 │  │  - bundle_mem           │  │                              │  │
 │  │                         │  │  Backend:                    │  │
 │  │                         │  │  - sqlite-storage            │  │
@@ -275,7 +276,7 @@ Call `bundle_storage_recovery()` to scan all stored bundle data:
 | Condition | Result | Action |
 |-----------|--------|--------|
 | Data + metadata exist | `Valid` | Resume from status checkpoint |
-| Data exists, no metadata | `Orphan` | Full receive pipeline (`process_received_bundle` + `ingress_bundle`) |
+| Data exists, no metadata | `Orphan` | Full receive pipeline (`process_received_bundle`) |
 | Duplicate data found | `Duplicate` | Delete spurious copy |
 | Data unparseable | `Junk` | Delete data |
 | Data missing | `Missing` | Skip (race condition) |

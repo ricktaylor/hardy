@@ -254,7 +254,6 @@ const POLL_FORWARD_PENDING_SQL: &str = "SELECT bundle, status_param3 FROM bundle
 
 #[async_trait]
 impl MetadataStorage for SqliteStorage {
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3)) = self
@@ -309,36 +308,6 @@ impl MetadataStorage for SqliteStorage {
             .map_err(Into::into)
         })
         .await
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        // UTC-normalized for the same reason as `insert`.
-        let expiry = bundle.expiry().to_offset(UtcOffset::UTC);
-        let received_at = bundle.metadata.received_at();
-        let (status_code, status_param1, status_param2, status_param3) =
-            from_status(&bundle.status);
-        let id = serde_json::to_vec(bundle.id())?;
-        let bundle = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
-        if self
-            .write(move |conn| {
-                // `bundle IS NOT NULL` keeps a tombstone a tombstone: the row
-                // survives deletion with its columns nulled, so an unqualified
-                // UPDATE would write the blob and status straight back in and
-                // resurrect the bundle. Matching no row is the defined outcome
-                // for a write that lost its race, not an error.
-                conn.prepare_cached(
-                    "UPDATE bundles SET bundle = ?2, expiry = ?3, received_at = ?4, status_code = ?5, status_param1 = ?6, status_param2 = ?7, status_param3 = ?8 WHERE bundle_id = ?1 AND bundle IS NOT NULL",
-                )?
-                .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3))
-                .map_err(Into::into)
-            })
-            .await?
-            != 1
-        {
-            debug!("Replace for a missing or tombstoned bundle, ignored");
-        }
-        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
@@ -1213,9 +1182,18 @@ mod tests {
         store.poll_waiting(&sink).await.unwrap();
         assert_eq!(sink.into_inner().len(), 1, "should poll 1 waiting bundle");
 
-        // Update status to Dispatching
+        // Claim the bundle to Dispatching
         bundle.status = BundleStatus::Dispatching;
-        store.replace(&bundle).await.unwrap();
+        assert!(
+            store
+                .swap_status(
+                    bundle.id(),
+                    &BundleStatus::Waiting,
+                    &BundleStatus::Dispatching
+                )
+                .await
+                .unwrap()
+        );
 
         // Poll waiting again — should return nothing
         let sink = VecSink::new();

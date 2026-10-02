@@ -316,6 +316,16 @@ impl PayloadTail {
         self.remaining
     }
 
+    /// Payload block-type-specific data bytes not yet seen — the target's
+    /// own content, excluding the CRC and break trailer. A caller feeding a
+    /// per-target digest (e.g. a deferred payload BIB) reads this before and
+    /// after each [`push`](Self::push) to slice the body prefix of the run
+    /// out from the trailer: the body is always consumed from the front, so
+    /// `body_remaining` before minus after is the run's leading body length.
+    pub fn body_remaining(&self) -> u64 {
+        self.body_remaining
+    }
+
     /// Feed the next run of streamed bytes. Returns `true` once the bundle is
     /// complete (body drained, CRC verified, breaks consumed). Errors on a CRC
     /// mismatch ([`crc::Error::IncorrectCrc`]), a malformed trailer
@@ -861,6 +871,13 @@ impl BundleParser {
         self.parse_blocks(data, offset)
     }
 
+    // The pre-payload bound: everything before the payload block's data must
+    // end within 256 MiB. An implementation limit, not RFC: real header
+    // chains are kilobytes, the whole pre-payload region must be resident
+    // for verification, and a fixed bound keeps accept/reject decisions
+    // identical on every node regardless of pointer width.
+    const MAX_PRE_PAYLOAD_EXTENT: u64 = 256 * 1024 * 1024;
+
     fn parse_blocks(&mut self, data: &[u8], mut offset: usize) -> Result<usize, Error> {
         let bundle = self
             .bundle
@@ -905,9 +922,7 @@ impl BundleParser {
             // RFC 9171 §4.2.3-4 / §4.2.3-5: an admin-record or null-source
             // bundle MUST NOT have the `report_on_failure` flag set on any
             // extension block.
-            if (bundle.primary.flags.is_admin_record || bundle.primary.id.source.is_null())
-                && header.flags.report_on_failure
-            {
+            if bundle.primary.forbids_report_on_failure() && header.flags.report_on_failure {
                 return Err(Error::InvalidFlags);
             }
 
@@ -926,6 +941,22 @@ impl BundleParser {
                 .ok_or(Error::InvalidCBOR(CborError::TooBig))?;
 
             let is_payload = matches!(header.block_type, block::Type::Payload);
+
+            // Enforce the pre-payload bound: everything before the payload
+            // body — every extension block and the payload block's header —
+            // must end within MAX_PRE_PAYLOAD_EXTENT (callers slice header
+            // extents as usize on the strength of this guarantee). Only the
+            // payload body may run past the bound, and the check fires from
+            // the declared lengths alone, before any body byte arrives.
+            if is_payload {
+                let payload_data_start = block_start_u64.saturating_add(header.data_start);
+                if payload_data_start > Self::MAX_PRE_PAYLOAD_EXTENT {
+                    return Err(Error::ExtensionBlocksTooLarge(payload_data_start));
+                }
+            } else if extent_end > Self::MAX_PRE_PAYLOAD_EXTENT {
+                return Err(Error::ExtensionBlocksTooLarge(extent_end));
+            }
+
             if (data.len() as u64) < body_end {
                 // Body doesn't fit in the buffer yet. Keep the shortfall in
                 // u64: the streaming-fallback path below must stay reachable on

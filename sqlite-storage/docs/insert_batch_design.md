@@ -9,8 +9,8 @@ Proposal -- partially implemented (assessed 2026-07-08). The current `sqlite-sto
 **Verdict: unlike the localdisk write-queue proposal (retired 2026-07-08; its surviving advice — the spool-and-commit engine with batched, directory-coalesced fsyncs — now lives in the [localdisk-storage design](../../localdisk-storage/docs/design.md) §Future Work), this design survives the streaming pipeline largely intact — what changes is the batching trigger and the op mix, not the architecture.**
 
 - **The unit of work is untouched.** Streaming re-plumbs payload bytes (`BundleStorage`), but the metadata/data split is preserved and `MetadataStorage` stays row-oriented; the streaming BPA is explicitly "a stateless pipeline over durable state" passing keys and lightweight metadata views. Rows stay small and batchable, so the INSERT batching, single write thread, read pool, and the whole WAL analysis remain valid as written.
-- **New coupling: the batching window chains with the data-commit window.** The late `Ingress` hook fires "after bundle fully stored", so the metadata insert must follow the bundle-data spool *commit*. If localdisk adopts the batched spool-and-commit engine, two naive independent batch windows add up (spool → data-commit window → insert window) on every ingress. Recommendation: drive metadata INSERT batches off completed data-commit batches — the set of spools fsynced in one commit batch *is* the next INSERT batch. One shared window, and crash-ordering (data durable before metadata references it) falls out for free.
-- **Op-mix shift.** With the streaming pipeline persisting a status transition each time a key moves between queues, `replace()` (status updates) traffic is at least as hot as `insert()`. The §Operation Routing table sends `replace()` direct for latency; before implementing, re-measure the op mix under the streaming pipeline — batching may want to cover status updates too, or the routing decision may deserve a latency budget per status class.
+- **New coupling: the batching window chains with the data-commit window.** The ingress path writes the metadata row once, after the payload drain has stored the bundle data (the `Ingress` hook runs earlier, at the pre-drain gate), so the metadata insert must follow the bundle-data spool *commit*. If localdisk adopts the batched spool-and-commit engine, two naive independent batch windows add up (spool → data-commit window → insert window) on every ingress. Recommendation: drive metadata INSERT batches off completed data-commit batches — the set of spools fsynced in one commit batch *is* the next INSERT batch. One shared window, and crash-ordering (data durable before metadata references it) falls out for free.
+- **Op-mix shift.** With the streaming pipeline persisting a status transition each time a key moves between queues, `swap_status()` (status updates) traffic is at least as hot as `insert()`. The §Operation Routing table sends `swap_status()` direct for latency; before implementing, re-measure the op mix under the streaming pipeline — batching may want to cover status updates too, or the routing decision may deserve a latency budget per status class.
 - **The WAL prerequisite is satisfied in code, not in the schema.** The `PRAGMA journal_mode = WAL` in `schemas/01_setup.sql` is inert — journal mode cannot be changed inside the migration transaction, and SQLite refuses silently (the schema file is hash-locked, so the dead pragma stays). WAL is applied at connection setup in `src/storage.rs` instead, and the §WAL Mode analysis below applies to the current code.
 - **Sequencing:** implement alongside the streaming storage traits, coordinated with the localdisk commit queue (shared batching window above).
 
@@ -23,7 +23,7 @@ All SQLite operations run on dedicated IO threads, keeping the tokio async runti
 ```
                     Async Tasks
                    /           \
-         insert/replace/       get/poll_expiry/
+         insert/swap_status/   get/poll_expiry/
          tombstone/etc         poll_waiting/etc
               |                      |
               v                      v
@@ -49,7 +49,7 @@ All SQLite operations run on dedicated IO threads, keeping the tokio async runti
 
 **Write queue (single thread):**
 - `insert()` -> batched (high volume, identical operations)
-- `replace()` -> direct (status updates, low latency needed)
+- `swap_status()` -> direct (status updates, low latency needed)
 - `tombstone()` -> direct (immediate cleanup)
 - `confirm_exists()` -> direct (startup only, contains DELETE + SELECT)
 - `remove_unconfirmed()` -> direct (startup only, transactional)
@@ -349,7 +349,12 @@ impl storage::MetadataStorage for Storage {
         rx.await.map_err(|_| /* queue closed */)?
     }
 
-    async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
+    async fn swap_status(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &hardy_bpa::bundle::BundleStatus,
+        status: &hardy_bpa::bundle::BundleStatus,
+    ) -> storage::Result<bool> {
         // Direct write via queue (not batched)
         let (tx, rx) = oneshot::channel();
         self.write_queue.submit(WriteRequest::Direct {

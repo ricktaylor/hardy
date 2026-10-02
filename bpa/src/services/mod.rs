@@ -1,6 +1,9 @@
 pub(crate) mod registry;
 
-use core::time::Duration;
+use core::{
+    fmt::{self, Display, Formatter},
+    time::Duration,
+};
 
 use hardy_async::async_trait;
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -71,13 +74,22 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
+    /// The bundle is a fragment. Fragmentation is a forwarding-time action
+    /// (RFC 9171 §5.8) — a source never emits fragments — so the raw
+    /// originate door rejects a service-built fragment outright.
+    #[error("Cannot originate a bundle fragment")]
+    FragmentedBundle,
+
     /// The bundle stream was cancelled: the producer dropped its sender
     /// before delivering the final segment, so no complete bundle arrived.
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
-    /// The bundle was dropped by a processing filter, with an optional reason code.
-    #[error("Bundle dropped by filter: {0:?}")]
+    /// The bundle was dropped before it was stored — by an Originate filter,
+    /// an origination gate check (an expired lifetime, an exhausted hop
+    /// limit, or a failed RFC 9171 validity check), or an explicit Drop
+    /// route — with an optional reason code.
+    #[error("Bundle dropped{}", DroppedReason(.0))]
     Dropped(Option<ReasonCode>),
 
     /// A bundle with the same identity already exists in storage.
@@ -91,6 +103,19 @@ pub enum Error {
     /// An internal error from an underlying subsystem.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
+}
+
+// The `Dropped` message's tail: the reason code when the drop gave one,
+// nothing otherwise.
+struct DroppedReason<'a>(&'a Option<ReasonCode>);
+
+impl Display for DroppedReason<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(reason) => write!(f, " ({reason:?})"),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The kind of bundle status event being reported to a service.
@@ -188,7 +213,7 @@ pub trait Application: Send + Sync {
     ///
     /// An implementation that needs the whole payload in memory buffers the
     /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
-    /// whose errors convert into this module's [`Error`] via `?`.
+    /// whose errors convert into this module's [`enum@Error`] via `?`.
     async fn on_deliver(
         &self,
         bundle_id: &Id,
@@ -255,6 +280,37 @@ pub trait ApplicationSink: Send + Sync {
         lifetime: Duration,
         options: Option<SendOptions>,
     ) -> Result<Id>;
+
+    /// Sends a payload supplied as a segment stream, wrapped in a bundle
+    /// by the BPA.
+    ///
+    /// The stream must deliver exactly `total_len` payload bytes — the
+    /// declaration frames the bundle's wire form before the first segment
+    /// is pulled — and the stream is one-shot: an over- or
+    /// under-delivering producer is rejected
+    /// ([`PayloadTooLarge`](Error::PayloadTooLarge) /
+    /// [`PayloadUnderrun`](Error::PayloadUnderrun)), a producer that goes
+    /// away before its final segment cancels the send
+    /// ([`StreamCancelled`](Error::StreamCancelled)), and — one-shot — a
+    /// creation-timestamp collision surfaces as
+    /// [`DuplicateBundle`](Error::DuplicateBundle) (vanishingly rare; the
+    /// caller may resend) where [`send`](Self::send) retries internally.
+    ///
+    /// The provided implementation buffers the stream
+    /// ([`buffer_stream`](crate::stream::buffer_stream)) and delegates to
+    /// [`send`](Self::send), with the same error surface; the BPA's own
+    /// sink streams end to end.
+    async fn send_streamed(
+        &self,
+        destination: Eid,
+        total_len: u64,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+        lifetime: Duration,
+        options: Option<SendOptions>,
+    ) -> Result<Id> {
+        let data = crate::stream::buffer_stream(stream, total_len).await?;
+        self.send(destination, data, lifetime, options).await
+    }
 }
 
 /// Low-level service trait with raw bundle access.
@@ -337,7 +393,7 @@ pub trait Service: Send + Sync {
     ///
     /// An implementation that needs the whole bundle in memory buffers the
     /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
-    /// whose errors convert into this module's [`Error`] via `?`.
+    /// whose errors convert into this module's [`enum@Error`] via `?`.
     async fn on_deliver(
         &self,
         bundle_id: &Id,
