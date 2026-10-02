@@ -74,7 +74,6 @@ if [ "$FROM_TIER" -le 5 ]; then
     publish hardy-tcpclv4
     publish hardy-echo-service
     publish hardy-file-cla
-    publish hardy-ipn-legacy-filter
     publish hardy-localdisk-storage
     publish hardy-sqlite-storage
     publish hardy-postgres-storage
