@@ -248,6 +248,29 @@ fn craft_bundle(crc_type: CrcType, indefinite: bool, body: &[u8]) -> Vec<u8> {
     out
 }
 
+// Drive `full` to `Partial`, then push the rest in two pieces split at each of
+// the last 8 bytes: every split through the trailer (CRC value, block break,
+// outer break) and the end of the body leaves the tail incomplete after the
+// first piece and complete, its CRC verified, after the second.
+fn assert_tail_settles_split_anywhere_in_its_trailer(full: &[u8]) {
+    // The longest trailer, CRC-32 in an indefinite block, is seven bytes
+    // (`44 c0 c1 c2 c3 FF FF`); the eighth split falls in the body.
+    for from_end in 1..=8 {
+        let (_, _consumed, mut tail, fed) = drive_to_partial(full, 20, 256);
+        let rest = &full[fed..];
+        let split = rest.len() - from_end;
+        assert!(
+            !tail.push(&rest[..split]).unwrap(),
+            "split {from_end} from the end: the first piece leaves it incomplete"
+        );
+        assert!(
+            tail.push(&rest[split..]).unwrap(),
+            "split {from_end} from the end: the second piece completes it"
+        );
+        tail.finish().unwrap();
+    }
+}
+
 // No-CRC, indefinite-length payload block: the tail's no-digest + block-break
 // path. The crafted bundle is itself valid (one-shot parse accepts it).
 #[test]
@@ -257,10 +280,7 @@ fn crc_none_indefinite_payload() {
         parse::parse(Bytes::copy_from_slice(&full)).is_ok(),
         "craft is a valid bundle"
     );
-
-    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
-    assert!(tail.push(&full[fed..]).unwrap(), "tail should complete");
-    tail.finish().unwrap();
+    assert_tail_settles_split_anywhere_in_its_trailer(&full);
 }
 
 // CRC-32, indefinite-length payload block: the tail feeds the block-level break
@@ -272,13 +292,7 @@ fn crc32_indefinite_payload() {
         parse::parse(Bytes::copy_from_slice(&full)).is_ok(),
         "craft is a valid bundle"
     );
-
-    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
-    assert!(
-        tail.push(&full[fed..]).unwrap(),
-        "tail should complete + verify CRC"
-    );
-    tail.finish().unwrap();
+    assert_tail_settles_split_anywhere_in_its_trailer(&full);
 }
 
 // One-shot `parse()` deals only in complete buffers, so a truncated oversized

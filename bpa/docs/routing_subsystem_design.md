@@ -223,10 +223,8 @@ A `Via` whose next-hop resolves to a **terminal** action (`Drop`, `Deliver`, `Ad
 The bundle status tracks where a bundle is in the processing pipeline. See [Bundle State Machine Design](bundle_state_machine_design.md) for complete state transition details and crash recovery semantics.
 
 ```
-         ┌─────────┐
-         │   New   │  ← Ingress filter runs here (ingress_bundle)
-         └────┬────┘
-              │ checkpoint after Ingress filter
+              │ arrival: Ingress chain at the pre-drain gate (in memory)
+              │ single insert — the first persisted status
               ▼
        ┌─────────────┐
        │ Dispatching │
@@ -282,7 +280,7 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
 1. INGRESS
    Bundle arrives via tcpclv4
    Destination: ipn:200.42
-   Status: New → Dispatching (after Ingress filter checkpoint)
+   Ingress chain at the pre-drain gate (in memory); the single insert persists it as Dispatching
 
 2. ROUTE LOOKUP (process_bundle)
    RIB::find() searches unified table:

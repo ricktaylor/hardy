@@ -141,17 +141,20 @@ impl ToCbor for Results {
 
 /// Incremental verifier for one HMAC-SHA2 payload-target operation.
 ///
-/// Created by [`Operation::begin_verify`] with every header-resident IPPT
-/// part already absorbed; the caller feeds the target's block-type-specific
-/// data through [`update`](Self::update) as it streams past, then settles
-/// the operation with [`finish`](Self::finish).
+/// Created by the crate's streaming `begin_verify` with every
+/// header-resident IPPT part already absorbed; the caller feeds the target's
+/// block-type-specific data through [`update`](Self::update) as it streams
+/// past, then settles the operation with [`finish`](Self::finish).
 ///
-/// The verifier owns everything it needs — including a copy of the resolved
-/// content-encryption key inside the MAC state — so it is deliberately
-/// `Send` and may cross `await` points and task boundaries: the streamed
-/// target's bytes are not resident, so the keyed state must live for the
-/// duration of the drain. This is a recorded exception to the header pass's
-/// no-key-material-across-awaits rule.
+/// The verifier owns everything it needs — the MAC state keyed with the
+/// resolved content-encryption key — so it is deliberately `Send` and may
+/// cross `await` points and task boundaries: the streamed target's bytes
+/// are not resident, so the keyed state must live for the duration of the
+/// drain. This is a recorded exception to the header pass's
+/// no-key-material-across-awaits rule. The CEK copy `begin_verify` resolves
+/// is zeroized once the MAC is keyed, but the MAC state itself — the `hmac`
+/// crate's inner and outer pads, derived from the key — is not zeroized
+/// when the verifier drops: the crate's zeroize support is not enabled.
 #[must_use = "an unfinished verifier is an unchecked integrity statement — call finish()"]
 pub struct Verifier {
     mac: MacInner,
@@ -230,7 +233,7 @@ impl Verifier {
 // block-type-specific data otherwise. The head is sized from the resident
 // payload's own length, not the block's parsed extent — the editor's
 // in-flight template carries a placeholder `Block.data` range. Shared by
-// `sign` and the resident `verify` wrapper.
+// `sign` and the resident path of `Operation::verify`.
 fn absorb_resident_target(mac: &mut MacInner, args: &bib::OperationArgs) -> Result<(), Error> {
     let (target_block, payload) = args
         .blocks
@@ -461,7 +464,7 @@ impl Operation {
     /// The resolved key material is *copied* into the returned MAC state
     /// (see [`Verifier`] for the recorded key-handling exception).
     /// [`Error::NoKey`] means no usable key: the caller's policy skip.
-    pub fn begin_verify<K>(
+    pub(crate) fn begin_verify<K>(
         &self,
         key_source: &K,
         args: &bib::OperationArgs,
@@ -491,7 +494,7 @@ impl Operation {
     }
 
     /// Verify a fully-resident target block. The all-in-one counterpart to
-    /// [`begin_verify`](Self::begin_verify): it can't reuse that path
+    /// the crate's streaming `begin_verify`: it can't reuse that path
     /// (which sizes the byte-string head from the parsed extent and streams
     /// raw bytes — wrong for a primary-block target's canonical form, and
     /// for the editor's placeholder extent during signing), but it shares

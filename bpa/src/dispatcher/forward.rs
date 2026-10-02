@@ -83,11 +83,16 @@ impl Dispatcher {
         lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
         next_hop: Eid,
-        bundle: bundle::Bundle,
+        mut bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // Egress chain: the registered Rewriters, on the stored wire form.
+        // The §E removals the ingress gate deferred apply first, so the
+        // Rewriters see the bundle as it will travel, and the strip can never
+        // delete a Rewriter's insert into a removed block's number.
+        let data = self.strip_removed_blocks(&mut bundle, data);
+
+        // Egress chain: the registered Rewriters, on the stripped wire form.
         // Nothing at Egress drops a bundle, so the chain hands back the pair.
         // - Runs after dequeue from ForwardPending, just before CLA send
         // - Edits are in-memory only (like Deliver), NOT persisted

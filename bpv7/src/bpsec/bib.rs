@@ -42,9 +42,19 @@ pub struct OperationArgs<'a> {
 /// it, and the streaming ingress drain feeds it a non-resident payload
 /// target segment by segment.
 ///
-/// Owns everything it needs (including copied key material — see the
-/// per-context verifier docs), so it is `Send` and may cross `await`
-/// points and task boundaries.
+/// Owns everything it needs, so it is `Send` and may cross `await` points
+/// and task boundaries. That includes keyed state: the HMAC-SHA2 verifier
+/// holds the MAC state derived from the key (see the per-context verifier
+/// docs for what is copied and what is zeroized).
+///
+/// Contract for future security contexts: a verifier carries the *minimum
+/// derived state* across the drain — a running digest, never a raw key
+/// larger than the digest state. Resolve key material from the
+/// [`KeySource`](super::key::KeySource) inside `begin_verify`'s sync scope;
+/// a context that instead needs the key at settle (a hash-then-verify
+/// signature scheme, say) should extend [`finish`](Self::finish) to take a
+/// `KeySource` — the settle site is sync and can re-resolve — rather than
+/// store the key in the verifier.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[must_use = "an unfinished verifier is an unchecked integrity statement — call finish()"]
@@ -56,16 +66,14 @@ pub enum Verifier {
 
 impl Verifier {
     /// Absorb the next run of the target's block-type-specific data.
-    #[allow(unused_variables)]
+    #[cfg_attr(not(feature = "rfc9173"), allow(unused_variables))]
     pub fn update(&mut self, bytes: &[u8]) {
-        match self {
+        // Match on the place (`*self`), not the reference: with no security
+        // context compiled in the enum is empty, and an empty enum's place
+        // needs no arms, where a reference to it still needs one.
+        match *self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(v) => v.update(bytes),
-            // With no security context compiled in the enum is empty and a
-            // `Verifier` is never constructed; the arm keeps the reference
-            // match exhaustive.
-            #[cfg(not(feature = "rfc9173"))]
-            _ => unreachable!("no security context compiled in"),
+            Self::HMAC_SHA2(ref mut v) => v.update(bytes),
         }
     }
 
@@ -73,8 +81,7 @@ impl Verifier {
     /// [`Error::IntegrityCheckFailed`] on tag mismatch.
     pub fn finish(self) -> Result<(), Error> {
         // By-value match: with no security context compiled in the enum is
-        // empty, so the match is exhaustive with no arms (unlike `update`'s
-        // reference match, which needs its catch-all).
+        // empty, so the match is exhaustive with no arms.
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(v) => v.finish(),
@@ -119,13 +126,22 @@ impl Operation {
     }
 
     /// Begin incremental verification of this operation: the returned
-    /// [`Verifier`] absorbs the target's data — streamed through
-    /// [`Verifier::update`] when it is not resident (the ingress drain), or
-    /// in one [`Verifier::update_resident`] step. Applies the RFC 9172
+    /// [`Verifier`] absorbs the target's data streamed through
+    /// [`Verifier::update`] (the ingress drain); a resident target takes the
+    /// all-in-one [`verify`](Self::verify) instead. Applies the RFC 9172
     /// Section 3.8 CRC-presence rule; [`Error::NoKey`] is the caller's
     /// policy skip.
-    #[allow(unused_variables)]
-    pub fn begin_verify<K>(&self, key_source: &K, args: &OperationArgs) -> Result<Verifier, Error>
+    ///
+    /// Crate-internal: its one caller,
+    /// [`begin_payload_verification`](crate::checks::begin_payload_verification),
+    /// targets the payload. The streamed IPPT frames the target's raw data,
+    /// which is wrong for a primary-block target's canonical form.
+    #[cfg_attr(not(feature = "rfc9173"), allow(unused_variables))]
+    pub(crate) fn begin_verify<K>(
+        &self,
+        key_source: &K,
+        args: &OperationArgs,
+    ) -> Result<Verifier, Error>
     where
         K: key::KeySource + ?Sized,
     {
@@ -146,11 +162,11 @@ impl Operation {
     }
 
     /// Verifies the integrity of a fully-resident target block. The
-    /// all-in-one counterpart to [`begin_verify`](Self::begin_verify);
+    /// all-in-one counterpart to the crate's streaming `begin_verify`;
     /// both share the per-context IPPT/MAC primitives. Applies the RFC 9172
     /// Section 3.8 CRC-presence rule; [`Error::NoKey`] is the caller's
     /// policy skip.
-    #[allow(unused_variables)]
+    #[cfg_attr(not(feature = "rfc9173"), allow(unused_variables))]
     pub fn verify<K>(&self, key_source: &K, args: OperationArgs) -> Result<(), Error>
     where
         K: key::KeySource + ?Sized,
