@@ -21,7 +21,7 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
     - [Core Libraries](#core-libraries)
     - [Storage Engines](#storage-engines)
     - [Convergence Layer Adapters](#convergence-layer-adapters)
-    - [Services \& Filters](#services--filters)
+    - [Services](#services)
     - [Servers \& Tools](#servers--tools)
   - [Getting Started](#getting-started)
     - [Prerequisites](#prerequisites)
@@ -77,12 +77,11 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 | [**`hardy-file-cla`**](./file-cla/) | File-system-based CLA for bundle exchange via watched directories. |
 | [**`hardy-bibe`**](./bibe/) | Bundle-in-Bundle Encapsulation (BIBE) for tunneling bundles through intermediate networks. |
 
-### Services & Filters
+### Services
 
 | Crate | Description |
 |-------|-------------|
 | [**`hardy-echo-service`**](./echo-service/) | Echo service for testing and diagnostics - reflects bundles back to sender. |
-| [**`hardy-ipn-legacy-filter`**](./ipn-legacy-filter/) | Egress filter for legacy 2-element IPN EID encoding compatibility. |
 
 ### Servers & Tools
 
