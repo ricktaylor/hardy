@@ -151,8 +151,10 @@ impl<'a> ExtensionEditor<'a> {
         data: Box<[u8]>,
     ) -> Result<u64> {
         // Canonicalized so an `Unrecognised` alias of a reserved code is
-        // refused here as the reserved type it encodes, not further down.
+        // refused here as the reserved type it encodes, not further down, and
+        // an alias of the forbidden flag as the flag it encodes.
         let block_type = block_type.canonicalize();
+        let flags = flags.canonicalize();
         if matches!(
             block_type,
             Type::Primary | Type::Payload | Type::BlockIntegrity | Type::BlockSecurity
