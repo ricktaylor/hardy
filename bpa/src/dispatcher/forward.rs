@@ -101,39 +101,32 @@ impl Dispatcher {
             }
         };
 
-        // Egress filter hook:
+        // Egress chain: registered Rewriters extend the fixed rewrite above,
+        // then Verifiers gate the final pre-BPSec wire form.
         // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Modifications are in-memory only (like Deliver), NOT persisted
+        // - Edits are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress will run again with fresh context
+        //   route to a different peer, so Egress runs again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        let bundle_id = bundle.id().clone();
-        let (bundle, mut data) = match self
-            .filter_engine
-            .exec(filter::Hook::Egress, bundle, data, self.key_provider())
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                return OfferOutcome::Dropped(bundle, reason);
-            }
-            Err(e) => {
-                error!("Egress filter execution failed: {e}");
+        let (bundle, mut data) =
+            match self
+                .filters
+                .run_egress(bundle, data, &next_hop, &*self.key_provider)
+            {
+                Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+                Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
+                    return OfferOutcome::Dropped(bundle, reason);
+                }
+                Err((bundle, e)) => {
+                    error!("Egress filter chain failed: {e}");
 
-                // The filter consumed the claimed bundle, so re-fetch it and
-                // conditionally return the claim to Waiting for a fresh
-                // routing decision. A re-fetch that finds the bundle moved
-                // on means a sweep or the reaper resolved it first.
-                return match self.store.get_metadata(&bundle_id).await {
-                    Some(bundle)
-                        if bundle.status == (bundle::BundleStatus::ForwardAckPending { peer }) =>
-                    {
-                        OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
-                    }
-                    _ => OfferOutcome::Lost,
-                };
-            }
-        };
+                    // The chain hands the claimed bundle back: return the claim
+                    // to Waiting for a fresh routing decision. The park is
+                    // CAS-clean — losing it means a sweep or the reaper
+                    // resolved the bundle first.
+                    return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
+                }
+            };
 
         // And pass to CLA: the whole bundle is in hand, so it travels as a
         // single Final segment.
@@ -261,9 +254,13 @@ impl Dispatcher {
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
-        // bumped values back: `forward_bundle` deletes the bundle on a successful
-        // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
-        // in-memory cache is never observed again after this rewrite.
+        // bumped values back: the rewrite is per-attempt and in-memory only, and
+        // the cache mirrors the stored bytes, which stay as received. The cache
+        // IS observed again after this rewrite — a park's reaper expiry watch
+        // reads `extensions.age` (and wants the original, un-bumped value), and
+        // the Egress chain sees the as-received values, not this attempt's
+        // bumped wire form: egress filters must derive per-attempt facts from
+        // the (bundle, data) pair they are handed, never from the cache.
         //
         // Editor needs a `&Bundle`, so re-parse structurally.
         // `editor::Error` has several `From` impls so disambiguate explicitly.
@@ -475,6 +472,7 @@ mod tests {
             .build(node_ids.clone(), store.clone())
             .await
             .unwrap();
+        let filters = crate::filter::pack::chains::FilterChains::freeze(Vec::new());
         let (dispatcher, _start) = Dispatcher::new(
             Config {
                 status_reports: false,
@@ -489,7 +487,7 @@ mod tests {
             store,
             rib,
             Arc::new(crate::keys::NullKeyProvider),
-            Arc::new(filter::FilterEngine::new()),
+            filters,
         );
 
         // Seed the record exactly as the egress queue holds it: data

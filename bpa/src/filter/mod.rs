@@ -1,29 +1,81 @@
+//! The filter subsystem — the embedder's extension seam on the bundle
+//! pipeline.
+//!
+//! Three kinds behind one verdict: read-only [`Verifier`]s (any hook),
+//! annotating [`Classifier`]s (input hooks, contributing a
+//! [`slots::MetadataDelta`]), and extension-block [`Rewriter`]s (output
+//! hooks, editing through bpv7's scoped [`ExtensionEditor`]). Filters are
+//! registered in [`pack::FilterPack`]s, frozen at
+//! [`build()`](crate::builder::BpaBuilder::build), and run inline by the
+//! engine at the pipeline's hook positions. The BPA's own checks are
+//! pipeline code gated by configuration, never registered filters.
+//!
+//! A registered filter is trusted code: it reads block plaintext —
+//! BCB-decrypted with the node's keys on request, the payload's included
+//! whenever it is resident — and only a Rewriter's *edits* are scoped, to
+//! extension blocks.
+//!
+//! # Reading the bundle
+//!
+//! Every invocation receives its kind's context — [`VerifyContext`],
+//! [`ClassifyContext`] or [`RewriteContext`] — lending the *wire* bundle
+//! (the primary block and the per-block headers), a [`Reader`] over its
+//! block bodies, and the BPA-local record state, each through its own
+//! getter: the wire form and the record's annotations are never one
+//! object. The reader is a
+//! [`DecryptingReader`](hardy_bpv7::bpsec::DecryptingReader) over the
+//! node's keys, so a BCB-covered block reads as its plaintext when a key is
+//! held, and otherwise as the
+//! [`Availability`](hardy_bpv7::reader::Availability) state that says why
+//! not (not resident, no key, not decryptable). It memoises, decrypting a
+//! covered block at most once for the filters that share it: one reader
+//! serves a whole input pass and the Verifiers that close an output chain,
+//! and each Rewriter gets its own, since an edit replaces the bytes.
+//! [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
+//! CBOR-decodes a block body.
+//!
+//! # Failure and Drop contract
+//!
+//! A [`Verdict::Drop`] is policy, never a failure. Its disposition per
+//! hook, and the pipeline's recovery when a chain *fails* (the engine
+//! could not run its decode pass over the stored bytes — never a
+//! filter's verdict):
+//!
+//! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
+//! |---|---|---|---|
+//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | `services::Error::Internal` to the caller; nothing was stored |
+//! | Ingress | dropped with a deletion report per the bundle's request flags | deleted silently, even when the flags request reporting | resolved as `BlockUnintelligible` — the stored bytes failed the chain's own decode pass |
+//! | Egress | dropped with a flag-gated deletion report; the transmission attempt ends | deleted silently | the claim returns to `Waiting` for a fresh routing decision |
+//! | Deliver | dropped with a flag-gated deletion report | deleted silently | parked `WaitingForService`, recovered by the next (re-)registration |
+//!
+//! `bpa.filter.filtered` counts every Drop, `bpa.filter.modified` every
+//! applied rewrite, and `bpa.filter.error` every chain failure, all by
+//! hook.
+//!
+//! A [`Rewriter`] execution failure — an invalid edit, or an edit whose
+//! materialised bytes do not re-parse — is not a chain failure: a rewrite
+//! that was meant to work and has not leaves every subsequent processing
+//! step undefined, so the engine panics naming the failing link's
+//! pack-prefixed label, and the panic aborts the process — the fail-fast
+//! rule, applied by analogy with a storage fault. The [`ExtensionEditor`]
+//! refuses at call time the edits it knows a receiver would reject, so a
+//! Rewriter that treats refusals as its no-match path meets those as
+//! refusals.
+
 use core::fmt::{self, Debug, Formatter};
 
-use hardy_async::async_trait;
 use hardy_bpv7::{
     Bundle, eid::Eid, extension_editor::ExtensionEditor, reader::Reader, status_report::ReasonCode,
 };
-use thiserror::Error;
 
-// Name collision with the wire `Bundle` the filter kinds read: the legacy
-// filter traits' stored bundle is aliased.
-use crate::bundle::{Bundle as StoredBundle, BundleMetadata, WritableMetadata};
-use crate::{Arc, Bytes};
+use crate::{Arc, bundle::BundleMetadata};
 
-mod chain;
 mod engine;
 
-pub(crate) use engine::FilterEngine;
-/// RFC9171 validity filter - always available, auto-registered by default.
-/// Disable auto-registration with `no-rfc9171-autoregister` feature.
-pub mod rfc9171;
+pub(crate) use self::engine::ChainOutcome;
 
 pub mod pack;
 pub mod slots;
-
-/// Bundle validity filter - lifetime and hop-count checks.
-pub mod validity;
 
 /// The outcome of a filter invocation, shared across all three kinds.
 ///
@@ -394,121 +446,4 @@ pub enum Boundary<'a> {
     /// Runs for every local delivery; the edits are observable only on the
     /// raw-bundle [`Service`](crate::services::Service) path.
     Deliver,
-}
-
-/// Errors related to filter registration and dependency management.
-#[derive(Debug, Error)]
-pub enum Error {
-    /// A filter with the given name is already registered.
-    #[error("Filter with name '{0}' already exists")]
-    AlreadyExists(String),
-
-    /// A filter declares a dependency on another filter that has not been registered.
-    #[error("Filter dependency '{0}' not found")]
-    DependencyNotFound(String),
-
-    /// Cannot remove a filter because other filters depend on it.
-    #[error("Filter '{0}' has dependants: {1:?}")]
-    HasDependants(String, Vec<String>),
-}
-
-/// Outcome of a read-only filter evaluation.
-#[derive(Debug, Default)]
-pub enum ReadResult {
-    /// Allow the bundle to proceed to the next filter or processing stage.
-    #[default]
-    Continue,
-    /// Drop the bundle, optionally providing a status-report reason code.
-    Drop(Option<ReasonCode>),
-}
-
-/// Outcome of a read-write filter evaluation, which may modify the bundle.
-#[derive(Debug)]
-pub enum WriteResult {
-    /// Continue processing, optionally with modified metadata and/or bundle data
-    /// - (None, None): no change
-    /// - (Some(meta), None): metadata changed, bundle bytes unchanged
-    /// - (None, Some(data)): bundle bytes changed (rare)
-    /// - (Some(meta), Some(data)): both changed
-    Continue(Option<WritableMetadata>, Option<Vec<u8>>),
-    /// Drop the bundle, optionally providing a status-report reason code.
-    Drop(Option<ReasonCode>),
-}
-
-/// Tracks whether filters modified the bundle or its metadata.
-#[derive(Default)]
-pub struct Mutation {
-    pub data: bool,
-    pub metadata: bool,
-}
-
-/// Result of executing the filter chain on a bundle.
-#[allow(clippy::large_enum_variant)]
-pub enum ExecResult {
-    Continue(Mutation, StoredBundle, Bytes),
-    Drop(StoredBundle, Option<ReasonCode>),
-}
-
-// Filter traits
-
-/// Read-only filter: can run in parallel with other ReadFilters
-#[async_trait]
-pub trait ReadFilter: Send + Sync {
-    async fn filter(&self, bundle: &StoredBundle, data: &[u8]) -> Result<ReadResult, crate::Error>;
-}
-
-/// Read-write filter: runs sequentially, may modify metadata or bundle data
-#[async_trait]
-pub trait WriteFilter: Send + Sync {
-    async fn filter(&self, bundle: &StoredBundle, data: &[u8])
-    -> Result<WriteResult, crate::Error>;
-}
-
-/// Filter wrapper enum for registration
-pub enum Filter {
-    Read(Arc<dyn ReadFilter>),
-    Write(Arc<dyn WriteFilter>),
-}
-
-/// Hook points in bundle processing
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
-#[derive(Debug)]
-pub enum Hook {
-    Ingress,
-    Deliver,
-    Originate,
-    Egress,
-}
-
-impl Hook {
-    /// Returns the lowercase string label for this hook point (e.g. `"ingress"`).
-    pub fn label(&self) -> &'static str {
-        match self {
-            Hook::Ingress => "ingress",
-            Hook::Deliver => "deliver",
-            Hook::Originate => "originate",
-            Hook::Egress => "egress",
-        }
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Hook {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        match s.to_lowercase().as_str() {
-            "ingress" => Ok(Hook::Ingress),
-            "deliver" => Ok(Hook::Deliver),
-            "originate" => Ok(Hook::Originate),
-            "egress" => Ok(Hook::Egress),
-            _ => Err(serde::de::Error::unknown_variant(
-                &s,
-                &["ingress", "deliver", "originate", "egress"],
-            )),
-        }
-    }
 }

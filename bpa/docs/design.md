@@ -14,7 +14,7 @@ Core bundle processing agent library implementing RFC 9171.
 
 - **Zero-copy bundle handling.** Bundle payloads can be large (megabytes). The BPA uses `Bytes` (reference-counted byte buffers) throughout the pipeline, enabling bundle data to flow from ingress through storage to egress without copying. Slicing creates views into the same underlying buffer.
 
-- **Dynamic runtime reconfiguration.** Routes, CLAs, services, and filters can be registered and unregistered at runtime without restart. This enables the BPA to adapt to changing network conditions—scheduled contacts, new peer discovery, and policy updates—without service interruption.
+- **Dynamic runtime reconfiguration.** Routes, CLAs, and services can be registered and unregistered at runtime without restart. This enables the BPA to adapt to changing network conditions—scheduled contacts, new peer discovery, and policy updates—without service interruption. Filters are the deliberate exception: they are construction-frozen, link-time policy code (see [Filter Subsystem](filter_subsystem_design.md)).
 
 ## Architecture Overview
 
@@ -30,7 +30,7 @@ The `Bpa` struct coordinates the major subsystems:
 - **Store** coordinates data and metadata persistence with caching
 - **RIB** maintains routing rules and triggers re-evaluation on changes
 - **Dispatcher** the central processing hub (see below)
-- **Registries** manage CLAs, services, filters, and keys
+- **Registries** manage CLAs, services, and keys; the filter chains are frozen at construction
 
 ### Dispatcher as Central Hub
 
@@ -42,7 +42,7 @@ The `Dispatcher` is the central coordinator that orchestrates all bundle process
                               │                                    │
    CLA Ingress ──────────────►│  ┌─────────┐      ┌─────────────┐  │
                               │  │ Filter  │      │   Service   │  │
-   Service Egress ───────────►│  │Registry │      │  Registry   │  │
+   Service Egress ───────────►│  │ Chains  │      │  Registry   │  │
                               │  └─────────┘      └─────────────┘  │
                               │                                    │
                               │  ┌─────────┐      ┌─────────────┐  │
@@ -65,12 +65,12 @@ A bundle entering from a CLA follows this path:
 1. **Ingress**: CLA calls `Sink::dispatch()` with raw bytes and peer information
 2. **Validation**: `process_received_bundle()` runs CBOR precheck and `RewrittenBundle::parse()` with full processing (block removal, canonicalization, BPSec). Invalid bundles are dropped internally with status reports — errors are never returned to the CLA
 3. **Storage**: Bundle data and metadata persisted with `New` status
-4. **Filtering**: `ingress_bundle()` runs Ingress filters, which may drop, modify, or mark the bundle. Status checkpointed to `Dispatching`
+4. **Filtering**: `ingress_bundle()` runs the Ingress chain (Verifiers, then Classifiers), which may drop or annotate the bundle. Status checkpointed to `Dispatching`
 5. **Dispatch**: Destination examined — local delivery, admin endpoint, or forwarding
 6. **Routing**: RIB lookup determines next hop for forwarding bundles
 7. **Egress**: Bundle queued to CLA for transmission, egress filters applied
 
-Locally-originated bundles (from services) run the Originate filter, store with `Dispatching` status, and skip the Ingress filter. Fragment reassembly shares the same `process_received_bundle()` path as CLA ingress, ensuring reassembled bundles get full-mode parsing and validation.
+Locally-originated bundles (from services) run the Originate chain pre-store, store with `Dispatching` status, and skip the Ingress chain. Fragment reassembly shares the same `process_received_bundle()` path as CLA ingress, ensuring reassembled bundles get full-mode parsing and validation.
 
 Failed bundles generate status reports where requested and permitted.
 
@@ -133,7 +133,6 @@ Each component type has a dedicated Registry that manages registration, lifecycl
 | `cla::registry::Registry` | `Cla` | `cla::Sink` | Convergence layer adapters |
 | `services::registry::Registry` | `Service` | `ServiceSink` | Low-level bundle services |
 | `services::registry::Registry` | `Application` | `ApplicationSink` | High-level payload services |
-| `filters::registry::Registry` | `Filter` | — | Traffic filtering (no Sink needed) |
 | `keys::registry::Registry` | `KeyProvider` | — | BPSec key management |
 | `rib::Rib` (via `rib::agent`) | `RoutingAgent` | `RoutingSink` | Dynamic routing protocols |
 
@@ -214,7 +213,7 @@ Routes are keyed by `(priority, pattern, action, source)` allowing multiple rout
 
 ### Bounded Processing Pool
 
-The `BoundedTaskPool` provides concurrency control for parallel filter execution and dispatch queue consumers. Bundle ingress runs inline in the caller's context rather than being spawned into the pool — backpressure for CLA ingress comes from the RpcProxy's handler pool, which limits concurrent gRPC handler tasks.
+The `BoundedTaskPool` provides concurrency control for dispatch queue consumers (filter chains run inline on the invoking task — see [Filter Subsystem](filter_subsystem_design.md)). Bundle ingress runs inline in the caller's context rather than being spawned into the pool — backpressure for CLA ingress comes from the RpcProxy's handler pool, which limits concurrent gRPC handler tasks.
 
 This layered backpressure model means CLAs that receive bundles faster than the BPA can process them experience slowdown at the gRPC dispatch call, which propagates to their network handling.
 
@@ -300,7 +299,7 @@ The `keys` module provides a `KeyProvider` trait and registry for BPSec key mana
 
 ### Storage Priority and Eviction
 
-When storage capacity is exhausted, bundles must be evicted. The filter subsystem can assign a `storage_priority` to bundles during ingress, enabling priority-based eviction policies. This infrastructure is planned but not yet implemented.
+When storage capacity is exhausted, bundles must be evicted. The planned shape is an eviction-rank property of the bundle's traffic class, assigned by ingress classification (see [Filter Subsystem](filter_subsystem_design.md) and [`policy_subsystem_redesign.md`](policy_subsystem_redesign.md)). This infrastructure is not yet implemented.
 
 ## Dependencies
 
@@ -313,7 +312,6 @@ Feature flags control optional functionality:
 - **`std`**: Standard library support for time and collections.
 - **`serde`**: Serialization support for configuration and metadata.
 - **`instrument`**: Span instrumentation for async tasks.
-- **`no-rfc9171-autoregister`**: Disable auto-registration of the RFC 9171 validity filter. Use this when the embedding application needs to register the filter with custom configuration.
 
 Key external dependencies:
 

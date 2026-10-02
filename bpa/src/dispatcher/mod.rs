@@ -5,6 +5,7 @@ use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
+use crate::filter::pack::chains::FilterChains;
 
 mod admin;
 mod deliver;
@@ -37,9 +38,11 @@ pub struct Config {
     pub poll_channel_depth: NonZeroUsize,
     pub processing_pool_size: NonZeroUsize,
     pub max_bundle_size: Option<NonZeroU64>,
-    /// Require primary-block integrity protection (RFC 9171 §4.3.1).
+    /// Pre-drain gate: require primary-block integrity protection
+    /// (RFC 9171 §4.3.1).
     pub primary_block_integrity: bool,
-    /// Require a Bundle Age block on clockless bundles (RFC 9171 §4.4.2).
+    /// Pre-drain gate: require a Bundle Age block on clockless bundles
+    /// (RFC 9171 §4.4.2).
     pub bundle_age_required: bool,
     /// Peers whose next hop requires legacy 2-element IPN EID encoding in
     /// the per-hop rewrite stage.
@@ -68,9 +71,6 @@ enum OfferOutcome {
     Detached(bundle::Bundle),
     /// Re-enter dispatch for a fresh routing decision.
     Redispatch(bundle::Bundle),
-    /// Another resolver (a sweep, the reaper, a duplicate outcome) claimed
-    /// the bundle first; its resolution stands.
-    Lost,
 }
 
 /// Which hand-off produced an [`OfferOutcome`] — completion reports and
@@ -86,7 +86,7 @@ pub(crate) struct Dispatcher {
     store: Arc<storage::store::Store>,
     rib: Arc<routing::Rib>,
     key_provider: Arc<dyn keys::KeyProvider>,
-    filter_engine: Arc<filter::FilterEngine>,
+    filters: FilterChains,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
 
     // Dispatch queue
@@ -117,7 +117,7 @@ impl Dispatcher {
         store: Arc<storage::store::Store>,
         rib: Arc<routing::Rib>,
         key_provider: Arc<dyn keys::KeyProvider>,
-        filter_engine: Arc<filter::FilterEngine>,
+        filters: FilterChains,
     ) -> (Arc<Self>, impl FnOnce(Arc<cla::registry::ClaRegistry>)) {
         if config.status_reports {
             warn!("Bundle status reports are enabled");
@@ -140,7 +140,7 @@ impl Dispatcher {
             store,
             rib,
             key_provider,
-            filter_engine,
+            filters,
             cla_registry: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
             status_reports: config.status_reports,
@@ -352,7 +352,6 @@ impl Dispatcher {
                 self.store.watch_bundle(bundle).await
             }
             OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
-            OfferOutcome::Lost => {}
         }
     }
 

@@ -87,7 +87,7 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 
 | Crate | Description |
 |-------|-------------|
-| [**`hardy-bpa-server`**](./bpa-server/) | Modular BPv7 Bundle Processing Agent server with gRPC API, multiple storage backends, configurable filters, and static routing. |
+| [**`hardy-bpa-server`**](./bpa-server/) | Modular BPv7 Bundle Processing Agent server with gRPC API, multiple storage backends, and static routing. |
 | [**`hardy-tcpclv4-server`**](./tcpclv4-server/) | Standalone TCPCLv4 listener and session handler. |
 | [**`hardy-bpv7-tools`**](./bpv7/tools/) | CLI (`bundle`) for bundle operations: create, inspect, validate, sign, encrypt, and more. |
 | [**`hardy-cbor-tools`**](./cbor/tools/) | CLI (`cbor`) for CBOR inspection and conversion between binary, CDN, and JSON formats. |
