@@ -250,6 +250,12 @@ fn assert_rebuild_matches_parse(bundle: &Bundle, data: &[u8]) {
         ),
         "CRC type mismatch"
     );
+    // Equality compares the encoding, so canonical form is checked apart:
+    // the rebuilt view holds what the bytes hold, not an alias of it.
+    assert!(
+        bundle.primary.flags.is_canonical(),
+        "primary flags not canonical"
+    );
     assert_eq!(bundle.primary.flags, reparsed.primary.flags);
 
     // Same set of block numbers
@@ -262,6 +268,10 @@ fn assert_rebuild_matches_parse(bundle: &Bundle, data: &[u8]) {
     // Block fields match and ranges index validly into the data
     for (block_number, block) in &bundle.blocks {
         let reparsed_block = reparsed.blocks.get(block_number).unwrap();
+        assert!(
+            block.block_type.is_canonical() && block.flags.is_canonical(),
+            "Block {block_number} type or flags not canonical"
+        );
         assert_eq!(
             block.block_type, reparsed_block.block_type,
             "Block {block_number} type mismatch"
@@ -330,6 +340,46 @@ fn rebuild_bundle_change_destination() {
     assert_eq!(new_bundle.primary.destination, new_dest);
     assert_eq!(new_bundle.primary.id.source, bundle.primary.id.source);
     assert_rebuild_matches_parse(&new_bundle, &new_data);
+}
+
+// The owner editor canonicalizes the flags it is handed, so the `Bundle`
+// `rebuild_bundle()` returns holds what the bytes hold: the admin-record
+// bit carried in `unrecognised` makes an administrative record while a
+// genuinely unrecognised bit passes through, and `report_on_failure`'s bit
+// makes an inserted block report.
+#[test]
+fn rebuild_bundle_canonicalizes_flag_aliases() {
+    let (bundle, data) = make_bundle();
+    let aliased = bundle::Flags {
+        unrecognised: (1 << 1) | (1 << 24),
+        ..Default::default()
+    };
+    let (new_bundle, new_data) = ok(Editor::new(&bundle, &data).with_bundle_flags(aliased))
+        .rebuild_bundle()
+        .map(|(b, c)| (b, Chunk::flatten(c, &data)))
+        .unwrap();
+    assert!(new_bundle.primary.flags.is_admin_record);
+    assert_eq!(new_bundle.primary.flags.unrecognised, 1 << 24);
+    assert_rebuild_matches_parse(&new_bundle, &new_data);
+
+    let editor = ok(Editor::new(&bundle, &data).insert_block(block::Type::Unrecognised(200)));
+    let inserted = editor.block_number();
+    let (new_bundle, new_data) = editor
+        .with_flags(block::Flags {
+            unrecognised: 1 << 1,
+            ..Default::default()
+        })
+        .with_data((&[0x01, 0x02][..]).into())
+        .rebuild()
+        .rebuild_bundle()
+        .map(|(b, c)| (b, Chunk::flatten(c, &data)))
+        .unwrap();
+    assert!(new_bundle.blocks[&inserted].flags.report_on_failure);
+    assert!(new_bundle.blocks[&inserted].flags.is_canonical());
+    assert_eq!(
+        new_bundle.blocks[&inserted].flags,
+        reparse(&new_data).blocks[&inserted].flags
+    );
 }
 
 #[test]
@@ -600,25 +650,32 @@ fn owner_editor_refuses_the_forbidden_flag_at_rebuild() {
 
 // `Type::canonicalize` folds an `Unrecognised` alias of a known code back
 // to the named variant it encodes as, and leaves everything else alone.
+// Matched structurally: equality already counts an alias as its variant.
 #[test]
 fn canonicalize_folds_reserved_aliases() {
-    assert_eq!(
+    assert!(matches!(
         block::Type::Unrecognised(0).canonicalize(),
         block::Type::Primary
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         block::Type::Unrecognised(11).canonicalize(),
         block::Type::BlockIntegrity
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         block::Type::Unrecognised(12).canonicalize(),
         block::Type::BlockSecurity
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         block::Type::Unrecognised(192).canonicalize(),
         block::Type::Unrecognised(192)
-    );
-    assert_eq!(block::Type::Payload.canonicalize(), block::Type::Payload);
+    ));
+    assert!(matches!(
+        block::Type::Payload.canonicalize(),
+        block::Type::Payload
+    ));
+    assert!(!block::Type::Unrecognised(11).is_canonical());
+    assert!(block::Type::Unrecognised(192).is_canonical());
+    assert!(block::Type::BlockIntegrity.is_canonical());
 }
 
 // Reserved wire codes must be refused whatever `Type` variant carries them:
@@ -1185,6 +1242,55 @@ fn extension_editor_refuses_report_on_failure_the_bundle_forbids() {
     let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
     let rewritten = reparse(&Chunk::flatten(chunks, &data));
     assert!(rewritten.blocks[&inserted].flags.report_on_failure);
+}
+
+// A named bit carried in `unrecognised` is the flag it encodes: the editor
+// refuses `report_on_failure`'s alias on an administrative record as the
+// forbidden flag, and on an ordinary bundle the alias reports, with a
+// genuinely unrecognised bit passing through.
+#[test]
+fn extension_editor_canonicalizes_unrecognised_aliases_of_named_flags() {
+    fn aliased() -> block::Flags {
+        block::Flags {
+            unrecognised: (1 << 1) | (1 << 8),
+            ..Default::default()
+        }
+    }
+
+    let (bundle, data) = make_bundle_from(
+        "ipn:1.0",
+        bundle::Flags {
+            is_admin_record: true,
+            ..Default::default()
+        },
+    );
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    assert!(matches!(
+        editor.insert(
+            block::Type::Unrecognised(200),
+            aliased(),
+            crc::CrcType::None,
+            b"ext-data".as_slice().into(),
+        ),
+        Err(extension_editor::Error::Invalid(Bpv7Error::InvalidFlags))
+    ));
+    assert!(!editor.is_modified(), "a refusal is not an edit");
+
+    let (bundle, data) = make_bundle_from("ipn:1.0", bundle::Flags::default());
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let inserted = editor
+        .insert(
+            block::Type::Unrecognised(200),
+            aliased(),
+            crc::CrcType::None,
+            b"ext-data".as_slice().into(),
+        )
+        .expect("an ordinary bundle permits the flag");
+    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let rewritten = reparse(&Chunk::flatten(chunks, &data));
+    let flags = &rewritten.blocks[&inserted].flags;
+    assert!(flags.report_on_failure);
+    assert_eq!(flags.unrecognised, 1 << 8);
 }
 
 #[test]

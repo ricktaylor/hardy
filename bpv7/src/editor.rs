@@ -391,14 +391,15 @@ impl<'a> Editor<'a> {
         Ok(self.primary.as_mut().unwrap())
     }
 
-    /// Sets the bundle flags for this [`Editor`].
+    /// Sets the bundle flags for this [`Editor`], canonicalized so an alias
+    /// bit in `unrecognised` counts as the flag it encodes.
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn with_bundle_flags(mut self, flags: bundle::Flags) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
             Ok(pb) => {
-                pb.flags = flags;
+                pb.flags = flags.canonicalize();
                 Ok(self)
             }
             Err(e) => Err((self, e)),
@@ -1277,9 +1278,10 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    /// Set the `Flags` for this block.
+    /// Set the `Flags` for this block, canonicalized so an alias bit in
+    /// `unrecognised` counts as the flag it encodes.
     pub fn with_flags(mut self, flags: block::Flags) -> Self {
-        self.template.block.flags = flags;
+        self.template.block.flags = flags.canonicalize();
         self
     }
 

@@ -64,9 +64,10 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Sets the [`bundle::Flags`] for this [`Builder`].
+    /// Sets the [`bundle::Flags`] for this [`Builder`], canonicalized so an
+    /// alias bit in `unrecognised` counts as the flag it encodes.
     pub fn with_flags(mut self, flags: bundle::Flags) -> Self {
-        self.bundle_flags = flags;
+        self.bundle_flags = flags.canonicalize();
 
         // The fragment flag is owned by the fragmentation logic, not the
         // caller: flag it in debug builds to catch API misuse, but always
@@ -215,9 +216,12 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    /// Sets the [`block::Flags`] for this [`BlockBuilder`].
+    /// Sets the [`block::Flags`] for this [`BlockBuilder`], canonicalized so
+    /// an alias bit in `unrecognised` counts as the flag it encodes.
+    /// [`Builder::build`] clears `report_on_failure` on a bundle that
+    /// forbids it.
     pub fn with_flags(mut self, flags: block::Flags) -> Self {
-        self.template.block.flags = flags;
+        self.template.block.flags = flags.canonicalize();
         self
     }
 
@@ -259,11 +263,12 @@ impl<'a> BlockTemplate<'a> {
             block: block::Block {
                 // Canonicalized here as the invariant every door funnels
                 // through: a stored template never holds an `Unrecognised`
-                // alias of a known code, so type-keyed policy and
-                // replace-by-type matches over templates are sound even if
-                // a future door forgets its own canonicalize.
+                // alias of a known code or flag, so type-keyed policy,
+                // replace-by-type matches and flag-reading normalisation over
+                // templates are sound even if a future door forgets its own
+                // canonicalize.
                 block_type: block_type.canonicalize(),
-                flags,
+                flags: flags.canonicalize(),
                 crc_type,
                 ..Default::default()
             },
@@ -412,4 +417,32 @@ fn test_template() {
     b.with_payload("Hello".as_bytes().into())
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap();
+}
+
+// The constructor is the backstop every door funnels through: a template
+// never holds an alias of a known code or flag, even from a door that forgot
+// its own canonicalize. Through the public API every door canonicalizes
+// first, so only a direct construction reaches it with an alias.
+#[test]
+fn block_template_canonicalizes_its_type_and_flags() {
+    let template = BlockTemplate::new(
+        block::Type::Unrecognised(10),
+        block::Flags {
+            unrecognised: (1 << 1) | (1 << 8),
+            ..Default::default()
+        },
+        crc::CrcType::None,
+        None,
+    );
+    // Matched structurally: equality counts an alias as its canonical form.
+    assert!(matches!(template.block.block_type, block::Type::HopCount));
+    assert!(template.block.flags.is_canonical());
+    assert_eq!(
+        template.block.flags,
+        block::Flags {
+            report_on_failure: true,
+            unrecognised: 1 << 8,
+            ..Default::default()
+        }
+    );
 }
