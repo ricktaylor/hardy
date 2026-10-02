@@ -150,7 +150,9 @@ where
     let mut mac =
         hmac::Hmac::<D>::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?;
 
-    // Build IPT
+    // Build IPT. RFC 9173 §3.7 step 1: the IPPT starts with the scope flags
+    // with reserved and unassigned bits set to 0, so only the named flags
+    // are carried over.
     mac.update(
         &emit(&ScopeFlags {
             include_primary_block: flags.include_primary_block,
@@ -259,6 +261,9 @@ impl Operation {
         scope_flags: ScopeFlags,
         args: bib::OperationArgs,
     ) -> Result<Self, Error> {
+        // The emitted parameter and the IPPT/AAD below must agree on what an
+        // alias bit in `unrecognised` covers.
+        let scope_flags = scope_flags.canonicalize();
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Sign)
         {

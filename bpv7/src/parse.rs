@@ -905,9 +905,7 @@ impl BundleParser {
             // RFC 9171 §4.2.3-4 / §4.2.3-5: an admin-record or null-source
             // bundle MUST NOT have the `report_on_failure` flag set on any
             // extension block.
-            if (bundle.primary.flags.is_admin_record || bundle.primary.id.source.is_null())
-                && header.flags.report_on_failure
-            {
+            if bundle.primary.forbids_report_on_failure() && header.flags.report_on_failure {
                 return Err(Error::InvalidFlags);
             }
 

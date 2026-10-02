@@ -2,7 +2,7 @@ use core::time::Duration;
 use hardy_bpv7::{
     Bundle,
     block::{Block, Type},
-    bpsec::{self, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
+    bpsec::{self, bcb, bib, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
     builder::Builder,
     checks,
     creation_timestamp::CreationTimestamp,
@@ -1316,4 +1316,257 @@ fn test_sign_removes_crc_from_target_block() {
         "Payload block CBOR should be array of 5 elements (0x85), got 0x{:02x}",
         payload_cbor[0]
     );
+}
+
+// The scope flags name exactly RFC 9173 §3.3.3's three bits (shared by
+// §4.3.4's AAD scope), each decoding to the field the RFC names it: every
+// other bit round-trips as unrecognised, and a named bit carried in
+// `unrecognised` encodes as its bit and canonicalizes to its field.
+#[test]
+fn scope_flags_name_exactly_the_rfc_bits() {
+    let named = [
+        (
+            0,
+            ScopeFlags {
+                include_primary_block: true,
+                ..ScopeFlags::NONE
+            },
+        ),
+        (
+            1,
+            ScopeFlags {
+                include_target_header: true,
+                ..ScopeFlags::NONE
+            },
+        ),
+        (
+            2,
+            ScopeFlags {
+                include_security_header: true,
+                ..ScopeFlags::NONE
+            },
+        ),
+    ];
+    for bit in 0..64 {
+        let value = 1u64 << bit;
+        let decoded = ScopeFlags::from(value);
+        assert!(
+            decoded.is_canonical(),
+            "bit {bit}: a decoded value is canonical"
+        );
+        let named_flags = named
+            .iter()
+            .find(|(named_bit, _)| *named_bit == bit)
+            .map(|(_, flags)| flags.clone());
+        let expected = named_flags.clone().unwrap_or(ScopeFlags {
+            unrecognised: value,
+            ..ScopeFlags::NONE
+        });
+        // Both canonical, so equal encodings mean equal fields.
+        assert_eq!(
+            decoded, expected,
+            "bit {bit}: decodes to the field RFC 9173 names, or as unrecognised"
+        );
+        assert_eq!(u64::from(&decoded), value, "bit {bit} round-trips");
+        let alias = ScopeFlags {
+            unrecognised: value,
+            ..ScopeFlags::NONE
+        };
+        assert_eq!(
+            u64::from(&alias),
+            value,
+            "bit {bit}: an alias encodes as its bit"
+        );
+        assert_eq!(
+            alias.is_canonical(),
+            named_flags.is_none(),
+            "bit {bit}: an alias of a named bit is not canonical"
+        );
+        let folded = alias.clone().canonicalize();
+        assert!(folded.is_canonical(), "bit {bit}: the alias folds");
+        assert_eq!(
+            folded, decoded,
+            "bit {bit}: the alias folds to the decoded value"
+        );
+        assert_eq!(alias, decoded, "bit {bit}: an alias equals what it encodes");
+    }
+}
+
+// The primary-block scope bit carried in `unrecognised` on an otherwise
+// empty scope: the scope these tests sign and encrypt under. It folds to a
+// primary-only scope, which is not the default, so the operation emits it
+// as its scope parameter.
+fn primary_scope_alias() -> ScopeFlags {
+    ScopeFlags {
+        unrecognised: 1 << 0,
+        ..ScopeFlags::NONE
+    }
+}
+
+// The alias folded: the scope the emitted parameter must carry.
+fn primary_scope() -> ScopeFlags {
+    ScopeFlags {
+        include_primary_block: true,
+        ..ScopeFlags::NONE
+    }
+}
+
+// Signing canonicalizes the scope: the parameter it emits carries the
+// folded, primary-only scope, and the IPPT the source computed agrees with
+// it, so the BIB verifies.
+#[test]
+fn signing_canonicalizes_an_alias_scope_bit() {
+    let (_bundle, bundle_bytes) =
+        Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"aliased scope".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(18)
+    }))
+    .unwrap();
+    let keys = key::KeySet::new(vec![sign_key.clone()]);
+
+    let raw = raw_of(&bundle_bytes);
+    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(primary_scope_alias()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("signing accepts the alias scope")
+        .rebuild()
+        .expect("the signed bundle rebuilds");
+
+    let (signed_bytes, parsed, bcb_ops, bib_ops) =
+        validate_with_keys(&signed_bytes, &keys).expect("the signed bundle verifies at parse");
+    // `bib` and `bcb` each name an `Operation`, so both stay module-qualified.
+    let bib::Operation::HMAC_SHA2(op) = &bib_ops
+        .values()
+        .next()
+        .expect("the bundle carries one BIB")
+        .operations()[&1]
+    else {
+        panic!("the BIB is BIB-HMAC-SHA2");
+    };
+    assert_eq!(op.parameters.flags, primary_scope());
+    assert!(
+        verify_block(1, &parsed.blocks, &signed_bytes, &bcb_ops, &bib_ops, &keys)
+            .expect("the BIB verifies under the scope the parameter states"),
+        "a BIB covers the payload"
+    );
+}
+
+// Encryption canonicalizes the scope: the parameter it emits carries the
+// folded, primary-only scope, and the AAD the source computed agrees with
+// it, so the payload decrypts.
+#[test]
+fn encryption_canonicalizes_an_alias_scope_bit() {
+    let plaintext = b"aliased scope";
+    let (_bundle, bundle_bytes) =
+        Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(plaintext.as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let keys = key::KeySet::new(vec![enc_key.clone()]);
+
+    let raw = raw_of(&bundle_bytes);
+    let encrypted_bytes = encryptor::Encryptor::new(&raw, &bundle_bytes)
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(primary_scope_alias()),
+            "ipn:2.1".parse().unwrap(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encryption accepts the alias scope")
+        .rebuild()
+        .expect("the encrypted bundle rebuilds");
+
+    let (encrypted_bytes, parsed, bcb_ops, _bib_ops) =
+        validate_with_keys(&encrypted_bytes, &keys).expect("the encrypted bundle parses");
+    let bcb::Operation::AES_GCM(op) = &bcb_ops
+        .values()
+        .next()
+        .expect("the bundle carries one BCB")
+        .operations()[&1]
+    else {
+        panic!("the BCB is BCB-AES-GCM");
+    };
+    assert_eq!(op.parameters.flags, primary_scope());
+    let decrypted = block_data(1, &parsed.blocks, &encrypted_bytes, &bcb_ops, &keys)
+        .expect("the payload decrypts under the scope the parameter states");
+    assert_eq!(decrypted.as_ref(), plaintext);
+}
+
+// Scope equality compares the encoding, so an aliased scope and its
+// canonical form are one security context: signing two blocks under them
+// yields one BIB carrying both targets, not two BIBs with identical
+// parameters.
+#[test]
+fn aliased_and_canonical_scopes_share_one_bib() {
+    let (_bundle, bundle_bytes) =
+        Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .add_extension_block(Type::Unrecognised(200))
+            .unwrap()
+            .build(b"ext-data".as_slice().into())
+            .with_payload(b"aliased scope".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(18)
+    }))
+    .unwrap();
+    let keys = key::KeySet::new(vec![sign_key.clone()]);
+
+    let raw = raw_of(&bundle_bytes);
+    let ext = *raw
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::Unrecognised(200))
+        .expect("the extension block is present")
+        .0;
+    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(primary_scope_alias()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("signing accepts the alias scope")
+        .sign_block(
+            ext,
+            signer::Context::HMAC_SHA2(primary_scope()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("signing accepts the canonical scope")
+        .rebuild()
+        .expect("the signed bundle rebuilds");
+
+    let (_, _, _, bib_ops) =
+        validate_with_keys(&signed_bytes, &keys).expect("the signed bundle verifies at parse");
+    assert_eq!(bib_ops.len(), 1, "one BIB for the one scope");
+    assert_eq!(bib_ops.values().next().unwrap().operations().len(), 2);
 }

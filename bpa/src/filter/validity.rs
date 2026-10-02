@@ -21,10 +21,11 @@ pub struct BundleValidityFilter;
 #[async_trait]
 impl ReadFilter for BundleValidityFilter {
     async fn filter(&self, bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
-        if let Some(u) = bundle.primary().flags.unrecognised {
+        let unrecognised = bundle.primary().flags.unrecognised;
+        if unrecognised != 0 {
             debug!(
                 bundle_id = %bundle.id(),
-                "Bundle primary block has unrecognised flag bits set: {u:#x}"
+                "Bundle primary block has unrecognised flag bits set: {unrecognised:#x}"
             );
         }
 

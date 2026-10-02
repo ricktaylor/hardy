@@ -258,61 +258,66 @@ fn dump_markdown(
 
         if primary.flags.is_fragment {
             output.append_str("* Is a fragment\n")?;
+        }
 
-            if primary.flags.is_admin_record {
-                output.append_str("* ADU is an Administrative Record\n")?;
-            }
+        if primary.flags.is_admin_record {
+            output.append_str("* ADU is an Administrative Record\n")?;
+        }
 
-            if primary.flags.do_not_fragment {
-                output.append_str("* Do not fragment\n")?;
-            }
+        if primary.flags.do_not_fragment {
+            output.append_str("* Do not fragment\n")?;
+        }
 
-            if primary.flags.app_ack_requested {
-                output.append_str("* Application acknowledgement requested\n")?;
-            }
+        if primary.flags.app_ack_requested {
+            output.append_str("* Application acknowledgement requested\n")?;
+        }
 
-            if primary.flags.report_status_time {
-                output.append_str("* Include status time with reports\n")?;
+        if primary.flags.report_status_time {
+            output.append_str("* Include status time with reports\n")?;
 
-                if !primary.flags.receipt_report_requested
-                    || !primary.flags.forward_report_requested
-                    || !primary.flags.delivery_report_requested
-                    || !primary.flags.delete_report_requested
-                {
-                    notes.push("Bundle flags request status time to be included with status reports, but no reports are requested.");
-                }
-            }
-
-            if primary.flags.receipt_report_requested {
-                output.append_str("* Reception report requested\n")?;
-            }
-
-            if primary.flags.forward_report_requested {
-                output.append_str("* Forwarding report requested\n")?;
-            }
-
-            if primary.flags.delivery_report_requested {
-                output.append_str("* Delivery report requested\n")?;
-            }
-
-            if primary.flags.delete_report_requested {
-                output.append_str("* Deletion report requested\n")?;
-            }
-
-            if let Some(u) = primary.flags.unrecognised {
-                output.append_str(format!("* Unrecognised: {u:#x}\n",))?;
-            }
-
-            output.append_str("\n")?;
-
-            if (primary.flags.receipt_report_requested
-                || primary.flags.forward_report_requested
-                || primary.flags.delivery_report_requested
-                || primary.flags.delete_report_requested)
-                && primary.report_to.is_null()
+            if !primary.flags.receipt_report_requested
+                || !primary.flags.forward_report_requested
+                || !primary.flags.delivery_report_requested
+                || !primary.flags.delete_report_requested
             {
-                notes.push("Null endpoint EID specified for 'Report To', but status reports are requested.");
+                notes.push("Bundle flags request status time to be included with status reports, but no reports are requested.");
             }
+        }
+
+        if primary.flags.receipt_report_requested {
+            output.append_str("* Reception report requested\n")?;
+        }
+
+        if primary.flags.forward_report_requested {
+            output.append_str("* Forwarding report requested\n")?;
+        }
+
+        if primary.flags.delivery_report_requested {
+            output.append_str("* Delivery report requested\n")?;
+        }
+
+        if primary.flags.delete_report_requested {
+            output.append_str("* Deletion report requested\n")?;
+        }
+
+        if primary.flags.unrecognised != 0 {
+            output.append_str(format!(
+                "* Unrecognised: {:#x}\n",
+                primary.flags.unrecognised
+            ))?;
+        }
+
+        output.append_str("\n")?;
+
+        if (primary.flags.receipt_report_requested
+            || primary.flags.forward_report_requested
+            || primary.flags.delivery_report_requested
+            || primary.flags.delete_report_requested)
+            && primary.report_to.is_null()
+        {
+            notes.push(
+                "Null endpoint EID specified for 'Report To', but status reports are requested.",
+            );
         }
     }
 
@@ -406,8 +411,8 @@ fn dump_block(
             output.append_str("* Delete bundle on failure\n")?;
         }
 
-        if let Some(u) = block.flags.unrecognised {
-            output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
+        if block.flags.unrecognised != 0 {
+            output.append_str(format!("* Unrecognised: {:#x}\n", block.flags.unrecognised))?;
         }
 
         output.append_str("\n")?;
@@ -587,8 +592,11 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                     output.append_str("* Include security header\n")?;
                 }
 
-                if let Some(u) = op.parameters.flags.unrecognised {
-                    output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
+                if op.parameters.flags.unrecognised != 0 {
+                    output.append_str(format!(
+                        "* Unrecognised: {:#x}\n",
+                        op.parameters.flags.unrecognised
+                    ))?;
                 }
 
                 output.append_str("\n")?;
@@ -658,8 +666,11 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                     output.append_str("* Include security header\n")?;
                 }
 
-                if let Some(u) = op.parameters.flags.unrecognised {
-                    output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
+                if op.parameters.flags.unrecognised != 0 {
+                    output.append_str(format!(
+                        "* Unrecognised: {:#x}\n",
+                        op.parameters.flags.unrecognised
+                    ))?;
                 }
 
                 output.append_str("\n")?;
