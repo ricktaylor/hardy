@@ -4,8 +4,8 @@ This document describes the storage subsystem in the BPA, covering the dual stor
 
 ## Related Documents
 
-- **[Bundle State Machine Design](bundle_state_machine_design.md)**: Bundle status values stored in metadata
-- **[Filter Subsystem Design](filter_subsystem_design.md)**: Filter checkpoint persistence
+- **`BundleStatus`** (rustdoc in `bpa/src/bundle/status.rs`): Bundle status values stored in metadata, and their transitions
+- **[Filter Subsystem Design](filter_subsystem_design.md)**: classification persistence (no filter mutation is ever persisted)
 - **[Policy Subsystem Design](policy_subsystem_design.md)**: Hybrid channels for queue management
 - **[Routing Design](routing_subsystem_design.md)**: Route changes trigger `reset_peer_queue()`
 
@@ -29,30 +29,33 @@ The storage subsystem provides persistent and cached storage for bundles, coordi
 │                            Store                                    │
 │                                                                     │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
-│  │   LRU Cache     │  │  Reaper Cache   │  │  Channel Manager    │  │
-│  │  (bundle data)  │  │  (expiry times) │  │  (fast/slow path)   │  │
-│  └────────┬────────┘  └────────┬────────┘  └──────────┬──────────┘  │
-│           │                    │                      │             │
-└───────────┼────────────────────┼──────────────────────┼─────────────┘
+│  │ Recent-ID Cache │  │  Reaper Cache   │  │  Channel Manager    │  │
+│  │  (duplicates)   │  │  (expiry times) │  │  (fast/slow path)   │  │
+│  └─────────────────┘  └─────────────────┘  └──────────┬──────────┘  │
+│                                                       │             │
+└───────────┬────────────────────┬──────────────────────┼─────────────┘
             │                    │                      │
             ▼                    ▼                      ▼
 ┌─────────────────────┐  ┌─────────────────┐  ┌─────────────────────┐
-│   BundleStorage     │  │ MetadataStorage │  │   Dispatcher        │
-│   (trait)           │  │ (trait)         │  │                     │
+│ CachedBundleStorage │  │ MetadataStorage │  │   Dispatcher        │
+│ (LRU decorator)     │  │ (trait)         │  │                     │
 ├─────────────────────┤  ├─────────────────┤  │  - drop_bundle()    │
-│ - localdisk-storage │  │ - sqlite-storage│  │  - ingress_bundle() │
-│ - bundle_mem        │  │ - metadata_mem  │  │  - poll_waiting()   │
+│ wraps a backend:    │  │ - sqlite-storage│  │  - restart_bundle() │
+│ - localdisk-storage │  │ - postgres      │  │  - poll_waiting()   │
+│ - s3-storage        │  │ - metadata_mem  │  │                     │
+│ - bundle_mem        │  │                 │  │                     │
 └─────────────────────┘  └─────────────────┘  └─────────────────────┘
 ```
 
 ## Store Coordinator
 
-The `Store` struct is the central coordinator for all storage operations. It holds references to both storage backends, manages the LRU cache and reaper cache, and coordinates recovery.
+The `Store` struct is the central coordinator for all storage operations. It holds references to both storage backends — a configured bundle backend is usually wrapped in the `CachedBundleStorage` LRU decorator, which owns the bundle-data cache — manages the reaper cache and the recently-committed id cache behind the input gates' advisory duplicate probe, and coordinates recovery.
 
 **Lock Strategy:**
 
-- `spin::Mutex` for bundle_cache (O(1) operations, no blocking)
+- `spin::Mutex` for the bundle-data LRU inside the `CachedBundleStorage` decorator (O(1) operations, no blocking)
 - Standard `Mutex` for reaper_cache (requires O(n) iteration)
+- Standard `Mutex` for the recently-committed id cache (O(1) LRU operations)
 
 ## Storage Traits
 
@@ -66,7 +69,7 @@ The `BundleStorage` trait manages binary bundle data as opaque blobs. Implementa
 
 The `MetadataStorage` trait manages bundle lifecycle state with indexed queries. Key operations include:
 
-- **CRUD**: get, insert, replace, tombstone (prevents re-insertion)
+- **CRUD**: get, insert, tombstone (prevents re-insertion)
 - **Recovery**: start_recovery, confirm_exists, remove_unconfirmed
 - **Queue management**: reset_peer_queue (ForwardPending → Waiting)
 - **Polling**: poll_expiry, poll_waiting, poll_pending for background processing
@@ -85,7 +88,7 @@ The trait is passed as `&dyn Sender<T>` rather than as a method-level generic pa
 
 Hardy already uses the name `Sink` for a structurally different pattern: the long-lived, multi-method back-channels that CLAs, Services, and RoutingAgents receive when they register with the BPA. A `cla::Sink` lives for the duration of the registration and exposes several methods (forward, dispatch, error reporting). Reusing `Sink` for the storage abstraction would invite confusion between the two patterns even though their architectural intent — decouple the trait from the underlying transport — is the same.
 
-`Sender<T>` mirrors [`hardy_async::channel::Sender`](../../async/src/channel.rs) deliberately: the trait is the abstract version of the same role at the channel layer (one async `send`, ownership-recovering error on disconnect), and most implementors wrap exactly such a channel. The name pairs naturally with a future `Receiver<T>` pull-side trait — the same Sender/Receiver split as `hardy_async::channel`, at the trait-level. (A `Receiver<T>` trait was introduced and then removed pending its first caller; it returns alongside the CLA streaming work.)
+`Sender<T>` mirrors [`hardy_async::channel::Sender`](../../async/src/channel.rs) deliberately: the trait is the abstract version of the same role at the channel layer (one async `send`, ownership-recovering error on disconnect), and most implementors wrap exactly such a channel. The name pairs with the `Receiver<T>` pull-side trait beside it in `crate::stream` — the same Sender/Receiver split as `hardy_async::channel`, at the trait level — through which the input doors pull bundle `Segment`s into the BPA.
 
 #### Connection to streaming chunks
 
@@ -106,7 +109,7 @@ Bundle data and metadata are stored separately:
 │  │  - Stored by blob key   │  │  - status (New, Waiting...)  │  │
 │  │                         │  │  - received_at               │  │
 │  │  Backend:               │  │  - ingress_peer_node/addr    │  │
-│  │  - localdisk-storage    │  │  - flow_label                │  │
+│  │  - localdisk-storage    │  │  - classification, epoch     │  │
 │  │  - bundle_mem           │  │                              │  │
 │  │                         │  │  Backend:                    │  │
 │  │                         │  │  - sqlite-storage            │  │
@@ -128,7 +131,7 @@ Bundle data and metadata are stored separately:
 
 ### Localdisk Storage (Bundle Data)
 
-**Location:** `/workspace/localdisk-storage/src/storage.rs`
+**Location:** [`localdisk-storage/src/storage.rs`](../../localdisk-storage/src/storage.rs)
 
 Directory structure with 2-level hierarchy:
 
@@ -149,7 +152,7 @@ Configuration includes the storage directory path and whether to use atomic writ
 
 ### SQLite Storage (Metadata)
 
-**Location:** `/workspace/sqlite-storage/src/storage.rs`
+**Location:** [`sqlite-storage/src/storage.rs`](../../sqlite-storage/src/storage.rs)
 
 **Features:**
 
@@ -163,22 +166,26 @@ Configuration includes the storage directory path and whether to use atomic writ
 |--------|------|--------|
 | `New` | 0 | - |
 | `Waiting` | 1 | - |
-| `ForwardPending` | 2 | peer, queue |
+| `ForwardPending` | 2 | peer, queue, next_hop |
 | `AduFragment` | 3 | timestamp, sequence, source_eid |
 | `Dispatching` | 4 | - |
 | `WaitingForService` | 5 | -, -, service_eid |
+| `ForwardAckPending` | 6 | peer |
+| `DispatchPending` | 7 | - |
+| `DeliverPending` | 8 | -, -, service_eid |
+| `DeliveryAckPending` | 9 | -, -, service_eid |
 
 Configuration includes the database directory and name. See the [sqlite-storage design doc](../../sqlite-storage/docs/design.md) for details.
 
 ### PostgreSQL Storage (Metadata)
 
-**Location:** `/workspace/postgres-storage/src/storage.rs`
+**Location:** [`postgres-storage/src/storage.rs`](../../postgres-storage/src/storage.rs)
 
 Implements `MetadataStorage` using PostgreSQL via `sqlx`, enabling shared metadata across multiple BPA instances. Uses connection pooling (`sqlx::PgPool`) and automatic schema migration. See the [postgres-storage design doc](../../postgres-storage/docs/design.md) for details.
 
 ### S3 Storage (Bundle Data)
 
-**Location:** `/workspace/s3-storage/src/storage.rs`
+**Location:** [`s3-storage/src/storage.rs`](../../s3-storage/src/storage.rs)
 
 Implements `BundleStorage` using the Amazon S3 API via `aws-sdk-s3`, storing each bundle as a separate object under a configurable prefix. Compatible with MinIO and other S3-compatible stores. See the [s3-storage design doc](../../s3-storage/docs/design.md) for details.
 
@@ -191,17 +198,17 @@ Both stores warn at startup that contents do not survive a restart, and emit edg
 
 ## LRU Cache Management
 
-The Store maintains an in-memory LRU cache for frequently accessed bundle data. Configuration controls the cache capacity (default: 1024 entries) and maximum bundle size to cache (default: 16 KB).
+Bundle data is cached by `CachedBundleStorage`, an in-memory LRU decorator the builder wraps around a configured `BundleStorage` backend (the default in-memory store is never cached, and `BpaBuilder::no_cache` disables it). Configuration controls the cache capacity (default: 1024 entries) and maximum bundle size to cache (default: 16 KB).
 
 ### Cache Operations
 
 | Operation | Strategy | Cache Behavior |
 |-----------|----------|----------------|
-| **Load** | Cache-first | Check cache (peek without LRU update), fall back to backend |
-| **Save** | Persist-first | Always persist to backend, cache if size ≤ `max_cached_bundle_size` |
+| **Load** | Cache-first | Pop a cached entry (the returned buffer is then usually uniquely owned), else load from the backend without re-populating the cache |
+| **Save** | Persist-first | Always persist to backend, cache if size < `max_cached_bundle_size` |
 | **Delete** | Cache-then-backend | Remove from cache, then delete from backend |
 
-See `load_data()`, `save_data()`, and `delete_data()` in `src/storage/store.rs` for implementation.
+See `CachedBundleStorage` in `src/storage/bundle_cache.rs` for implementation.
 
 ## Reaper (Expiration Monitoring)
 
@@ -224,7 +231,7 @@ The reaper monitors bundle lifetimes and triggers deletion on expiry (`src/stora
 ┌─────────────────────────────────────────────────────────────────┐
 │                  MetadataStorage (persistent)                   │
 │                                                                 │
-│  poll_expiry(tx, limit) returns bundles ordered by expiry       │
+│  poll_expiry(stream) returns bundles ordered by expiry          │
 │  Full list of all bundles with lifetimes                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -239,10 +246,10 @@ The reaper runs as a background task with the following behavior:
 
 1. **Sleep** until the next bundle expiry (or indefinitely if cache is empty)
 2. **Wake** on: shutdown signal, new bundle notification, or expiry timeout
-3. **Expire** all bundles past their lifetime via `drop_bundle()`
+3. **Expire** all bundles past their lifetime via `drop_bundle()`, except in-flight hand-offs (`ForwardAckPending`, `DeliveryAckPending`), which cannot be recalled and resolve their expiry when the hand-off does
 4. **Refill** cache from storage when depleted
 
-The reaper uses `select_biased!` to prioritize shutdown handling. See `run_reaper()` in `src/storage/reaper.rs` for implementation.
+The reaper uses `select_biased!` to prioritize shutdown handling. See `Reaper::run()` in `src/storage/reaper.rs` for implementation.
 
 ### Watch Bundle
 
@@ -275,7 +282,7 @@ Call `bundle_storage_recovery()` to scan all stored bundle data:
 | Condition | Result | Action |
 |-----------|--------|--------|
 | Data + metadata exist | `Valid` | Resume from status checkpoint |
-| Data exists, no metadata | `Orphan` | Full receive pipeline (`process_received_bundle` + `ingress_bundle`) |
+| Data exists, no metadata | `Orphan` | Full receive pipeline (`process_received_bundle`) |
 | Duplicate data found | `Duplicate` | Delete spurious copy |
 | Data unparseable | `Junk` | Delete data |
 | Data missing | `Missing` | Skip (race condition) |
@@ -313,7 +320,7 @@ flowchart TD
 ## Crash Safety Properties
 
 1. **Atomic store**: Bundle data saved before metadata; cleanup on failure
-2. **Checkpoints**: Status transitions mark processing milestones (see [Bundle State Machine Design](bundle_state_machine_design.md))
+2. **Checkpoints**: Status transitions mark processing milestones (see the `BundleStatus` rustdoc in `bpa/src/bundle/status.rs`)
 3. **Tombstones**: Deleted bundles cannot be re-inserted
 4. **Two-level verification**: Recovery cross-checks data + metadata existence
 5. **Orphan detection**: Unconfirmed metadata entries reported with `DepletedStorage` reason
@@ -338,18 +345,18 @@ flowchart TD
 
 ```
 load_data(storage_name)
-   → bundle_cache.peek(storage_name)? return cached
    → bundle_storage.load(storage_name)
+      (CachedBundleStorage: pop a cached copy, else the inner backend's load)
 ```
 
 ### Delete
 
 ```
 delete_data(storage_name)
-   → bundle_cache.pop(storage_name)
    → bundle_storage.delete(storage_name)
+      (CachedBundleStorage: pop the cached copy, then the inner backend's delete)
 
-tombstone(bundle_id)
+tombstone_metadata(bundle_id)
    → metadata_storage.tombstone(bundle_id)
 ```
 
@@ -359,7 +366,7 @@ Each storage component is configured separately:
 
 | Component | Key Settings |
 |-----------|-------------|
-| **Store** | LRU cache capacity (default: 1024), max cached bundle size (default: 16 KB) |
+| **Bundle cache** (`CachedBundleStorage`) | LRU cache capacity (default: 1024), max cached bundle size (default: 16 KB); `BpaBuilder::no_cache` disables it |
 | **Localdisk** | Storage directory, atomic writes (fsync) |
 | **SQLite** | Database directory and name |
 | **In-memory** | Bundle: byte capacity, minimum bundle count; metadata: maximum entry count |

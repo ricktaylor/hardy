@@ -10,8 +10,8 @@ The BPA pipeline can be understood as a set of stateless processing blocks conne
 graph LR
     CLA([CLA]) --> Ingest[Ingest]
     Service([Service]) --> Originate[Originate]
-    Ingest -->|MPSC| Dispatch[Dispatch]
-    Originate -->|MPSC| Dispatch
+    Ingest -->|inline| Dispatch[Dispatch]
+    Originate -->|inline| Dispatch
     Dispatch -->|MPSC per peer| EgressCtl[EgressController]
     EgressCtl -->|MPSC per peer| ClaSend[ClaSend]
     Dispatch --> Deliver[Deliver]
@@ -25,15 +25,15 @@ graph LR
     Reassemble -->|complete| Ingest
 ```
 
-**Legend:** Solid lines = active queues (continuous consumers). Dashed lines = gated queues (event-triggered sweep). Circles = gated holding states.
+**Legend:** Solid lines = active queues (continuous consumers). Dashed lines = gated queues (event-triggered sweep). Circles = gated holding states. An `inline` edge is a direct hand-off on the producer's task, with no queue between the blocks.
 
 ### Processing blocks
 
-- **Ingest** — drive `Sink::write(&dyn Receiver<Segment>)` from the CLA, stream bytes through the parser and early filters, spool to `BundleStorage::store()`, run late ingress filters, checkpoint metadata. (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
+- **Ingest** — drive `Sink::dispatch(peer_node, peer_addr, &mut dyn Receiver<Segment>)` from the CLA, stream bytes through the parser, the pre-drain gate, and the Ingress filter chain (a single pass — there is no late ingress pass, see [filter_subsystem_design.md](filter_subsystem_design.md)), run the route lookup (the routing decision of record), spool through `Store::save_stream()`, write the metadata record once, and execute the routing decision directly. (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
 - **Originate** — receive from local service, run originate filters, checkpoint to storage
 - **Dispatch** — RIB lookup, fan-out to deliver/admin/reassemble/wait queues. For forwarding, enqueues to a per-peer queue
 - **EgressController** — consumer of per-peer queue. Classifies bundles, rate-limits and reorders by traffic class (HTB scheduling), enqueues to a per-peer CLA queue
-- **ClaSend** — consumer of per-peer CLA queue. Updates extension blocks, runs egress filters, calls `CLA::send()`
+- **ClaSend** — consumer of per-peer CLA queue. Updates extension blocks, runs egress filters, calls `Cla::forward()`
 - **Deliver** — decrypt payload, deliver to local service
 - **Admin** — parse and route status reports
 - **Reassemble** — accumulate fragments, re-ingest on completion
@@ -42,22 +42,24 @@ graph LR
 
 **Active queues** have continuous consumers with storage-backed hybrid channels (fast in-memory path with storage-backed slow path for backpressure):
 
-- **Dispatch** (`Dispatching`) — MPSC. Multiple producers (CLA reception, local origination, status reports, reassembly, gated queue sweeps). Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
+- **Dispatch** (`DispatchPending`, claimed to `Dispatching` on dequeue) — MPSC. Multiple producers (status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes, restart); fresh CLA arrivals, reassembled bundles, and local originations execute their gate routing decision directly and never transit it. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
 - **Egress** (`ForwardPending { peer, queue }`) — MPSC per peer per policy queue. Any dispatch worker can produce. Single poller per queue feeds the CLA
+- **Deliver** (`DeliverPending { service }`) — MPSC per registered service, the local analogue of a peer's egress queue. Any dispatch worker can produce. A single consumer per service claims each bundle to `DeliveryAckPending` and offers it via `on_deliver`
 
 **Gated queues** are structurally the same as active queues — ordered, storage-backed — but their consumer blocks on a side-channel signal. The consumer only polls when the signal indicates conditions have changed and draining may be productive:
 
-- **Waiting** (`Waiting`) — sweeps all bundles on RIB change (`notify_updated`). Semantics: "I tried to route and there was nowhere to go"
-- **WaitingForService** (`WaitingForService { service }`) — sweeps bundles matching a specific service EID on service re-registration. Used for status reports awaiting their originating service (a rename to `WaitingForOriginator` is planned)
+- **Waiting** (`Waiting`) — sweeps all bundles on RIB change (`poll_waiting_notify`). Semantics: "I tried to route and there was nowhere to go"
+- **WaitingForService** (`WaitingForService { service }`) — sweeps bundles matching a specific service EID on service re-registration. The local analogue of Waiting: used for any bundle whose local destination service is not registered — dispatch or a delivery exit found no service, the service unregistered, or restart re-parked a pending delivery — including status reports awaiting their originating service
 
 **Other states** that are not queues in the current implementation:
 
 - **AduFragment** (`AduFragment { source, timestamp }`) — fragment accumulator. No consumer; completion detected when a new fragment completes the set
-- **New** (`New`) — crash recovery checkpoint between "data stored" and "ingress complete." Not a queue — a transient recovery waypoint
+- **ForwardAckPending** (`ForwardAckPending { peer }`) and **DeliveryAckPending** (`DeliveryAckPending { service }`) — hand-off holding states: offered to a CLA or a service and retained until the hand-off resolves (see [design.md](design.md#deferred-cla-transfer-outcomes)). No consumer, and the reaper defers them; restart re-parks them as `Waiting` / `WaitingForService`, and peer loss resets `ForwardAckPending` to `Waiting`
+- **New** (`New`) — the default status of a record under construction, never persisted: ingress and origination write a single `Dispatching` record once the Ingress or Originate chain has run, so a crash before that write leaves bundle data with no metadata, which restart recovers as an orphan
 
 ### Peer loss
 
-CLAs are long-lived server processes — they rarely disappear. CLA *peers* come and go frequently (link outages, scheduled contacts, mobile nodes). When a peer disconnects, its `ForwardPending` bundles reset to `Waiting`. The route removal fires `notify_updated`, sweeping waiting bundles back through dispatch to find alternative routes. If no route exists, bundles remain in `Waiting` (correct DTN behaviour).
+CLAs are long-lived server processes — they rarely disappear. CLA *peers* come and go frequently (link outages, scheduled contacts, mobile nodes). When a peer disconnects, its `ForwardPending` (queued) and `ForwardAckPending` (in-flight) bundles reset to `Waiting`. The route removal signals `poll_waiting_notify`, sweeping waiting bundles back through dispatch to find alternative routes. If no route exists, bundles remain in `Waiting` (correct DTN behaviour).
 
 All queues in the standalone BPA are MPSC — multiple producers, single receiver. Dispatch concurrency comes from the `BoundedTaskPool` downstream of the single receiver, not from multiple receivers on the queue. MPMC (multiple consumers on a shared queue) is a distributed deployment concern handled by the distributed queue infrastructure (consumer groups), not by the local queue implementation.
 
@@ -111,11 +113,11 @@ The `MetadataStorage` implementation is exclusive to a single BPA instance — t
 - **`enqueue` atomically replaces the queue assignment.** This is the commit point — the bundle moves from one queue to the next in a single storage operation
 - **`delete` is the terminal operation.** After successful forwarding or delivery, the bundle is removed from storage entirely (or moved to the Tombstone queue for deduplication)
 - **A write against a deleted bundle is a no-op.** `delete` wins every race: an `enqueue` or status update that loses to the reaper or a concurrent resolution quietly does nothing — the storage layer must neither resurrect the bundle (the in-memory backend refuses to replace a tombstone with a live entry) nor surface an error. Deletions themselves come in two forms: unconditional `delete` where the authority is independent of queue state (expiry, operator drop, an owner completing a claimed bundle), and the conditional move into the Tombstone queue (`requeue`) where the authority derives from the bundle still being where the deleter believes it is
-- **A bundle in circulation only moves conditionally.** Every queue move for a bundle past ingress is a conditional swap from the mover's own snapshot (`swap_status`/`requeue`, or its terminal form `tombstone_if`): the channels deliver at-least-once, so a stale duplicate copy must lose the swap and be dropped rather than stomp the live copy's assignment. The remaining unconditional writes are terminal `delete` (above), pre-circulation initialisation at the ingress checkpoint, and the forward path's error restores — releases of a claim the restoring task itself won, where the claim swap was the arbiter
+- **A bundle in circulation only moves conditionally.** Every queue move for a bundle past ingress is a conditional swap from the mover's own snapshot (`swap_status`/`requeue`, or its terminal form `tombstone_if`): the channels deliver at-least-once, so a stale duplicate copy must lose the swap and be dropped rather than stomp the live copy's assignment. The remaining unconditional writes are terminal `delete` (above) and pre-circulation initialisation at the ingress checkpoint
 
 This provides **at-least-once** delivery semantics: a bundle may be processed more than once after a crash, but it is never lost. Processing blocks must be idempotent — re-dispatching re-runs the RIB lookup, re-forwarding checks for duplicates, re-delivery is handled by the service layer.
 
-**Known issue:** There is a crash window between an ingress filter rewriting the bundle binary (`BundleStorage::replace`) and the subsequent enqueue to Dispatch. If the process crashes in this window, recovery finds an unqueued bundle with already-rewritten data and re-runs ingestion — the filter executes again on already-filtered data. This is a pre-existing issue not introduced by the queue architecture. Possible mitigations include storing the filter result as a metadata-level diff applied at load time, or making filters idempotent. To be addressed separately.
+No crash window exists between an ingress filter and the subsequent enqueue to Dispatch: no filter mutation is ever persisted — input filters write only idempotent metadata deltas, and Rewriter edits are per-attempt and in-memory (see [filter_subsystem_design.md](filter_subsystem_design.md)).
 
 ### Storage maintenance (reaper)
 
@@ -143,13 +145,13 @@ This pattern works because:
 
 - `BundleStorage` is the coordination point — no locks needed, the data is either there or it isn't
 - The reaper owns the status report for expired bundles — processing blocks defer to it
-- Processing blocks already handle `load() → None` in the current code (`forward.rs`, `dispatch.rs`)
+- Processing blocks already handle `load() → None` in the current code (`load_data_or_drop`, used by `forward.rs`, `deliver.rs` and `admin.rs`)
 
 In a distributed architecture, the reaper becomes a storage-level maintenance job per storage shard, independent of processing nodes. The same ground-truth coordination applies.
 
 ### Eliminating `New` status
 
-With the redesigned trait, `New` is implicit. A bundle stored via `MetadataStorage::store` but not yet enqueued via `enqueue` is simply unqueued. Crash recovery finds all unqueued bundles and re-runs ingestion.
+The single-write ingress model already makes `New` implicit: ingress writes the metadata record once, at `Dispatching`, after its chain has run, so a crash before that write leaves bundle data with no metadata, which crash recovery re-ingests as an orphan. The redesigned trait keeps that shape — a bundle stored via `MetadataStorage::store` but not yet enqueued via `enqueue` is simply unqueued, and crash recovery finds all unqueued bundles and re-runs ingestion.
 
 ### Resulting queue schema
 
@@ -277,10 +279,10 @@ The caller handles `SendError::Closed` by re-parking the bundle in the Waiting q
 The existing `storage::channel::Sender` (the BPA's current hybrid-channel implementation, pre-streaming-refactor) is close to the target design. The main changes are:
 
 - `status: BundleStatus` -> `queue: u32` (opaque queue ID)
-- `update_status()` -> `enqueue(id, queue, priority)`
+- the send's conditional `swap_status()` move -> `requeue(id, from, queue)`
 - `send(bundle)` -> `send(bundle, priority)` — the processing block computes the priority and passes it in
 
-The hybrid channel state machine (Open/Draining/Congested/Closing), the lock-free CAS backpressure, and the error on Closing all remain unchanged. This is a refactor, not a rewrite. The underlying memory channel may move from the current `flume` to `hardy_async::closeable` as the streaming refactor lands; that swap is orthogonal to the queue-layer redesign and does not affect the `Sender` / `Receiver` surface described above.
+The hybrid channel state machine (Open/Draining/Congested/Closing), the lock-free CAS backpressure, and the error on Closing all remain unchanged. This is a refactor, not a rewrite. The underlying memory channel is `hardy_async::closeable`, which is orthogonal to the queue-layer redesign and does not affect the `Sender` / `Receiver` surface described above.
 
 ### Processing blocks
 
@@ -296,7 +298,9 @@ All classification, filtering, routing, and scheduling logic lives in processing
 
 ### Flow labels and classification
 
-The `flow_label` (`Option<u32>` in `WritableMetadata`) is a traffic class tag set by ingress/originate filters. It carries no scheduling semantics itself — it is a label like "Blue" or "Green" traffic. All policy decisions are derived from it by classification lookups at different points in the pipeline.
+> **Being superseded.** The filter-writable `flow_label` field (`WritableMetadata`) has been removed from the code: the write path is now the classification seam owned by [`filter_subsystem_design.md`](filter_subsystem_design.md) ("`MetadataDelta` and the traffic class"), and the label the egress policy consumes (ECMP, HTB-style queue selection — both still in scope) will be derived from classification when the policy tranche lands ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md)). This section's own principle survives in sharpened form — filters assign, the pipeline consumes. The text below is retained until the policy tranche applies the recorded amendments.
+
+The `flow_label` (`Option<u32>` in `WritableMetadata`) was a traffic class tag set by ingress/originate filters. It carries no scheduling semantics itself — it is a label like "Blue" or "Green" traffic. All policy decisions are derived from it by classification lookups at different points in the pipeline.
 
 Multiple independent policy dimensions derive from the same flow_label:
 
@@ -330,7 +334,7 @@ queue[waiting] -> GatedReceiver(RibNotify) -> [re-dispatch] -> enqueue(dispatch)
 
 ### Priority memory channel
 
-The current fast-path channel (`flume`) is FIFO. To support priority ordering on the fast path, the `hardy-async` channel should use a `BTreeMap<u32, VecDeque<Bundle>>` behind a spin `Mutex` + `Notify`:
+The current fast-path channel (`hardy_async::closeable`) is FIFO. To support priority ordering on the fast path, the `hardy-async` channel should use a `BTreeMap<u32, VecDeque<Bundle>>` behind a spin `Mutex` + `Notify`:
 
 - Each key is a priority level, each value a FIFO deque for that level
 - Push: insert into the deque for the bundle's priority — O(log k) on the map + O(1) on the deque, where k is the number of active priority levels (small, bounded by traffic classes)

@@ -107,7 +107,6 @@ UNIT_CRATES=(
     hardy-tcpclv4
     hardy-otel
     hardy-async
-    hardy-ipn-legacy-filter
     hardy-tvr
     hardy-sqlite-storage
     hardy-localdisk-storage

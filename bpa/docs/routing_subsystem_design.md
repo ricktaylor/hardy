@@ -4,21 +4,21 @@ This document describes the routing infrastructure in the Bundle Protocol Agent 
 
 ## Related Documents
 
-- **[Bundle State Machine Design](bundle_state_machine_design.md)**: Bundle status transitions and crash recovery
+- **`BundleStatus`** (rustdoc in `bpa/src/bundle/status.rs`): Bundle status transitions; crash recovery is in [Storage Subsystem Design](storage_subsystem_design.md#crash-recovery)
 - **[Filter Subsystem Design](filter_subsystem_design.md)**: Filter hooks that run during routing and forwarding
 - **[Policy Subsystem Design](policy_subsystem_design.md)**: Flow classification and queue management
 - **[Storage Subsystem Design](storage_subsystem_design.md)**: Bundle and metadata persistence
 
 ## Overview
 
-The BPA routing system consists of two interconnected components, driven by pluggable **Routing Agents** that push routes into the RIB via the `RoutingAgent` / `RoutingSink` trait pair (see `bpa/src/routes.rs`):
+The BPA routing system consists of two interconnected components, driven by pluggable **Routing Agents** that push routes into the RIB via the `RoutingAgent` / `RoutingSink` trait pair (see `bpa/src/routing/agent/mod.rs`):
 
 | Component | Purpose | Key Structure |
 |-----------|---------|---------------|
 | **RIB** | Unified pattern-based route storage and lookup | Priority-ordered BTreeMap of EidPatterns to Actions |
 | **Peer Table** | Reachable neighbors via CLAs | HashMap of NodeId to ClaAddress to peer_id |
 
-All routes — admin endpoints, service registrations, CLA peers, static routes, TVR contacts, and drop rules — live in a single priority-ordered table. There is no separate local table or FIB. Forwarding decisions are recorded in bundle metadata as `BundleStatus::ForwardPending { peer, queue }`.
+All routes — admin endpoints, service registrations, CLA peers, static routes, TVR contacts, and drop rules — live in a single priority-ordered table. There is no separate local table or FIB. Forwarding decisions are recorded in bundle metadata as `BundleStatus::ForwardPending { peer, queue, next_hop }`.
 
 ## Architecture Diagram
 
@@ -50,7 +50,7 @@ All routes — admin endpoints, service registrations, CLA peers, static routes,
                                                  │
                                                  ▼
                       ┌─────────────────────────────────────────────────────┐
-                      │                     FindResult                      │
+                      │                    DispatchAction                   │
                       │                                                     │
                       │ AdminEndpoint / Deliver(svc) / Forward(peer) / Drop |
                       └─────────────────────────────────────────────────────┘
@@ -59,10 +59,10 @@ All routes — admin endpoints, service registrations, CLA peers, static routes,
                           ┌─────────────────────────────────────────────┐
                           │              Peer Table                     │
                           │                                             │
-                          │    peer_id → Peer { cla, queues }           │
+                          │    peer_id → Peer { controller, queues }    │
                           │                                             │
                           │    CLA Registry:                            │
-                          │    NodeId → ClaAddress → peer_id            │
+                          │    Cla → ClaAddress → (NodeIds, peer_id)    │
                           └─────────────────────────────────────────────┘
 ```
 
@@ -105,7 +105,7 @@ The `service-priority` configuration controls where service routes sit in the pr
 
 ### Default-to-Wait Behaviour
 
-When no route matches a bundle's destination, the bundle waits (`BundleStatus::Waiting`) for a future route to appear. This applies uniformly — including bundles destined for local service numbers with no registered service. When a service registers, its route is added to the table, triggering `poll_waiting()` which re-dispatches waiting bundles.
+When no route matches a bundle's destination, the bundle waits for a future opportunity rather than being dropped. A destination on one of this node's own service EIDs with no registered service parks as `BundleStatus::WaitingForService`, recovered by `poll_service_waiting()` when a service registers on that EID; any other destination parks as `BundleStatus::Waiting`, re-dispatched by `poll_waiting()` when the route table changes.
 
 Operators who want specific service ranges to be rejected rather than deferred can configure explicit `Drop` rules via static routes or TVR contact plans at a priority that will be checked before the (absent) service route.
 
@@ -113,11 +113,11 @@ Operators who want specific service ranges to be rejected rather than deferred c
 
 ### Structure
 
-The peer table maps auto-incrementing peer IDs to `Peer` structs. Each peer holds a weak reference to its CLA and a set of queue pollers (one per priority queue).
+The peer table maps auto-incrementing peer IDs to `Peer` structs. Each peer holds its own FlowController (which owns queue assignment) and one queue poller per policy queue.
 
 ### CLA Registry Mapping
 
-The CLA registry maintains a three-level lookup: `NodeId → ClaAddress → peer_id`. This allows multiple addresses per node (multi-homing) and multiple nodes per CLA.
+Each registered CLA keeps its own address map, `ClaAddress → (NodeIds, peer_id)`: the CL address keys the adjacency, one address may carry several node IDs (a multi-homed node), and each node ID gets a `Forward` route to the peer.
 
 ### Peer Registration Flow
 
@@ -149,9 +149,11 @@ Route table: NodeId pattern → Forward(peer_id) at priority 0
 
 ### Entry Point
 
-`RIB::find(&bundle, &mut metadata) -> Option<FindResult>`
+`RIB::find(&bundle) -> Option<DispatchAction>`
 
 ### Algorithm
+
+The lookup key is the bundle's Classifier-set `route_key` when its classification record carries one, otherwise the destination EID; a record naming any `route_table` other than the default is a strict no-match, and the bundle waits (see [`routing_table_redesign.md`](routing_table_redesign.md)).
 
 1. **Search unified route table by priority**
    - Iterate priorities low to high (0, 1, 100, ...)
@@ -167,7 +169,7 @@ Route table: NodeId pattern → Forward(peer_id) at priority 0
    - An unresolvable next-hop — no matching route, or a loop detected by the trail set — is skipped, and the lookup falls through to less-specific patterns and lower priorities (see "Unresolvable next-hops" below)
 
 3. **ECMP selection** (if multiple peers)
-   - Hash of: bundle source + destination + flow_label
+   - Hash of: bundle source + destination — the conversation only: the lookup's `route_key`/`route_table` select the ECMP group, never the member, and policy-injected entropy belongs to the egress flow-label input, not this hash
    - Uses a per-instance `RandomState` (seeded once at RIB creation) for deterministic peer selection within a BPA instance
 
 ### Specificity Scoring
@@ -185,9 +187,9 @@ Priority provides inter-agent ordering (static routes vs DPP vs SAND). Specifici
 
 Patterns with non-monotonic structure (e.g., union sets) receive a specificity score of 0, sorting them with the broadest patterns.
 
-### FindResult
+### DispatchAction
 
-The `FindResult` enum indicates the routing decision: `AdminEndpoint` for administrative bundles, `Deliver` for local services, `Forward` with a peer ID for remote destinations, or `Drop` with an optional reason code.
+The `DispatchAction` enum indicates the routing decision: `AdminEndpoint` for administrative bundles, `Deliver` for local services, `Forward` with the selected peer ID and the resolved next-hop EID for remote destinations, or `Drop` with an optional reason code.
 
 ### Recursion and Via Resolution
 
@@ -204,7 +206,7 @@ Route: ipn:200.* via dtn://tunnel1
 5. Result: Forward(5), next_hop=dtn://tunnel1
 ```
 
-The `next_hop` is stored in bundle metadata for egress filters.
+The resolved `next_hop` rides the `ForwardPending { peer, queue, next_hop }` assignment record into the peer's queue, and the Egress chain receives it as invocation context (`RewriteContext::Egress { next_hop }`).
 
 ### Unresolvable Next-Hops
 
@@ -220,18 +222,16 @@ A `Via` whose next-hop resolves to a **terminal** action (`Drop`, `Deliver`, `Ad
 
 ### Bundle Status Transitions
 
-The bundle status tracks where a bundle is in the processing pipeline. See [Bundle State Machine Design](bundle_state_machine_design.md) for complete state transition details and crash recovery semantics.
+The bundle status tracks where a bundle is in the processing pipeline. See the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`) for complete state transition details and [Storage Subsystem Design](storage_subsystem_design.md#crash-recovery) for crash recovery semantics.
 
 ```
-         ┌─────────┐
-         │   New   │  ← Ingress filter runs here (ingress_bundle)
-         └────┬────┘
-              │ checkpoint after Ingress filter
+              │ arrival: Ingress chain at the pre-drain gate (in memory)
+              │ single insert — the first persisted status
               ▼
        ┌─────────────┐
        │ Dispatching │
        └──────┬──────┘
-              │ process_bundle() / RIB::find()
+              │ RIB::find() — at the gate for fresh arrivals, in process_bundle() on re-dispatch
               │
     ┌─────────┼─────────┬──────────┐
     ▼         ▼         ▼          ▼
@@ -251,40 +251,40 @@ The bundle status tracks where a bundle is in the processing pipeline. See [Bund
 
 ### Queue Assignment
 
-When `FindResult::Forward(peer_id)` is returned, the bundle enters the policy subsystem. See [Policy Subsystem Design](policy_subsystem_design.md) for full details.
+When `DispatchAction::Forward { peer, next_hop }` is returned, the bundle enters the policy subsystem. See [Policy Subsystem Design](policy_subsystem_design.md) for full details.
 
-1. Policy classifies bundle → queue_id (based on flow_label)
+1. Policy classifies bundle → queue_id (classification arrives with the policy tranche; today every bundle takes the default queue)
 2. Bundle sent to queue channel (fast path) or storage (slow path with backpressure)
-3. Status: `ForwardPending { peer, queue }`
+3. Status: `ForwardPending { peer, queue, next_hop }` — the resolved adjacency rides the queue-assignment record
 4. Queue poller receives bundle
 5. **Egress filters run** (see [Filter Subsystem Design](filter_subsystem_design.md))
 6. CLA forwards to peer
 
 ### Route Change Handling
 
-When routes change, affected bundles are re-routed. See [Bundle State Machine Design: CLA Forwarding Failures](bundle_state_machine_design.md#error-handling-and-recovery) for the `reset_peer_queue` mechanism.
+When routes change, affected bundles are re-routed: `Store::reset_peer_queue` sweeps a peer's queued bundles back to `Waiting`, and the waiting poll re-dispatches them.
 
 ```mermaid
 flowchart TD
     A["RIB::add() or RIB::remove()"] --> B["Find impacted peers (via find_peers)"]
     B --> C["Store::reset_peer_queue(peer)"]
     C --> D["ForwardPending { peer, _ } → Waiting"]
-    D --> E["poll_waiting_notify.notify()"]
+    D --> E["Rib::request_poll()"]
     E --> F["Dispatcher::poll_waiting()"]
     F --> G["Re-run process_bundle() with new routes"]
 ```
 
 ## Example: Complete Forwarding Flow
 
-See also: [Bundle State Machine Design](bundle_state_machine_design.md) for detailed state transitions and [Filter Subsystem Design](filter_subsystem_design.md) for filter hook details.
+See also: the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`) for detailed state transitions and [Filter Subsystem Design](filter_subsystem_design.md) for filter hook details.
 
 ```
 1. INGRESS
    Bundle arrives via tcpclv4
    Destination: ipn:200.42
-   Status: New → Dispatching (after Ingress filter checkpoint)
+   Ingress chain at the pre-drain gate (in memory); the single insert persists it as Dispatching
 
-2. ROUTE LOOKUP (process_bundle)
+2. ROUTE LOOKUP (at the pre-drain gate; the commit executes it)
    RIB::find() searches unified table:
    - priority 0: no match (admin endpoints, CLA peers)
    - priority 100: ipn:200.* via dtn://tunnel1
@@ -295,30 +295,31 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
 
 4. ECMP
    Only one peer, select peer_id=5
-   Set metadata.next_hop = dtn://tunnel1
+   Resolved next hop: dtn://tunnel1
 
 5. QUEUE ASSIGNMENT
-   Policy: flow_label=None → queue=None (default)
+   Policy: no classification → queue=0 (default)
    Send to peer 5's default queue
-   Status: ForwardPending { peer: 5, queue: None }
+   Status: ForwardPending { peer: 5, queue: 0, next_hop: dtn://tunnel1 }
 
 6. QUEUE POLLER (forward_bundle)
    Dequeue bundle
    Update: Previous Node, Hop Count, Bundle Age
-   Run Egress filters (BPSec, validation, etc.)
+   Run the Egress chain (registered Rewriters, then Verifiers)
 
 7. CLA FORWARD
    Lookup ClaAddress for peer 5
-   CLA::forward(None, cla_addr, bundle_bytes)
+   Cla::forward(lane, cla_addr, bundle_id, total_len, stream)
 
 8. COMPLETION
    Success: delete bundle, send forwarded report
-   Failure: reset_peer_queue(5), bundle → Waiting
+   Failure: bundle → Waiting (a NoNeighbour answer also runs reset_peer_queue(5));
+            a deferred Failed transfer outcome re-dispatches the bundle
 ```
 
 ## Routing Agent API
 
-External routing protocols interact with the RIB through the `RoutingAgent` / `RoutingSink` trait pair defined in `bpa/src/routes.rs`. This follows the same bidirectional Sink pattern used by CLAs and Services.
+External routing protocols interact with the RIB through the `RoutingAgent` / `RoutingSink` trait pair defined in `bpa/src/routing/agent/mod.rs`. This follows the same bidirectional Sink pattern used by CLAs and Services.
 
 ### Trait Overview
 
@@ -344,7 +345,7 @@ sequenceDiagram
 
 ### Built-in Agents
 
-- **`StaticRoutingAgent`** — installs a fixed set of routes on registration. Used by `bpa-server/static_routes` and the `ping` tool.
+- **`StaticRoutingAgent`** — installs a fixed set of routes on registration. Used by the `ping` tool; `bpa-server/static_routes` implements its own file-driven `StaticRoutesAgent` over the same trait pair.
 
 ### gRPC Support
 
@@ -356,10 +357,10 @@ Remote routing agents connect via `routing.proto` (bidirectional streaming), wit
 
 | Component | Lock Type | Rationale |
 |-----------|-----------|-----------|
-| RIB | `RwLock` | Many readers (lookups), rare writers (route changes) |
+| RIB | `ArcSwap` snapshot + `Mutex` | Lock-free readers (lookups load the published table), rare writers (route changes mutate under the mutex and publish a fresh snapshot) |
 | PeerTable | `spin::RwLock` | O(1) operations, minimal contention |
 | CLA Registry | `spin::Mutex` | O(1) lookups, short critical sections |
 
 ### Notification Flow
 
-Route changes trigger re-routing through a notification mechanism. When `add_route()` or `remove_route()` is called, affected peers have their queues reset via `reset_peer_queue()`, and the `poll_waiting_notify` signal wakes the background task. The dispatcher's `poll_waiting()` then re-evaluates bundles with the updated routes.
+Route changes trigger re-routing through a notification mechanism. When `add_route()` or `remove_route()` is called, affected peers have their queues reset via `reset_peer_queue()`, and `Rib::request_poll()` counts the request and wakes the background task. The dispatcher's `poll_waiting()` then re-evaluates bundles with the updated routes. The task reads the request count before each poll, so a wakeup whose requests an earlier poll already covered — the permit `Notify` stores for a request landing between that poll's wakeup and its read — skips the redundant scan.

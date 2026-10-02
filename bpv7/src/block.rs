@@ -50,12 +50,17 @@ pub struct Flags {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     /// A bitmask of any unrecognized flags encountered during parsing.
+    /// Encoding ignores the bits of the named flags above: each named field
+    /// alone decides its bit.
     pub unrecognised: Option<u64>,
 }
 
 impl From<&Flags> for u64 {
     fn from(value: &Flags) -> Self {
-        let mut flags = value.unrecognised.unwrap_or(0);
+        // Only the bits the decoder leaves unrecognised pass through, so the
+        // wire never sets a named flag its field leaves clear.
+        const NAMED: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4);
+        let mut flags = value.unrecognised.unwrap_or(0) & !NAMED;
         if value.must_replicate {
             flags |= 1 << 0;
         }
@@ -346,7 +351,12 @@ impl Default for Block {
 impl Block {
     /// Bundle-absolute byte offsets of the block's payload within the
     /// wire stream. Honest `Range<u64>` — callers that have the bundle
-    /// in memory cast to `usize` at the slice point.
+    /// in memory cast to `usize` at the slice point. For a parsed bundle
+    /// only the payload block's `end` can run large: the parser bounds every
+    /// pre-payload offset to 256 MiB
+    /// ([`Error::ExtensionBlocksTooLarge`](crate::Error::ExtensionBlocksTooLarge)),
+    /// so any other range — and the payload's `start` — converts to `usize`
+    /// infallibly.
     pub fn payload_range(&self) -> Range<u64> {
         self.extent.start + self.data.start..self.extent.start + self.data.end
     }
@@ -355,7 +365,7 @@ impl Block {
     ///
     /// `source` MUST be the complete, contiguous bundle byte stream the
     /// block's offsets were parsed against (the `Bytes` returned by
-    /// [`parse::parse`], or the
+    /// [`parse::parse`](crate::parse::parse), or the
     /// buffer a `Builder`/`Editor` produced) — the offsets are
     /// bundle-absolute. Returns `None` if they fall outside `source`.
     ///

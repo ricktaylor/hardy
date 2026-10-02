@@ -1,448 +1,152 @@
 # Policy Subsystem Design
 
-This document describes the egress policy subsystem in the BPA, covering flow classification, queue management, and the integration with CLA forwarding.
-
-> **Note:** the trait names below predate the FlowController rename: `EgressPolicy` is now `FlowControllerFactory`, `EgressController` is now `FlowController`, and `classify` has been removed in favour of `FlowController::queue_for`. See [policy_subsystem_redesign.md](policy_subsystem_redesign.md).
+This document describes the BPA's egress policy subsystem: the per-peer queues a routed bundle waits in, the FlowController that assigns each bundle a queue and releases it onto the CLA's lanes, and the storage-backed channels beneath those queues.
 
 ## Related Documents
 
-- **[Routing Design](routing_subsystem_design.md)**: RIB lookup and peer selection (ECMP uses flow_label)
-- **[Bundle State Machine Design](bundle_state_machine_design.md)**: `ForwardPending { peer, queue }` status
-- **[Filter Subsystem Design](filter_subsystem_design.md)**: Ingress filters can set flow_label
-- **[Storage Subsystem Design](storage_subsystem_design.md)**: Hybrid channel implementation and bundle persistence
+- **[Routing Design](routing_subsystem_design.md)**: peer selection and route change handling.
+- **[Filter Subsystem Design](filter_subsystem_design.md)**: traffic-class classification, and the Egress chain run at transmission.
+- **[Storage Subsystem Design](storage_subsystem_design.md)**: bundle persistence and crash recovery.
+- **[Deferred CLA Transfer Outcomes](design.md#deferred-cla-transfer-outcomes)**: the `Accepted` answer and the `ForwardAckPending` hold.
+- **[Policy Subsystem Redesign](policy_subsystem_redesign.md)** (draft): the planned evolution of this subsystem.
 
-## Overview
+## Design Goals
 
-The policy subsystem controls **how** and **when** bundles are transmitted to peers. It provides:
+- **Mechanism in the open crate, policy behind a trait.** Routing decides *where* a bundle goes; the policy decides *when* and *in what order* it leaves. An embedder, closed-source included, supplies a scheduler through `FlowControllerFactory` against the unmodified `bpa` crate.
+- **Zero configuration is a working node.** A CLA registered without a policy gets the null policy: one FIFO queue per peer, no shaping.
+- **Waiting costs storage, not memory.** A full queue spills to the store rather than blocking the sender or dropping anything.
+- **The CLA stays policy-free.** A CLA declares how many transfers it can carry in parallel and never learns about priorities or classes.
 
-| Aspect | Purpose |
-|--------|---------|
-| **Flow Classification** | Map flow_label to queue index |
-| **Queue Management** | Priority-based queue hierarchy |
-| **Rate Control** | Backpressure and rate limiting via controllers |
-| **CLA Integration** | Policy wraps CLA transmission |
-
-## Architecture Diagram
+## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Dispatcher                                  │
-│                                                                     │
-│  process_bundle() → RIB::find() → FindResult::Forward(peer_id)      │
-│                                                                     │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       CLA Registry                                  │
-│                                                                     │
-│  forward(peer_id, bundle) → PeerTable lookup                        │
-│                                                                     │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Peer                                       │
-│                                                                     │
-│  1. Extract flow_label from bundle.metadata.writable.flow_label     │
-│  2. policy.classify(flow_label) → queue index                       │
-│  3. Send to queue channel                                           │
-│                                                                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
-│  │  Queue 0    │  │  Queue 1    │  │  Queue None │                  │
-│  │  (highest)  │  │  (medium)   │  │  (best-eff) │                  │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                  │
-│         │                │                │                         │
-└─────────┼────────────────┼────────────────┼─────────────────────────┘
-          │                │                │
-          ▼                ▼                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Queue Pollers (per queue)                        │
-│                                                                     │
-│  recv_async() → controller.forward(queue, bundle)                   │
-│                                                                     │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      EgressController                               │
-│                                                                     │
-│  Policy enforcement: rate limiting, scheduling, etc.                │
-│  Calls egress_queue.forward(bundle)                                 │
-│                                                                     │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   Dispatcher.forward_bundle()                       │
-│                                                                     │
-│  1. Load bundle data                                                │
-│  2. Update extension blocks (Hop Count, Previous Node, Bundle Age)  │
-│  3. Run Egress filters (see filter_subsystem_design.md)             │
-│  4. CLA.forward(lane, cla_addr, data)                               │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+  Dispatcher: RIB::find() → DispatchAction::Forward { peer, next_hop }
+        │
+        │ ClaRegistry::forward(peer, next_hop, bundle)
+        ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ Peer (one per CLA adjacency)                                         │
+│                                                                      │
+│   controller.queue_for() → queue in 0..queue_count()                 │
+│   (out of range → queue 0, logged)                                   │
+│   status := ForwardPending { peer, queue, next_hop }                 │
+│                                                                      │
+│   ┌───────────┐   ┌───────────┐          ┌─────────────┐             │
+│   │  queue 0  │   │  queue 1  │   ...    │  queue M-1  │  hybrid     │
+│   └─────┬─────┘   └─────┬─────┘          └──────┬──────┘  channels   │
+└─────────┼───────────────┼───────────────────────┼────────────────────┘
+          │ one poller per queue: controller.forward(queue, bundle)
+          ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ FlowController (one per peer)                                        │
+│                                                                      │
+│   decides when to transmit, and under which lane directive:          │
+│   EgressQueueSet { next_free → lane None, pinned[i] → lane Some(i) } │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   │ EgressQueue::forward(bundle)
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ Dispatcher::forward_bundle                                           │
+│                                                                      │
+│   1. claim ForwardPending → ForwardAckPending                        │
+│   2. update extension blocks (Previous Node, Hop Count, Bundle Age)  │
+│   3. Egress chain (Rewriters, then Verifiers)                        │
+│   4. Cla::forward(lane, cla_addr, bundle_id, total_len, stream)      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Policy Traits
+The subsystem is three traits in `bpa/src/policy/mod.rs`. **`FlowControllerFactory`** is the policy bound to a CLA: it declares the policy's queue count and builds one `FlowController` per peer. **`FlowController`** assigns each bundle a queue (`queue_for()`) and, called by that queue's poller (`forward(queue, bundle)`), decides when the bundle leaves and on which lane directive. **`EgressQueue`** is the transmission endpoint for one lane directive.
 
-The policy subsystem defines three traits. See rustdoc for full API details.
+Two counts meet in the controller: the policy's **queue count** (M, `queue_count()`) counts places where bundles wait, and the CLA's **lane count** (N, `ClaInit::lane_count`) counts transfers in flight. The controller maps one onto the other, so a policy works unchanged over any CLA.
 
-**EgressPolicy** is the main policy interface that defines queue count, flow classification logic, and creates controllers for peer queue sets.
+`queue_for()` takes no per-bundle input, so every bundle takes the controller's own assignment. The classification input — the traffic class assigned by the Classifier chains ([Filter Subsystem Design](filter_subsystem_design.md#metadatadelta-and-the-traffic-class)) — remains in scope and is designed in the [redesign](policy_subsystem_redesign.md).
 
-**EgressController** is the policy enforcement point created per-peer. It mediates all `forward(queue, bundle)` calls, allowing rate limiting and scheduling.
+## Key Design Decisions
 
-**EgressQueue** is the transmission endpoint that forwards bundles through the dispatcher to the CLA.
+### Queues hold waiting work; lanes carry in-flight work
 
-## Flow Classification
+A routed bundle needs somewhere to wait until the link can take it. That place is per peer, so a slow or dark link holds back only its own traffic, and it is where ordering and rate decisions are made without involving routing or the CLA.
 
-### Flow Label Source
+Lanes are the CLA's side. As the `ClaInit::lane_count` rustdoc (`bpa/src/cla/mod.rs`) defines them, lanes are parallel transport channels — QUIC streams, DSCP classes, separate TCP connections — carrying in-flight transfers with no priority among them: the policy decides what goes onto each lane, the CLA transmits what arrives, and one lane's in-flight transfer must not head-of-line block another's.
 
-The `flow_label` is stored in bundle metadata (`WritableMetadata`) and can be set by Ingress filters. See [Filter Subsystem Design](filter_subsystem_design.md) for filter implementation details.
+`lane_count` is an `Option<NonZeroU32>`: `None` declares no limit (an effectively unconstrained CLA, such as a datagram CL), `Some(n)` declares lanes `0..n`, and zero is unrepresentable. It is part of the set-once `ClaInit` snapshotted at registration, so a CLA whose parallelism changes re-registers. The controller reaches the lanes through its `EgressQueueSet`: a required `next_free` queue that transmits with lane `None`, letting the CLA pick its next free lane, and one `pinned` queue per declared lane.
 
-### Classification Process
+### A total queue model
 
-When a bundle reaches a peer for forwarding, the policy's `classify()` method maps the flow_label to a queue index. Bundles without a flow_label default to the best-effort queue (`None`). If classification returns an invalid queue index, it falls back to the best-effort queue.
+`queue_count()` returns a `NonZeroU32`, so queue 0 always exists; `queue_for()` returns a plain `u32`, not an `Option`; and `Peer::forward` clamps an out-of-range index — a policy bug — to queue 0 and logs it. Every bundle has a real queue, and there is no special-cased default queue.
 
-### ECMP Peer Selection
+The persisted status requires this. A queued bundle's status is `ForwardPending { peer, queue, next_hop }`, and the queue's channel recovers spilled bundles by that `(peer, queue)` identity (`BundleStatus::same_queue`), so every assignment must name a channel that exists; clamping rather than rejecting keeps a buggy policy from stranding the bundle. `Option` appears only at the lane directive, where `None` means something. Queue indices carry no fixed priority: relative priority is the policy's decision, and index 0 is guaranteed only as the clamp target.
 
-Flow labels also affect peer selection during routing. See [Routing Design](routing_subsystem_design.md) for details.
+### One controller per peer, draining serially
 
-When multiple peers can reach a destination, the RIB uses a hash of bundle source, destination, and flow_label for deterministic peer selection. This ensures bundles with the same flow_label always route to the same peer, preventing out-of-order delivery.
+`Peer::start` builds the controller from the CLA's factory, then one hybrid channel and one poller per policy queue, and only then publishes the peer, so a reachable peer always has a working controller. The controller owns all per-peer scheduler state for the peer's lifetime; on peer removal the channels close, the pollers exit once drained, and the controller is dropped.
 
-## Queue Management
+Each poller awaits `controller.forward(queue, bundle)` before taking the next bundle, and `EgressQueue::forward` returns only when the CLA answers `Cla::forward`. Both pacing levers follow from that. A controller that rate-limits awaits before transmitting, so its channel fills and further bundles spill to storage — shaping neither drops bundles nor grows memory. A CLA paces the BPA by when it answers: answering `Accepted` early frees the queue while the acknowledgement is in flight, and a CLA at capacity withholds its answer.
 
-### Queue Hierarchy
+### Hybrid Channel Architecture
 
-| Queue | Priority | Purpose |
-|-------|----------|---------|
-| `Some(0)` | Highest | Critical traffic |
-| `Some(1)` | Medium | Standard traffic |
-| `Some(n)` | Decreasing | Lower priority |
-| `None` | Lowest | Best-effort / fallback |
-
-### Lane Semantics
-
-From `src/cla/mod.rs`:
-
-> Lanes are parallel transport channels — QUIC streams, DSCP classes, separate TCP connections — carrying in-flight transfers with no explicit priority among them. Scheduling and prioritisation live in the BPA's egress policy, which decides what is forwarded onto each lane; the CLA simply transmits what arrives on a lane, and one lane's in-flight transfer must not head-of-line block another's.
-
-### Queue Creation
-
-For each peer, queues are created based on the policy's `queue_count()`. A best-effort queue (`None`) is always created, plus numbered priority queues `Some(0)` through `Some(queue_count-1)`.
-
-### Queue Pollers
-
-Each queue has a dedicated background task that receives bundles from the channel and forwards them through the controller. The bundle status `ForwardPending { peer, queue }` persists the queue assignment for crash recovery. See [Bundle State Machine Design](bundle_state_machine_design.md).
-
-## Hybrid Channel Architecture
-
-The queue channels implement a fast/slow path hybrid for backpressure (`src/storage/channel.rs`):
+Each policy queue is a hybrid memory/storage channel (`bpa/src/storage/channel.rs`) buffering `poll_channel_depth` bundles (default 16). A conditional swap durably moves the bundle's status to the queue's status before the bundle is offered to the buffer, which makes the in-memory copy disposable: on the fast path it reaches the poller in memory, and when the buffer is full it is dropped and the channel's background poller recovers the bundle from metadata storage.
 
 ```
-┌──────────────────────────────┐
-│           Open               │  Fast path: direct memory channel
-│    (try_send succeeds)       │
-└──────────────┬───────────────┘
-               │ channel full
-               ▼
-┌──────────────────────────────┐
-│         Draining             │  Slow path: poll from storage
-│   (poller drains storage)    │
-└──────────────┬───────────────┘
-               │ new arrivals during drain
-               ▼
-┌──────────────────────────────┐
-│         Congested            │  Continue draining, then re-open
-│    (work queued in storage)  │
-└──────────────────────────────┘
+    ┌──────────┐  buffer full   ┌──────────┐  storage drained,   ┌──────────┐
+    │   Open   │ ──────────────►│ Draining │  buffer ≤ cap / 2   │   Open   │
+    └──────────┘                └────┬─────┘ ───────────────────►└──────────┘
+                                     │ send while draining
+                                     ▼
+                                ┌───────────┐
+                                │ Congested │ ──► poller drains again at once
+                                └───────────┘
+
+    Any state ──► Closing (channel closed)
 ```
 
-### Fast Path
+Memory stays bounded per queue whatever the arrival rate, and a full queue never blocks or fails the sender. Every send pays the status write; the fast path saves the storage re-read. Delivery is at-least-once, so `forward_bundle` claims each bundle with a conditional swap to `ForwardAckPending` before offering it, and a duplicate copy loses the swap.
 
-- Direct channel send
-- Sub-millisecond latency
-- Capacity: `poll_channel_depth` configuration
-
-### Slow Path
-
-- Bundle stored in persistent metadata with `ForwardPending` status
-- Background poller drains storage to channel
-- Automatic backpressure via storage insertion rate
-- Hysteresis: requires <50% channel utilization to re-open fast path
+#### Hysteresis and congestion signalling
 
-## CLA Integration
+The poller re-opens the fast path only when a drain cycle finds nothing more in storage to push, the buffer holds at most half its capacity (`buffered <= cap / 2`, inclusive so a capacity-1 channel can re-open), and the `Draining` → `Open` swap succeeds. The threshold is hysteresis: re-opening at the first free slot would flip paths on nearly every send near capacity, each flip costing a storage scan.
 
-### Policy Configuration
+`Congested` is the senders' signal to the poller. A sender that spills during a drain moves `Draining` to `Congested`, so the re-open swap fails and the poller drains again at once, rather than re-opening the fast path where new arrivals would overtake the spilled bundle.
 
-Policies are defined as named, reusable configurations in the bpa-server
-config. Each policy specifies a type (qdisc) and its parameters. CLAs
-reference a policy by name at registration time.
+### Factories are code; configuration binds them
 
-```toml
-[policies.satellite]
-type = "htb"
-# class hierarchy, rates, borrowing rules...
-
-[policies.ground-link]
-type = "strict-priority"
-classes = 4
-
-[policies.best-effort]
-type = "null"
+A `FlowControllerFactory` is code linked in by the embedder; configuration only selects among the factories a build contains. Following the Linux `tc` model, it is bound per CLA — a queuing discipline attached to an interface — and instantiated per peer.
 
-[cla.tcpclv4]
-policy = "satellite"
+- **At build time**, `BpaBuilder::cla(name, cla, policy, init)` binds a configured CLA's factory. bpa-server resolves each CLA's `policy` key against its named `policies` table; it compiles in no policy types, so every entry is ignored with a warning and a CLA naming one fails startup.
+- **At runtime**, `BpaRegistration::register_cla(name, cla, policy, init)` takes the factory from the caller, so an in-process CLA brings its own.
+- **With no factory**, the registry binds the null policy. A CLA registered over gRPC always takes this path, since the wire carries no policy.
 
-[cla.udpcl]
-policy = "ground-link"
-```
+This registration shape is interim, and the model is still being designed. The intended one registers policies by name once, when the BPA is constructed, and has each CLA register with a named reference to one — the shape bpa-server's configuration already has, with its named `policies` table — so the binding stays configuration, and a CLA registered over gRPC is no longer confined to the null policy ([Policy Subsystem Redesign](policy_subsystem_redesign.md)).
 
-The policy definition describes *what* the scheduling should be (traffic
-classes, priorities, rates). The controller adapts *how* to map those
-classes onto the CLA's actual lanes at peer establishment time. The same
-named policy works regardless of the CLA's lane count — the controller
-degrades gracefully (multiple classes share a lane when N < M, or
-classes spread across lanes when N > M).
+The null policy (`policy::null_policy`), the only factory `bpa` ships, declares one queue and hands every bundle to `next_free` without rate limiting. It leaves the pinned queues idle on purpose: applying no policy means imposing no lane constraint, so a multi-lane CLA spreads transfers across whichever lanes are free.
 
-Multiple CLAs can reference the same named policy. A CLA that registers
-without specifying a policy (e.g., a gRPC-connected CLA server) defaults
-to the null policy.
+### Failure evidence is scoped, and every exit returns to routing
 
-This follows the linux `tc` model: the policy config defines the class
-hierarchy (like `tc class add`), and the controller is the qdisc
-attached to the device (CLA). The qdisc queries the device for
-capabilities (lane count) and builds the class-to-lane mapping at
-attach time, not at config time.
+The CLA's answer to `Cla::forward` decides how much of the peer's queue a failure disturbs:
 
-### CLA Lane Count
+- **`Sent`** completes the forward: the bundle is reported forwarded where requested, and deleted.
+- **`Accepted`** holds the bundle in `ForwardAckPending` until the CLA reports the outcome; a deferred `Failed` re-enters dispatch for that bundle alone.
+- **`NoNeighbour`** is link-scoped evidence: `Store::reset_peer_queue` returns all the peer's `ForwardPending` bundles to `Waiting`, along with the offered one.
+- **An error** is bundle-scoped evidence: only the offered bundle returns to `Waiting`, with no inline retry, because a synchronous failure can be deterministic and a retry would spin.
 
-CLAs declare their lane count via `lane_count()`, an
-`Option<NonZeroUsize>`: `None` (the default) declares no limit — the
-CLA is effectively unconstrained, and forwards arrive with lane
-`None`, each requesting a new lane from the infinite pool — while
-`Some(n)` declares `n` explicit lanes; a zero count is unrepresentable
-by construction. Lanes are physical or logical transport channels —
-QUIC streams, DSCP classes, separate TCP connections. The lane index
-is passed to `CLA::forward()`.
+Peer removal and CLA unregistration close the peer's channels first, so no new send can land, then withdraw its RIB entries, which resets its queued bundles and its unresolved accepted transfers to `Waiting`. Peer ids do not survive a restart, so recovery resets `ForwardPending` and `ForwardAckPending` bundles to `Waiting`. A `Waiting` bundle is re-dispatched on the next routing event, possibly to a different peer ([Routing Design: Route Change Handling](routing_subsystem_design.md#route-change-handling)).
 
-The CLA does not need to understand traffic classes. It transmits
-what the controller gives it on each lane — lanes carry no explicit
-priority. All traffic class intelligence lives in the BPA's policy
-controller.
+## Integration
 
-### Runtime Class-to-Lane Mapping
+- **Routing** hands the policy a peer through `ClaRegistry::forward`, which returns the bundle if the peer has vanished, and the dispatcher parks it in `Waiting`. Peer selection, ECMP included, is complete before the policy sees the bundle.
+- **Filters** run the Egress chain inside `forward_bundle` on every transmission attempt, in memory only, so a re-routed bundle is re-filtered with fresh context.
+- **Storage** provides the queue channels, the peer sweeps, and restart recovery; status semantics are in the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`), recovery in [Storage Subsystem Design](storage_subsystem_design.md#crash-recovery).
+- **gRPC** carries `lane_count` at registration (`optional uint32`, where 0 is rejected) and a lane on each forward, but no policy.
 
-The policy config defines M traffic classes. The CLA advertises N lanes
-at registration time. When a peer connects, the controller builds the
-M→N mapping:
+## Standards Compliance
 
-**N >= M** — each class gets its own CLA lane. Remaining CLA lanes
-are unused (or classes can be spread for isolation). Scheduling within
-each lane is FIFO since each class is already separated.
+RFC 9171 §5.4 Step 4 makes "the time at which the BPA invokes CLA services" a BPA implementation matter — the latitude the FlowController occupies — and requires the Bundle Age increase "at the last possible moment before the CLA initiates conveyance": the extension-block update runs after the controller releases the bundle, so the age it writes includes time spent queued.
 
-**N < M** — multiple classes share CLA lanes. The controller does
-priority scheduling within each shared lane, ensuring higher-priority
-classes are serviced before lower-priority ones on the same output.
-
-**N = 1** — all classes collapse onto a single CLA lane. The controller
-does all scheduling internally, feeding one output stream in priority
-order. The CLA sees a single FIFO, but the bundle ordering reflects
-the full HTB discipline.
+## Planned Work
 
-**N = 0** — equivalent to N = 1 (single best-effort queue, `None`).
-
-The mapping is built once at controller creation and is fixed for the
-lifetime of the peer connection. If the CLA's capabilities change (e.g.,
-reconfiguration), the peer must be re-established to pick up the new
-mapping.
-
-### Controller Lifecycle
+This document describes what is built. The next tranche — the traffic-class input, a class-aware `push(bundle, class)` in place of `forward(queue, bundle)`, controller-owned queues from the queue mechanism ([Queue Architecture](queue_architecture.md)), the scheduling discipline, and adaptive de-staging of the hybrid channel — is designed in [Policy Subsystem Redesign](policy_subsystem_redesign.md), which folds into this document as it lands.
 
-1. **Peer connects**: Policy creates controller via `new_controller(queues)`.
-   The controller receives the actual CLA queue set and builds its
-   class-to-queue mapping based on the CLA's capabilities
-2. **Bundle forwarding**: Controller mediates all `forward(class, bundle)`
-   calls, scheduling across traffic classes and mapping to CLA queues
-3. **Peer removal**: Controller dropped, pollers exit naturally
+## Testing
 
-## Default Policy (Null Policy)
-
-The null policy provides simple FIFO behavior: it declares zero priority queues, classifies all bundles to the best-effort queue (`None`), and its controller simply passes bundles through without rate limiting or scheduling.
-
-### Known wart: `Option<u32>` queue indices
-
-CLA queue indices are currently `Option<u32>`, where `None` means "the
-default queue." This was a natural fit for the null policy (everything is
-`None`) but creates an awkward special case: `None` doesn't mean "no
-queue" — it means queue 0 by another name. The `queue_count()` return
-value of 0 means "one queue (the `None` queue)," which is confusing.
-
-A cleaner model would use plain `u32` indices starting at 0. The default
-/ best-effort queue would just be a numbered queue (e.g., the highest
-index, or whichever the policy designates). `queue_count()` would return
-the actual count (1 for a single-queue CLA). No special casing for
-`None` vs `Some(0)`.
-
-This cleanup should be done when implementing a real policy — it touches
-the CLA trait, peer queue maps, `ForwardPending` status, storage
-channels, and tests, so it's not worth the churn until there's a
-functional reason to make the change.
-
-## Three-Stage Egress Pipeline
-
-The egress path has three conceptually distinct stages. The current null
-policy collapses all three, but an advanced policy implementation must
-separate them.
-
-### Stage 1: Label (Filter)
-
-Ingress or originate filters tag bundles with a `flow_label: Option<u32>`
-in `WritableMetadata`. The label is an opaque application-level identifier
-— it carries no scheduling semantics itself. Examples: DSCP value from
-the payload, application priority, mission phase identifier.
-
-### Stage 2: Classify (EgressPolicy)
-
-`EgressPolicy::classify(flow_label) → traffic_class` maps the label to
-one of M traffic classes. Traffic classes carry scheduling semantics:
-priority level, rate guarantees, burst allowances. The number of traffic
-classes (M) is independent of the number of CLA queues (N).
-
-**Current limitation:** `classify` returns `Option<u32>` which is treated
-as a CLA queue index, conflating traffic class with CLA queue. An HTB
-implementation would need `classify` to return a traffic class that the
-controller then maps to CLA queues.
-
-### Stage 3: Schedule (EgressController)
-
-The `EgressController` is the scheduler. It accepts bundles tagged with
-traffic classes and multiplexes M classes onto N CLA queues using a
-scheduling discipline (HTB, WFQ, strict priority, etc.).
-
-The controller is the only component that knows both:
-
-- The traffic class semantics (M classes with priorities and rates)
-- The CLA's capabilities (N queues, link bandwidth)
-
-It performs the M→N mapping, ensuring high-priority classes get
-preferential access to CLA queue capacity while low-priority classes can
-borrow when capacity is available.
-
-### Pipeline diagram
-
-```
-Filter              EgressPolicy         EgressController        CLA
-  │                     │                       │                  │
-  │  flow_label (u32)   │                       │                  │
-  ├────────────────────►│                       │                  │
-  │                     │  traffic_class        │                  │
-  │                     ├──────────────────────►│                  │
-  │                     │                       │  HTB scheduling  │
-  │                     │                       │  M classes → N   │
-  │                     │                       │  CLA queues      │
-  │                     │                       ├─────────────────►│
-  │                     │                       │  forward(q, data)│
-```
-
-### CLA queue semantics
-
-The CLA advertises N queues via `queue_count()`. These are physical or
-logical transport channels — QUIC streams, DSCP classes, separate TCP
-connections, etc. The CLA implements strict priority across its own
-queues (queue 0 before queue 1), but does not need to understand traffic
-classes. The BPA's HTB scheduler has already made the priority decision.
-
-This means a CLA with just 2 queues (e.g., high/low QUIC streams) can
-support arbitrarily many traffic classes — the HTB scheduler in the BPA
-does the M→2 mapping, and the CLA just sends on whichever stream it's
-told.
-
-## Advanced Policy Patterns
-
-The `EgressController` is the extension point for sophisticated
-scheduling. Possible implementations:
-
-- **Token Bucket** — per-class rate limiting with burst allowance
-- **Weighted Fair Queueing** — proportional service across classes
-- **Hierarchical Token Bucket** — multi-level rate limits with borrowing
-  between parent/child classes
-- **Strict Priority** — always service highest non-empty class first,
-  with optional starvation guards
-
-## Forwarding Failure Handling
-
-When CLA transmission fails (either `NoNeighbour` result or error), `reset_peer_queue()` is called. The operation:
-
-1. Transitions all `ForwardPending { peer, _ }` bundles to `Waiting`
-2. Bundles re-enter routing via `poll_waiting()`
-3. May route to different peer with fresh classification
-
-See [Routing Design: Route Change Handling](routing_subsystem_design.md#route-change-handling).
-
-## Data Flow Summary
-
-```
-1. INGRESS FILTER (optional)
-   Set bundle.metadata.writable.flow_label based on bundle properties
-
-2. ROUTING (process_bundle)
-   RIB::find() uses flow_label for ECMP peer selection
-   Returns FindResult::Forward(peer_id)
-
-3. QUEUE CLASSIFICATION (Peer.forward)
-   policy.classify(flow_label) → queue index
-   Send to queue channel (fast or slow path)
-   Status: ForwardPending { peer, queue }
-
-4. QUEUE POLLING
-   Poller receives bundle from channel
-   Calls controller.forward(queue, bundle)
-
-5. POLICY ENFORCEMENT (EgressController)
-   Apply rate limiting, scheduling, etc.
-   Calls egress_queue.forward(bundle)
-
-6. TRANSMISSION (Dispatcher.forward_bundle)
-   Load data, update extension blocks
-   Run Egress filters
-   CLA.forward(queue, cla_addr, data)
-
-7. COMPLETION
-   Success: delete bundle
-   Failure: reset_peer_queue() → bundles return to Waiting
-```
-
-## Future direction: EgressPolicy as controller factory
-
-The `EgressPolicy` trait currently serves two roles: classification
-(`classify`) and controller creation (`new_controller`). In the target
-architecture (see queue_architecture.md), these separate:
-
-- **Classification** becomes a generic `ClassificationPolicy` trait
-  (`flow_label → u32`) used at multiple pipeline stages, not just
-  egress. The `EgressPolicy::classify` method is an instance of this
-  generic pattern
-- **Controller creation** is the factory role. `EgressPolicy` becomes
-  `EgressControllerFactory` — its sole responsibility is creating
-  per-peer `EgressController` instances
-
-**`EgressPolicy::queue_count()`** currently returns M (the number of
-traffic classes / BPA-side queues). This exists because the current
-code in `peers.rs` pre-creates M storage channels before calling
-`new_controller`. In the target architecture, the controller owns its
-own queue creation — it receives N CLA queues, allocates M class queues
-internally from the `QueueFactory`, and builds the M→N mapping. M
-becomes a private implementation detail of the controller, not part of
-the factory's public interface.
-
-There are two separate `queue_count` methods that should not be
-confused:
-
-- **`Cla::queue_count()`** — N, the CLA's transport channel count.
-  Stays on the CLA trait
-- **`EgressPolicy::queue_count()`** — M, the policy's traffic class
-  count. Disappears when the controller owns its queue creation
-
-This refactor cannot be done independently of the queue architecture
-work described in queue_architecture.md.
+- [Unit Test Plan](unit_test_plan.md) — §3.3 egress policy, §3.7 the hybrid channel state machine, and §3.8 CLA registry and peer logic.
+- [CLA Integration Test Plan](cla_integration_test_plan.md) — Suite B forwarding and Suite D peer management.

@@ -1906,6 +1906,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.10.2",
  "serde",
+ "serde_json",
  "thiserror",
  "time",
  "tokio",
@@ -2107,17 +2108,6 @@ dependencies = [
  "tokio-util",
  "trace-err",
  "tracing",
-]
-
-[[package]]
-name = "hardy-ipn-legacy-filter"
-version = "0.2.0"
-dependencies = [
- "hardy-bpa",
- "hardy-bpv7",
- "hardy-eid-patterns",
- "serde",
- "tokio",
 ]
 
 [[package]]

@@ -2,11 +2,13 @@
 Bundle Processing Agent library implementing RFC 9171.
 
 This crate provides the core bundle processing logic, storage abstractions,
-routing infrastructure, and service/CLA registries for a DTN node.
+routing infrastructure, the filter subsystem (the embedder's extension
+points on the pipeline, see [`filter`]), and service/CLA registries for a
+DTN node.
 
 # `no_std` Support
 
-This crate is `no_std` compatible with a heap allocator. Feature flags control functionality:
+`no_std` support is aspirational: the code is written for `no_std` + alloc, but the default build requires Tokio (and therefore `std`). Feature flags control functionality:
 
 - **`std`**: Enables standard library support and propagates to dependencies.
 - **`tokio`** (default): Enables Tokio runtime support. Implies `std`.

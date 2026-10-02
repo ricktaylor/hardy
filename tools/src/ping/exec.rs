@@ -31,10 +31,9 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
 
     // bp is a diagnostic client, so it must accept echoes from peers that don't
     // meet every RFC9171 ingress policy — notably dtn7-rs's dtnecho2, which
-    // reflects bundles without a primary-block CRC. The builder flags own the
-    // policy — the reception gate and the auto-registered filter both take
-    // their checks from them — relaxed by --lax-rfc9171. The reflected payload
-    // is still compared byte-for-byte by the client.
+    // reflects bundles without a primary-block CRC. --lax-rfc9171 relaxes the
+    // BPA's config-gated ingress checks; the reflected payload is still
+    // compared byte-for-byte by the client.
     let bpa = alloc::sync::Arc::new(
         hardy_bpa::bpa::Bpa::builder()
             .status_reports(true)

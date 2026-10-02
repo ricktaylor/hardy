@@ -10,6 +10,9 @@ use super::*;
 // 4. Avoids OS rwlock overhead on hot forwarding path
 
 pub struct Peer {
+    // The peer id every queue below is keyed under; `forward` composes
+    // each assignment record from it directly.
+    peer: u32,
     // One poller per policy queue, indexed by the queue index — queue 0
     // always exists (`FlowControllerFactory::queue_count` is non-zero).
     queues: Vec<storage::channel::Sender>,
@@ -58,7 +61,11 @@ impl Peer {
             ));
         }
 
-        Arc::new(Self { queues, controller })
+        Arc::new(Self {
+            peer,
+            queues,
+            controller,
+        })
     }
 
     fn start_queue_poller(
@@ -108,25 +115,23 @@ impl Peer {
         let queue = self.controller.queue_for();
         // An out-of-range index is a policy bug: clamp to queue 0, which
         // always exists.
-        let queue = self.queues.get(queue as usize).unwrap_or_else(|| {
+        let queue = if (queue as usize) < self.queues.len() {
+            queue
+        } else {
             warn!("Egress policy classified a bundle into out-of-range queue {queue}");
-            &self.queues[0]
-        });
-
-        // The full assignment record: this queue's identity (which the
-        // selection above may have fallen back on) plus the resolved
-        // adjacency, so the decision survives the channel's storage spill.
-        let bundle::BundleStatus::ForwardPending { peer, queue: q, .. } = queue.queue_status()
-        else {
-            unreachable!("Egress queue with a non-ForwardPending target status")
+            0
         };
+
+        // The full assignment record: this queue's identity plus the
+        // resolved adjacency, so the decision survives the channel's
+        // storage spill.
         let status = bundle::BundleStatus::ForwardPending {
-            peer: *peer,
-            queue: *q,
+            peer: self.peer,
+            queue,
             next_hop,
         };
 
-        match queue.send_to(bundle, status).await {
+        match self.queues[queue as usize].send_to(bundle, status).await {
             Ok(_) => Ok(()),
             Err(storage::channel::SendError(b)) => Err(b),
         }
@@ -249,16 +254,16 @@ impl Drop for Reservation<'_> {
 mod tests {
     // use super::*;
 
-    // // TODO: Implement test for 'Queue Selection' (Verify Policy maps to correct CLA queue)
+    // // TODO: Implement test for 'Queue Selection' (Verify the controller's queue_for() selects the peer queue)
     // #[test]
     // fn test_queue_selection() {
-    //     todo!("Verify Policy maps to correct CLA queue");
+    //     todo!("Verify the controller's queue_for() selects the peer queue");
     // }
 
-    // // TODO: Implement test for 'Queue Fallback' (Verify fallback to default queue on invalid index)
+    // // TODO: Implement test for 'Queue Fallback' (Verify an out-of-range queue index is clamped to queue 0)
     // #[test]
     // fn test_queue_fallback() {
-    //     todo!("Verify fallback to default queue on invalid index");
+    //     todo!("Verify an out-of-range queue index is clamped to queue 0");
     // }
 
     use super::*;

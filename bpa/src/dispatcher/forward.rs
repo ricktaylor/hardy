@@ -101,39 +101,37 @@ impl Dispatcher {
             }
         };
 
-        // Egress filter hook:
+        // Egress chain: registered Rewriters extend the fixed rewrite above,
+        // then Verifiers gate the final pre-BPSec wire form.
         // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Modifications are in-memory only (like Deliver), NOT persisted
+        // - Edits are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress will run again with fresh context
-        // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        let bundle_id = bundle.id().clone();
-        let (bundle, mut data) = match self
-            .filter_engine
-            .exec(filter::Hook::Egress, bundle, data, self.key_provider())
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                return OfferOutcome::Dropped(bundle, reason);
-            }
-            Err(e) => {
-                error!("Egress filter execution failed: {e}");
+        //   route to a different peer, so Egress runs again with fresh context
+        // - The BPSec seam (BIB/BCB per egress policy, possibly per peer)
+        //   belongs after the Egress Verifiers: designed, not yet built —
+        //   nothing is signed or encrypted on the way out
+        // - `metadata.extensions` still carries the as-received decode (it
+        //   mirrors the stored bytes); this attempt's bumped hop count / age
+        //   live only in the (bundle, data) pair handed down the chain
+        let (bundle, mut data) =
+            match self
+                .filters
+                .run_egress(bundle, data, &next_hop, &*self.key_provider)
+            {
+                Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+                Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
+                    return OfferOutcome::Dropped(bundle, reason);
+                }
+                Err((bundle, e)) => {
+                    error!("Egress filter chain failed: {e}");
 
-                // The filter consumed the claimed bundle, so re-fetch it and
-                // conditionally return the claim to Waiting for a fresh
-                // routing decision. A re-fetch that finds the bundle moved
-                // on means a sweep or the reaper resolved it first.
-                return match self.store.get_metadata(&bundle_id).await {
-                    Some(bundle)
-                        if bundle.status == (bundle::BundleStatus::ForwardAckPending { peer }) =>
-                    {
-                        OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
-                    }
-                    _ => OfferOutcome::Lost,
-                };
-            }
-        };
+                    // The chain hands the claimed bundle back: return the claim
+                    // to Waiting for a fresh routing decision. The park is
+                    // CAS-clean — losing it means a sweep or the reaper
+                    // resolved the bundle first.
+                    return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
+                }
+            };
 
         // And pass to CLA: the whole bundle is in hand, so it travels as a
         // single Final segment.
@@ -261,9 +259,13 @@ impl Dispatcher {
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
-        // bumped values back: `forward_bundle` deletes the bundle on a successful
-        // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
-        // in-memory cache is never observed again after this rewrite.
+        // bumped values back: the rewrite is per-attempt and in-memory only, and
+        // the cache mirrors the stored bytes, which stay as received. The cache
+        // IS observed again after this rewrite — a park's reaper expiry watch
+        // reads `extensions.age` (and wants the original, un-bumped value), and
+        // the Egress chain sees the as-received values, not this attempt's
+        // bumped wire form: egress filters must derive per-attempt facts from
+        // the (bundle, data) pair they are handed, never from the cache.
         //
         // Editor needs a `&Bundle`, so re-parse structurally.
         // `editor::Error` has several `From` impls so disambiguate explicitly.
@@ -273,12 +275,27 @@ impl Dispatcher {
             ..
         } = hardy_bpv7::parse::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
 
-        // RFC 9171 §4.2.3-4/-5: report_on_failure MUST NOT be set on any block
-        // of an admin-record or anonymous bundle — the receiver has nowhere
-        // meaningful to report to, and a conformant parser (ours included)
-        // rejects the combination.
-        let report_on_failure =
-            !bundle.primary().flags.is_admin_record && !bundle.id().source.is_null();
+        // RFC 9171 §4.2.3-4/-5: an admin-record or anonymous bundle's blocks
+        // may not request a report on failure, and a conformant parser (ours
+        // included) rejects the combination.
+        let report_on_failure = !bundle.primary().forbids_report_on_failure();
+
+        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data);
+
+        // Fixed head of the rewrite stage: apply the §E block removals the
+        // ingress gate deferred (RFC 9172 §5.1.1 failure-drops + honoured
+        // `delete_block_on_failure` unknowns). The stored bundle is as
+        // received; the removal — with its full BPSec cascade — happens here,
+        // per transmission attempt.
+        if !bundle.metadata.to_remove.is_empty() {
+            use hardy_bpv7::bpsec::edit::BPSecEditor;
+            let key_source = self.key_source(&raw, &source_data);
+            let to_remove = bundle.metadata.to_remove.iter().copied().collect();
+            editor = editor
+                .remove_blocks(to_remove, key_source.as_ref())
+                .map_err(|(_, e)| e)?
+                .0;
+        }
 
         // The per-hop blocks below are replaced through `insert_block`, which
         // strips a replaced block from any plaintext BIB that covers it. That
@@ -297,7 +314,7 @@ impl Dispatcher {
         // encrypted BIB) refuses, and the caller parks the bundle.
 
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
+        let mut editor = editor
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(|(_, e)| e)?
             .with_flags(hardy_bpv7::block::Flags {
@@ -477,6 +494,8 @@ mod tests {
             .build(node_ids.clone(), store.clone())
             .await
             .unwrap();
+        let (filters, slot_table) =
+            crate::filter::pack::chains::FilterChains::freeze(Vec::new()).unwrap();
         let (dispatcher, _start) = Dispatcher::new(
             Config {
                 status_reports: false,
@@ -491,7 +510,8 @@ mod tests {
             store,
             rib,
             Arc::new(crate::keys::NullKeyProvider),
-            Arc::new(filter::FilterEngine::new()),
+            filters,
+            slot_table,
         );
 
         // Seed the record exactly as the egress queue holds it: data
@@ -513,8 +533,7 @@ mod tests {
         let storage_name = data_store.save(data.clone()).await.unwrap();
         let parsed =
             crate::bundle::parse::parse_validate_with_provider(data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
+                .unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {

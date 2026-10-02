@@ -6,12 +6,13 @@
 use core::{iter::repeat_n, num::NonZeroU8};
 
 use bytes::Bytes;
-use hardy_bpv7::{Error, block, builder, crc, creation_timestamp, hop_info, parse};
+use hardy_bpv7::{Error, block, builder, bundle, crc, creation_timestamp, hop_info, parse};
 // Aliased: collides with the bpv7 `Error` imported above.
 use hardy_cbor::decode::Error as CborError;
 use hex_literal::hex;
 
 mod common;
+use self::common::{insert_after_primary, make_block};
 
 // Build a minimal valid bundle and return its serialised bytes.
 fn build_minimal_bundle() -> Box<[u8]> {
@@ -77,6 +78,182 @@ fn invalid_flags() {
         parse::parse(Bytes::from_static(BUNDLE)),
         Err(Error::InvalidFlags)
     ));
+}
+
+// RFC 9171 §4.2.3-4/-5 at the parser: a block requesting a report on
+// failure is rejected in a null-source bundle and in an administrative
+// record, and accepted in an ordinary bundle. The block is spliced into the
+// wire bytes, since the builder never emits the forbidden combination; the
+// same splice without the flag parses, so a rejection is the flag's alone.
+#[test]
+fn parser_rejects_report_on_failure_where_the_bundle_forbids_it() {
+    for (source, flags, rejected) in [
+        (
+            "dtn:none",
+            bundle::Flags {
+                do_not_fragment: true,
+                ..Default::default()
+            },
+            true,
+        ),
+        (
+            "ipn:1.0",
+            bundle::Flags {
+                is_admin_record: true,
+                ..Default::default()
+            },
+            true,
+        ),
+        ("ipn:1.0", bundle::Flags::default(), false),
+    ] {
+        let (_, data) = builder::Builder::new(source.parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_flags(flags)
+            .with_payload("Hello".as_bytes().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+
+        let plain = insert_after_primary(&data, &[&make_block(200, 2, 0, b"ext-data")]);
+        parse::parse(Bytes::from(plain))
+            .unwrap_or_else(|e| panic!("{source}: the splice without the flag must parse: {e:?}"));
+
+        let reporting = insert_after_primary(&data, &[&make_block(200, 2, 1 << 1, b"ext-data")]);
+        let result = parse::parse(Bytes::from(reporting)).map(drop);
+        if rejected {
+            assert!(
+                matches!(result, Err(Error::InvalidFlags)),
+                "{source}: expected InvalidFlags, got {result:?}"
+            );
+        } else {
+            assert!(result.is_ok(), "{source}: expected a parse, got {result:?}");
+        }
+    }
+}
+
+// A bundle that forbids `report_on_failure` (RFC 9171 §4.2.3-4/-5) is built
+// with the flag clear on every block — the Hop Count block's default and
+// caller-set flags on an extension block and on the payload alike — so it
+// parses; an ordinary bundle keeps all three.
+#[test]
+fn builder_clears_report_on_failure_on_a_forbidding_bundle() {
+    let hop_info = hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 0,
+    };
+    let reporting = || block::Flags {
+        report_on_failure: true,
+        ..Default::default()
+    };
+    for (source, flags, reports) in [
+        (
+            "dtn:none",
+            bundle::Flags {
+                do_not_fragment: true,
+                ..Default::default()
+            },
+            false,
+        ),
+        (
+            "ipn:1.0",
+            bundle::Flags {
+                is_admin_record: true,
+                ..Default::default()
+            },
+            false,
+        ),
+        ("ipn:1.0", bundle::Flags::default(), true),
+    ] {
+        let (_, data) = builder::Builder::new(source.parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_flags(flags)
+            .with_hop_count(&hop_info)
+            .add_extension_block(block::Type::Unrecognised(200))
+            .unwrap()
+            .with_flags(reporting())
+            .build(b"ext-data".as_slice().into())
+            .add_extension_block(block::Type::Payload)
+            .unwrap()
+            .with_flags(reporting())
+            .build(b"Hello".as_slice().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+        let parsed = parse::parse(Bytes::from(data))
+            .unwrap_or_else(|e| panic!("{source} bundle must parse: {e:?}"))
+            .bundle;
+        for block_type in [
+            block::Type::HopCount,
+            block::Type::Unrecognised(200),
+            block::Type::Payload,
+        ] {
+            let block = parsed
+                .blocks
+                .values()
+                .find(|b| b.block_type == block_type)
+                .expect("the block is present");
+            assert_eq!(
+                block.flags.report_on_failure, reports,
+                "{source}: {block_type:?} reports on failure exactly when the bundle allows it"
+            );
+        }
+    }
+}
+
+// A named flag's bit follows its field alone, at both flag levels, so a
+// hand-built `unrecognised` cannot carry a bit past the normalisation above:
+// the admin-record bit leaves an ordinary bundle ordinary on the wire, and
+// `report_on_failure`'s bit does not reach an admin record's block. A
+// genuinely unrecognised bit passes through.
+#[test]
+fn builder_keeps_named_bits_out_of_unrecognised_flags() {
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_flags(bundle::Flags {
+            unrecognised: Some(1 << 1),
+            ..Default::default()
+        })
+        .with_hop_count(&hop_info::HopInfo {
+            limit: NonZeroU8::new(30).unwrap(),
+            count: 0,
+        })
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let parsed = parse::parse(Bytes::from(data))
+        .expect("the bundle is not an administrative record on the wire")
+        .bundle;
+    assert!(!parsed.primary.flags.is_admin_record);
+    let hop_count = parsed
+        .blocks
+        .values()
+        .find(|b| b.block_type == block::Type::HopCount)
+        .expect("the Hop Count block is present");
+    assert!(
+        hop_count.flags.report_on_failure,
+        "an ordinary bundle keeps the Hop Count default"
+    );
+
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_flags(bundle::Flags {
+            is_admin_record: true,
+            ..Default::default()
+        })
+        .add_extension_block(block::Type::Unrecognised(200))
+        .unwrap()
+        .with_flags(block::Flags {
+            unrecognised: Some((1 << 1) | (1 << 8)),
+            ..Default::default()
+        })
+        .build(b"ext-data".as_slice().into())
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let parsed = parse::parse(Bytes::from(data))
+        .expect("no block of the administrative record requests a report")
+        .bundle;
+    let block = parsed
+        .blocks
+        .values()
+        .find(|b| b.block_type == block::Type::Unrecognised(200))
+        .expect("the extension block is present");
+    assert!(!block.flags.report_on_failure);
+    assert_eq!(block.flags.unrecognised, Some(1 << 8));
 }
 
 // NOTE: LLR 1.1.33 (Bundle Age required when Creation Time is zero) is enforced
@@ -232,6 +409,47 @@ fn crafted_max_extent_payload() {
             Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
         ),
         "crafted max-extent payload must be rejected, not overflow"
+    );
+}
+
+// An extension block whose declared body pushes its extent past the 256 MiB
+// pre-payload bound must be rejected from the declaration alone — a typed
+// `ExtensionBlocksTooLarge`, not a `NeedMoreData` invitation to spool a
+// quarter-gigabyte the parser must reject anyway. Only a handful of real
+// bytes are ever fed.
+#[test]
+fn oversized_extension_block_rejected_from_declaration() {
+    let (_, good) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(b"x".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    // Keep the outer array head + primary block, then graft an extension
+    // block — array(5)[type=7, num=2, flags=0, crc=none, data=bstr(len)] with
+    // the canonical 4-byte length head (256 MiB fits u32): 5 array/field
+    // bytes + a 5-byte byte-string head, so the body starts 10 bytes after
+    // the block and the extent ends right where the body does (no CRC
+    // trailer).
+    let prim_end = parse::parse(Bytes::copy_from_slice(&good))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&0)
+        .expect("primary block")
+        .extent
+        .end;
+    let len: u64 = 256 * 1024 * 1024;
+
+    let mut evil = good[..prim_end as usize].to_vec();
+    evil.extend_from_slice(&[0x85, 0x07, 0x02, 0x00, 0x00, 0x5A]);
+    evil.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
+
+    assert!(
+        matches!(
+            parse::parse(Bytes::copy_from_slice(&evil)),
+            Err(Error::ExtensionBlocksTooLarge(end)) if end == prim_end + 10 + len
+        ),
+        "oversized extension block must fail with the typed bound error"
     );
 }
 

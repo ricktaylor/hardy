@@ -100,8 +100,9 @@ The BPA is internally modular, with pluggable components for storage, routing, a
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐    │
 │  │  Routing (RIB)    │  │  Admin Endpoint   │  │  Filters              │    │
 │  │                   │  │                   │  │                       │    │
-│  │  Pattern-based    │  │  Status reports   │  │  Ingress / Egress     │    │
-│  │  route lookup     │  │  generation       │  │  hooks                │    │
+│  │  Pattern-based    │  │  Status reports   │  │  Ingress, Originate,  │    │
+│  │  route lookup     │  │  generation       │  │  Egress, Deliver      │    │
+│  │                   │  │                   │  │  hooks                │    │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘    │
 │                                                                             │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
@@ -112,7 +113,7 @@ The BPA is internally modular, with pluggable components for storage, routing, a
 │  │  │                            │  │                                │  │   │
 │  │  │  • localdisk-storage       │  │  • sqlite-storage              │  │   │
 │  │  │  • (memory, for testing)   │  │  • (memory, for testing)       │  │   │
-│  │  │  • (future: S3, etc.)      │  │  • (future: Postgres, etc.)    │  │   │
+│  │  │  • s3-storage              │  │  • postgres-storage            │  │   │
 │  │  └────────────────────────────┘  └────────────────────────────────┘  │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
@@ -133,7 +134,7 @@ For detailed pipeline and subsystem documentation, see [bpa/docs/design.md](../b
 | hardy-cbor | Library | CBOR encoding/decoding | [cbor/docs/design.md](../cbor/docs/design.md) |
 | hardy-bpv7 | Library | BPv7 bundle handling | [bpv7/docs/design.md](../bpv7/docs/design.md) |
 | hardy-bpv7-tools | Application | Bundle CLI (`bundle`) | [bpv7/tools/docs/design.md](../bpv7/tools/docs/design.md) |
-| hardy-cbor-tools | Application | CBOR CLI (`cbor`) | [cbor/tools/docs/design.md](../cbor/tools/docs/design.md) |
+| hardy-cbor-tools | Application | CBOR CLI (`cbor`) | [cbor/tools/README.md](../cbor/tools/README.md) |
 | hardy-eid-patterns | Library | EID pattern matching | [eid-patterns/docs/design.md](../eid-patterns/docs/design.md) |
 | hardy-async | Library | Async runtime abstraction | [async/docs/design.md](../async/docs/design.md) |
 | hardy-bpa | Library | Core BPA functionality | [bpa/docs/design.md](../bpa/docs/design.md) |
@@ -146,7 +147,6 @@ For detailed pipeline and subsystem documentation, see [bpa/docs/design.md](../b
 | hardy-file-cla | Library | File-based CLA | [file-cla/docs/design.md](../file-cla/docs/design.md) |
 | hardy-echo-service | Library | Echo service | [echo-service/docs/design.md](../echo-service/docs/design.md) |
 | hardy-otel | Library | OpenTelemetry integration | [otel/docs/design.md](../otel/docs/design.md) |
-| hardy-ipn-legacy-filter | Library | Legacy IPN filter | [ipn-legacy-filter/docs/design.md](../ipn-legacy-filter/docs/design.md) |
 | hardy-bibe | Library | BIBE implementation | [bibe/docs/design.md](../bibe/docs/design.md) |
 | hardy-tvr | Application | Time-Variant Routing agent | [tvr/docs/design.md](../tvr/docs/design.md) |
 | hardy-bpa-server | Application | BPA server | [bpa-server/docs/design.md](../bpa-server/docs/design.md) |
@@ -155,14 +155,14 @@ For detailed pipeline and subsystem documentation, see [bpa/docs/design.md](../b
 
 ## 5. Testing
 
-See the [Test Strategy](test_strategy.md) for the full verification approach, test plan inventory (32 plans), and tooling. The [Test Coverage Report](test_coverage_report.md) summarises current coverage across all crates.
+See the [Test Strategy](test_strategy.md) for the full verification approach, test plan inventory (31 plans), and tooling. The [Test Coverage Report](test_coverage_report.md) summarises current coverage across all crates.
 
 ## 6. Dependencies and Compatibility
 
 ### 6.1. Rust Edition
 
 - Edition: 2024
-- Minimum Rust version: 1.87
+- Minimum Rust version: 1.95
 
 ### 6.2. External Dependencies
 
@@ -175,10 +175,11 @@ See the [Test Strategy](test_strategy.md) for the full verification approach, te
 | opentelemetry | Metrics, traces, and logs export |
 | flume | Channel implementation |
 | rusqlite | SQLite bindings |
-| tokio-postgres | PostgreSQL client |
+| sqlx | PostgreSQL client, connection pooling, migrations |
 | aws-sdk-s3 | S3-compatible object storage |
 | rustls | TLS implementation |
-| chumsky | Parser combinators (EID patterns, TVR) |
+| chumsky | Parser combinators (static routes, TVR, `cbor` CLI) |
+| winnow | Parser combinators (EIDs, EID patterns) |
 | humantime | Duration parsing |
 | criterion | Performance benchmarking |
 

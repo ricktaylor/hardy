@@ -8,10 +8,14 @@ use hardy_async::{
     sync::{Mutex, spin},
 };
 use hardy_bpv7::{
+    bundle::Bundle as Bpv7Bundle,
     eid::{Eid, NodeId},
     status_report::ReasonCode,
 };
 use hardy_eid_patterns::EidPattern;
+use portable_atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, trace};
 
 #[cfg(feature = "instrument")]
@@ -33,6 +37,68 @@ use crate::{
     services::registry::Service,
     storage::store::Store,
 };
+
+/// The resolved inputs of a RIB lookup — the `{table, key}` pair
+/// [`Rib::find`] reads from the bundle's own record at every lookup.
+///
+/// `None` means the default in both halves: the default table, and the
+/// bundle's destination EID as the lookup key. Classifiers fill the halves
+/// through the delta's `route_table`/`route_key` fields; a bundle whose
+/// chain expressed no opinion looks up with the defaults.
+///
+/// Contract for key producers, recorded ahead of the first producer: the key
+/// replaces the destination for the *entire* walk, deciding node-level
+/// disposition — so a Classifier must never emit a key that resolves locally
+/// for a bundle that must forward (the segment-routing skip-self discipline;
+/// `docs/routing_table_redesign.md`, "Key selection").
+///
+/// The pair's influence ends at route selection: it picks the ECMP *group*
+/// (the route the walk resolves), never the *member* within it — member
+/// selection hashes the conversation `(source, destination)` only, the
+/// packet-entropy/lookup-state split every ECMP implementation observes. An
+/// explicit default in either half — the default table, or a key equal to
+/// the destination — is indistinguishable from unset.
+///
+/// Persisted in the bundle's classification group as the cache of the
+/// Classifier chain's last derivation; every lookup resolves from the
+/// record, so the persisted shape and the lookup input are one type by
+/// construction.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct RoutingKey {
+    /// The routing table to walk. `None` selects the default table, and an
+    /// explicit [`Self::DEFAULT_TABLE`] is indistinguishable from `None`.
+    /// Naming any other table is a strict no-match while only the default
+    /// exists — the bundle Waits for its topology rather than leaking onto
+    /// another (wait-not-drop). The representation of table identity is the
+    /// tables tranche's open question; the seam carries a numeric id until
+    /// it is settled.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub table: Option<u32>,
+    /// The lookup key. `None` keys the walk on the bundle's destination.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub key: Option<Eid>,
+}
+
+impl RoutingKey {
+    /// The id of the default table — the table `None` selects. Provisional
+    /// alongside the numeric id itself, until the tables tranche settles
+    /// table identity.
+    pub const DEFAULT_TABLE: u32 = 0;
+
+    /// Whether both halves are unset — the serde skip predicate that keeps
+    /// unkeyed records byte-identical to the prior at-rest shape.
+    #[cfg(feature = "serde")]
+    pub fn is_unset(&self) -> bool {
+        self.table.is_none() && self.key.is_none()
+    }
+}
 
 #[derive(Debug)]
 pub enum DispatchAction {
@@ -64,6 +130,15 @@ pub struct Rib {
     ecmp_hash_state: RandomState,
     pub(crate) tasks: TaskPool,
     poll_waiting_notify: Arc<Notify>,
+    // Waiting-poll requests raised so far (wrapping). The poll task records
+    // the count each poll covers, so a wakeup with nothing new — the permit
+    // `Notify` stores for a request that lands after a poll woke but before
+    // it read the count — skips the redundant scan.
+    poll_requests: AtomicUsize,
+    #[cfg(test)]
+    polls_covered: AtomicUsize,
+    #[cfg(test)]
+    polls_covered_notify: Notify,
     store: Arc<Store>,
     service_priority: u32,
 }
@@ -113,6 +188,11 @@ impl Rib {
             ecmp_hash_state: RandomState::default(),
             tasks: TaskPool::new(),
             poll_waiting_notify: Arc::new(Notify::new()),
+            poll_requests: AtomicUsize::new(0),
+            #[cfg(test)]
+            polls_covered: AtomicUsize::new(0),
+            #[cfg(test)]
+            polls_covered_notify: Notify::new(),
             store,
             service_priority,
         }
@@ -122,20 +202,55 @@ impl Rib {
         let cancel_token = self.tasks.cancel_token().clone();
         let rib = self.clone();
         hardy_async::spawn!(self.tasks, "poll_waiting_task", async move {
+            let mut covered = 0;
             loop {
                 select_biased! {
                     _ = cancel_token.cancelled().fuse() => {
                         break;
                     }
                     _ = rib.poll_waiting_notify.notified().fuse() => {
-                        dispatcher.poll_waiting(cancel_token.clone()).await;
+                        // Read before scanning: every request counted here
+                        // made its change first, so this poll sees it.
+                        let requested = rib.poll_requests.load(Ordering::Acquire);
+                        if requested != covered {
+                            dispatcher.poll_waiting(cancel_token.clone()).await;
+                            covered = requested;
+
+                            #[cfg(test)]
+                            {
+                                rib.polls_covered.store(covered, Ordering::Release);
+                                rib.polls_covered_notify.notify_one();
+                            }
+                        }
                     },
                 }
             }
             debug!("Poll waiting task complete");
         });
 
+        self.request_poll();
+    }
+
+    // Wakes the poll task to re-dispatch Waiting bundles. Callers make their
+    // routing or queue change first: the poll task reads the count before
+    // scanning, so a counted request's change is visible to that scan.
+    fn request_poll(&self) {
+        self.poll_requests.fetch_add(1, Ordering::Release);
         self.poll_waiting_notify.notify_one();
+    }
+
+    /// Waits until the poll task has finished a poll covering every request
+    /// raised so far, so a test can order a bundle's arrival in Waiting after
+    /// the polls its own setup triggered.
+    #[cfg(test)]
+    pub async fn poll_waiting_idle(&self) {
+        // The poll task's notify_one stores a permit if it lands between the
+        // check and the await, so no completion is missed.
+        while self.polls_covered.load(Ordering::Acquire)
+            != self.poll_requests.load(Ordering::Acquire)
+        {
+            self.polls_covered_notify.notified().await;
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -144,10 +259,28 @@ impl Rib {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub fn find(&self, bundle: &Bundle) -> Option<DispatchAction> {
+        // The lookup inputs are the record's own: the {table, key} the
+        // Classifier chain derived, destination-in-default-table when unset.
+        let key = bundle.metadata.routing_key();
+
+        // Only the default table exists until the tables tranche: a lookup
+        // naming any other table is a strict no-match, and the bundle Waits
+        // for its topology rather than leaking onto this one. An explicit
+        // default is the default — the same normalisation as the key.
+        if let Some(table_id) = key.table
+            && table_id != RoutingKey::DEFAULT_TABLE
+        {
+            debug!("Lookup names unknown table {table_id}: no match");
+            return None;
+        }
+
         let table = self.snapshot.load();
 
-        let result =
-            table.find_recurse(&bundle.primary().destination, true, &mut HashSet::new())?;
+        let result = table.find_recurse(
+            key.key.as_ref().unwrap_or(&bundle.primary().destination),
+            true,
+            &mut HashSet::new(),
+        )?;
 
         let previous;
         let result = if matches!(result, LookupResult::Reflect) {
@@ -167,7 +300,7 @@ impl Rib {
                 peer,
                 next_hop: next_hop.clone(),
             }),
-            LookupResult::ForwardEcmp(peers) => self.select_peer(peers, bundle),
+            LookupResult::ForwardEcmp(peers) => self.select_peer(peers, &bundle.bpv7),
             LookupResult::Reflect => None,
         }
     }
@@ -195,7 +328,11 @@ impl Rib {
         self.snapshot.load().find_peers(to)
     }
 
-    fn select_peer(&self, mut peers: Vec<(u32, &Eid)>, bundle: &Bundle) -> Option<DispatchAction> {
+    fn select_peer(
+        &self,
+        mut peers: Vec<(u32, &Eid)>,
+        bundle: &Bpv7Bundle,
+    ) -> Option<DispatchAction> {
         if peers.is_empty() {
             debug_assert!(false, "Empty Forward result from find_recurse");
             return None;
@@ -203,12 +340,18 @@ impl Rib {
 
         trace!(peers = ?peers, "Forward to CLA peers");
 
+        // Member selection hashes the conversation only. The RoutingKey's
+        // influence was spent selecting the group (the route the walk
+        // resolved): hashing lookup state here would split a conversation
+        // whose classification varies per bundle across members — the
+        // reordering ECMP affinity exists to prevent. Packet entropy picks
+        // the member; policy-injected entropy is the egress flow-label
+        // input's seat, not this one.
         let idx = if peers.len() > 1 {
-            (self.ecmp_hash_state.hash_one((
-                &bundle.bpv7.primary.id.source,
-                &bundle.bpv7.primary.destination,
-                &bundle.metadata.writable.flow_label,
-            )) % (peers.len() as u64)) as usize
+            (self
+                .ecmp_hash_state
+                .hash_one((&bundle.primary.id.source, &bundle.primary.destination))
+                % (peers.len() as u64)) as usize
         } else {
             0
         };
@@ -263,7 +406,7 @@ impl Rib {
 
         // notify if not AdminEndpoint
         if !matches!(action, Action::Internal(InternalAction::AdminEndpoint)) {
-            self.poll_waiting_notify.notify_one();
+            self.request_poll();
         }
 
         Ok(true)
@@ -301,7 +444,7 @@ impl Rib {
                 if let Some(peers) = self.find_peers(to)
                     && self.reset_peer_queues(peers).await
                 {
-                    self.poll_waiting_notify.notify_one();
+                    self.request_poll();
                 }
             }
             Action::Internal(InternalAction::Forward(peer)) => {
@@ -311,7 +454,7 @@ impl Rib {
                 let queued = self.store.reset_peer_queue(peer).await;
                 let in_flight = self.store.reset_peer_ack_pending(peer).await;
                 if queued || in_flight {
-                    self.poll_waiting_notify.notify_one();
+                    self.request_poll();
                 }
             }
             Action::Internal(InternalAction::Local(ref service)) => {
@@ -321,7 +464,7 @@ impl Rib {
                 // (DeliveryAckPending) are untouched — they resolve
                 // themselves.
                 self.store.reset_service_queue(service.eid()).await;
-                self.poll_waiting_notify.notify_one();
+                self.request_poll();
             }
             _ => {}
         }
@@ -361,7 +504,7 @@ impl Rib {
             }
         }
         if changed {
-            self.poll_waiting_notify.notify_one();
+            self.request_poll();
         }
     }
 
@@ -511,6 +654,7 @@ mod tests {
 
     use super::*;
     use crate::bundle::tests::test_bundle;
+    use crate::filter::slots::MetadataDelta;
     use crate::services::registry::ServiceImpl;
     use crate::services::tests::NullService;
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
@@ -588,6 +732,16 @@ mod tests {
             allocator_id: 0,
             node_number: n,
         })
+    }
+
+    // Writes the routing inputs the way production does: through the
+    // classification group's delta-apply write path.
+    fn set_routing(bundle: &mut Bundle, table: Option<u32>, key: Option<&str>) {
+        bundle.metadata.apply(MetadataDelta {
+            route_table: table,
+            route_key: key.map(|k| k.parse().unwrap()),
+            ..Default::default()
+        });
     }
 
     #[test]
@@ -778,6 +932,65 @@ mod tests {
     }
 
     #[test]
+    fn test_ecmp_key_selects_group_not_member() {
+        let rib = make_rib();
+        add_route(
+            &rib,
+            "ipn:0.50.*",
+            "ecmp_a",
+            Action::Route(RouteAction::Via("ipn:0.10.0".parse().unwrap())),
+            10,
+        );
+        add_route(
+            &rib,
+            "ipn:0.50.*",
+            "ecmp_b",
+            Action::Route(RouteAction::Via("ipn:0.11.0".parse().unwrap())),
+            10,
+        );
+        add_local_forward(&rib, ipn_node(10), 10);
+        add_local_forward(&rib, ipn_node(11), 11);
+
+        // A keyed walk reaches the ECMP group even when the destination has
+        // no route of its own — the key selects the group.
+        let mut bundle = make_bundle("ipn:0.60.1");
+        set_routing(&mut bundle, None, Some("ipn:0.50.7"));
+        let keyed_off_destination = match rib.find(&bundle) {
+            Some(DispatchAction::Forward { peer, .. }) => peer,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+        assert!(
+            keyed_off_destination == 10 || keyed_off_destination == 11,
+            "Peer must be one of the ECMP targets, got {keyed_off_destination}"
+        );
+
+        // Member selection hashes the conversation only: the same
+        // (source, destination) selects the same member whatever the
+        // RoutingKey, provided the walks resolve to the same group. This
+        // holds for every hash seed — lookup state is not hash input.
+        let bundle = make_bundle("ipn:0.50.1");
+        let unkeyed = match rib.find(&bundle) {
+            Some(DispatchAction::Forward { peer, .. }) => peer,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+        let mut keyed = make_bundle("ipn:0.50.1");
+        keyed.bpv7.primary.id = bundle.id().clone();
+        set_routing(
+            &mut keyed,
+            Some(RoutingKey::DEFAULT_TABLE),
+            Some("ipn:0.50.7"),
+        );
+        let keyed = match rib.find(&keyed) {
+            Some(DispatchAction::Forward { peer, .. }) => peer,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+        assert_eq!(
+            unkeyed, keyed,
+            "The RoutingKey must not perturb member selection within a group"
+        );
+    }
+
+    #[test]
     fn test_ecmp_direct_forwards() {
         let rib = make_rib();
 
@@ -810,6 +1023,54 @@ mod tests {
             other => panic!("Expected Forward, got {other:?}"),
         };
         assert_eq!(peer, peer2, "ECMP selection must be deterministic");
+    }
+
+    #[test]
+    fn test_key_overrides_destination() {
+        let rib = make_rib();
+        add_local_forward(&rib, ipn_node(2), 42);
+
+        // No route exists for the destination; the key routes the bundle.
+        let mut bundle = make_bundle("ipn:0.50.1");
+        set_routing(&mut bundle, None, Some("ipn:0.2.1"));
+        let result = rib.find(&bundle);
+        assert!(
+            matches!(result, Some(DispatchAction::Forward { peer: 42, .. })),
+            "The key must drive the walk when the destination has no route, got {result:?}"
+        );
+
+        // The override is total: a key with no route waits, even though the
+        // destination itself has one.
+        let mut bundle = make_bundle("ipn:0.2.1");
+        set_routing(&mut bundle, None, Some("ipn:0.60.1"));
+        let result = rib.find(&bundle);
+        assert!(
+            result.is_none(),
+            "A keyed lookup must not fall back to the destination, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_table_waits() {
+        let rib = make_rib();
+        add_local_forward(&rib, ipn_node(2), 42);
+
+        let mut bundle = make_bundle("ipn:0.2.1");
+        set_routing(&mut bundle, Some(1), None);
+        let result = rib.find(&bundle);
+        assert!(
+            result.is_none(),
+            "A lookup naming a table that does not exist must wait, not fall through, got {result:?}"
+        );
+
+        // An explicit default table is the default table (per-field
+        // last-writer-wins overwrites the stored table).
+        set_routing(&mut bundle, Some(RoutingKey::DEFAULT_TABLE), None);
+        let result = rib.find(&bundle);
+        assert!(
+            matches!(result, Some(DispatchAction::Forward { peer: 42, .. })),
+            "An explicit default table must walk as None does, got {result:?}"
+        );
     }
 
     #[test]
