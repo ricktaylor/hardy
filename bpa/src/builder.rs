@@ -7,7 +7,11 @@ use crate::{
     bpa::Bpa,
     cla::{Cla, ClaInit, registry::ClaRegistryBuilder},
     dispatcher::{self, Dispatcher},
-    filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
+    filter::{
+        Filter, FilterEngine, Hook,
+        pack::{FilterPack, chains::FilterChains},
+        validity::BundleValidityFilter,
+    },
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
@@ -29,6 +33,7 @@ use crate::{
 /// Defaults: in-memory storage (never cached), status reports disabled,
 /// processing pool = 4x available parallelism. A configured bundle storage
 /// is cached unless [`no_cache()`](BpaBuilder::no_cache) is called.
+#[must_use = "a builder does nothing until build() is called"]
 pub struct BpaBuilder {
     status_reports: bool,
     poll_channel_depth: NonZeroUsize,
@@ -48,6 +53,7 @@ pub struct BpaBuilder {
     service_registry_builder: ServiceRegistryBuilder,
     cla_registry_builder: ClaRegistryBuilder,
     rib_builder: RibBuilder,
+    filter_packs: Vec<FilterPack>,
 }
 
 impl BpaBuilder {
@@ -97,6 +103,7 @@ impl BpaBuilder {
             service_registry_builder: ServiceRegistryBuilder::new(),
             cla_registry_builder: ClaRegistryBuilder::new(),
             rib_builder: RibBuilder::new(),
+            filter_packs: Vec::new(),
         }
     }
 
@@ -257,8 +264,22 @@ impl BpaBuilder {
         self
     }
 
+    /// Adds a filter pack: its filter registrations are spliced into the
+    /// per-hook chains at [`build()`](Self::build), in registration order
+    /// within the pack and in `add_filters` call order across packs. The
+    /// registrations' diagnostic labels carry the pack's name as a prefix.
+    pub fn add_filters(mut self, pack: FilterPack) -> Self {
+        self.filter_packs.push(pack);
+        self
+    }
+
     /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
+        // Freeze the filter packs first: the per-hook chains splice in call
+        // order, and P = the max declared payload peek. Nothing runs the
+        // frozen chains yet.
+        let _filter_chains = FilterChains::freeze(self.filter_packs);
+
         // Auto-register the RFC 9171 validity filter unless disabled: built
         // here, from the final flag values, so this seat and the dispatcher's
         // pre-drain gate enforce the same policy.
