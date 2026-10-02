@@ -1,14 +1,22 @@
-use core::time::Duration;
+use core::{str::from_utf8, time::Duration};
 
 use hardy_bpv7::{
     eid::{Eid, NodeId},
     hop_info::HopInfo,
 };
+use hardy_cbor::decode::{Head, Marker, parse, parse_exact};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{Arc, cla::ClaAddress};
+use crate::{
+    Arc,
+    cla::ClaAddress,
+    filter::slots::{
+        Blob, MetadataDelta, Slot, SlotValue,
+        state::{PolicyEpoch, SlotMap},
+    },
+};
 
 /// How a bundle entered this BPA's custody.
 ///
@@ -81,11 +89,27 @@ pub struct ExtensionFields {
 }
 
 // Output of the classifier chain: persisted, cleared and re-derived at
-// restart re-admission. Fields arrive with the filter and policy tranches
-// (see bpa/docs/filter_subsystem_redesign.md).
+// restart re-admission. The class and route_key fields arrive with the
+// policy and routing tranches (see bpa/docs/filter_subsystem_design.md).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-struct Classification {}
+struct Classification {
+    // Annotation slots — embedder-private, gated by the declaring static. The
+    // skip predicate keeps slot-free records byte-identical to the
+    // pre-slots serde shape.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "SlotMap::is_empty")
+    )]
+    slots: SlotMap,
+    // Policy-epoch stamp for lazy restart re-admission — engine bookkeeping
+    // with no accessor at all.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "PolicyEpoch::is_initial")
+    )]
+    epoch: PolicyEpoch,
+}
 
 /// Mutable annotations that filters may modify during bundle processing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -190,5 +214,197 @@ impl BundleMetadata {
     /// How the bundle entered this BPA's custody.
     pub fn origin(&self) -> &Origin {
         &self.provenance.origin
+    }
+
+    /// Reads an annotation slot, decoding the stored value.
+    ///
+    /// Only code that can name the [`Slot`] reads it. Returns `None` when
+    /// the slot is unset — or when the stored bytes no longer decode as `T`
+    /// (a stale value from a declaration whose type changed across a restart
+    /// reads as unset rather than erroring; the next classification pass
+    /// re-derives it).
+    pub fn slot<T: SlotValue>(&self, slot: &Slot<T>) -> Option<T> {
+        parse_exact(self.classification.slots.get(slot.name())?).ok()
+    }
+
+    /// Reads a text slot as a borrowed view of the stored bytes — the
+    /// zero-copy read.
+    ///
+    /// [`set`](MetadataDelta::set) encodes canonically, so a stored text
+    /// value is a definite-length string whose payload sits contiguous in
+    /// the record; the returned `&str` borrows it directly. `None` when the
+    /// slot is unset or the stored bytes are not exactly one untagged
+    /// definite-length text string.
+    pub fn slot_str(&self, slot: &Slot<String>) -> Option<&str> {
+        let data = self.classification.slots.get(slot.name())?;
+        let (head, _, offset) = parse::<(Head, bool, usize)>(data).ok()?;
+        if !head.tags.is_empty() {
+            return None;
+        }
+        let Marker::Text(Some(len)) = head.marker else {
+            return None;
+        };
+        let end = offset.checked_add(usize::try_from(len).ok()?)?;
+        if end != data.len() {
+            return None;
+        }
+        from_utf8(&data[offset..end]).ok()
+    }
+
+    /// Reads a blob slot as a borrowed view of the stored bytes — the
+    /// zero-copy read; see [`slot_str`](Self::slot_str).
+    pub fn slot_bytes(&self, slot: &Slot<Blob>) -> Option<&[u8]> {
+        let data = self.classification.slots.get(slot.name())?;
+        let (head, _, offset) = parse::<(Head, bool, usize)>(data).ok()?;
+        if !head.tags.is_empty() {
+            return None;
+        }
+        let Marker::Bytes(Some(len)) = head.marker else {
+            return None;
+        };
+        let end = offset.checked_add(usize::try_from(len).ok()?)?;
+        if end != data.len() {
+            return None;
+        }
+        data.get(offset..end)
+    }
+
+    /// Applies a Classifier's delta — the only write path into the
+    /// classification group.
+    ///
+    /// Per-slot last-writer-wins. Every write is stored as written: filters
+    /// are trusted code, and a Classifier bounds what it writes.
+    pub(crate) fn apply(&mut self, delta: MetadataDelta) {
+        for write in delta.slots {
+            self.classification.slots.insert(write.name, write.value);
+        }
+    }
+
+    /// Clears the classification group for re-derivation (restart
+    /// re-admission or a policy-epoch bump), stamping the epoch the next
+    /// classification pass runs under.
+    #[allow(dead_code)] // wired by the restart re-admission path (Phase 3, filter_subsystem_design.md)
+    pub(crate) fn clear_classification(&mut self, epoch: PolicyEpoch) {
+        self.classification.slots.clear();
+        self.classification.epoch = epoch;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::filter::slots::Blob;
+
+    use super::*;
+
+    // Slots built by name: the stale-type tests need two slots sharing a
+    // name, which `slot!` cannot declare.
+    fn handle<T: SlotValue>(name: &'static str) -> Slot<T> {
+        Slot::__declare(name)
+    }
+
+    #[test]
+    fn slot_round_trips_through_delta_apply() {
+        let h = handle::<u32>("vendor.x");
+        let mut md = BundleMetadata::originated();
+
+        let mut delta = MetadataDelta::default();
+        delta.set(&h, &42u32);
+        md.apply(delta);
+
+        assert_eq!(md.slot(&h), Some(42));
+    }
+
+    #[test]
+    fn owned_container_slot_values_round_trip() {
+        // The vendor-facing cases: a String rides the codec's owned
+        // decode directly through the blanket SlotValue, and an opaque
+        // byte blob rides the slots-provided Blob newtype (bare byte
+        // containers deliberately are not SlotValues — see Blob's docs).
+        let h_text = handle::<String>("vendor.text");
+        let h_blob = handle::<Blob>("vendor.blob");
+        let mut md = BundleMetadata::originated();
+
+        let mut delta = MetadataDelta::default();
+        delta.set(&h_text, &"parsed-at-ingress".to_string());
+        delta.set(&h_blob, &Blob(Box::from(&[0xDEu8, 0xAD, 0xBE, 0xEF][..])));
+        md.apply(delta);
+
+        assert_eq!(md.slot(&h_text), Some("parsed-at-ingress".to_string()));
+        assert_eq!(
+            md.slot(&h_blob),
+            Some(Blob(Box::from(&[0xDEu8, 0xAD, 0xBE, 0xEF][..])))
+        );
+
+        // The zero-copy reads: borrowed views straight into the record.
+        assert_eq!(md.slot_str(&h_text), Some("parsed-at-ingress"));
+        assert_eq!(
+            md.slot_bytes(&h_blob),
+            Some(&[0xDEu8, 0xAD, 0xBE, 0xEF][..])
+        );
+    }
+
+    #[test]
+    fn borrowed_slot_views_read_stale_types_as_unset() {
+        // A u32 written under the name: neither borrowed view matches.
+        let h_writer = handle::<u32>("vendor.x");
+        let h_text = handle::<String>("vendor.x");
+        let h_blob = handle::<Blob>("vendor.x");
+        let mut md = BundleMetadata::originated();
+
+        let mut delta = MetadataDelta::default();
+        delta.set(&h_writer, &42u32);
+        md.apply(delta);
+
+        assert_eq!(md.slot_str(&h_text), None);
+        assert_eq!(md.slot_bytes(&h_blob), None);
+    }
+
+    #[test]
+    fn later_write_wins_within_and_across_deltas() {
+        let h = handle::<u32>("vendor.x");
+        let mut md = BundleMetadata::originated();
+
+        // Within one delta: the second set wins.
+        let mut delta = MetadataDelta::default();
+        delta.set(&h, &1u32);
+        delta.set(&h, &2u32);
+        md.apply(delta);
+        assert_eq!(md.slot(&h), Some(2));
+
+        // Across sequential deltas (the chain rule): the later delta wins.
+        let mut delta = MetadataDelta::default();
+        delta.set(&h, &3u32);
+        md.apply(delta);
+        assert_eq!(md.slot(&h), Some(3));
+    }
+
+    #[test]
+    fn clear_classification_wipes_slots_and_stamps_the_epoch() {
+        let h = handle::<u32>("vendor.x");
+        let mut md = BundleMetadata::originated();
+
+        let mut delta = MetadataDelta::default();
+        delta.set(&h, &42u32);
+        md.apply(delta);
+
+        md.clear_classification(PolicyEpoch(3));
+
+        assert_eq!(md.slot(&h), None);
+        assert_eq!(md.classification.epoch, PolicyEpoch(3));
+    }
+
+    #[test]
+    fn stale_bytes_of_another_type_read_as_unset() {
+        let h_writer = handle::<u32>("vendor.x");
+        let h_reader = handle::<bool>("vendor.x");
+        let mut md = BundleMetadata::originated();
+
+        // A registration that changed type across a restart: the stored
+        // bytes decode as the old type, not the new one.
+        let mut delta = MetadataDelta::default();
+        delta.set(&h_writer, &42u32);
+        md.apply(delta);
+
+        assert_eq!(md.slot(&h_reader), None);
     }
 }
