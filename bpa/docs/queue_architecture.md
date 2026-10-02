@@ -10,7 +10,7 @@ The BPA pipeline can be understood as a set of stateless processing blocks conne
 graph LR
     CLA([CLA]) --> Ingest[Ingest]
     Service([Service]) --> Originate[Originate]
-    Ingest -->|MPSC| Dispatch[Dispatch]
+    Ingest -->|inline| Dispatch[Dispatch]
     Originate -->|MPSC| Dispatch
     Dispatch -->|MPSC per peer| EgressCtl[EgressController]
     EgressCtl -->|MPSC per peer| ClaSend[ClaSend]
@@ -25,11 +25,11 @@ graph LR
     Reassemble -->|complete| Ingest
 ```
 
-**Legend:** Solid lines = active queues (continuous consumers). Dashed lines = gated queues (event-triggered sweep). Circles = gated holding states.
+**Legend:** Solid lines = active queues (continuous consumers). Dashed lines = gated queues (event-triggered sweep). Circles = gated holding states. An `inline` edge is a direct hand-off on the producer's task, with no queue between the blocks.
 
 ### Processing blocks
 
-- **Ingest** — drive `Sink::write(&dyn Receiver<Segment>)` from the CLA, stream bytes through the parser and early filters, spool to `BundleStorage::store()`, run late ingress filters, checkpoint metadata. (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
+- **Ingest** — drive `Sink::write(&dyn Receiver<Segment>)` from the CLA, stream bytes through the parser, the pre-drain gate, and the Ingress filter chain (a single pass — there is no late ingress pass, see [filter_subsystem_design.md](filter_subsystem_design.md)), run the route lookup (the routing decision of record), spool through `Store::save_stream()`, write the metadata record once, and execute the routing decision directly. (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
 - **Originate** — receive from local service, run originate filters, checkpoint to storage
 - **Dispatch** — RIB lookup, fan-out to deliver/admin/reassemble/wait queues. For forwarding, enqueues to a per-peer queue
 - **EgressController** — consumer of per-peer queue. Classifies bundles, rate-limits and reorders by traffic class (HTB scheduling), enqueues to a per-peer CLA queue
@@ -42,7 +42,7 @@ graph LR
 
 **Active queues** have continuous consumers with storage-backed hybrid channels (fast in-memory path with storage-backed slow path for backpressure):
 
-- **Dispatch** (`Dispatching`) — MPSC. Multiple producers (CLA reception, local origination, status reports, reassembly, gated queue sweeps). Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
+- **Dispatch** (`Dispatching`) — MPSC. Multiple producers (local origination, status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes, restart); fresh CLA arrivals and reassembled bundles execute their gate routing decision directly and never transit it. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
 - **Egress** (`ForwardPending { peer, queue }`) — MPSC per peer per policy queue. Any dispatch worker can produce. Single poller per queue feeds the CLA
 
 **Gated queues** are structurally the same as active queues — ordered, storage-backed — but their consumer blocks on a side-channel signal. The consumer only polls when the signal indicates conditions have changed and draining may be productive:
@@ -53,7 +53,7 @@ graph LR
 **Other states** that are not queues in the current implementation:
 
 - **AduFragment** (`AduFragment { source, timestamp }`) — fragment accumulator. No consumer; completion detected when a new fragment completes the set
-- **New** (`New`) — crash recovery checkpoint between "data stored" and "ingress complete." Not a queue — a transient recovery waypoint
+- **New** (`New`) — the default status of a record under construction, never persisted: ingress and origination write a single `Dispatching` record once the Ingress or Originate chain has run, so a crash before that write leaves bundle data with no metadata, which restart recovers as an orphan
 
 ### Peer loss
 
@@ -115,7 +115,7 @@ The `MetadataStorage` implementation is exclusive to a single BPA instance — t
 
 This provides **at-least-once** delivery semantics: a bundle may be processed more than once after a crash, but it is never lost. Processing blocks must be idempotent — re-dispatching re-runs the RIB lookup, re-forwarding checks for duplicates, re-delivery is handled by the service layer.
 
-**Known issue:** There is a crash window between an ingress filter rewriting the bundle binary (`BundleStorage::replace`) and the subsequent enqueue to Dispatch. If the process crashes in this window, recovery finds an unqueued bundle with already-rewritten data and re-runs ingestion — the filter executes again on already-filtered data. This is a pre-existing issue not introduced by the queue architecture. Possible mitigations include storing the filter result as a metadata-level diff applied at load time, or making filters idempotent. To be addressed separately.
+No crash window exists between an ingress filter and the subsequent enqueue to Dispatch: no filter mutation is ever persisted — input filters write only idempotent metadata deltas, and Rewriter edits are per-attempt and in-memory (see [filter_subsystem_design.md](filter_subsystem_design.md)).
 
 ### Storage maintenance (reaper)
 
@@ -149,7 +149,7 @@ In a distributed architecture, the reaper becomes a storage-level maintenance jo
 
 ### Eliminating `New` status
 
-With the redesigned trait, `New` is implicit. A bundle stored via `MetadataStorage::store` but not yet enqueued via `enqueue` is simply unqueued. Crash recovery finds all unqueued bundles and re-runs ingestion.
+The single-write ingress model already makes `New` implicit: ingress writes the metadata record once, at `Dispatching`, after its chain has run, so a crash before that write leaves bundle data with no metadata, which crash recovery re-ingests as an orphan. The redesigned trait keeps that shape — a bundle stored via `MetadataStorage::store` but not yet enqueued via `enqueue` is simply unqueued, and crash recovery finds all unqueued bundles and re-runs ingestion.
 
 ### Resulting queue schema
 
@@ -296,7 +296,9 @@ All classification, filtering, routing, and scheduling logic lives in processing
 
 ### Flow labels and classification
 
-The `flow_label` (`Option<u32>` in `WritableMetadata`) is a traffic class tag set by ingress/originate filters. It carries no scheduling semantics itself — it is a label like "Blue" or "Green" traffic. All policy decisions are derived from it by classification lookups at different points in the pipeline.
+> **Being superseded.** The filter-writable `flow_label` field (`WritableMetadata`) has been removed from the code: the write path is now the classification seam owned by [`filter_subsystem_design.md`](filter_subsystem_design.md) ("`MetadataDelta` and the traffic class"), and the label the egress policy consumes (ECMP, HTB-style queue selection — both still in scope) will be derived from classification when the policy tranche lands ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md)). This section's own principle survives in sharpened form — filters assign, the pipeline consumes. The text below is retained until the policy tranche applies the recorded amendments.
+
+The `flow_label` (`Option<u32>` in `WritableMetadata`) was a traffic class tag set by ingress/originate filters. It carries no scheduling semantics itself — it is a label like "Blue" or "Green" traffic. All policy decisions are derived from it by classification lookups at different points in the pipeline.
 
 Multiple independent policy dimensions derive from the same flow_label:
 

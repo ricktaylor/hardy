@@ -26,15 +26,14 @@ impl Dispatcher {
         lifetime: Duration,
         flags: Option<services::SendOptions>,
     ) -> Result<Id, services::Error> {
-        // Build bundle and run the Originate chain before storing. The bundle
-        // id is unique within this process by construction —
-        // `CreationTimestamp::now` issues process-monotonic `(time,
-        // sequence)` pairs — so the builder never collides with an id this
-        // process issued and there is nothing to retry. `DuplicateBundle`
-        // surfaces a duplicate already in the store (in practice a
-        // pre-restart bundle after a backward clock step, made vanishingly
-        // unlikely by the nanosecond-seeded sequence floor) — and only
-        // that: a metadata-storage failure aborts inside `Store::store`.
+        // Build bundle and run the Originate chain before storing. Built
+        // once, no rebuild-and-retry: `CreationTimestamp::now` issues
+        // process-monotonic (time, sequence) pairs, so the id is unique by
+        // construction and `DuplicateBundle` can only mean a collision with
+        // a pre-restart bundle (a wall clock that stepped backwards across a
+        // restart, per RFC 9171 §4.2.7) — surfaced to the caller, who may
+        // resend; the store's atomic insert refusal remains the backstop,
+        // and a metadata-storage failure aborts inside `Store::store`.
         let mut builder = Builder::new(source, destination.clone()).with_lifetime(lifetime);
 
         // Set flags
@@ -157,19 +156,18 @@ impl Dispatcher {
             return Err(services::Error::Dropped(Some(ReasonCode::HopLimitExceeded)));
         }
 
-        // Run the Originate filter hook (pure in-memory, pre-store); a Drop
+        // Run the Originate chain (pure in-memory, pre-store); a Drop
         // returns its reason to the originating service.
         let (mut bundle, data) = match self
-            .filter_engine
-            .exec(filter::Hook::Originate, bundle, data, self.key_provider())
-            .await
+            .filters
+            .run_originate(bundle, data, &*self.key_provider)
         {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(_, reason)) => {
+            Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+            Ok(filter::ChainOutcome::Drop(_, reason)) => {
                 return Err(services::Error::Dropped(reason));
             }
-            Err(e) => {
-                error!("Originate filter execution failed: {e}");
+            Err((_, e)) => {
+                error!("Originate filter chain failed: {e}");
                 return Err(services::Error::Internal(e));
             }
         };

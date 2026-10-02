@@ -16,7 +16,6 @@ Live coverage dashboards: CFLite fuzz coverage at <https://ricktaylor.github.io/
 | hardy-tcpclv4 | 24.7% (604 of 2443 lines) | 7.0% (55 of 791 functions) |
 | hardy-otel | 78.7% (439 of 558 lines) | 53.3% (64 of 120 functions) |
 | hardy-async | 76.1% (534 of 702 lines) | 6.7% (139 of 2065 functions) |
-| hardy-ipn-legacy-filter | 97.9% (93 of 95 lines) | 100.0% (21 of 21 functions) |
 | hardy-tvr | 78.1% (2203 of 2821 lines) | 78.8% (272 of 345 functions) |
 | hardy-sqlite-storage | 71.8% (455 of 634 lines) | 37.4% (76 of 203 functions) |
 | hardy-localdisk-storage | 71.8% (250 of 348 lines) | 35.0% (28 of 80 functions) |

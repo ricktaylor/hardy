@@ -181,17 +181,6 @@ impl MetadataMemStorage {
         }
     }
 
-    // Apply a mutation, then emit any watermark transition once the lock has
-    // been released.
-    fn apply(&self, key: Id, value: Entry) {
-        let edge = {
-            let mut inner = self.inner.lock();
-            inner.upsert(key, value);
-            inner.check_watermark(self.high_watermark, self.low_watermark)
-        };
-        self.log_edge(edge);
-    }
-
     fn log_edge(&self, edge: Option<Edge>) {
         match edge {
             Some(Edge::Enter { live }) => info!(
@@ -250,11 +239,6 @@ impl MetadataStorage for MetadataMemStorage {
         };
         self.log_edge(edge);
         Ok(true)
-    }
-
-    async fn replace(&self, bundle: &Bundle) -> Result<()> {
-        self.apply(bundle.id().clone(), Entry::Live(Box::new(bundle.clone())));
-        Ok(())
     }
 
     async fn swap_status(
@@ -790,7 +774,10 @@ mod tests {
         assert!(storage.insert(&bundle).await.unwrap());
         storage.tombstone(bundle.id()).await.unwrap();
 
-        storage.replace(&bundle).await.unwrap();
+        assert!(
+            !storage.insert(&bundle).await.unwrap(),
+            "an insert must not resurrect a tombstone"
+        );
         assert!(storage.get(bundle.id()).await.unwrap().is_none());
     }
 }
