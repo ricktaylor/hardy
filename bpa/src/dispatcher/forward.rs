@@ -271,6 +271,23 @@ impl Dispatcher {
         // included) rejects the combination.
         let report_on_failure = !bundle.primary().forbids_report_on_failure();
 
+        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data);
+
+        // Fixed head of the rewrite stage: apply the §E block removals the
+        // ingress gate deferred (RFC 9172 §5.1.1 failure-drops + honoured
+        // `delete_block_on_failure` unknowns). The stored bundle is as
+        // received; the removal — with its full BPSec cascade — happens here,
+        // per transmission attempt.
+        if !bundle.metadata.to_remove.is_empty() {
+            use hardy_bpv7::bpsec::edit::BPSecEditor;
+            let key_source = self.key_source(&raw, &source_data);
+            let to_remove = bundle.metadata.to_remove.iter().copied().collect();
+            editor = editor
+                .remove_blocks(to_remove, key_source.as_ref())
+                .map_err(|(_, e)| e)?
+                .0;
+        }
+
         // The per-hop blocks below are replaced through `insert_block`, which
         // strips a replaced block from any plaintext BIB that covers it. That
         // is Hardy's relay policy, within the waypoint latitude of RFC 9172
@@ -288,7 +305,7 @@ impl Dispatcher {
         // encrypted BIB) refuses, and the caller parks the bundle.
 
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
+        let mut editor = editor
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(|(_, e)| e)?
             .with_flags(hardy_bpv7::block::Flags {

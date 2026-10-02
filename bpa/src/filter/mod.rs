@@ -42,7 +42,7 @@
 //! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
 //! |---|---|---|---|
 //! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | `services::Error::Internal` to the caller; nothing was stored |
-//! | Ingress | dropped with a deletion report per the bundle's request flags | deleted silently, even when the flags request reporting | resolved as `BlockUnintelligible` — the stored bytes failed the chain's own decode pass |
+//! | Ingress | dropped before anything is stored, with one reception + deletion report per the bundle's request flags | the same, without the deletion assertion even when the flags request one (a requested reception report is still sent) | none — the chain decodes nothing itself: it runs on the gate's header decode, whose failures are the header pass's |
 //! | Egress | dropped with a flag-gated deletion report; the transmission attempt ends | deleted silently | the claim returns to `Waiting` for a fresh routing decision |
 //! | Deliver | dropped with a flag-gated deletion report | deleted silently | parked `WaitingForService`, recovered by the next (re-)registration |
 //!

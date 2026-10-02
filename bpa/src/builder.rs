@@ -112,14 +112,15 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets the maximum size of a single reassembled bundle at ingress.
+    /// Sets the maximum size, in bytes, of a single bundle at any ingress
+    /// door.
     ///
-    /// Streamed dispatch and streamed service origination accumulate
-    /// segments until the bundle is complete; this bound stops a runaway or
-    /// hostile producer growing BPA memory without limit. An over-cap CLA
-    /// transfer is answered [`Acceptance::Refused`](crate::cla::Acceptance)
-    /// (the CLA withholds its acknowledgement); an over-cap origination
-    /// fails with a size error to the producer. A cap beyond the target's
+    /// A received or originated bundle accumulates in memory until it is
+    /// stored, so this bound stops a runaway or hostile producer growing BPA
+    /// memory without limit. An over-cap or truncated CLA transfer is
+    /// answered [`Acceptance::Refused`](crate::cla::Acceptance) (the CLA
+    /// withholds its acknowledgement); an over-cap origination fails with a
+    /// size error to the producer. A cap beyond the target's
     /// addressable bound (`isize::MAX`, relevant on 32-bit targets) is
     /// clamped to it — the clamped value is both enforced and advertised to
     /// CLAs at registration.

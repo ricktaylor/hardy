@@ -54,7 +54,7 @@ pub struct FilterChains {
     pub deliver: OutputChain,
     /// P: the maximum payload peek declared across every input-hook
     /// registration.
-    #[allow(dead_code)] // consumed by the pre-drain Ingress seat (Phase 3)
+    #[allow(dead_code)] // no consumer yet: the payload-peek wiring (refactor_plan.md Phase 3)
     pub max_peek: usize,
 }
 

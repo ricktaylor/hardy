@@ -131,7 +131,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Builds the bundle with the given timestamp, returning the parsed
-    /// [`Bundle`] view (primary block + blocks map) alongside
+    /// [`Bundle`](crate::Bundle) view (primary block + blocks map) alongside
     /// the encoded wire bytes.
     ///
     /// An administrative record or null-source bundle is built with

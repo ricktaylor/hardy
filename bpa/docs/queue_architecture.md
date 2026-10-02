@@ -53,7 +53,7 @@ graph LR
 **Other states** that are not queues in the current implementation:
 
 - **AduFragment** (`AduFragment { source, timestamp }`) — fragment accumulator. No consumer; completion detected when a new fragment completes the set
-- **New** (`New`) — crash recovery checkpoint between "data stored" and "ingress complete." Not a queue — a transient recovery waypoint
+- **New** (`New`) — the default status of a record under construction, never persisted: ingress and origination write a single `Dispatching` record once the Ingress or Originate chain has run, so a crash before that write leaves bundle data with no metadata, which restart recovers as an orphan
 
 ### Peer loss
 
@@ -149,7 +149,7 @@ In a distributed architecture, the reaper becomes a storage-level maintenance jo
 
 ### Eliminating `New` status
 
-With the redesigned trait, `New` is implicit. A bundle stored via `MetadataStorage::store` but not yet enqueued via `enqueue` is simply unqueued. Crash recovery finds all unqueued bundles and re-runs ingestion.
+The single-write ingress model already makes `New` implicit: ingress writes the metadata record once, at `Dispatching`, after its chain has run, so a crash before that write leaves bundle data with no metadata, which crash recovery re-ingests as an orphan. The redesigned trait keeps that shape — a bundle stored via `MetadataStorage::store` but not yet enqueued via `enqueue` is simply unqueued, and crash recovery finds all unqueued bundles and re-runs ingestion.
 
 ### Resulting queue schema
 

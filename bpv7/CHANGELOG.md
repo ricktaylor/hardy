@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 - **BREAKING:** the free `bpsec::block_data()` function — `bpsec::DecryptingReader::block_data` is the same contract (typed errors carrying the cause; owned decrypted plaintext) plus outcome memoisation and an explicit `Ok(None)` for non-resident extents. A one-shot caller migrates to `DecryptingReader::new(..).into_block_data(n)`, which, like the removed function, returns the decrypted plaintext without an extra copy.
+- **BREAKING:** `checks::verify_payload` is removed. Callers holding deferred payload-BIB op-sets settle them incrementally via `checks::begin_payload_verification` + `bib::Verifier` — no resident payload buffer is required, which is the point.
 
 ### Changed
 - **BREAKING:** the block read abstraction is renamed and lifted to the crate root, joining the `Builder`/`Editor`/`Signer`/`Encryptor` role-noun family: trait `bpsec::BlockSet` is now `reader::Reader`, and `bpsec::PlainBlockSet` is now `reader::PlainReader`. No behavioural change — signatures and semantics are otherwise identical, and plain block reading no longer requires the `bpsec` module path. `PlainReader`, two shared references, also derives `Clone`, `Copy` and `Debug`.

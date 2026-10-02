@@ -40,7 +40,7 @@ The storage subsystem provides persistent and cached storage for bundles, coordi
 │   BundleStorage     │  │ MetadataStorage │  │   Dispatcher        │
 │   (trait)           │  │ (trait)         │  │                     │
 ├─────────────────────┤  ├─────────────────┤  │  - drop_bundle()    │
-│ - localdisk-storage │  │ - sqlite-storage│  │  - ingress_bundle() │
+│ - localdisk-storage │  │ - sqlite-storage│  │  - restart_bundle() │
 │ - bundle_mem        │  │ - metadata_mem  │  │  - poll_waiting()   │
 └─────────────────────┘  └─────────────────┘  └─────────────────────┘
 ```
@@ -275,7 +275,7 @@ Call `bundle_storage_recovery()` to scan all stored bundle data:
 | Condition | Result | Action |
 |-----------|--------|--------|
 | Data + metadata exist | `Valid` | Resume from status checkpoint |
-| Data exists, no metadata | `Orphan` | Full receive pipeline (`process_received_bundle` + `ingress_bundle`) |
+| Data exists, no metadata | `Orphan` | Full receive pipeline (`process_received_bundle`) |
 | Duplicate data found | `Duplicate` | Delete spurious copy |
 | Data unparseable | `Junk` | Delete data |
 | Data missing | `Missing` | Skip (race condition) |

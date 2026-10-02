@@ -4,31 +4,35 @@
 | --- | --- |
 | **Component** | BPA — Bundle data I/O, spool-based streaming |
 | **Scope** | Transformer-based streaming, spool commit model, sequential-only storage |
-| **Status** | Living doc — partially implemented (streaming parser, CLA segment delivery, streamed ingress drain, pre-drain gate landed; storage / egress / tee'd spool pending) |
+| **Status** | Living doc — partially implemented (streaming parser, CLA segment delivery, unified ingress pipeline with pre-drain gate + validating `TailReceiver` drain landed; storage / egress / hot-forward tee pending) |
 | **Related** | `queue_architecture.md`, `storage_subsystem_design.md`, Editor (`bpv7/src/editor.rs`) |
 
-## Implementation status (2026-08-28)
+## Implementation status (2026-09-03)
 
-This is a living document: the sections below mix shipped behaviour with design targets. Current state on the v0.3.0 stack (`refactor/parse` → `refactor/metadata`).
+This is a living document: the sections below mix shipped behaviour with design targets.
 
 **Landed**
 
 - Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready, Partial}`, one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. `Partial { consumed, tail: PayloadTail }` is the deferred-payload signal: `push` returns it at the payload boundary and the caller drains the remaining payload through `PayloadTail` (CRC + termination + anti-smuggling checks) without re-buffering headers. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check`.
 - CLA segment delivery — `cla::Segment::{Next, Final}` and the streamed-only `Sink::dispatch(&mut dyn Receiver<Segment>)` (the buffered/streamed trait pairs were collapsed; no `Bytes` variant remains). Stream traits `Sender<T>` / `Receiver<T>` live in `bpa::stream` with adapters over `hardy_async::channel`.
-- Streamed ingress drain — `dispatcher::ingress` drives the parser per `Segment` and drains the payload tail via `PayloadTail` (the whole-buffer `concat_stream` path is gone). The tail still accumulates in memory before `save` — that accumulator is the one seam to swap for streaming storage.
-- Pre-drain gate — `bundle::parse::parse_headers` + `HeaderVerify::gate_reason`: lifetime/hop/expiry rejection runs on the accumulation buffer before the payload drain (§5.4's early reject in interim form; link-layer reach-back per §1.3 rides the CLA's streaming dispatch path).
+- Streamed ingress drain — `dispatcher::ingress` drives the parser per `Segment` and drains the payload tail through the validating `TailReceiver` (below). The tail still accumulates in memory before `save` — that accumulator is the one seam to swap for streaming storage.
+- Pre-drain gate — `bundle::parse::parse_headers` + `HeaderVerify::gate_reason`: lifetime/hop/expiry rejection, the config-gated RFC 9171 validity checks, and the Ingress filter chain all run on the accumulation buffer before the payload drain (§5.4's early reject in interim form; link-layer reach-back per §1.3 rides the CLA's streaming dispatch path). A gate drop is pre-custody and pre-store: nothing has been spooled.
+- `TailReceiver` validating drain (§5.5's pull-through) — `bundle::tail::TailReceiver` wraps the CLA stream as a `Receiver<Segment>` decorator: as each segment flows through it feeds the sync `PayloadTail` checks (payload CRC, block/outer breaks, anti-smuggling) plus one incremental digest per deferred payload BIB, then yields the same segment onward; the categorised verdict (`Truncated` / `Invalid` / `IntegrityFailed`) is read from `finish()` once drained. Layering is as designed: `PayloadTail` and the digest framing are `bpv7`'s (no_std, sans-IO), the async wrapper is bpa's.
+- Deferred payload-BIB verification is streaming — `checks::begin_payload_verification` begins a `bpsec::bib::Verifier` per BIB the header verify deferred, *inside `parse_headers`' keyed scope* (`HeaderVerify::deferred_verifiers`): the `!Send` `KeySource` is resolved once per bundle and never crosses an `await`; only the `Send` verifiers — copied key material, the recorded exception documented on `bib::Verifier` — ride the drain. `checks::verify_payload` and `finalize_with_provider` are deleted, resolving the key-material re-adjudication this block previously flagged.
+- Unified ingress pipeline, one metadata write — the CLA, reassembly, and restart in-feeds share `process_received_bundle`; the single `insert_metadata` at `Dispatching` carries the Ingress chain's classifier deltas (`New` is an in-memory marker that never persists), and the dispatch send's CAS to `DispatchPending` is the queue commit.
+- No editing on input — the bundle is stored exactly as received; §5.1.1 failure-drops and unrecognised-deletable removals are *scheduled* in `BundleMetadata::to_remove` and applied per attempt at the output doors (the egress rewrite head in `forward.rs`, the deliver strip). Captured payload-BCB op-sets are likewise never spent at ingress — delivery re-derives them from the stored bytes (the §6.1.5 transformers make that streaming).
 - Parse-mode collapse (§9.3) — the three `parse_{preserve,canonicalize,full}_with_provider` pipelines are gone; call sites compose the primitives (`bpa::bundle::parse`).
 - Decoded extension fields — pre-parsed at ingress into `BundleMetadata` (§2.3's open choice is resolved; the filter redesign partitions them as the **wire cache** group). The rich `bpa::Bpv7Bundle` view is replaced by structural `hardy_bpv7::Bundle` + metadata.
 - `RewrittenBundle` and the `Checked` / `Rewritten` / `Parsed` taxonomy removed from `bpv7`.
 
 **Interim (works, not yet the target shape)**
 
-- `checks::verify_payload`'s contiguous `data: &[u8]` input and `finalize_with_provider`'s whole-buffer parameter are interim: they work only because the drain spools to RAM. When the storage-spool tranche lands, the deferred payload-BIB verification should move into the drain continuation as a streaming digest fed per-segment (the pattern `PayloadTail` already uses for the CRC), deleting `verify_payload` rather than adapting it. Note this carries keyed HMAC state across the drain's awaits — a deliberate departure from the header pass's key-material rule that the spool-tranche design must re-adjudicate explicitly. The deferral seam itself (`HeaderVerify::deferred_bibs`) is the durable half.
-- The `Partial`-route drain plumbing is the same class of interim: `parse_headers` hands back the resident `Bytes` plus an `Option<PayloadTail>` the caller must marry to the segment stream, and the accumulator above is what that marriage feeds. The target seam replaces the caller-side marriage with a validating pull-through: bpa wraps the CLA stream in a `Receiver<Segment>` decorator (working name `TailReceiver`) that pulls the inner receiver, feeds the sync `bpv7` `PayloadTail` checks (CRC, termination, anti-smuggling) plus an incremental digest per deferred payload BIB, and yields the same segment onward — so every downstream consumer takes a plain `Receiver<Segment>` (the interim RAM accumulator today, `BundleStorage::store()` after the spool tranche) and any tee composes visibly at the tee site (§5.5's chain in pull form). Layering is deliberate: `PayloadTail` stays no_std, sans-IO and independently fuzzable, and `bpv7` owns the digest framing (the RFC 9173 IPPT's scope-flagged header parts are resident; the block-type-specific payload data streams through), constructed from `HeaderVerify::deferred_bibs`; the async wrapper is bpa's. Captured payload-BCB op-sets are never spent at ingress — they ride the metadata to the §6.1.5 streaming transformers at forward/deliver.
+- The drain's destination is still RAM: the consumer downstream of `TailReceiver` accumulates onto the resident header prefix (bounded by `max_bundle_size`) and commits via `BundleStorage::save(Bytes)`. That accumulator is deliberately the *one* seam the storage-spool tranche swaps for `store(stream)` (§3) — every stage upstream of it already sees a plain `Receiver<Segment>`, so the swap touches nothing else.
+- The drain runs sequentially inline in `process_received_bundle`. The target shape spawns it as a task consuming the `TailReceiver` concurrently with the RIB lookup (§5.7 routing-at-commit), with a cancel token aborting the spool on a chain drop — deferred to land with the RIB-concurrency phase (`refactor_plan.md`).
 
 **Pending**
 
-- Streaming storage (§3 — `BundleStorage` still exposes `save(Bytes)` / `load -> Result<Option<Bytes>>`; swapping the ingress tail accumulator for `store()` is the remaining prerequisite for the payload-never-in-RAM property §2.5), egress `Cla::write` + Transformer chain (§6), tee'd spool ingress (§5.7), the §10 phases.
+- Streaming storage (§3 — `BundleStorage` still exposes `save(Bytes)` / `load -> Result<Option<Bytes>>`; swapping the ingress tail accumulator for `store()` is the remaining prerequisite for the payload-never-in-RAM property §2.5), egress `Cla::write` + Transformer chain (§6), the hot-forward tee (§3.2, §5.7), the §10 phases.
 
 Where a section below still describes the pre-implementation shape, the API names in this block are authoritative.
 
@@ -404,7 +408,7 @@ The contiguity guarantee is "headers contiguous at the start of stored data," no
 
 Payload bytes that arrived after the parser completed continue to stream as subsequent chunks. This means that during egress, the Transformer (§6.1) receives header blocks first, allowing it to capture header data before the payload arrives.
 
-The `Span` model is **not needed at ingress** — it is internal to the Editor's Transformer (§6.1). At ingress, the accumulation buffer is mutated only by the fixed finalize step; the parser is pure and can be tested independently.
+The `Span` model is **not needed at ingress** — it is internal to the Editor's Transformer (§6.1). At ingress, the accumulation buffer is never mutated — the bundle is stored exactly as received; the parser is pure and can be tested independently.
 
 ### 5.3. Filters in the Streaming Pipeline
 
@@ -412,7 +416,7 @@ Filter design — kinds, hooks, registration, metadata, restart re-admission —
 
 The byte contract keeps filters off the streaming path entirely:
 
-- An invocation receives `(&Bundle, data: &[u8])` — the resident header prefix plus, when a registered Classifier declared a payload peek, the first min(P, payload length) payload bytes. Block bodies are read through `bpv7`'s existing accessors (`Block::payload` / `Block::extract`), which return `None` for bytes not resident in `data`.
+- An invocation receives `(&Bundle, data: &[u8])` — the resident header prefix plus, when a registered Classifier declared a payload peek, the first min(P, payload length) payload bytes (the peek seat is pending — §5.4). Block bodies are read through `bpv7`'s existing accessors (`Block::payload` / `Block::extract`), which return `None` for bytes not resident in `data`.
 - No filter receives a byte stream, holds a stream open, or blocks the drain: the hook runs on the accumulation buffer at the gate, and the payload spools past untouched.
 - Classifiers return a `MetadataDelta` that the engine applies — registered annotation slots, plus the named fields that arrive with their tranches (the `route_table` / `route_key` routing inputs; the traffic `class`, which drives the dispatch enqueue once the policy tranche lands). Filters never mutate stored bytes — the egress Rewriter edits extension blocks per transmission attempt, in memory, so §6.4's read-only forward path holds by construction.
 - The originate-raw path (`local_dispatch_raw()`, bundles from services via gRPC) runs the same strict parser → gate pipeline as ingress — non-canonical service-provided bytes are rejected at parse (§5.2.2), never canonicalised.
@@ -429,7 +433,7 @@ This is the mechanism behind the **link-layer-reach** motivator (§1.3): the BPA
 
 If the gate **accepts**: open a spool via `BundleStorage::store()`, push the accumulated header bytes as the first chunk, then forward subsequent CLA chunks through any configured transforms into the spool channel.
 
-With a registered payload peek (`filter_subsystem_design.md`: P > 0), the hook runs once min(P, payload length) payload bytes have accumulated — a bounded extension of the same gate; the peek bytes sit on the invocation side of the spool boundary and are never cached or persisted.
+With a registered payload peek (`filter_subsystem_design.md`: P > 0), the hook is designed to run once min(P, payload length) payload bytes have accumulated — a bounded extension of the same gate; the peek bytes sit on the invocation side of the spool boundary and are never cached or persisted. The peek seat is not yet wired: `build()` records P, but the Ingress chain runs on the resident header prefix alone.
 
 ### 5.5. Inline Payload Transforms and Durability
 
@@ -509,8 +513,9 @@ Ingest
   |
   |-- on CLA stream closed (end of bundle):
   |     drop spool_sender → store() returns storage_name (fsync + rename)
-  |     Finalize (fixed): deferred payload-BIB results,
-  |       §5.1.1 failure-drop / removal rewrites
+  |     Finalize (fixed): deferred payload-BIB results
+  |       (§5.1.1 failure-drops / removals scheduled in
+  |       to_remove, applied at the output doors)
   '--   enqueue(dispatch; class from the Classifier chain)
         routing result available (started during Phase B)
 ```
@@ -950,8 +955,7 @@ Result: the payload-never-in-RAM property (§2.5) on ingress.
 
 ### Phase C: Tee'd Ingress
 
-1. Tee payload chunks to the deferred payload-BIB verifier during spooling (§5.7)
-2. Hot-forward tee: stream to the CLA from ingress data before spool commit (§3.2)
+1. Hot-forward tee: stream to the CLA from ingress data before spool commit (§3.2)
 
 ### Phase D: Security Gateway
 

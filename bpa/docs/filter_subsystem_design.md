@@ -2,7 +2,7 @@
 
 The embedder's extension seam on the bundle pipeline: three filter kinds, registered in construction-frozen packs, run inline at four hook points. A registered filter is trusted code with plaintext read access — block bodies BCB-decrypted on request, the payload's included whenever it is resident; only a Rewriter's *edits* are scoped, to extension blocks.
 
-> **Status.** This document describes the implemented registration surface, filter kinds, and engine (the filter redesign's Phase 2, per [`refactor_plan.md`](refactor_plan.md)). Two settled parts of the design are not yet implemented and are flagged where they appear: the repositioning of the Ingress chain onto the pre-drain gate together with [restart re-admission](#restart-re-admission) (Phase 3), and the [scanner component](#payload-inspection-is-a-component-not-a-filter-kind) (Phase 4). The `class`/`route_key` classification fields arrive with the policy and routing tranches ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md), [`routing_table_redesign.md`](routing_table_redesign.md)).
+> **Status.** This document describes the implemented registration surface, filter kinds, and engine (the filter redesign's Phase 2, per [`refactor_plan.md`](refactor_plan.md)). The Ingress chain runs at the pre-drain gate (the Phase-3 repositioning landed with the ingress-spool tranche). Three settled parts of the design are not yet implemented and are flagged where they appear: [restart re-admission](#restart-re-admission) (Phase 3), holding the declared [payload peek](#payload-inspection-is-a-component-not-a-filter-kind) at the gate (Phase 3), and the [scanner component](#payload-inspection-is-a-component-not-a-filter-kind) (Phase 4). The `class`/`route_key` classification fields arrive with the policy and routing tranches ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md), [`routing_table_redesign.md`](routing_table_redesign.md)).
 
 ## The governing constraint: a closed-source server on an unmodified open `bpa`
 
@@ -36,9 +36,9 @@ Anything that appears to want runtime registration is evidence it is a component
 
 ## Hook points: the pipeline enumerated
 
-The evidence base for the taxonomy. Every processing point in the in→out pipeline, classified by (a) read or write, (b) externally pluggable. Stage names follow the processing blocks of [`queue_architecture.md`](queue_architecture.md); function references are current `dispatcher/` code. The ★ hook rows show the *designed* positions; today the registered Ingress chain runs post-store in `ingress_bundle` (before the `Dispatching` checkpoint), and Phase 3 moves it onto the pre-drain gate where the config-gated built-ins already sit. The other three hooks are at their designed positions.
+The evidence base for the taxonomy. Every processing point in the in→out pipeline, classified by (a) read or write, (b) externally pluggable. Stage names follow the processing blocks of [`queue_architecture.md`](queue_architecture.md); function references are current `dispatcher/` code. All four ★ hook rows are at their designed positions (the Ingress chain runs at the pre-drain gate, beside the config-gated built-ins).
 
-**In from a peer** (Ingest block — `receive_bundle` → `process_received_bundle` → `ingress_bundle`):
+**In from a peer** (Ingest block — `receive_bundle` → `process_received_bundle`):
 
 | Processing point | R/W | Pluggable? |
 |---|---|---|
@@ -48,8 +48,8 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Extension fields → metadata wire cache | write (meta) | no |
 | Pre-drain gate: lifetime / hop exhaustion (`gate_reason`) + the config-gated RFC 9171 checks (`rfc9171_gate_reason`) | read (reject) | no — spec/config |
 | **★ Ingress hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (headers + metadata, no payload) |
-| Payload drain/spool | write (accumulate) | no |
-| Finalize: deferred block-1 BIB, §5.1.1 failure-drop, removal rewrites | **write (bytes)** | no — parser/BPSec owns |
+| Payload drain/spool through `TailReceiver` (payload CRC, breaks, deferred block-1 BIB digests) | write (accumulate), read (reject) | no — parser/BPSec owns |
+| §5.1.1 failure-drops + unrecognised-block removals — *scheduled* in `to_remove` metadata, applied per attempt at the output doors; stored bytes stay as-received | write (meta) | no |
 | Persist; reception report (§5.6, before dedup); dedup | write | storage trait; reports fixed |
 | Enqueue to Dispatch | queue op | no |
 
@@ -77,7 +77,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Processing point | R/W | Pluggable? |
 |---|---|---|
 | Load from store | — | no |
-| Per-hop rewrite: PreviousNode insert, HopCount increment, BundleAge update, and the config-driven IPN legacy re-encode (`update_extension_blocks`) | **write (extension blocks)** | no — spec §4.4.x + config; the fixed head of the rewrite stage |
+| Per-hop rewrite: the ingress-scheduled §5.1.1 failure-drops and `delete_block_on_failure` removals (`to_remove`, with their BPSec cascade), PreviousNode insert, HopCount increment, BundleAge update, and the config-driven IPN legacy re-encode (`update_extension_blocks`) | **write (extension blocks)** | no — spec §4.4.x, RFC 9172 §5.1.1 + config; the fixed head of the rewrite stage |
 | **★ Egress hook (rewrite)** — registered Rewriters, seq | **write (extension blocks)** | **yes — the hook** (in-memory, per transmission attempt; payload/primary/BIB/BCB excluded by the editor handle) |
 | **★ Egress hook (gate)** — registered Verifiers ∥ | read (reject) | **yes — the hook** (gates the final pre-BPSec wire form; re-runs with fresh context on re-route) |
 | BPSec-egress seam | **write (bytes)** | no — fixed, security-policy/KeyProvider-driven (designed; not yet built) |
@@ -89,6 +89,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 |---|---|---|
 | Load from store | — | no |
 | **★ Deliver hook** — registered Rewriters (seq, transport-block strip), then Verifiers ∥ | read (reject) + **write (extension blocks)** | **yes — the hook** (runs for every local delivery, before payload decrypt; edits are observable on the raw-`Service` path only) |
+| Raw-`Service` path: the ingress-scheduled §5.1.1 / `delete_block_on_failure` removals (`to_remove`) stripped from the delivered wire form | write (extension blocks) | no — RFC 9172 §5.1.1 |
 | BCB payload decrypt — produces the ADU | write (plaintext) | no — normal BPA functionality |
 | `service.on_deliver` | — | already — Service trait |
 | Delivery report; delete | write | no — spec |
@@ -112,7 +113,7 @@ Three kinds, defined in `bpa/src/filter/mod.rs` (`Verifier`, `Classifier`, `Rewr
 
 The two mutating kinds are duals by scope: the **Classifier** (inputs) writes *node-scoped* annotations — metadata this node's own downstream consumes; the **Rewriter** (egress) writes *network-scoped* annotations — extension blocks the next hops consume. A rule whose effect is local needs a delta; a rule whose effect must travel needs a block.
 
-All three kinds are payload-free and therefore **streaming-immune**: at ingress, Verifiers and Classifiers need only the header blocks (plus any declared payload peek), and when the full streaming gate lands (`streaming_pipeline_design.md` §5.4/§5.7) they ride it unchanged; the Rewriter edits header blocks, which are resident at ClaSend where the per-hop rewrite already operates, while the payload streams past untouched. There is no late ingress pass — an early/late Ingress split would exist only to serve in-pipeline payload inspection, and with none there is nothing a late pass could see that the pre-drain pass cannot.
+All three kinds are **streaming-immune** because none needs the payload to decide: at ingress, Verifiers and Classifiers need only the header blocks (plus any declared payload peek) and ride the pre-drain gate unchanged (`streaming_pipeline_design.md` §5.4; the §5.7 tee'd spool is still to come); the Rewriter edits header blocks, which are resident at ClaSend where the per-hop rewrite already operates, while the payload streams past untouched. (A filter may still read a resident payload — a registered filter is trusted code — but nothing in the pipeline waits for one.) There is no late ingress pass — an early/late Ingress split would exist only to serve in-pipeline payload inspection, and with none there is nothing a late pass could see that the pre-drain pass cannot.
 
 The Classifier returns a *delta* rather than taking `&mut metadata` deliberately: the engine applies it, filters never touch `bundle.metadata` directly, the boundary stays clean for closed-source implementors, and delta application is idempotent — which the queue architecture's at-least-once semantics require of every processing block. A Classifier **sees the deltas applied by preceding links** of the same pass: the engine applies each delta before the next invocation. The reader/metadata split above is what makes this cheap and unambiguous — the reader lends only the wire form (invariant for the whole pass, one construction), while the `metadata` argument is re-borrowed per link over the advancing record state; a Classifier alters metadata through its delta and never the bundle itself. (An accumulate-then-apply variant — every link observing gate-time state, deltas merged after the pass — was considered and rejected 2026-09-09: per-link visibility is the designed behaviour.)
 
@@ -124,7 +125,7 @@ The Rewriter's execution model is **in-memory, per transmission attempt** — ex
 
 | Hook | Processing block | Position | Verifier | Classifier | Rewriter |
 |---|---|---|:--:|:--:|:--:|
-| **Ingress** | Ingest | designed: pre-drain, pre-store (at the gate); today: post-store, pre-dispatch | ✓ | ✓ | — |
+| **Ingress** | Ingest | pre-drain, pre-store (at the gate) | ✓ | ✓ | — |
 | **Originate** | Originate | pre-store, in-memory | ✓ | ✓ | — |
 | **Egress** | ClaSend | after per-hop rewrite, before BPSec | ✓ | — | ✓ |
 | **Deliver** | Deliver | before payload decrypt | ✓ | — | ✓ (transport-block strip) |
@@ -142,7 +143,7 @@ The Rewriter's execution model is **in-memory, per transmission attempt** — ex
 The frozen chains run **synchronously, inline on the calling task** (`filter/engine.rs`). Two facts force this and one payoff justifies it:
 
 - Filter invocations are synchronous by trait signature — async methods would exist only to serve callout-style filters (gRPC policy engines, database lookups), which the two-tier split places in the component tier; policy-as-code on the hot path has no await points.
-- The decoded BCB OperationSets the filters' `DecryptingReader` lends are not `Send` (and the memoising reader is not `Sync`), so an invocation cannot migrate across tasks anyway.
+- The filters' `DecryptingReader` borrows the caller's decoded block map, buffer, BCB OperationSets, and key source — borrows that cannot cross a spawn boundary — so an invocation cannot migrate across tasks anyway.
 
 "Parallel" Verifiers is therefore an **independence contract** — no ordering, no cross-talk between the Verifiers of one hook — not a spawning strategy, so the engine needs no task pool and no pool-deadlock reasoning. An empty chain costs one branch: nothing is parsed, nothing is allocated, so hooks nobody extends are near-free. Each Rewriter that edits costs a full copy of the wire form (its edits are materialised before the next link reads them), so M editing Rewriters hold up to M bundle copies at peak, per attempt — the whole-buffer interim that the streamed egress Transformer (`streaming_pipeline_design.md` §6.1, Phase B) replaces.
 
@@ -159,7 +160,8 @@ Two engine behaviours are load-bearing for the dispatcher's claim discipline:
 
 ```
 load from store                          (stored bundle = as received; source of truth)
-  └▶ built-in per-hop rewrite            PreviousNode / HopCount / BundleAge — fixed, spec §4.4.x
+  └▶ built-in per-hop rewrite            deferred §5.1.1 removals (to_remove) — fixed, RFC 9172
+                                         + PreviousNode / HopCount / BundleAge — fixed, spec §4.4.x
                                          + the config-driven IPN legacy re-encode (ipn_legacy_peers)
   └▶ registered Rewriters (seq)          extension-block add / modify / remove — THE pluggable mutation point
   └▶ Egress Verifiers (∥)                gate the final pre-BPSec wire form
@@ -173,8 +175,8 @@ The IPN legacy re-encode (3-element `ipn` EIDs re-encoded 2-element for peers th
 
 The fixed byte-owners elsewhere are unchanged:
 
-- **Ingress**: the parser — canonical rejection (never rewrite incoming wire bytes), BPSec verify/decrypt, the RFC 9172 §5.1.1 removal cascade.
-- **Deliver**: BCB payload decrypt — normal BPA functionality.
+- **Ingress**: the parser — canonical rejection (never rewrite incoming wire bytes), BPSec verify/decrypt, and the scheduling of the RFC 9172 §5.1.1 removals, which leaves the stored bytes as received: the output doors apply the removal cascade per attempt.
+- **Deliver**: BCB payload decrypt — normal BPA functionality — and, on the raw-`Service` path, the deferred §5.1.1 removals.
 - **Re-targeting** (BIBE, tunnelling, overlays): RIB-selected **virtual CLAs**. The carrier gets a new destination, so the next lookup makes forward progress; chaining is the sequence of carrier destinations; loop protection is ordinary hop-count/age.
 
 There is no payload-rewriting egress Transform. The slot such a filter would reserve belongs to BPSec (a fixed seam), and its other tenants are payload operations with better homes: compression and framing are the CLA's, transcoding/redaction are rewriting gateways (components), aggregation is application-layer or BIBE-shaped encapsulation. The Rewriter is not a Transform — it is scoped to extension blocks, extends a stage that already mutates them, and its output remains subject to the fixed BPSec seam behind it.
@@ -187,7 +189,7 @@ The fixed BPSec machinery named above follows the RFC 9172 §3.2 role model, map
 |---|---|---|---|---|
 | **Originate · Service trait** | caller = Source for payload; BPA = Source for extension blocks | structurally validate; verify caller's security | add BPA extension blocks and secure them | reject to caller |
 | **Originate · Application trait** | BPA = Source | validate built bundle | build; add BIB/BCB per policy | reject to app |
-| **Receive** (CLA → BPA) | BPA = **Verifier** | parse; verify BIBs pre-drain; decrypt extension blocks to read; classify unsupported; payload BIBs post-drain via `deferred_bibs` | failure-drop corrupt non-payload block + security blocks; drop `delete_block_on_failure` unknowns; keep valid encrypted | block → drop block; bundle-level → drop bundle; NoKey → keep |
+| **Receive** (CLA → BPA) | BPA = **Verifier** | parse; verify BIBs pre-drain; decrypt extension blocks to read; classify unsupported; payload BIBs incrementally during the drain (`deferred_verifiers`, begun in the header pass) | none to the stored bytes: *schedule* (`to_remove`) the failure-drop of corrupt non-payload blocks + their security blocks and the drop of `delete_block_on_failure` unknowns, applied per attempt at Forward/Deliver; keep valid encrypted | block → drop block (at the output doors); bundle-level → drop bundle; NoKey → keep |
 | **Deliver · Application trait** | BPA = **Acceptor** | decrypt payload (`block_data`); optionally verify payload BIB | consume → transient plaintext to app; bundle deleted after | payload fail → drop bundle; NoKey → watch |
 | **Deliver · Service trait** | service is the Acceptor; BPA passes through | none | none — hand raw encrypted bytes to service | service's responsibility |
 | **Forward** (BPA → CLA) | Forwarder (default); waypoint Acceptor/Source by policy | none by default; waypoint acceptor decrypts/verifies its op | per-hop blocks; optionally waypoint-accept at the BPSec seam → decrypt + strip + §5.1.1 | waypoint fail → §5.1.1 (drop block; payload → drop bundle) |
@@ -207,7 +209,7 @@ Two component shapes in Hardy terms (**Phase 4 — neither is built yet**):
 1. **Queue/verdict (the NFQUEUE analogue — preferred).** Under the queue architecture, forward-to-scanner is an *enqueue to a scanner-owned queue*; the scanner is a registry+sink component that consumes bundle bytes and returns a verdict — release with an optional classification delta, or drop with a reason — which re-enqueues to Dispatch. No re-ingress, no dedup collision, parking is a queue doing what queues do, and the component is runtime-registrable and remotable without touching the frozen filter chains, because traffic only reaches it by explicit RIB/policy selection.
 2. **Provenance-chained peer (the BIBE-adjacent shape).** RIB policy forwards selected traffic to a scanner peer; re-injected traffic is distinguished by provenance (its `origin` records arrival from the scanner) so the second lookup does not re-select it. Caveat: a successful CLA forward is terminal today (report, delete, tombstone), so a *same-bundle* round-trip collides with dedup on re-entry; this shape needs the virtual-CLA **re-forward entry point** (non-terminal forward semantics) from the routing work.
 
-**One bounded case stays inside the filter family: payload header peeking.** A Classifier may need the first few bytes of the payload — a wrapped IP header, an HTTP request line — purely to place a class: netfilter's `-m u32` shallow match, not its NFQUEUE. This is *bounded classification input*, not payload processing, and it fails none of the three tests above: there is no engine, no parking, and no verdict latency (a match on already-resident bytes); a ≤P-byte protocol-header decode is the same in-process risk class as the BPA's own CBOR parsing; and where BPSec encrypts the payload the peek reads ciphertext and classifies nothing — a deployment property the registering embedder knows. Mechanically it is free, because at every wire-facing hook the initial bytes of the bundle are memory-resident anyway. Registration declares the prefix per input-hook filter (the `_with_peek` registration variants; default 0), and `build()` fixes P as the maximum declared, so the zero-config node retains nothing; the ingress drain will keep min(P, payload length) payload bytes on the invocation side of the spool boundary when the streaming gate lands. Nothing is cached or persisted: the peek exists to stamp a class at classification time. The DPI line stays bright and *is* the bound: input bounded at `build()` → Classifier; unbounded or verdict-driven processing → component. Two inherent caveats: only an offset-0 fragment carries a meaningful prefix (others classify without it; the reassembled bundle re-crosses Ingest and is peeked properly), and a BCB-encrypted payload is the classifier's no-match path.
+**One bounded case stays inside the filter family: payload header peeking.** A Classifier may need the first few bytes of the payload — a wrapped IP header, an HTTP request line — purely to place a class: netfilter's `-m u32` shallow match, not its NFQUEUE. This is *bounded classification input*, not payload processing, and it fails none of the three tests above: there is no engine, no parking, and no verdict latency (a match on already-resident bytes); a ≤P-byte protocol-header decode is the same in-process risk class as the BPA's own CBOR parsing; and where BPSec encrypts the payload the peek reads ciphertext and classifies nothing — a deployment property the registering embedder knows. Mechanically it is free, because at every wire-facing hook the initial bytes of the bundle are memory-resident anyway. Registration declares the prefix per input-hook filter (the `_with_peek` registration variants; default 0), and `build()` fixes P as the maximum declared, so the zero-config node retains nothing; keeping min(P, payload length) payload bytes on the invocation side of the spool boundary is the gate's designed extension, not yet built — the Ingress chain runs on the resident header prefix, so until then a peeking filter reads a not-yet-resident payload as absent (`Ok(None)`). Nothing is cached or persisted: the peek exists to stamp a class at classification time. The DPI line stays bright and *is* the bound: input bounded at `build()` → Classifier; unbounded or verdict-driven processing → component. Two inherent caveats: only an offset-0 fragment carries a meaningful prefix (others classify without it; the reassembled bundle re-crosses Ingest and is peeked properly), and a BCB-encrypted payload is the classifier's no-match path.
 
 The refined criterion:
 
@@ -241,7 +243,7 @@ Because a closed repository implements these traits without seeing `bpa` interna
 
 ## Restart re-admission
 
-> **Phase 3 — settled design, not yet implemented.** The policy-epoch stamp already rides the classification group (engine bookkeeping, invisible to filters), and `clear_classification` exists as the clearing primitive, not yet called; the re-admission pass itself lands with the hook repositioning.
+> **Phase 3 — settled design, not yet implemented.** The policy-epoch stamp already rides the classification group (engine bookkeeping, invisible to filters), and `clear_classification` exists as the clearing primitive, not yet called; the re-admission pass itself is not yet built.
 
 Because the chain is frozen in-process, filter policy can only change across a restart — a new binary, new construction wiring, or new config. Stored bundles were admitted and classified by the *previous* chain, so **restart recovery re-runs the input-hook chains over stored bundles**: new policy applies to traffic already in custody, not just to new arrivals.
 
@@ -294,6 +296,7 @@ The delta decision forces the wider question, and the answer is a principle: **m
 | **Provenance** | `received_at`; `origin: Ingress { peer_node, peer_addr, cla } \| Originated \| Recovered` | admission machinery, once | yes | kept — historical fact | read-only |
 | **Wire cache** | `previous_node`, `age`, `hop_count` | parser, from the stored bytes | yes | kept — stored bytes never change | read-only |
 | **Classification** | registered annotation slots (later `class`, `route_key`), plus the policy-epoch stamp | Classifier chain, via applied deltas | yes | cleared + re-derived (re-admission) | read; written only via the delta; slots gated per-handle; the epoch stamp invisible (engine bookkeeping) |
+| **Built-in derivations** | `to_remove` (the scheduled §5.1.1 failure-drops and `delete_block_on_failure` removals) | the header verify | yes | re-derived (re-admission) — a cache over stored bytes + keys | **none — crate-private, fixed machinery only** |
 | **Infrastructure** | `storage_name` | BPA | yes | kept | **none — unreachable outside the crate** |
 
 **Visibility is a property of each group**, as load-bearing as its writer, persistence, and restart fate — and it is enforced the way the Rewriter's payload-purity is: by construction, not code review. There is no per-invocation view struct: the record's own field/module privacy *is* the projection (private fields plus inline getters compile to field reads — the only zero-cost shape), so `bpa::bundle::Bundle` is committed filter API directly, and there is no view type to drift from the record. Filters read provenance and the wire cache, read classification through the handle-gated accessors and write it only via the delta, and infrastructure does not exist in their world. Infrastructure stays BPA-private for safety in three senses — where "safety" means accident-prevention among trusted code, not defence: a mechanism reference in filter hands invites out-of-contract coupling; whatever the view exposes to a closed embedder is committed semver surface; and policy written against mechanism internals is meaningless policy — a rule keyed on a storage backend's naming scheme is not a rule about the bundle, and the shape makes such rules inexpressible rather than merely inadvisable.
@@ -329,7 +332,7 @@ The fourth, **latest-only delivery, is deliberately not filter material** — an
 
 ## Open items
 
-- **Drop reporting from Originate/Egress/Deliver Verifiers.** Gate-pattern reporting is defined for Ingress; Phase 2 keeps today's per-hook behaviour (Originate returns the reason to the service; Egress/Deliver drop with reason or delete). The formal semantics land with Phase 3's repositioning, alongside the reception-report reason-code fix ledgered in [`TODO.md`](TODO.md).
+- **Drop reporting from Originate/Egress/Deliver Verifiers.** Gate-pattern reporting is defined (and implemented) for Ingress; the other hooks keep their per-hook behaviour (Originate returns the reason to the service; Egress/Deliver drop with reason or delete). The formal semantics land with the rest of Phase 3, on the conforming §5.6/§5.10 report shape the Ingress gate already emits ([`TODO.md`](TODO.md), "Ingress status-report conformance").
 - **Scanner component.** Queue/verdict shape: a new registry row + queue wiring — how much lands with the queue-architecture work vs later; the provenance-chained shape waits on the virtual-CLA re-forward entry point in the routing work.
 - **Fixed-vs-pluggable split for stripping the standard transport blocks at Deliver.** The RFC-defined blocks (Previous Node, Hop Count, Bundle Age) may be stripped by fixed machinery; the pluggable Deliver Rewriter targets embedder-defined transport blocks. The fixed strip is Phase 3 material.
 - **Intra-chain classification reads.** Whether a later Classifier should read a predecessor's *pending* class assignment through the reader (it currently sees applied deltas, which is sufficient for slots); revisit when `class` arrives with the policy tranche.
@@ -338,10 +341,10 @@ The fourth, **latest-only delivery, is deliberately not filter material** — an
 
 The working task list is [`refactor_plan.md`](refactor_plan.md). Phase 2 — the kinds, packs, slots, editor, engine swap, and dissolution of the built-in filters — is complete. Remaining:
 
-- **Phase 3** — move the Ingress chain onto the pre-drain gate; formal Originate/Egress/Deliver drop semantics; restart re-admission of stored bundles. Early Drop then skips drain + store entirely: for a rejected 1 GB bundle the BPA has received only the header blocks (`streaming_pipeline_design.md` §5.4).
+- **Phase 3 (remaining)** — formal Originate/Egress/Deliver drop semantics; restart re-admission of stored bundles. The Ingress-chain move onto the pre-drain gate landed with the ingress-spool tranche: an early Drop skips drain + store entirely, so for a rejected 1 GB bundle the BPA has received only the header blocks (`streaming_pipeline_design.md` §5.4).
 - **Phase 4** — scanner/verdict component and the virtual-CLA re-forward entry point. Waits on the queue-architecture and routing/RIB work; build when a consumer exists.
 
-When the full streaming gate lands (`streaming_pipeline_design.md` §5.4/§5.7) the Ingress pass moves onto the accumulation buffer before any spool opens — the payload-free signatures make that a no-op for filter authors.
+The Ingress pass runs on the accumulation buffer before any spool opens — since no filter kind needs the payload to decide, that was a no-op for filter authors, as designed.
 
 ## Testing
 

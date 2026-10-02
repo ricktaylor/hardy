@@ -63,9 +63,9 @@ This centralised design ensures consistent bundle handling across all paths (CLA
 A bundle entering from a CLA follows this path:
 
 1. **Ingress**: CLA calls `Sink::dispatch()` with raw bytes and peer information
-2. **Validation**: `process_received_bundle()` runs CBOR precheck and `RewrittenBundle::parse()` with full processing (block removal, canonicalization, BPSec). Invalid bundles are dropped internally with status reports — errors are never returned to the CLA
-3. **Storage**: Bundle data and metadata persisted with `New` status
-4. **Filtering**: `ingress_bundle()` runs the Ingress chain (Verifiers, then Classifiers), which may drop or annotate the bundle. Status checkpointed to `Dispatching`
+2. **Validation**: `process_received_bundle()` parses the header chain off the stream with keyed BPSec verification before the payload drains. Invalid bundles are dropped internally with status reports — errors are never returned to the CLA
+3. **Filtering**: the Ingress chain (Verifiers, then Classifiers) runs at the pre-drain gate on the resident header prefix, and may drop or annotate the bundle
+4. **Storage**: the payload drains with its CRC and deferred payload BIBs verified as it flows, the bundle data is stored exactly as received, and the finished record is written once to metadata storage with `Dispatching` status and queued for dispatch
 5. **Dispatch**: Destination examined — local delivery, admin endpoint, or forwarding
 6. **Routing**: RIB lookup determines next hop for forwarding bundles
 7. **Egress**: Bundle queued to CLA for transmission, egress filters applied
@@ -249,11 +249,11 @@ See [Policy Subsystem Design](policy_subsystem_design.md#hybrid-channel-architec
 
 ### With hardy-bpv7
 
-The BPA uses all three parsing modes:
+The BPA parses through its `bundle::parse` layer over hardy-bpv7, in three shapes:
 
-- `RewrittenBundle` for CLA ingress and fragment reassembly (untrusted, full validation with block removal)
-- `CheckedBundle` for service input (semi-trusted, canonicalization only)
-- `ParsedBundle` for restart recovery routing inspection
+- `parse_headers` for CLA ingress and fragment reassembly (untrusted: a streamed header pass with keyed BPSec verification before the payload drains; the payload CRC and deferred payload BIBs verify as it drains, and the bundle is stored exactly as received, its RFC 9172 block removals riding the metadata to the output doors)
+- `parse_validate_with_provider` for service input and restart recovery (one-shot keyed validation with no block removal or rewriting — non-canonical CBOR is rejected)
+- `extract_from_built` for bundles the BPA builds itself (the Builder emits valid bundles by construction)
 
 ### With Storage Backends
 
