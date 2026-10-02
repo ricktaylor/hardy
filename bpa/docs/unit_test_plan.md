@@ -204,6 +204,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Rewriter Edit Consistency** | A Rewriter's insert reaches the gating Verifier with consistent extents; the returned pair re-parses. | `src/filter/engine.rs` | Done |
 | **Key Derivation** | Output chains derive keys once without edits; a BPSec-free input chain never consults the key provider. | `src/filter/engine.rs` | Done |
 | **Scope Refusals** | Primary/payload targets, BIB/BCB types, and absent blocks are refused through the engine, and the bundle passes unedited. | `src/filter/engine.rs` | Done |
+| **Editor Refusals** | The `ExtensionEditor`'s call-time refusals — BPSec-covered targets, the forbidden `report_on_failure` flag (RFC 9171 §4.2.3-4/-5), unrecognised CRC types, undecodable well-known bodies, reserved aliases — are bpv7's; the forbidden flag is also pinned end to end. | `bpv7/tests/editor.rs`, `tests/filter_dispositions.rs` | Done |
 | **Non-Resident Block** | A block beyond the resident bytes reads as `Availability::NotResident` through the `DecryptingReader`. | `bpv7/tests/reader.rs` | Done |
 | **Slot Names** | Duplicate slot names fail freezing; distinct names are accepted. | `src/filter/slots/state.rs` | Done |
 
