@@ -1,0 +1,28 @@
+[package]
+name = "hardy-btpu-fuzz"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+hardy-btpu = { path = ".." }
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "receive"
+path = "fuzz_targets/receive.rs"
+test = false
+bench = false
+doc = false

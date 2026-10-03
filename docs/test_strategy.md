@@ -35,6 +35,8 @@ This Strategy is the parent document. Verification is executed according to the 
 | **OpenTelemetry** | Component | [`COMP-OTEL-01`](../otel/docs/component_test_plan.md) | OTLP export verification (traces, metrics, logs). |
 | **TCPCLv4** | Component | [`PLAN-TCPCL-01`](../tcpclv4/docs/component_test_plan.md) | Session state machine via `duplex` harness. |
 | **TCPCLv4** | Fuzz | [`FUZZ-TCPCL-01`](../tcpclv4/docs/fuzz_test_plan.md) | Protocol stream parsing and state machine robustness. |
+| **BTP-U** | Unit | [`UTP-BTPU-01`](../btpu/docs/unit_test_plan.md) | Draft-04 framing, segmentation, reassembly, window, and receiver limits. |
+| **BTP-U** | Fuzz | [`FUZZ-BTPU-01`](../btpu/docs/fuzz_test_plan.md) | PDU decoding and receiver state robustness. |
 | **TCPCLv4 Server** | System | [`PLAN-TCPCL-SERVER-01`](../tcpclv4-server/docs/test_plan.md) | Application lifecycle, config, packaging. |
 | **CLA Trait** | Integration | [`PLAN-CLA-01`](../bpa/docs/cla_integration_test_plan.md) | Generic Convergence Layer Trait verification. |
 | **Service Trait** | Integration | [`PLAN-SVC-01`](../bpa/docs/service_integration_test_plan.md) | Generic Application Service Trait verification. |
@@ -79,7 +81,7 @@ This Strategy is the parent document. Verification is executed according to the 
 * **Scope:** Parsers (CBOR, Bundle, EID string/CBOR, EID patterns), protocol streams (TCPCLv4 passive/active), and the BPA async pipeline.
 * **Goal:** Identify panics, memory safety issues, and deadlocks from adversarial input.
 * **Methodology:** Dedicated fuzz plans per target using `cargo fuzz` (libFuzzer). Executed continuously in CI via **ClusterFuzzLite** (the OSS-Fuzz engine hosted in GitHub Actions): per-PR fuzzing of changed code and a nightly batch run, both reporting minimised, replayable crash reproducers. Coverage measured separately from unit tests.
-* **Targets:** 8 fuzz binaries across 5 crates (cbor, bpv7, eid-patterns, bpa, tcpclv4).
+* **Targets:** 10 fuzz binaries across 6 crates (cbor, bpv7, eid-patterns, bpa, tcpclv4, btpu).
 
 ### 3.4 System & Interoperability Testing
 
@@ -132,7 +134,7 @@ Each peer implementation runs in its own Docker container alongside a Hardy node
 | Risk | Impact | Mitigation |
 | ----- | ----- | ----- |
 | **Protocol Non-Compliance** | Interop failure with other BPv7 implementations. | Interoperability verified against 7 implementations ([`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md)). |
-| **Parser Panics** | DoS vulnerability in production. | Continuous CI fuzz testing on all public-facing parsers (8 targets across 5 crates) via ClusterFuzzLite. |
+| **Parser Panics** | DoS vulnerability in production. | Continuous CI fuzz testing on all public-facing parsers (10 targets across 6 crates) via ClusterFuzzLite. |
 | **Key Wrapping Failures** | Data loss or security breach. | Unit tests for RFC 9173 Key Wrapping (AES-KW, HMAC-SHA2). |
 | **Async Deadlocks** | Router hangs under load. | BPA pipeline fuzz target exercises concurrent message processing. |
 | **Storage Corruption** | Data loss after crash or restart. | Storage harness tests recovery and restart across all backends. |
