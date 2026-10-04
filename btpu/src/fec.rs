@@ -1,0 +1,70 @@
+//! FEC extension message types (draft-ietf-dtn-btpu-fec).
+//!
+//! This module defines the content of the four message types introduced by
+//! the BTP-U FEC extension.  The crate frames them (encode, decode, and
+//! window tracking) but implements no FEC scheme and performs no FEC
+//! reassembly; the payload of each message is carried opaquely.
+//!
+//! The four types share two layouts.  A pre-agreed message names a
+//! scheme instance configured out of band; an explicit one names an FEC
+//! Encoding ID and carries the scheme's inline parameters in its payload.
+//! Whether the payload holds source data or repair symbols is decided by
+//! the [`Message`](crate::codec::message::Message) variant that wraps the
+//! content, not by the content itself.
+//!
+//! The message type codes are not yet IANA-assigned (the FEC draft lists
+//! them as TBD1..TBD4).  This crate uses 0x70..=0x73, from the Private Use
+//! range of the BTPU Message Types registry (Section 12.1 of the base
+//! draft), as provisional values: Pre-agreed Source 0x70, Explicit Source
+//! 0x71, Pre-agreed Repair 0x72, and Explicit Repair 0x73.  They will change
+//! when the codes are assigned, and peers must agree on them out of band
+//! until then.  Because the range is Private Use, a decoder interprets them
+//! only when asked to
+//! via [`DecodeOptions::fec`](crate::codec::DecodeOptions::fec) or
+//! [`ReceiverConfig::fec`](crate::receiver::ReceiverConfig::fec); otherwise
+//! they relay as [`Message::Unknown`](crate::codec::message::Message::Unknown).
+
+use alloc::vec::Vec;
+
+use bytes::Bytes;
+
+use crate::codec::hint::HintItem;
+
+/// Content of a Pre-agreed FEC Source or Repair message (provisional types
+/// 0x70 and 0x72), for a transfer using a pre-configured FEC scheme.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreAgreedFecMessage {
+    /// The transfer this message belongs to.
+    pub transfer_number: u32,
+    /// Identifies the pre-agreed FEC scheme instance.
+    pub fec_instance_id: u8,
+    /// Hint items carried by the message.
+    pub hints: Vec<HintItem>,
+    /// The Explicit Source FEC Payload ID and Source Data (Source message),
+    /// or the Repair FEC Payload ID and Repair Symbol Data (Repair message),
+    /// as raw bytes.
+    ///
+    /// The boundary between the two is defined by the pre-agreed scheme and
+    /// cannot be determined here.
+    pub payload: Bytes,
+}
+
+/// Content of an Explicit FEC Source or Repair message (provisional types
+/// 0x71 and 0x73), which carries its FEC-Scheme-Specific Information
+/// (FSSI) inline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplicitFecMessage {
+    /// The transfer this message belongs to.
+    pub transfer_number: u32,
+    /// The FEC Encoding ID of the scheme (RFC 6363 Section 5.6).
+    pub fec_encoding_id: u8,
+    /// Hint items carried by the message.
+    pub hints: Vec<HintItem>,
+    /// The FSSI elements, then the Explicit Source FEC Payload ID and
+    /// Source Data (Source message) or the Repair FEC Payload ID and Repair
+    /// Symbol Data (Repair message), as raw bytes.
+    ///
+    /// The boundaries are defined by the scheme identified by
+    /// `fec_encoding_id` and cannot be determined here.
+    pub payload: Bytes,
+}
