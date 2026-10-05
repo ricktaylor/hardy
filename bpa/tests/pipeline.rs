@@ -12,6 +12,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     cla,
     filter::{RewriteContext, Rewriter, pack::FilterPack},
+    keys::KeyProvider,
     node_ids::NodeIds,
     services,
     storage::{MetadataMemStorage, MetadataStorage},
@@ -31,13 +32,13 @@ use hardy_bpv7::{
     hop_info::HopInfo,
     parse::{Parsed, parse},
     reader::Availability,
-    status_report::ReasonCode,
+    status_report::{AdministrativeRecord, ReasonCode},
 };
 // Aliased: the key type, beside the block `Type` imported above.
 #[cfg(feature = "rfc9173")]
 use hardy_bpv7::bpsec::{
     encryptor::{Context as EncryptContext, Encryptor},
-    key::{EncAlgorithm, Key, Operation, Type as KeyType},
+    key::{EncAlgorithm, Key, KeySet, KeySource, Operation, Type as KeyType},
 };
 use hardy_cbor::{
     decode::skip_value,
@@ -1349,6 +1350,191 @@ async fn local_delivery() {
     );
 
     bpa.shutdown().await;
+}
+
+// A key provider lending the same keys for every bundle.
+#[cfg(feature = "rfc9173")]
+struct FixedKeys(Vec<Key>);
+
+#[cfg(feature = "rfc9173")]
+impl KeyProvider for FixedKeys {
+    fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+        Box::new(KeySet::new(self.0.clone()))
+    }
+}
+
+// Delivers `inbound` — from ipn:0.2.1, requesting deletion reports — to an
+// Application at ipn:0.1.42 on a node using `keys`, and returns the
+// deletion report's reason once the completed shutdown proves nothing was
+// delivered. The report travels to its report-to, ipn:0.2.1, over the CLA.
+async fn undeliverable_payload_reason(
+    mut inbound: Bytes,
+    keys: Option<Arc<dyn KeyProvider>>,
+) -> ReasonCode {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let mut builder = Bpa::builder().node_ids(node_ids).status_reports(true);
+    if let Some(keys) = keys {
+        builder = builder.key_provider(keys);
+    }
+    let bpa = builder.build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            from_ref(&remote_node),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let reason = loop {
+        // Event-driven wait; the timeout only bounds a regression.
+        let bundle = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for the deletion report")
+        .expect("Channel closed");
+        let parsed = parse(bundle).expect("the report parses");
+        assert!(
+            parsed.bundle.primary.flags.is_admin_record,
+            "only status reports leave the node"
+        );
+        let AdministrativeRecord::BundleStatusReport(report) = parsed.bundle.blocks[&1]
+            .extract::<AdministrativeRecord>(&parsed.data)
+            .expect("the payload is an administrative record")
+            .expect("the report payload is resident");
+        if report.deleted.is_some() {
+            break report.reason;
+        }
+    };
+
+    // The completed shutdown is the barrier proving nothing was delivered.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "nothing is delivered");
+    reason
+}
+
+/// RFC 9172 §5.1.1 at the payload's security acceptor: an Application's
+/// payload whose ciphertext fails to decrypt discards the bundle, reported
+/// as `FailedSecurityOperation`.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delivery_drops_a_payload_that_fails_to_decrypt() {
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (built, data) = Builder::new(remote_source.clone(), "ipn:0.1.42".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Borrowed(b"tampered in transit"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let encrypted = parse(Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                1,
+                EncryptContext::AES_GCM(Default::default()),
+                remote_source,
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+    // Flip the last ciphertext byte: the GCM check fails.
+    let last = usize::try_from(encrypted.bundle.blocks[&1].payload_range().end).unwrap() - 1;
+    let mut tampered = encrypted.data.to_vec();
+    tampered[last] ^= 0x01;
+
+    assert_eq!(
+        undeliverable_payload_reason(Bytes::from(tampered), Some(Arc::new(FixedKeys(vec![key]))))
+            .await,
+        ReasonCode::FailedSecurityOperation
+    );
+}
+
+/// The payload's security acceptor cannot process a BCB in a security
+/// context it does not recognise: the bundle is discarded, reported as
+/// `UnknownSecurityOperation` (RFC 9172 §7.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delivery_drops_a_payload_in_an_unknown_security_context() {
+    // RFC 9173 has the encryptor strip a target's CRC, and a BCB target
+    // still carrying one fails before its context is consulted.
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(Type::Payload)
+        .unwrap()
+        .with_flags(BlockFlags {
+            delete_bundle_on_failure: true,
+            ..Default::default()
+        })
+        .with_crc_type(CrcType::None)
+        .build(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    assert_eq!(
+        undeliverable_payload_reason(splice_unrecognised_bcb(&data), None).await,
+        ReasonCode::UnknownSecurityOperation
+    );
 }
 
 // ---------------------------------------------------------------------------

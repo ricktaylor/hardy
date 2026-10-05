@@ -521,6 +521,45 @@ impl Dispatcher {
             .trace_expect("The scheduled block removals failed");
         (editor, !removed.is_empty())
     }
+
+    // The payload a local consumer — an Application, or the administrative
+    // endpoint — receives: the wire body, or the plaintext when a BCB covers
+    // it, decrypted by this node as the payload's security acceptor. The
+    // bytes were validated at ingress and the whole bundle is in hand, so a
+    // re-parse failure or an absent payload is a BPA bug or storage
+    // corruption, and fatal; only the decryption can fail. The key provider
+    // needs a `&Bundle`, so re-parse structurally.
+    fn payload_bytes(&self, data: Bytes) -> Result<Bytes, hardy_bpv7::Error> {
+        let hardy_bpv7::parse::Parsed {
+            data: buf,
+            bundle: raw,
+            bcbs: bcb_ops,
+            ..
+        } = hardy_bpv7::parse::parse(data)
+            .trace_expect("The delivered bundle's bytes do not decode");
+        let key_source = self.key_source(&raw, &buf);
+        let payload =
+            hardy_bpv7::bpsec::DecryptingReader::new(&raw.blocks, &buf, &bcb_ops, &*key_source)
+                .into_block_data(1)?
+                .trace_expect("The delivered bundle has no resident payload");
+        Ok(match payload {
+            hardy_bpv7::block::Payload::Borrowed(s) => buf.slice_ref(s),
+            hardy_bpv7::block::Payload::Decrypted(d) => Bytes::from_owner(d),
+        })
+    }
+}
+
+// The reason a payload that fails to decrypt, other than for want of a key,
+// is dropped with: a security context this node does not recognise is an
+// unknown operation (RFC 9172 §7.1), anything else a failed one (§5.1.1).
+fn payload_failure_reason(e: &hardy_bpv7::Error) -> ReasonCode {
+    match e {
+        hardy_bpv7::Error::InvalidBPSec(
+            hardy_bpv7::bpsec::Error::UnrecognisedContext(_)
+            | hardy_bpv7::bpsec::Error::UnsupportedOperation,
+        ) => ReasonCode::UnknownSecurityOperation,
+        _ => ReasonCode::FailedSecurityOperation,
+    }
 }
 
 // The storage name of a bundle an output door loads: every record in the
@@ -587,5 +626,29 @@ pub mod tests {
             filters,
         );
         dispatcher
+    }
+
+    /// A delivered bundle's bytes were validated at ingress and come back
+    /// from storage, so failing to decode them is a BPA bug or storage
+    /// corruption: fatal, never a park. Driven as a direct call because a
+    /// panic inside a running BPA aborts the test process.
+    #[tokio::test]
+    #[should_panic(expected = "The delivered bundle's bytes do not decode")]
+    async fn undecodable_delivered_bytes_are_fatal() {
+        let dispatcher = dispatcher(
+            Arc::new(MetadataMemStorage::new(None)),
+            Arc::new(BundleMemStorage::new(None, None)),
+        )
+        .await;
+        let (_, data) = hardy_bpv7::builder::Builder::new(
+            "ipn:0.2.1".parse().unwrap(),
+            "ipn:0.1.42".parse().unwrap(),
+        )
+        .with_payload(b"truncated in storage".to_vec().into())
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+        let data = Bytes::from(data);
+
+        let _ = dispatcher.payload_bytes(data.slice(..data.len() - 1));
     }
 }

@@ -1,12 +1,8 @@
 // `Bpv7Error` disambiguates the bpv7 wire-format error from this crate's
 // `Error` in scope via the parent module.
 use hardy_bpv7::{
-    Error as Bpv7Error,
-    block::Payload,
-    bpsec,
+    Error as Bpv7Error, bpsec,
     editor::{Chunk, Editor},
-    parse::{self, Parsed},
-    status_report::ReasonCode,
 };
 
 use super::*;
@@ -139,46 +135,14 @@ impl Dispatcher {
                     .await
             }
             ServiceImpl::Application(app) => {
-                // Extract and decrypt payload for Application.
-                // KeyProvider needs a &Bundle; scope the parse
-                // as a match expression so the parse OperationSets
-                // (which contain `Rc<…>` and are therefore `!Send`) are
-                // dropped at the arm boundary, before any `.await` in
-                // this async fn. Consume `data` into the parse and work
-                // from the authoritative buffer it returns (the streaming
-                // path concatenates pushes), converting the payload to an
-                // owned `Bytes` (zero-copy for the unencrypted case via
-                // `slice_ref`) before the arm ends.
-                let payload_result = match parse::parse(data) {
-                    Ok(Parsed {
-                        data: buf,
-                        bundle: raw,
-                        bcbs: bcb_ops,
-                        ..
-                    }) => {
-                        let key_source = self.key_source(&raw, &buf);
-                        match bpsec::DecryptingReader::new(
-                            &raw.blocks,
-                            &buf,
-                            &bcb_ops,
-                            &*key_source,
-                        )
-                        .into_block_data(1)
-                        .and_then(|p| p.ok_or(Bpv7Error::Altered))
-                        {
-                            Ok(Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
-                            Ok(Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Err(e) => Err(e),
-                };
-
-                let mut payload = match payload_result {
+                // An Application receives the payload alone, decrypted by
+                // this node as the payload's security acceptor (RFC 9172
+                // §5.1.1). With no key, park for the next registration,
+                // which may bring usable keys; a payload that fails to
+                // decrypt discards the bundle.
+                let mut payload = match self.payload_bytes(data) {
+                    Ok(payload) => payload,
                     Err(Bpv7Error::InvalidBPSec(bpsec::Error::NoKey)) => {
-                        // TODO: We are unable to decrypt the payload, what do we do?
-                        // For now, park for the next registration (which may
-                        // bring usable keys).
                         debug!("Failed to decrypt payload: No valid keys");
                         return OfferOutcome::Parked(
                             bundle,
@@ -189,17 +153,12 @@ impl Dispatcher {
                         );
                     }
                     Err(e) => {
-                        // Other decryption error - skip delivery
-                        debug!("Received an invalid payload: {e}");
+                        debug!("Failed to decrypt payload: {e}");
 
                         // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
 
-                        return OfferOutcome::Dropped(
-                            bundle,
-                            Some(ReasonCode::BlockUnintelligible),
-                        );
+                        return OfferOutcome::Dropped(bundle, Some(payload_failure_reason(&e)));
                     }
-                    Ok(payload) => payload,
                 };
 
                 // As for low-level services, the whole payload is in hand,
