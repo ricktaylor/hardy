@@ -2,11 +2,11 @@
 
 ## Fragmentation and ADU reassembly
 
-All fragmentation-shaped work — the two sections below, fragment-carried payload BIB deferral, streaming-shaped reassembly — is being consolidated in [`fixing_fragmentation.md`](fixing_fragmentation.md), pending a decision once the bulk of the streaming work lands. Until that decision is taken, the sections here remain the authoritative record.
+All fragmentation-shaped work — the four sections below, fragment-carried payload BIB deferral, streaming-shaped reassembly — is gathered in [`fixing_fragmentation.md`](fixing_fragmentation.md), and the decision it deferred is settled in [`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md) (2026-09-07, not yet implemented). The sections here record defects in the current code until that redesign closes them; where a fix direction below differs from the redesign, the redesign governs.
 
 ### Concurrent final fragments both park NotReady (2026 dispatch review, finding 6)
 
-`poll_fragments` only sees siblings already parked in `AduFragment` status, so when the last two fragments of an ADU are processed concurrently each polls while the other is still `Dispatching`, both conclude the set is incomplete, both park, and nothing ever re-triggers reassembly (reproduced with a delegating metadata store holding the two polls open across each other). Deliberately not patched in place: the fix would land in `poll_fragments`/`reassemble`, which the settled redesign in [`fixing_fragmentation.md`](fixing_fragmentation.md) deletes wholesale — its ledger-driven completion has no park-vs-poll window. Another motivating instance of the shape problem that redesign exists to fix.
+`poll_fragments` only sees siblings already parked in `AduFragment` status, so when the last two fragments of an ADU are processed concurrently each polls while the other is still `Dispatching`, both conclude the set is incomplete, both park, and nothing ever re-triggers reassembly (reproduced with a delegating metadata store holding the two polls open across each other). Deliberately not patched in place: the fix would land in `poll_fragments`/`reassemble`, which the settled redesign in [`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md) deletes wholesale — its ledger-driven completion has no park-vs-poll window. Another motivating instance of the shape problem that redesign exists to fix.
 
 ### RFC 9171 §5.9 material-extents reassembly (overlapping fragments)
 
@@ -18,22 +18,19 @@ RFC 9171 §5.9 is more permissive: overlapping fragments are legal on the wire (
 
 Hardy has never accepted overlap: the pre-tiling-check code also failed overlapping sets (payload-length sum ≠ total), except for the length-sum coincidence that silently delivered a corrupt ADU (2026-07-08 review findings #1/#4). The tiling check makes rejection deterministic and safe, but Hardy remains non-conformant for legitimately overlapping fragment sets.
 
-#### What full §5.9 support needs
+#### Fix
 
-- `FragmentSet` must hold *trimmed* ranges decided at insert time by arrival order: on insert, clip the new fragment's payload range against the extents already covered (possibly splitting it), rather than keying whole fragments by raw offset.
-- The completeness gate in `poll_fragments()` (`adu_totals >= total_adu_len`) must sum material extents, not raw payload lengths, or completion fires early on overlapping sets.
-- The copy loop in `reassemble()` then slices each stored payload sub-range; the tiling invariant holds by construction.
-- §5.9 requires the reassembled ADU to replace the payload of the fragment whose material extents include offset zero — the current "fragment 0" special-casing needs re-deriving from material extents, not from a raw offset-0 key.
+Settled in [`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md) (not yet implemented): the per-ADU `Coverage` ledger merges overlapping ranges and replaces `FragmentSet`/`poll_fragments`, so overlap stops being a failure mode.
 
 ### Deletion status reports on reassembly failure
 
 When reassembly fails (`ReassemblyResult::Failed`), `Store::adu_reassemble` deletes the held fragments directly against storage (`delete_data` + `tombstone_metadata`) and the dispatcher's `Failed` arm returns without action — no deletion status reports are generated. RFC 9171 §5.10 says a deletion status report SHOULD be generated per deleted bundle (each fragment is its own bundle, reported to its own report-to EID with its fragment offset/length) when the report flag is set and reporting is enabled.
 
-The fix is plumbing, not policy: `adu_reassemble` should hand the fragment `Bundle`s back on failure instead of consuming them, so `Dispatcher::reassemble` can route each through `drop_bundle(bundle, reason)` (which already does the flag-gated `report_bundle_deletion` + delete). Reason-code selection per failure mode needs deciding: `DepletedStorage` fits the length-not-addressable case; coverage gaps/overlaps have no exact RFC 9171 reason code (`NoAdditionalInformation` or `BlockUnintelligible` are the candidates).
+Not patched in place: [`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md) dissolves the case — fragments are never held as bundle records, failures shrink to door-side drops of single arrivals, and an expired partial reports its own deletion through the reaper.
 
 ### Offset-keyed fragment set drops the trigger's cleanup on a hostile collision (review round 3)
 
-`FragmentSet.adus` is keyed by fragment offset, so a hostile sibling sharing the trigger fragment's source/timestamp/offset but a different `total_adu_length` (a distinct bundle id, so nothing deduplicates it) overwrites the trigger's seeded entry. The trigger then never reaches the cleanup loop — its metadata is never tombstoned and its `Dispatching` gauge never decremented — while the reassembly fails the length check and drops without cleanup. Key the map by bundle id (or fail the set on an offset collision); natural to fold into the §5.9 material-extents rework above, which re-keys this structure anyway.
+`FragmentSet.adus` is keyed by fragment offset, so a hostile sibling sharing the trigger fragment's source/timestamp/offset but a different `total_adu_length` (a distinct bundle id, so nothing deduplicates it) overwrites the trigger's seeded entry. The trigger then never reaches the cleanup loop — its metadata is never tombstoned and its `Dispatching` gauge never decremented — while the reassembly fails the length check and drops without cleanup. Not patched in place: closed structurally by [`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md) — fragments are never bundle records, and a sibling with a mismatched total drops at the door's consistency check under the ADU's merge permit.
 
 ## Ingress status-report conformance (invalid bundles, duplicates, expired arrivals)
 
