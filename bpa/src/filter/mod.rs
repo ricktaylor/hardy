@@ -421,9 +421,10 @@ pub trait Classifier: Send + Sync {
 ///
 /// At Egress the Rewriters run before the BPA's per-hop writes (RFC 9171
 /// §5.4), which supersede their edits to the blocks those writes cover: the
-/// Previous Node always; the Hop Count when the bundle arrived with one this
-/// node could read and can update; and the Bundle Age when the bundle arrived
-/// with one or has no creation clock. A per-hop block a
+/// Previous Node always; the Hop Count when the bundle arrived from a peer
+/// with one this node could read and can update (origination is not a hop,
+/// so the originating node never writes it); and the Bundle Age when the
+/// bundle arrived with one or has no creation clock. A per-hop block a
 /// Rewriter adds or edits where the BPA writes none travels as the Rewriter
 /// left it.
 ///
