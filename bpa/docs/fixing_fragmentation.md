@@ -65,4 +65,4 @@ Each delivered fragment triggers `poll_adu_fragments`, a full metadata scan of t
 
 ## Decision
 
-Items 1 and 2 are conformance bugs with a data-loss edge and are fixable now, independent of streaming. Item 3 is an interop gap whose clean fix (fragment-aware BIB deferral) is small once agreed. Items 4 and 5 are architecture and should wait for the streaming storage primitives. The proposal to decide on: whether to fix 1–3 as a pre-streaming tranche on the v0.3.0 stack, or batch everything into one fragmentation rework after the streaming bulk lands.
+Items 1 and 2 are conformance bugs with a data-loss edge and are fixable now, independent of streaming. Item 3 is an interop gap whose clean fix (fragment-aware BIB deferral) is small once agreed. Items 4 and 5 are architecture and should wait for the streaming storage primitives. The decision is taken in [`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md): one fragmentation rework after the streaming bulk, resolving all five items (see its resolution table).
