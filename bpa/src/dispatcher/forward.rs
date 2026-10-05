@@ -305,15 +305,20 @@ impl Dispatcher {
         // which this node holds no key for or could not accept, is not its
         // to change, one the editor refuses (BCB-covered beside an encrypted
         // BIB that may cover it) cannot be, and one this node could not
-        // read at ingress has no cached value.
+        // read at ingress has no cached value. Origination is not a hop: a
+        // bundle this node originated leaves with the count it was built
+        // with, and the next node makes the first increment.
         let signed = raw.blocks.values().any(|block| {
             block.block_type == block::Type::HopCount && block.bib != block::BibCoverage::None
         });
+        let originated = matches!(bundle.metadata.origin(), bundle::Origin::Originated);
         if signed {
             debug!(
                 "Hop Count block travels unchanged: under an integrity operation this node did not accept"
             );
-        } else if let Some(hop_count) = &bundle.metadata.per_hop.hop_count {
+        } else if let Some(hop_count) = &bundle.metadata.per_hop.hop_count
+            && !originated
+        {
             match editor.insert_block(block::Type::HopCount) {
                 Ok(block) => block
                     .with_flags(block::Flags {
