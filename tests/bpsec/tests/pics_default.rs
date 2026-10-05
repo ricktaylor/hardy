@@ -132,14 +132,85 @@ fn pics_1_2_duplicate_bib_on_payload_must_fail() {
 // Requirement 2: A single security block MAY represent multiple security
 // operations. (RFC 9172, Section 3.3)
 
+// The bundle PICS 2.1 signs: a payload and a Bundle Age block (block 2).
+const PICS_2_1_INCOMING: [u8; 79] = hex_literal::hex!(
+    "9F88070000820282010282028202018202820201820018281A000F4240850702000041"
+    "0085010100005823526561647920746F2067656E657261746520612033322D62797465"
+    "207061796C6F6164FF"
+);
+
+// The payload and Bundle Age block of `PICS_2_1_INCOMING`, signed by
+// ipn:3.1 under `scope` with the integrity key.
+fn sign_payload_and_bundle_age(scope: ScopeFlags) -> Box<[u8]> {
+    let sign_key = integrity_key();
+    let src: Eid = "ipn:3.1".parse().unwrap();
+    let parsed = parse::parse(Bytes::copy_from_slice(&PICS_2_1_INCOMING)).expect("Failed to parse");
+    signer::Signer::new(&parsed.bundle, &PICS_2_1_INCOMING)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(scope.clone()),
+            src.clone(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .sign_block(2, signer::Context::HMAC_SHA2(scope), src, &sign_key)
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .rebuild()
+        .unwrap()
+}
+
+// Parse `bytes`, verify every BIB with the integrity key, and return each
+// BIB's targets, keyed by BIB block number.
+fn verified_bib_targets(bytes: &[u8]) -> HashMap<u64, HashSet<u64>> {
+    let parse::Parsed {
+        data, bundle, bibs, ..
+    } = parse::parse(Bytes::copy_from_slice(bytes)).expect("Failed to parse");
+    let deferred = checks::verify_all_bibs(
+        &data,
+        &key::KeySet::new(vec![integrity_key()]),
+        &bundle.blocks,
+        &bibs,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("every BIB verifies");
+    assert!(deferred.is_empty(), "every target is resident");
+    bibs.iter()
+        .map(|(bib, opset)| (*bib, opset.operations().keys().copied().collect()))
+        .collect()
+}
+
+// Requirement 2 holds where combining is safe: under a scope without the
+// security header, the source signs the payload and the Bundle Age block
+// into one BIB, and both results verify.
 #[test]
 fn pics_2_1_source_sign_payload_and_bundle_age() {
+    let signed = sign_payload_and_bundle_age(ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    });
+    let targets: Vec<_> = verified_bib_targets(&signed).into_values().collect();
+    assert_eq!(targets, [HashSet::from([1, 2])]);
+}
+
+// Under a scope that includes the security header, the default, the source
+// signs each target into its own BIB: a waypoint's RFC 9172 §3.9 split would
+// renumber a shared BIB and break its results (RFC 9172 erratum 8723).
+#[test]
+fn pics_2_1_source_signs_each_target_alone_under_the_default_scope() {
+    let signed = sign_payload_and_bundle_age(ScopeFlags::default());
+    let mut targets: Vec<_> = verified_bib_targets(&signed).into_values().collect();
+    targets.sort_by_key(|t| t.iter().copied().min());
+    assert_eq!(targets, [HashSet::from([1]), HashSet::from([2])]);
+}
+
+// A shared BIB under the default scope, as another source may build it,
+// still verifies on receipt.
+#[test]
+fn pics_2_1_received_shared_default_scope_bib_verifies() {
     let incoming = hex_literal::hex!(
-        "9F88070000820282010282028202018202820201820018281A000F4240850702000041"
-        "0085010100005823526561647920746F2067656E657261746520612033322D62797465"
-        "207061796C6F6164FF"
-    );
-    let outgoing = hex_literal::hex!(
         "9F88070000820282010282028202018202820201820018281A000F4240850B03000058"
         "7582010201008202820301828182015830F75FE4C37F76F046165855BD5FF72FBFD4E3"
         "A64B4695C40E2B787DA005AE819F0A2E30A2E8B325527DE8AEFB52E73D718182015830"
@@ -147,32 +218,8 @@ fn pics_2_1_source_sign_payload_and_bundle_age() {
         "82538299B4B7E53C04FE03FDE88507020000410085010100005823526561647920746F"
         "2067656E657261746520612033322D62797465207061796C6F6164FF"
     );
-
-    let sign_key = integrity_key();
-    let src: Eid = "ipn:3.1".parse().unwrap();
-    let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
-
-    let signed = signer::Signer::new(&parsed.bundle, &incoming)
-        .sign_block(
-            1,
-            signer::Context::HMAC_SHA2(ScopeFlags::default()),
-            src.clone(),
-            &sign_key,
-        )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .sign_block(
-            2,
-            signer::Context::HMAC_SHA2(ScopeFlags::default()),
-            src,
-            &sign_key,
-        )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
-        .unwrap();
-
-    assert_bundles_equivalent(&signed, &outgoing);
+    let targets: Vec<_> = verified_bib_targets(&incoming).into_values().collect();
+    assert_eq!(targets, [HashSet::from([1, 2])]);
 }
 
 #[test]

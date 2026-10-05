@@ -596,7 +596,7 @@ fn remove_block_rejects_security_block() {
 // BIB, but the primary stays under it, and the edit would break the result.
 #[test]
 fn primary_edit_refused_while_a_bib_covers_it() {
-    let (bundle, data, hop_count, _, _) = make_signed_hop_count(true, primary_excluded());
+    let (bundle, data, hop_count, _, _) = make_signed_hop_count(true, shared(false));
     let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
 
     assert!(matches!(
@@ -625,7 +625,7 @@ fn primary_edit_refused_while_a_bib_covers_it() {
 // out, so it still verifies after the edit.
 #[test]
 fn remove_integrity_releases_the_primary() {
-    let (bundle, data, hop_count, bib, key) = make_signed_hop_count(true, primary_excluded());
+    let (bundle, data, hop_count, bib, key) = make_signed_hop_count(true, shared(false));
     let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
 
     let edited = ok(Editor::new(&bundle, &data).remove_integrity(0));
@@ -661,7 +661,7 @@ fn remove_integrity_releases_the_primary() {
 // primary block too, with no key: the BIB is not encrypted.
 #[test]
 fn removing_the_bib_releases_the_primary() {
-    let (bundle, data, _, bib, _) = make_signed_hop_count(true, primary_excluded());
+    let (bundle, data, _, bib, _) = make_signed_hop_count(true, shared(false));
     let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
     assert_eq!(
         bundle.primary.crc_type,
@@ -750,11 +750,12 @@ fn an_encrypted_bib_refuses_primary_edits() {
 }
 
 // `remove_integrity(0)` restores the primary's CRC, which would break the
-// Hop Count's operation under the same default-scope BIB: refused before
-// any edit, so the editor comes back with the primary still signed.
+// Hop Count's operation under the same BIB, whose scope includes the
+// primary: refused before any edit, so the editor comes back with the
+// primary still signed.
 #[test]
 fn remove_integrity_refused_while_another_operation_scopes_the_primary() {
-    let (bundle, data, _, bib, _) = make_signed_hop_count(true, ScopeFlags::default());
+    let (bundle, data, _, bib, _) = make_signed_hop_count(true, shared(true));
     let Err((editor, Error::PrimaryInSecurityScope(n))) =
         Editor::new(&bundle, &data).remove_integrity(0)
     else {
@@ -1765,6 +1766,16 @@ fn extension_editor_refuses_an_undecodable_well_known_replacement() {
 
 // === insert_block replace-by-type: BIB/BCB coverage parity =============
 
+// A scope under which two targets can share one BIB: no security header
+// (RFC 9172 erratum 8723), with or without the primary block.
+fn shared(include_primary_block: bool) -> ScopeFlags {
+    ScopeFlags {
+        include_primary_block,
+        include_security_header: false,
+        ..ScopeFlags::default()
+    }
+}
+
 // A scope that leaves the primary block out of an operation's input, so a
 // primary edit does not break it.
 fn primary_excluded() -> ScopeFlags {
@@ -1776,7 +1787,8 @@ fn primary_excluded() -> ScopeFlags {
 
 // A bundle whose Hop Count block is BIB-signed under `scope`: (bundle,
 // data, Hop Count block number, BIB block number, signing key). With
-// `sign_primary` the same BIB also signs the primary block.
+// `sign_primary` the same BIB also signs the primary block, which takes a
+// scope the two targets can share (`shared`).
 fn make_signed_hop_count(
     sign_primary: bool,
     scope: ScopeFlags,
@@ -1788,25 +1800,13 @@ fn make_signed_hop_count(
         .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
         .map(|(n, _)| *n)
         .expect("the hop count block is present");
-    // A two-target BIB signs with a direct key: under key wrap only one
-    // target's wrapped key reaches the wire (the bpv7 TODO's multi-target
-    // BIB entry).
-    let kek: key::Key = if sign_primary {
-        serde_json::from_value(serde_json::json!({
-            "kty": "oct",
-            "alg": "HS256",
-            "key_ops": ["sign", "verify"],
-            "k": rand_k(32)
-        }))
-    } else {
-        serde_json::from_value(serde_json::json!({
-            "kid": "ipn:2.1",
-            "kty": "oct",
-            "alg": "HS256+A128KW",
-            "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
-            "k": rand_k(16)
-        }))
-    }
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
     .unwrap();
     let mut signing = signer::Signer::new(&bundle, &data);
     if sign_primary {

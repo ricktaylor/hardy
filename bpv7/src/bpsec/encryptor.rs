@@ -208,7 +208,10 @@ impl<'a> Encryptor<'a> {
         // Reorder and accumulate BCB operations if sharing is possible
         type TargetVec<'b> = SmallVec<[(u64, &'b key::Key); 4]>;
         let mut bcbs: SmallVec<[(eid::Eid, Context, TargetVec<'a>); 4]> = SmallVec::new();
-        let mut shared_bcbs = HashMap::<(eid::Eid, Context), TargetVec<'a>>::new();
+        // Shared BCBs group per source, context and key: the key stands for
+        // the security acceptors, which must not differ within a block (RFC
+        // 9172 §3.3).
+        let mut shared_bcbs = HashMap::<(eid::Eid, Context, *const key::Key), TargetVec<'a>>::new();
         for (block_number, template) in self.templates {
             // Check if this context supports sharing multiple targets in one BCB.
             // AES_GCM requires unique IVs per target, so each target gets its own BCB.
@@ -229,7 +232,11 @@ impl<'a> Encryptor<'a> {
                 }
                 _ => {
                     shared_bcbs
-                        .entry((template.source, template.context))
+                        .entry((
+                            template.source,
+                            template.context,
+                            core::ptr::from_ref(template.key),
+                        ))
                         .or_default()
                         .push((block_number, template.key));
                 }
@@ -240,7 +247,7 @@ impl<'a> Encryptor<'a> {
         bcbs.extend(
             shared_bcbs
                 .into_iter()
-                .map(|((bpsec_source, context), targets)| (bpsec_source, context, targets)),
+                .map(|((bpsec_source, context, _), targets)| (bpsec_source, context, targets)),
         );
 
         let mut editor = Editor::new(self.original, self.source_data);
