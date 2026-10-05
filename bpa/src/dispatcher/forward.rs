@@ -320,8 +320,13 @@ impl Dispatcher {
         // (BCB-covered beside an encrypted BIB that may cover it) travels
         // unchanged, with its security operations, rather than holding the
         // bundle back. One this node could not read at ingress has no cached
-        // value, and travels unchanged too.
-        if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
+        // value, and travels unchanged too. Origination is not a hop: a bundle
+        // this node originated leaves with the count it was built with, and
+        // the next node makes the first increment.
+        let originated = matches!(bundle.metadata.origin(), bundle::Origin::Originated);
+        if let Some(hop_count) = &bundle.metadata.extensions.hop_count
+            && !originated
+        {
             editor = match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
                 Ok(block) => block
                     .with_flags(hardy_bpv7::block::Flags {
