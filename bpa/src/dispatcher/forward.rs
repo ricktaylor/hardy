@@ -319,7 +319,8 @@ impl Dispatcher {
         // is a SHOULD (RFC 9171 §4.4.3): a Hop Count block the editor refuses
         // (BCB-covered beside an encrypted BIB that may cover it) travels
         // unchanged, with its security operations, rather than holding the
-        // bundle back.
+        // bundle back. One this node could not read at ingress has no cached
+        // value, and travels unchanged too.
         if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
             editor = match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
                 Ok(block) => block

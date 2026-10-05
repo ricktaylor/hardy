@@ -1288,6 +1288,29 @@ async fn keyless_relay_forwards_a_signed_then_encrypted_bundle() {
     assert_eq!(payload.as_ref(), b"relay me");
 }
 
+// A keyless relay can't read an encrypted Hop Count. The increment is a
+// SHOULD (RFC 9171 §4.4.3), so the bundle passes ingress and the block
+// travels unchanged with its BCB; the PreviousNode is still replaced.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyless_relay_forwards_an_encrypted_hop_count_unchanged() {
+    let enc_key = enc_key();
+    let received = protected_bundle(&sign_key(), &enc_key, true);
+    assert!(
+        extension(&received, block::Type::HopCount).bcb.is_some(),
+        "the Hop Count arrives encrypted"
+    );
+
+    let out = relay(&received.data, Vec::new()).await;
+
+    assert_protected_blocks_untouched(&received, &out);
+    let previous = extension(&out, block::Type::PreviousNode)
+        .extract::<Eid>(&out.data)
+        .expect("the previous node decodes")
+        .expect("the previous node is resident");
+    assert_eq!(previous, Eid::from(relay_node(1)), "the relay names itself");
+}
+
 // A relay holding the decryption key reads the encrypted Hop Count at
 // ingress, but the bundle carries an encrypted BIB that may cover it, so
 // the per-hop rewrite cannot safely update the block. The increment is a

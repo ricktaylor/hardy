@@ -33,10 +33,18 @@ use hardy_bpv7::{
     reader::Availability,
     status_report::ReasonCode,
 };
+// Aliased: the key type, beside the block `Type` imported above.
+#[cfg(feature = "rfc9173")]
+use hardy_bpv7::bpsec::{
+    encryptor::{Context as EncryptContext, Encryptor},
+    key::{EncAlgorithm, Key, Operation, Type as KeyType},
+};
 use hardy_cbor::{
     decode::skip_value,
     encode::{Raw, emit, emit_array},
 };
+#[cfg(feature = "rfc9173")]
+use rand::{TryRng, rngs::SysRng};
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -1149,6 +1157,100 @@ async fn service_streamed_send_rejects_spoofed_source() {
         result,
         Err(hardy_bpa::services::Error::InvalidDestination(_))
     ));
+
+    bpa.shutdown().await;
+}
+
+// Sends `data` through the raw service door and returns the bundle the
+// CLA forwards: origination admitted it.
+#[cfg(feature = "rfc9173")]
+async fn originate_raw_and_forward(
+    svc: &EchoService,
+    forwarded_rx: &flume::Receiver<Bytes>,
+    data: Bytes,
+) -> Parsed {
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    tx.send(Segment::Final(data)).await.unwrap();
+    drop(tx);
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut rx)
+        .await
+        .expect("origination admits the bundle");
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the forwarded bundle")
+    .expect("channel closed");
+    parse(forwarded).expect("the forwarded bundle parses")
+}
+
+/// Origination admits a Hop Count block this node cannot decrypt, as
+/// ingress does (its increment is a SHOULD), and the bundle leaves with the
+/// block unchanged.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some([Operation::Encrypt].into_iter().collect()),
+        id: None,
+        key_use: None,
+    };
+    let (built, data) = Builder::new(source_eid.clone(), "ipn:0.2.1".parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 0,
+        })
+        .with_payload(b"undecryptable hop count".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let hop_count = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::HopCount)
+        .expect("the builder emitted the Hop Count block")
+        .0;
+    let encrypted = parse(Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                hop_count,
+                EncryptContext::AES_GCM(Default::default()),
+                source_eid,
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the Hop Count block")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+
+    let out = originate_raw_and_forward(&svc, &forwarded_rx, encrypted.data.clone()).await;
+    let before = &encrypted.bundle.blocks[&hop_count];
+    let after = out
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::HopCount)
+        .expect("the Hop Count block travels");
+    assert!(after.bcb.is_some(), "the block stays encrypted");
+    assert_eq!(
+        after.payload(&out.data),
+        before.payload(&encrypted.data),
+        "the encrypted block travels unchanged"
+    );
 
     bpa.shutdown().await;
 }

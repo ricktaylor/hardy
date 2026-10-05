@@ -233,17 +233,19 @@ where
 }
 
 /// A liveness-critical extension block a forwarding node can't process without
-/// its plaintext: `HopCount` (RFC 9171 §4.4.3 — the anti-"ping-pong" loop
-/// defense, so it must stay processable) and, on a node with no clock,
-/// `BundleAge` (its only expiry signal). Such a block is fatal whether it's
-/// undecipherable (no key) or corrupt (failed authentication): either way we
-/// can't enforce it, and forwarding without it risks a routing loop or an
-/// immortal bundle. Contrast a non-liveness block, where the two failure modes
-/// diverge — a corrupt one is stripped (RFC 9172 §5.1.1), an undecipherable one
-/// is forwarded intact for a downstream security acceptor.
+/// its plaintext: on a bundle with no creation clock, `BundleAge`, its only
+/// expiry signal, which every forwarder MUST increase (RFC 9171 §4.4.2,
+/// §5.4). Such a block is fatal whether it's undecipherable (no key) or
+/// corrupt (failed authentication): either way the node can't determine
+/// expiry or write the next age. Contrast a non-liveness block, where the two
+/// failure modes diverge — a corrupt one is stripped (RFC 9172 §5.1.1), an
+/// undecipherable one is forwarded intact for a downstream security acceptor.
+///
+/// `HopCount` is not liveness-critical: its increment is a SHOULD (RFC 9171
+/// §4.4.3), so a node that can't read it neither enforces the hop limit nor
+/// increments the count, and forwards the block unchanged.
 fn is_liveness_critical(block_type: block::Type, is_clocked: bool) -> bool {
-    matches!(block_type, block::Type::HopCount)
-        || (!is_clocked && matches!(block_type, block::Type::BundleAge))
+    !is_clocked && matches!(block_type, block::Type::BundleAge)
 }
 
 /// Call-site NoKey policy: reject a bundle carrying a liveness-critical extension
@@ -741,7 +743,7 @@ fn verify_headers(
         }
 
         // §B + §C8 + §C7 — composed keyed verification. NoKey on §C8 is fatal for
-        // HopCount and unclocked BundleAge; a §C8/§B decrypt failure is rejected.
+        // an unclocked BundleAge; a §C8/§B decrypt failure is rejected.
         // `verify` drains the deferred block-1 (payload) op-sets out of `bib_ops`,
         // handing them back owned in `facts.deferred_bibs`; `bcb_ops` is only
         // borrowed.
@@ -983,23 +985,16 @@ mod tests {
         assert!(hv.bundle.blocks.contains_key(&1), "payload survives");
     }
 
-    // The NoKey liveness policy through both real keyed pipelines: a
-    // BCB-encrypted Hop Count this node has no key for is fatal at ingress
-    // (the anti-loop defense cannot be enforced, so the bundle must not be
-    // forwarded), while the one-shot validate path returns it as a fact for
-    // the call site to adjudicate — `dispatcher::restart` ignores the list
-    // (tolerating a since-rotated key), and the accept/forward paths reject
-    // through `reject_undecryptable_liveness`.
+    // A peer's bundle whose Hop Count block is BCB-encrypted under a
+    // generated key: (bytes, the Hop Count's block number, the key).
     #[cfg(feature = "rfc9173")]
-    #[tokio::test]
-    async fn nokey_hop_count_fatal_at_ingress_a_fact_at_validate() {
+    fn encrypted_hop_count_bundle() -> (Bytes, u64, bpsec::key::Key) {
         use core::num::NonZeroU8;
 
         use hardy_bpv7::{
             bpsec::{
                 encryptor::{Context, Encryptor},
                 key::{EncAlgorithm, Key, Operation, Type},
-                no_keys,
             },
             builder::Builder,
             creation_timestamp::CreationTimestamp,
@@ -1007,15 +1002,18 @@ mod tests {
         };
         use rand::{TryRng, rngs::SysRng};
 
-        // Immaterial key value: the test parses with `no_keys`, so the
-        // key only has to encrypt; generated per the no-literal-keys rule.
-        let mut enc_k_bytes = vec![0u8; 32];
-        SysRng.try_fill_bytes(&mut enc_k_bytes).unwrap();
-        let enc_k = Key {
-            key_type: Type::octet_sequence(enc_k_bytes),
+        // Immaterial key value: generated per the no-literal-keys rule.
+        let mut key_bytes = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(key_bytes),
             key_algorithm: None,
             enc_algorithm: Some(EncAlgorithm::A256GCM),
-            operations: Some([Operation::Encrypt].into_iter().collect()),
+            operations: Some(
+                [Operation::Encrypt, Operation::Decrypt]
+                    .into_iter()
+                    .collect(),
+            ),
             id: Some("ipn:2.1".into()),
             key_use: None,
         };
@@ -1042,45 +1040,58 @@ mod tests {
                     hop_block,
                     Context::AES_GCM(Default::default()),
                     "ipn:0.2.1".parse().unwrap(),
-                    &enc_k,
+                    &key,
                 )
                 .map_err(|(_, e)| e)
                 .expect("encrypt the Hop Count block")
                 .rebuild()
                 .expect("rebuild the encrypted bundle"),
         );
+        (encrypted, hop_block, key)
+    }
 
-        // Ingress: fatal, with a recoverable bundle for the reception report.
-        // (NoKey has no RFC 9172 reason of its own; it maps to the generic
-        // BlockUnintelligible.)
+    // The NoKey liveness policy through both real keyed pipelines: a
+    // BCB-encrypted Hop Count this node has no key for passes the header
+    // pass unread. Its increment is a SHOULD (RFC 9171 §4.4.3), so the node
+    // enforces no hop limit and forwards the block intact; only an unclocked
+    // Bundle Age is fatal. The one-shot validate path tolerates it too.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn nokey_hop_count_passes_ingress_unread() {
+        use hardy_bpv7::bpsec::no_keys;
+
+        let (encrypted, hop_block, _) = encrypted_hop_count_bundle();
+
         let (tx, mut rx) = hardy_async::channel::bounded(1);
         tx.send(Segment::Final(encrypted.clone()))
             .await
             .expect("channel open");
-        match parse_headers(&mut rx, 1 << 20, 0, no_keys).await {
-            Err(HeaderFailure::Invalid {
-                report: Some((_, _, reason)),
-                ..
-            }) => {
-                assert_eq!(reason, ReasonCode::BlockUnintelligible)
-            }
-            Ok(_) => panic!("an undecryptable Hop Count must be fatal at ingress"),
-            Err(_) => panic!("expected Invalid with a recoverable bundle"),
-        }
+        let Ok((hv, ..)) = parse_headers(&mut rx, 1 << 20, 0, no_keys).await else {
+            panic!("an undecryptable Hop Count must pass the header pass");
+        };
+        assert!(hv.extensions.hop_count.is_none(), "the count is unread");
+        assert!(
+            !hv.to_remove.contains(&hop_block),
+            "the block is forwarded intact"
+        );
 
-        // Validate: tolerant by construction — the Ok is what lets restart
-        // re-admit stored data whose key has rotated away; the ingress door
-        // above is the one that adjudicates.
         parse_validate_with_provider(encrypted, no_keys)
             .expect("validate tolerates an undecryptable Hop Count");
         assert!(matches!(
             reject_undecryptable_liveness(&[(hop_block, block::Type::HopCount)], true),
-            Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
+            Ok(())
+        ));
+        assert!(matches!(
+            reject_undecryptable_liveness(&[(hop_block, block::Type::HopCount)], false),
+            Ok(())
         ));
 
         // BundleAge is liveness-critical only on an unclocked node.
         let age_fact = [(9, block::Type::BundleAge)];
-        assert!(reject_undecryptable_liveness(&age_fact, true).is_ok());
+        assert!(matches!(
+            reject_undecryptable_liveness(&age_fact, true),
+            Ok(())
+        ));
         assert!(matches!(
             reject_undecryptable_liveness(&age_fact, false),
             Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
@@ -1185,6 +1196,39 @@ mod tests {
             ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
         );
         assert_eq!(reason, ReasonCode::FailedSecurityOperation);
+    }
+
+    // RFC 9172 §5.1.1 for a Hop Count whose ciphertext fails authentication:
+    // not liveness-critical, so the header pass schedules it for removal with
+    // its security blocks, and the bundle survives, reporting the drop.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn corrupt_hop_count_is_scheduled_for_removal() {
+        use bpsec::key::{Key, KeySet};
+
+        fn keys(key: &Key) -> Box<dyn bpsec::key::KeySource> {
+            Box::new(KeySet::new(vec![key.clone()]))
+        }
+
+        let (encrypted, hop_block, key) = encrypted_hop_count_bundle();
+        let target = parse::parse(encrypted.clone()).unwrap().bundle.blocks[&hop_block].clone();
+        // Flip the last ciphertext byte: the GCM check fails.
+        let last = usize::try_from(target.payload_range().end).unwrap() - 1;
+        let mut data = encrypted.to_vec();
+        data[last] ^= 0x01;
+
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Final(Bytes::from(data)))
+            .await
+            .expect("channel open");
+        let Ok((hv, ..)) = parse_headers(&mut rx, 1 << 20, 0, |_, _| keys(&key)).await else {
+            panic!("a corrupt Hop Count must not be fatal");
+        };
+        assert!(
+            hv.to_remove.contains(&hop_block),
+            "the corrupt Hop Count is scheduled for the failure-drop"
+        );
+        assert_eq!(hv.report, ReceptionReport::FailureDropped);
     }
 
     #[test]
