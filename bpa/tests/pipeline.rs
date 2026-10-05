@@ -1163,7 +1163,6 @@ async fn service_streamed_send_rejects_spoofed_source() {
 
 // Sends `data` through the raw service door and returns the bundle the
 // CLA forwards: origination admitted it.
-#[cfg(feature = "rfc9173")]
 async fn originate_raw_and_forward(
     svc: &EchoService,
     forwarded_rx: &flume::Receiver<Bytes>,
@@ -1187,6 +1186,35 @@ async fn originate_raw_and_forward(
     .expect("timeout waiting for the forwarded bundle")
     .expect("channel closed");
     parse(forwarded).expect("the forwarded bundle parses")
+}
+
+/// Origination is not a hop: a bundle this node originates leaves with the
+/// Hop Count it was built with, and the next node makes the first increment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originated_bundle_leaves_with_its_built_hop_count() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let (_, data) = Builder::new(source_eid, "ipn:0.2.1".parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 0,
+        })
+        .with_payload(b"originated".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    let out = originate_raw_and_forward(&svc, &forwarded_rx, Bytes::from(data)).await;
+    let hop_info = out
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::HopCount)
+        .expect("the Hop Count block travels")
+        .extract::<HopInfo>(&out.data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 0, "the originating node does not increment");
+
+    bpa.shutdown().await;
 }
 
 /// Origination admits a Hop Count block this node cannot decrypt, as
