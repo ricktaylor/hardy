@@ -179,6 +179,8 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | ----- | ----- | ----- | ----- | ----- |
 | **Fragment Security** | Reject fragmentation if BPSec blocks present. | `bpv7/src/bpsec/signer.rs` | Bundle with BIB/BCB + Request Fragment | `Error(CannotFragmentSecureBundle)` |
 | **Target Cleanup** | Remove security info when target block is dropped. | `src/dispatcher/dispatch.rs` | Bundle with BIB targeting Payload + Drop Payload | Bundle with BIB removed. |
+| **Unreadable Hop Count** | A Hop Count block this node has no key for passes the header pass unread: its increment is a SHOULD (RFC 9171 §4.4.3), so it is not liveness-critical. | `src/bundle/parse.rs` | Bundle with a BCB-encrypted Hop Count, no keys | Accepted; no cached hop count; the block is kept. |
+| **Corrupt Hop Count** | A Hop Count block whose ciphertext fails authentication is scheduled for removal with its BCB (RFC 9172 §5.1.1). | `src/bundle/parse.rs` | Bundle with a tampered BCB-encrypted Hop Count | Accepted; the block scheduled for removal; reception report `FailureDropped`. |
 
 **Note (Rev 3):** Fragment Security (LLR 2.1.3) is a sender constraint enforced by `bpv7/src/bpsec/signer.rs:75` — not a BPA-level validation. Target Cleanup (LLR 2.1.2) is verified by the bpv7 unit tests (`test_bib_removal_and_readd`, `test_bcb_without_bib_removal`). Both scenarios are covered by the bpv7 test suite ([`UTP-BPSEC-01`](../../bpv7/docs/unit_test_plan_bpsec.md)); no separate BPA tests are required.
 
