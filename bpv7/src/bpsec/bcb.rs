@@ -58,6 +58,22 @@ impl Operation {
         }
     }
 
+    /// Returns `true` if this operation's input includes the primary block
+    /// through its scope, so any change to the primary block's bytes
+    /// invalidates it, as under RFC 9173's default scope. An unrecognised
+    /// context's parameters cannot be read, so it is taken to include the
+    /// primary.
+    ///
+    /// The answer is about the primary as part of another target's input:
+    /// an operation whose target is the primary block covers it regardless.
+    pub fn scope_includes_primary(&self) -> bool {
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::AES_GCM(operation) => operation.scope_includes_primary(),
+            Self::Unrecognised(..) => true,
+        }
+    }
+
     /// Returns true if multiple security operations can share the same security
     /// context parameters (and thus be in the same BCB).
     ///

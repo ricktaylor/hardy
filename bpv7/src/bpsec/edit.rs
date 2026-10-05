@@ -52,7 +52,7 @@ pub trait BPSecEditor: Sized {
     /// For cascade-aware single-block removal, call this with a
     /// 1-element set and inspect the returned set.
     ///
-    /// Lenient on three fronts: (a) when the cascade would partially shrink
+    /// Lenient on four fronts: (a) when the cascade would partially shrink
     /// a BCB-encrypted BIB and no Encrypt-capable key is available, the
     /// affected BIB's covered targets are silently retained — a dangling
     /// BIB reference would be worse; (b) a BCB-encrypted BIB that cannot
@@ -64,7 +64,10 @@ pub trait BPSecEditor: Sized {
     /// coverage is unresolved ([`block::BibCoverage::Maybe`]) is silently
     /// retained while any undecryptable BIB survives — removing it would
     /// leave that BIB's ciphertext OperationSet listing a nonexistent
-    /// block for downstream key-holders.
+    /// block for downstream key-holders; (d) the BIB that targets the
+    /// primary block is retained while another operation's scope includes
+    /// the primary ([`Editor`]'s rule), since removing it would restore the
+    /// primary's CRC and break that operation.
     ///
     /// Strict on the rest: requests naming the primary block, the payload
     /// block, or a BCB whose targets are not all also in `blocks` (which
@@ -82,7 +85,9 @@ pub trait BPSecEditor: Sized {
     /// recursively drops the BIB.
     ///
     /// Targets uncovered by a removed BIB keep their original CRC type —
-    /// see [`remove_integrity`] for why no CRC is restored on this path.
+    /// see [`remove_integrity`] for why no CRC is restored on this path —
+    /// except the primary block, which must carry a CRC once no BIB
+    /// targets it (RFC 9171 §4.3.1): a primary without one gains CRC32.
     ///
     /// [`remove_integrity`]: BPSecEditor::remove_integrity
     #[allow(clippy::result_large_err)]
@@ -109,7 +114,11 @@ pub trait BPSecEditor: Sized {
     /// Errors with [`Error::NotSigned`] if the target has no covering
     /// BIB. Errors if the covering BIB is itself BCB-encrypted (the BIB
     /// OpSet parse on ciphertext fails) — use [`remove_blocks`] for
-    /// that case.
+    /// that case. On the primary block, the restored CRC changes its
+    /// bytes, so it errors with
+    /// [`PrimaryInSecurityScope`](EditorError::PrimaryInSecurityScope)
+    /// while another operation's scope includes the primary, before any
+    /// edit.
     ///
     /// [`remove_blocks`]: crate::bpsec::edit::BPSecEditor::remove_blocks
     #[allow(clippy::result_large_err)]
@@ -256,6 +265,24 @@ impl<'a> BPSecEditor for Editor<'a> {
             });
         }
 
+        // 2c. Removing the BIB that targets the primary restores the
+        //     primary's CRC (RFC 9171 §4.3.1), changing its bytes, so while
+        //     another operation's scope includes the primary that BIB is
+        //     retained, as the rules above retain what cannot go safely.
+        let mut restore_primary_crc = false;
+        if let Some(bib) = self.primary_bib()
+            && to_remove.contains(&bib)
+            && self
+                .block(0)
+                .is_some_and(|(b, _)| matches!(b.crc_type, crc::CrcType::None))
+        {
+            if self.primary_scoped_operation(&to_remove).is_some() {
+                to_remove.remove(&bib);
+            } else {
+                restore_primary_crc = true;
+            }
+        }
+
         // 3. Stage plaintext into Editor templates so
         //    remove_from_bib_targets reads plaintext instead of tripping
         //    on ciphertext.
@@ -299,6 +326,11 @@ impl<'a> BPSecEditor for Editor<'a> {
                 Ok(e) => e,
                 Err((ed, e)) => return Err((ed, e.into())),
             };
+        }
+
+        // 6. The primary lost its BIB: restore its CRC.
+        if restore_primary_crc {
+            self = self.with_bundle_crc_type(crc::CrcType::CRC32_CASTAGNOLI)?;
         }
 
         Ok((self, removed))
@@ -651,6 +683,17 @@ fn remove_integrity_inner<'a>(
         .block(block_number)
         .map(|(b, _)| (b.bcb.is_some(), matches!(b.crc_type, crc::CrcType::None)))
         .unwrap_or((false, false));
+
+    // Restoring the primary's CRC changes its bytes, which would break
+    // every other operation whose scope includes the primary: refused
+    // before any edit.
+    if block_number == 0
+        && !has_bcb
+        && needs_crc
+        && let Some(security_block) = editor.primary_scoped_operation(&HashSet::new())
+    {
+        return Err((editor, EditorError::PrimaryInSecurityScope(security_block)));
+    }
 
     editor = editor.remove_from_bib_targets(block_number, bib_block_num)?;
 

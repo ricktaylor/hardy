@@ -62,6 +62,10 @@ The library exposes a common key representation based on JWK (JSON Web Key) form
 
 Following RFC 9172's design, security operations within a BIB or BCB share context parameters but produce unique results per target. The library reflects this by using reference-counted parameters shared across operations while maintaining separate result storage for each target block. This matches the wire format where a single security block can protect multiple targets with one set of parameters but distinct cryptographic results.
 
+### Editing Under BPSec
+
+An operation can cover the primary block without targeting it: RFC 9173's default scope puts the primary in every BIB's integrity-protected plaintext and every BCB's additional authenticated data. Each security context reports, from its own parameters, whether an operation's scope includes the primary (`scope_includes_primary()` on `bib::Operation` and `bcb::Operation`); an unrecognised context counts as including it, and a consumer such as the BPA never reads a context's parameters itself. The owner `Editor` refuses a primary-block edit while a BIB targets the primary or any remaining operation's scope includes it, an unreadable BIB counting as one, and the BIB removals that would restore the primary's CRC (RFC 9171 §4.3.1) are refused or retained on the same terms. Fragment info is exempt: no BIB or BCB is added to a fragment (RFC 9172 §5.2), so every operation covers the unfragmented primary.
+
 ### Processing Order
 
 Bundle security processing follows a specific order to give key providers maximum information for their decisions.

@@ -596,7 +596,7 @@ fn remove_block_rejects_security_block() {
 // BIB, but the primary stays under it, and the edit would break the result.
 #[test]
 fn primary_edit_refused_while_a_bib_covers_it() {
-    let (bundle, data, hop_count, _, _) = make_signed_hop_count(true);
+    let (bundle, data, hop_count, _, _) = make_signed_hop_count(true, primary_excluded());
     let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
 
     assert!(matches!(
@@ -625,7 +625,7 @@ fn primary_edit_refused_while_a_bib_covers_it() {
 // out, so it still verifies after the edit.
 #[test]
 fn remove_integrity_releases_the_primary() {
-    let (bundle, data, hop_count, bib, key) = make_signed_hop_count(true);
+    let (bundle, data, hop_count, bib, key) = make_signed_hop_count(true, primary_excluded());
     let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
 
     let edited = ok(Editor::new(&bundle, &data).remove_integrity(0));
@@ -661,8 +661,13 @@ fn remove_integrity_releases_the_primary() {
 // primary block too, with no key: the BIB is not encrypted.
 #[test]
 fn removing_the_bib_releases_the_primary() {
-    let (bundle, data, _, bib, _) = make_signed_hop_count(true);
+    let (bundle, data, _, bib, _) = make_signed_hop_count(true, primary_excluded());
     let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
+    assert_eq!(
+        bundle.primary.crc_type,
+        crc::CrcType::None,
+        "precondition: signing the primary strips its CRC"
+    );
 
     let (edited, removed) = Editor::new(&bundle, &data)
         .remove_blocks(HashSet::from([bib]), &key::KeySet::new(Vec::new()))
@@ -673,7 +678,188 @@ fn removing_the_bib_releases_the_primary() {
         .rebuild()
         .map(|c| Chunk::flatten(c, &data))
         .expect("rebuild the edited bundle");
+    let edited = reparse(&edited);
+    assert_eq!(edited.primary.destination, new_dest);
+    // RFC 9171 §4.3.1: a primary no BIB targets carries a CRC.
+    assert_eq!(edited.primary.crc_type, crc::CrcType::CRC32_CASTAGNOLI);
+}
+
+// A primary edit is refused while an operation on another target has the
+// primary block in its scope, as RFC 9173's default scope does, though no
+// BIB targets the primary; a scope without it lets the edit through.
+#[test]
+fn primary_edit_refused_under_a_bib_scope_that_includes_it() {
+    let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
+
+    let (bundle, data, _, bib, _) = make_signed_hop_count(false, ScopeFlags::default());
+    assert!(matches!(
+        Editor::new(&bundle, &data).with_destination(new_dest.clone()),
+        Err((_, Error::PrimaryInSecurityScope(n))) if n == bib
+    ));
+
+    let (bundle, data, _, _, _) = make_signed_hop_count(false, primary_excluded());
+    let edited = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()))
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &data))
+        .expect("rebuild the edited bundle");
     assert_eq!(reparse(&edited).primary.destination, new_dest);
+}
+
+// A BCB's AAD scope counts the same way.
+#[test]
+fn primary_edit_refused_under_a_bcb_scope_that_includes_it() {
+    let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
+    let (bundle, data) = make_bundle();
+
+    let (encrypted, bytes) = encrypt_scoped(&bundle, &data, 1, &aes_key(), ScopeFlags::default());
+    let bcb = *encrypted
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::BlockSecurity)
+        .expect("the bundle carries a BCB")
+        .0;
+    assert!(matches!(
+        Editor::new(&encrypted, &bytes).with_destination(new_dest.clone()),
+        Err((_, Error::PrimaryInSecurityScope(n))) if n == bcb
+    ));
+
+    let (encrypted, bytes) = encrypt_scoped(&bundle, &data, 1, &aes_key(), primary_excluded());
+    ok(Editor::new(&encrypted, &bytes).with_destination(new_dest));
+}
+
+// An encrypted BIB's scope cannot be read, so it counts as including the
+// primary block whatever it says.
+#[test]
+fn an_encrypted_bib_refuses_primary_edits() {
+    let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
+    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false, primary_excluded());
+    ok(Editor::new(&signed, &signed_bytes).with_destination(new_dest.clone()));
+
+    // Encrypting the Hop Count encrypts the BIB over it (RFC 9172 §3.9),
+    // under an AAD scope that leaves the primary out.
+    let (encrypted, bytes) =
+        encrypt_scoped(&signed, &signed_bytes, hop, &aes_key(), primary_excluded());
+    assert!(
+        encrypted.blocks[&bib].bcb.is_some(),
+        "precondition: the BIB is encrypted"
+    );
+    assert!(matches!(
+        Editor::new(&encrypted, &bytes).with_destination(new_dest),
+        Err((_, Error::PrimaryInSecurityScope(n))) if n == bib
+    ));
+}
+
+// `remove_integrity(0)` restores the primary's CRC, which would break the
+// Hop Count's operation under the same default-scope BIB: refused before
+// any edit, so the editor comes back with the primary still signed.
+#[test]
+fn remove_integrity_refused_while_another_operation_scopes_the_primary() {
+    let (bundle, data, _, bib, _) = make_signed_hop_count(true, ScopeFlags::default());
+    let Err((editor, Error::PrimaryInSecurityScope(n))) =
+        Editor::new(&bundle, &data).remove_integrity(0)
+    else {
+        panic!("remove_integrity(0) is refused");
+    };
+    assert_eq!(n, bib);
+    assert!(matches!(
+        editor.with_destination("ipn:9.0".parse().unwrap()),
+        Err((_, Error::PrimaryBlockHasBib))
+    ));
+}
+
+// `remove_blocks` retains the BIB over the primary block while another
+// operation's scope includes the primary, and does not report it removed.
+#[test]
+fn remove_blocks_retains_the_primary_bib_under_another_scope() {
+    let (bundle, data) = make_bundle();
+    let key: key::Key = serde_json::from_value(serde_json::json!({
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(32)
+    }))
+    .unwrap();
+    // One source signs the primary, another the payload under the default
+    // scope: two BIBs.
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            0,
+            signer::Context::HMAC_SHA2(primary_excluded()),
+            "ipn:2.1".parse().unwrap(),
+            &key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the primary")
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:3.1".parse().unwrap(),
+            &key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the payload")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+    let block::BibCoverage::Some(primary_bib) = signed.blocks[&0].bib else {
+        panic!("the primary is signed");
+    };
+    let block::BibCoverage::Some(payload_bib) = signed.blocks[&1].bib else {
+        panic!("the payload is signed");
+    };
+    assert_ne!(primary_bib, payload_bib, "precondition: two BIBs");
+
+    let (editor, removed) = Editor::new(&signed, &signed_bytes)
+        .remove_blocks(HashSet::from([primary_bib]), &key::KeySet::new(Vec::new()))
+        .map_err(|(_, e)| e)
+        .expect("remove_blocks");
+    assert!(removed.is_empty(), "the BIB over the primary is retained");
+    assert!(matches!(
+        editor.with_destination("ipn:9.0".parse().unwrap()),
+        Err((_, Error::PrimaryBlockHasBib))
+    ));
+}
+
+// Fragment info is exempt: no BIB or BCB is added to a fragment (RFC 9172
+// §5.2), so every operation covers the unfragmented primary. Fragmenting a
+// bundle a default-scope BIB protects and clearing the fragment info again
+// restores the primary the signature verifies over.
+#[test]
+fn fragment_info_edits_are_exempt() {
+    let (bundle, data, _, _, key) = make_signed_hop_count(false, ScopeFlags::default());
+    let fragment = ok(
+        Editor::new(&bundle, &data).with_fragment_info(Some(bundle::FragmentInfo {
+            offset: 0,
+            total_adu_length: 5,
+        })),
+    )
+    .rebuild()
+    .map(|c| Chunk::flatten(c, &data))
+    .expect("rebuild the fragment");
+    let fragment_bundle = reparse(&fragment);
+    assert!(fragment_bundle.primary.id.fragment_info.is_some());
+
+    let whole = ok(Editor::new(&fragment_bundle, &fragment).with_fragment_info(None))
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &fragment))
+        .expect("rebuild the reassembled bundle");
+    let parse::Parsed {
+        data: whole,
+        bundle: whole_bundle,
+        bibs,
+        ..
+    } = parse::parse(Bytes::copy_from_slice(&whole)).expect("parse the reassembled bundle");
+    assert_eq!(whole_bundle.primary.id.fragment_info, None);
+    let deferred = checks::verify_all_bibs(
+        &whole,
+        &key::KeySet::new(vec![key]),
+        &whole_bundle.blocks,
+        &bibs,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("the Hop Count's operation verifies over the restored primary");
+    assert!(deferred.is_empty(), "every target is resident");
 }
 
 // RFC 9171 §4.2.3-4/-5 against the final primary: the owner editor refuses
@@ -1579,13 +1765,22 @@ fn extension_editor_refuses_an_undecodable_well_known_replacement() {
 
 // === insert_block replace-by-type: BIB/BCB coverage parity =============
 
-// A bundle whose Hop Count block is BIB-signed: (bundle, data, Hop Count
-// block number, BIB block number, signing key). With `sign_primary` the same
-// BIB also signs the primary block, under a scope without the primary block
-// flag: RFC 9173's default scope would put the primary's bytes in the Hop
-// Count's operation too, and any edit that releases the primary would break
-// it.
-fn make_signed_hop_count(sign_primary: bool) -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
+// A scope that leaves the primary block out of an operation's input, so a
+// primary edit does not break it.
+fn primary_excluded() -> ScopeFlags {
+    ScopeFlags {
+        include_primary_block: false,
+        ..ScopeFlags::default()
+    }
+}
+
+// A bundle whose Hop Count block is BIB-signed under `scope`: (bundle,
+// data, Hop Count block number, BIB block number, signing key). With
+// `sign_primary` the same BIB also signs the primary block.
+fn make_signed_hop_count(
+    sign_primary: bool,
+    scope: ScopeFlags,
+) -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
     let (bundle, data) = make_bundle_with_hop_count();
     let hop = bundle
         .blocks
@@ -1613,14 +1808,6 @@ fn make_signed_hop_count(sign_primary: bool) -> (Bundle, Box<[u8]>, u64, u64, ke
         }))
     }
     .unwrap();
-    let scope = if sign_primary {
-        ScopeFlags {
-            include_primary_block: false,
-            ..ScopeFlags::default()
-        }
-    } else {
-        ScopeFlags::default()
-    };
     let mut signing = signer::Signer::new(&bundle, &data);
     if sign_primary {
         signing = signing
@@ -1663,7 +1850,7 @@ fn make_signed_hop_count(sign_primary: bool) -> (Bundle, Box<[u8]>, u64, u64, ke
 
 #[test]
 fn insert_block_replace_strips_bib_coverage_like_update_block() {
-    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count(false);
+    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count(false, ScopeFlags::default());
 
     // Replace the signed hop count via the replace-by-type door.
     let (rebuilt, chunks) =
@@ -1709,7 +1896,7 @@ fn insert_block_replace_strips_bib_coverage_like_update_block() {
 
 #[test]
 fn insert_block_replace_refuses_an_encrypted_bib() {
-    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count(false);
+    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count(false, ScopeFlags::default());
 
     // Encrypt the signed hop count: the cascade also encrypts its BIB.
     let enc_key: key::Key = serde_json::from_value(serde_json::json!({
@@ -1883,10 +2070,26 @@ fn aes_key() -> key::Key {
 // bundle and its bytes. The security header stays out of the AAD, as in the
 // other encryption fixtures here.
 fn encrypt(bundle: &Bundle, data: &[u8], n: u64, key: &key::Key) -> (Bundle, Box<[u8]>) {
-    let flags = ScopeFlags {
-        include_security_header: false,
-        ..ScopeFlags::default()
-    };
+    encrypt_scoped(
+        bundle,
+        data,
+        n,
+        key,
+        ScopeFlags {
+            include_security_header: false,
+            ..ScopeFlags::default()
+        },
+    )
+}
+
+// `encrypt` under the AAD scope `flags`.
+fn encrypt_scoped(
+    bundle: &Bundle,
+    data: &[u8],
+    n: u64,
+    key: &key::Key,
+    flags: ScopeFlags,
+) -> (Bundle, Box<[u8]>) {
     let bytes = encryptor::Encryptor::new(bundle, data)
         .encrypt_block(
             n,
@@ -1907,7 +2110,7 @@ fn insert_block_replace_refuses_a_verified_encrypted_bib() {
     // encrypted hop count is stamped as covered by a BIB that is itself
     // BCB-encrypted, and the replace refuses with BibIsEncrypted — the
     // target cannot be stripped from the BIB's ciphertext.
-    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false);
+    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false, ScopeFlags::default());
     let enc_key = aes_key();
     let (_, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
 

@@ -256,6 +256,16 @@ impl Operation {
         matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
+    // Whether the integrity scope puts the primary block in this
+    // operation's IPPT (RFC 9173 §3.7 step 2).
+    pub fn scope_includes_primary(&self) -> bool {
+        self.parameters
+            .flags
+            .clone()
+            .canonicalize()
+            .include_primary_block
+    }
+
     pub fn sign(
         jwk: &key::Key,
         scope_flags: ScopeFlags,
