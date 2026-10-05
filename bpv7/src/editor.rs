@@ -323,6 +323,17 @@ impl Chunk {
 ///
 /// The editor is designed to allow for efficient modification of a bundle by
 /// reusing the unmodified portions of the original bundle.
+///
+/// The primary-block setters ([`with_source`](Self::with_source),
+/// [`with_destination`](Self::with_destination) and the rest) refuse while a
+/// BIB targets the primary block.
+/// [`remove_integrity(0)`](crate::bpsec::edit::BPSecEditor::remove_integrity),
+/// or removing that BIB with
+/// [`remove_blocks`](crate::bpsec::edit::BPSecEditor::remove_blocks),
+/// releases it for editing. The refusal reads target coverage only: an
+/// accepted primary edit still breaks every remaining BIB or BCB operation
+/// whose scope includes the primary block, as RFC 9173's default scope does,
+/// and those are the caller's to re-sign or remove.
 pub struct Editor<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],
@@ -371,19 +382,25 @@ impl<'a> Editor<'a> {
     }
 
     fn primary_block(&mut self) -> Result<&mut primary_block::PrimaryBlock, Error> {
-        // Check if primary block is still protected by an untouched BIB
-        if let Some(primary) = self.original.blocks.get(&0) {
-            match primary.bib {
-                block::BibCoverage::Some(bib_num)
-                    if matches!(self.blocks.get(&bib_num), Some(BlockTemplate::Keep(_))) =>
-                {
-                    return Err(Error::PrimaryBlockHasBib);
-                }
-                block::BibCoverage::Maybe => {
-                    return Err(bpsec::Error::MaybeHasBib(0).into());
-                }
-                _ => {}
+        // Refuse while a BIB still targets the primary block, judged by the
+        // primary's current coverage rather than the BIB's template: an edit
+        // that strips another target from the same BIB rewrites that BIB but
+        // leaves the primary under it. `remove_integrity(0)`, or removing the
+        // BIB with `BPSecEditor::remove_blocks`, releases the primary. Only
+        // targets are checked: operations whose scope includes the primary
+        // block break on any accepted edit (see the type docs).
+        let coverage = match self.bib_overrides.get(&0) {
+            Some(coverage) => Some(coverage),
+            None => self.original.blocks.get(&0).map(|primary| &primary.bib),
+        };
+        match coverage {
+            Some(block::BibCoverage::Some(bib_num)) if self.blocks.contains_key(bib_num) => {
+                return Err(Error::PrimaryBlockHasBib);
             }
+            Some(block::BibCoverage::Maybe) => {
+                return Err(bpsec::Error::MaybeHasBib(0).into());
+            }
+            _ => {}
         }
 
         if self.primary.is_none() {
@@ -395,7 +412,10 @@ impl<'a> Editor<'a> {
     /// Sets the bundle flags for this [`Editor`], canonicalized so an alias
     /// bit in `unrecognised` counts as the flag it encodes.
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block
+    /// (see [`Editor`]). The editor comes back with the error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_bundle_flags(mut self, flags: bundle::Flags) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -409,7 +429,10 @@ impl<'a> Editor<'a> {
 
     /// Sets the [`crc::CrcType`] for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block
+    /// (see [`Editor`]). The editor comes back with the error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_bundle_crc_type(mut self, crc_type: crc::CrcType) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -423,7 +446,10 @@ impl<'a> Editor<'a> {
 
     /// Sets the creation timestamp for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block
+    /// (see [`Editor`]). The editor comes back with the error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_timestamp(
         mut self,
@@ -440,7 +466,10 @@ impl<'a> Editor<'a> {
 
     /// Sets the source [`eid::Eid`] for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block
+    /// (see [`Editor`]). The editor comes back with the error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_source(mut self, source: eid::Eid) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -454,7 +483,10 @@ impl<'a> Editor<'a> {
 
     /// Sets the destination [`eid::Eid`] for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block
+    /// (see [`Editor`]). The editor comes back with the error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_destination(mut self, destination: eid::Eid) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -468,7 +500,10 @@ impl<'a> Editor<'a> {
 
     /// Sets the report_to [`eid::Eid`] for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block
+    /// (see [`Editor`]). The editor comes back with the error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_report_to(mut self, report_to: eid::Eid) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -482,7 +517,10 @@ impl<'a> Editor<'a> {
 
     /// Sets the lifetime for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block
+    /// (see [`Editor`]). The editor comes back with the error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_lifetime(mut self, lifetime: core::time::Duration) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -496,7 +534,10 @@ impl<'a> Editor<'a> {
 
     /// Sets the fragment_info for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block
+    /// (see [`Editor`]). The editor comes back with the error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_fragment_info(
         mut self,

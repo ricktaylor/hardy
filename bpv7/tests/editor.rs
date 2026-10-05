@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use hardy_bpv7::{
     Bundle, block,
-    bpsec::{encryptor, key, rfc9173::ScopeFlags, signer},
+    bpsec::{edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
     builder, bundle, checks, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
     eid,
@@ -589,6 +589,91 @@ fn remove_block_rejects_security_block() {
         matches!(result, Err((_, Error::SecurityBlock))),
         "remove_block must reject a BIB block with Error::SecurityBlock"
     );
+}
+
+// A primary edit is refused while a BIB covers the primary block, including
+// after another target was stripped from that BIB: the strip rewrites the
+// BIB, but the primary stays under it, and the edit would break the result.
+#[test]
+fn primary_edit_refused_while_a_bib_covers_it() {
+    let (bundle, data, hop_count, _, _) = make_signed_hop_count(true);
+    let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
+
+    assert!(matches!(
+        Editor::new(&bundle, &data).with_destination(new_dest.clone()),
+        Err((_, Error::PrimaryBlockHasBib))
+    ));
+
+    let stripped = ok(Editor::new(&bundle, &data).update_block(hop_count))
+        .with_data(
+            emit(&hop_info::HopInfo {
+                limit: NonZeroU8::new(30).unwrap(),
+                count: 1,
+            })
+            .0
+            .into(),
+        )
+        .rebuild();
+    assert!(matches!(
+        stripped.with_destination(new_dest),
+        Err((_, Error::PrimaryBlockHasBib))
+    ));
+}
+
+// `remove_integrity(0)` releases the primary block for editing. The BIB
+// keeps the Hop Count's operation, whose scope leaves the primary block
+// out, so it still verifies after the edit.
+#[test]
+fn remove_integrity_releases_the_primary() {
+    let (bundle, data, hop_count, bib, key) = make_signed_hop_count(true);
+    let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
+
+    let edited = ok(Editor::new(&bundle, &data).remove_integrity(0));
+    let edited = ok(edited.with_destination(new_dest.clone()))
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &data))
+        .expect("rebuild the edited bundle");
+    let parse::Parsed {
+        data: edited,
+        bundle: edited_bundle,
+        bibs,
+        ..
+    } = parse::parse(Bytes::copy_from_slice(&edited)).expect("parse the edited bundle");
+    assert_eq!(edited_bundle.primary.destination, new_dest);
+    assert_eq!(edited_bundle.blocks[&0].bib, block::BibCoverage::None);
+    assert_eq!(
+        edited_bundle.blocks[&hop_count].bib,
+        block::BibCoverage::Some(bib)
+    );
+    let deferred = checks::verify_all_bibs(
+        &edited,
+        &key::KeySet::new(vec![key]),
+        &edited_bundle.blocks,
+        &bibs,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("the Hop Count's operation verifies");
+    assert!(deferred.is_empty(), "every target is resident");
+}
+
+// Removing the BIB through `BPSecEditor::remove_blocks` releases the
+// primary block too, with no key: the BIB is not encrypted.
+#[test]
+fn removing_the_bib_releases_the_primary() {
+    let (bundle, data, _, bib, _) = make_signed_hop_count(true);
+    let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
+
+    let (edited, removed) = Editor::new(&bundle, &data)
+        .remove_blocks(HashSet::from([bib]), &key::KeySet::new(Vec::new()))
+        .map_err(|(_, e)| e)
+        .expect("remove the BIB");
+    assert_eq!(removed, HashSet::from([bib]));
+    let edited = ok(edited.with_destination(new_dest.clone()))
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &data))
+        .expect("rebuild the edited bundle");
+    assert_eq!(reparse(&edited).primary.destination, new_dest);
 }
 
 // RFC 9171 §4.2.3-4/-5 against the final primary: the owner editor refuses
@@ -1494,9 +1579,13 @@ fn extension_editor_refuses_an_undecodable_well_known_replacement() {
 
 // === insert_block replace-by-type: BIB/BCB coverage parity =============
 
-// A bundle whose HopCount block is BIB-signed: (bundle, data, hop block
-// number, BIB block number, signing key).
-fn make_signed_hop_count() -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
+// A bundle whose Hop Count block is BIB-signed: (bundle, data, Hop Count
+// block number, BIB block number, signing key). With `sign_primary` the same
+// BIB also signs the primary block, under a scope without the primary block
+// flag: RFC 9173's default scope would put the primary's bytes in the Hop
+// Count's operation too, and any edit that releases the primary would break
+// it.
+fn make_signed_hop_count(sign_primary: bool) -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
     let (bundle, data) = make_bundle_with_hop_count();
     let hop = bundle
         .blocks
@@ -1504,18 +1593,50 @@ fn make_signed_hop_count() -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
         .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
         .map(|(n, _)| *n)
         .expect("the hop count block is present");
-    let kek: key::Key = serde_json::from_value(serde_json::json!({
-        "kid": "ipn:2.1",
-        "kty": "oct",
-        "alg": "HS256+A128KW",
-        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
-        "k": rand_k(16)
-    }))
+    // A two-target BIB signs with a direct key: under key wrap only one
+    // target's wrapped key reaches the wire (the bpv7 TODO's multi-target
+    // BIB entry).
+    let kek: key::Key = if sign_primary {
+        serde_json::from_value(serde_json::json!({
+            "kty": "oct",
+            "alg": "HS256",
+            "key_ops": ["sign", "verify"],
+            "k": rand_k(32)
+        }))
+    } else {
+        serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "HS256+A128KW",
+            "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+            "k": rand_k(16)
+        }))
+    }
     .unwrap();
-    let signed_bytes = signer::Signer::new(&bundle, &data)
+    let scope = if sign_primary {
+        ScopeFlags {
+            include_primary_block: false,
+            ..ScopeFlags::default()
+        }
+    } else {
+        ScopeFlags::default()
+    };
+    let mut signing = signer::Signer::new(&bundle, &data);
+    if sign_primary {
+        signing = signing
+            .sign_block(
+                0,
+                signer::Context::HMAC_SHA2(scope.clone()),
+                "ipn:2.1".parse().unwrap(),
+                &kek,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the primary block");
+    }
+    let signed_bytes = signing
         .sign_block(
             hop,
-            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            signer::Context::HMAC_SHA2(scope),
             "ipn:2.1".parse().unwrap(),
             &kek,
         )
@@ -1530,12 +1651,19 @@ fn make_signed_hop_count() -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
         .find(|(_, b)| matches!(b.block_type, block::Type::BlockIntegrity))
         .map(|(n, _)| *n)
         .expect("the BIB is present");
+    if sign_primary {
+        assert_eq!(
+            signed.blocks[&0].bib,
+            block::BibCoverage::Some(bib),
+            "one BIB covers the primary and the Hop Count"
+        );
+    }
     (signed, signed_bytes, hop, bib, kek)
 }
 
 #[test]
 fn insert_block_replace_strips_bib_coverage_like_update_block() {
-    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count();
+    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count(false);
 
     // Replace the signed hop count via the replace-by-type door.
     let (rebuilt, chunks) =
@@ -1581,7 +1709,7 @@ fn insert_block_replace_strips_bib_coverage_like_update_block() {
 
 #[test]
 fn insert_block_replace_refuses_an_encrypted_bib() {
-    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count();
+    let (signed, signed_bytes, hop, _, _) = make_signed_hop_count(false);
 
     // Encrypt the signed hop count: the cascade also encrypts its BIB.
     let enc_key: key::Key = serde_json::from_value(serde_json::json!({
@@ -1779,7 +1907,7 @@ fn insert_block_replace_refuses_a_verified_encrypted_bib() {
     // encrypted hop count is stamped as covered by a BIB that is itself
     // BCB-encrypted, and the replace refuses with BibIsEncrypted — the
     // target cannot be stripped from the BIB's ciphertext.
-    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count();
+    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false);
     let enc_key = aes_key();
     let (_, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
 
