@@ -87,11 +87,13 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 
 ### Suite E: Service Delivery Failure
 
-*Objective: a delivery the service fails leaves the bundle in custody (`bpa/tests/pipeline.rs`).*
+*Objective: a delivery the service fails leaves the bundle in custody, and a payload this node cannot decrypt as its security acceptor discards the bundle (`bpa/tests/pipeline.rs`).*
 
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **INT-BPA-05** | **`on_deliver` returns `Err`** | 1. Register an application whose `on_deliver` fails.<br>2. Originate a bundle to it from a second application.<br>3. Unregister the failing application and register a working one on the same service id. | The failed delivery parks the bundle `WaitingForService` rather than reporting it delivered and deleting it; the working receiver gets it re-delivered, payload intact. |
+| **INT-BPA-16** | **Payload fails to decrypt** | 1. Register a key provider holding the payload's key.<br>2. Deliver, via a CLA, a deletion-report-requesting bundle whose encrypted payload was tampered with, addressed to a local application. | The bundle is dropped with one deletion report carrying `FailedSecurityOperation` (RFC 9172 §5.1.1); nothing is delivered. |
+| **INT-BPA-17** | **Payload in an unknown security context** | 1. Deliver, via a CLA, a deletion-report-requesting bundle whose payload a BCB covers in a security context this node does not recognise, addressed to a local application. | The bundle is dropped with one deletion report carrying `UnknownSecurityOperation` (RFC 9172 §7.1); nothing is delivered. |
 
 ### Suite F: Deferred CLA Transfer Outcomes
 
