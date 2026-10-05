@@ -1,7 +1,7 @@
 use core::time::Duration;
 use hardy_bpv7::{
     Bundle,
-    block::{Block, Type},
+    block::{BibCoverage, Block, Type},
     bpsec::{self, bcb, bib, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
     builder::Builder,
     checks,
@@ -208,18 +208,22 @@ fn rfc9173_appendix_a_2() {
     block_data(1, &raw.blocks, &data, &bcb_ops, &keys).expect("Failed to decrypt");
 }
 
+// The final bundle of RFC 9173 Appendix A.3: a BCB over the payload, and a
+// BIB over the primary block (0) and the Bundle Age block (2).
+const APPENDIX_A_3: [u8; 239] = hex_literal::hex!(
+    "9f88070000820282010282028202018202820201820018281a000f4240850b0300
+            00585c8200020101820282030082820105820300828182015820cac6ce8e4c5dae57
+            988b757e49a6dd1431dc04763541b2845098265bc817241b81820158203ed614c0d9
+            7f49b3633627779aa18a338d212bf3c92b97759d9739cd50725596850c0401005834
+            8101020182028202018382014c5477656c7665313231323132820201820400818182
+            0150efa4b5ac0108e3816c5606479801bc0485070200004319012c85010100005823
+            3a09c1e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e
+            9aff"
+);
+
 #[test]
 fn rfc9173_appendix_a_3() {
-    let data = hex_literal::hex!(
-        "9f88070000820282010282028202018202820201820018281a000f4240850b0300
-                00585c8200020101820282030082820105820300828182015820cac6ce8e4c5dae57
-                988b757e49a6dd1431dc04763541b2845098265bc817241b81820158203ed614c0d9
-                7f49b3633627779aa18a338d212bf3c92b97759d9739cd50725596850c0401005834
-                8101020182028202018382014c5477656c7665313231323132820201820400818182
-                0150efa4b5ac0108e3816c5606479801bc0485070200004319012c85010100005823
-                3a09c1e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e
-                9aff"
-    );
+    let data = APPENDIX_A_3;
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [
             {
@@ -1892,4 +1896,37 @@ fn targets_under_different_keys_get_separate_bibs() {
         )
         .expect("each target verifies under its own key");
     }
+}
+
+// Encrypting the Bundle Age block of the RFC 9173 A.3 bundle would encrypt
+// the BIB over it with every block that BIB covers (RFC 9172 §3.9), the
+// primary among them, which no BCB can target: refused, naming the BIB.
+#[test]
+fn encrypting_under_a_bib_that_covers_the_primary_is_refused() {
+    let raw = raw_of(&APPENDIX_A_3);
+    let BibCoverage::Some(bib) = raw.blocks[&2].bib else {
+        panic!("the Bundle Age block is signed");
+    };
+    assert!(
+        matches!(raw.blocks[&0].bib, BibCoverage::Some(n) if n == bib),
+        "precondition: one BIB covers the primary and the Bundle Age block"
+    );
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kty": "oct",
+        "alg": "dir",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let result = encryptor::Encryptor::new(&raw, &APPENDIX_A_3).encrypt_block(
+        2,
+        encryptor::Context::AES_GCM(ScopeFlags::default()),
+        "ipn:2.1".parse().unwrap(),
+        &enc_key,
+    );
+    assert!(matches!(
+        result,
+        Err((_, encryptor::Error::BibCoversPrimary(n))) if n == bib
+    ));
 }

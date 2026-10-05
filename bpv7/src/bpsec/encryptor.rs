@@ -24,6 +24,12 @@ pub enum Error {
     #[error("Block target {0} is already the target of a BCB")]
     AlreadyEncrypted(u64),
 
+    /// The BIB over the target, named here, also signs the primary block.
+    /// Encrypting the target encrypts that BIB and every block it covers
+    /// (RFC 9172 §3.9), and a BCB cannot target the primary block.
+    #[error("BIB {0} over the target also covers the primary block, which a BCB cannot target")]
+    BibCoversPrimary(u64),
+
     /// Encryption of fragmented bundles is not supported (RFC 9172 Section 5).
     #[error("Bundle is a fragment")]
     FragmentedBundle,
@@ -84,7 +90,17 @@ impl<'a> Encryptor<'a> {
 
     /// Encrypt a block in the bundle.
     ///
-    /// On error, returns the encryptor along with the error so it can be reused for recovery.
+    /// A BIB over the target is encrypted with it, as RFC 9172 §3.9
+    /// requires, together with every other block that BIB covers, each under
+    /// its own BCB: the BIB is never split, since a split would make this
+    /// node the security source of the moved results.
+    ///
+    /// # Errors
+    ///
+    /// Among the target checks, [`Error::BibCoversPrimary`] when the BIB
+    /// over the target also covers the primary block, which no BCB can
+    /// target. On error, returns the encryptor along with the error so it
+    /// can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn encrypt_block(
         mut self,
@@ -142,6 +158,10 @@ impl<'a> Encryptor<'a> {
                         ));
                     }
                 };
+
+                if opset.operations.contains_key(&0) {
+                    return Err((self, Error::BibCoversPrimary(bib_block)));
+                }
 
                 // Encrypt all the BIB targets
                 for target in opset.operations.keys() {

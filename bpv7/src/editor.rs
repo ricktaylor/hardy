@@ -949,9 +949,21 @@ impl<'a> Editor<'a> {
 
     #[allow(clippy::result_large_err)]
     pub(crate) fn remove_block_inner(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
-        // Get the block's security references BEFORE removing it
+        // The block's current security references, read BEFORE removing it.
+        // An earlier edit's strip records the block's new coverage in the
+        // overrides, leaving its template's stamps stale: the BIB or BCB they
+        // name may be gone, and its number reused by an unrelated block.
         let (bib, bcb) = if let Some((block, _)) = self.block(block_number) {
-            (block.bib.clone(), block.bcb)
+            (
+                self.bib_overrides
+                    .get(&block_number)
+                    .cloned()
+                    .unwrap_or_else(|| block.bib.clone()),
+                self.bcb_overrides
+                    .get(&block_number)
+                    .copied()
+                    .unwrap_or(block.bcb),
+            )
         } else {
             (block::BibCoverage::None, None)
         };
@@ -992,8 +1004,10 @@ impl<'a> Editor<'a> {
             }
         }
 
-        // Now remove the block from the templates
-        if self.blocks.remove(&block_number).is_some() {
+        // Strip the block from its security blocks' target lists, then
+        // remove it from the templates, so a failed strip returns an editor
+        // that still holds the block.
+        if self.blocks.contains_key(&block_number) {
             // If there is a BIB, remove the block from the list of targets
             // If the BIB is now empty, recursively call this function.
             if let block::BibCoverage::Some(bib) = bib {
@@ -1005,6 +1019,7 @@ impl<'a> Editor<'a> {
             if let Some(bcb) = bcb {
                 self = self.remove_from_bcb_targets(block_number, bcb)?;
             }
+            self.blocks.remove(&block_number);
         }
         Ok(self)
     }

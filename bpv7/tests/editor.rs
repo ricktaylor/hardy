@@ -2268,3 +2268,46 @@ fn insert_block_replace_keeps_an_uncovered_blocks_flags_and_crc() {
         .expect("the hop count is resident");
     assert_eq!(hop_info.count, 1);
 }
+
+// `update_block` strips an encrypted block from its BCB, which then goes
+// and frees its number; a pushed block reuses it. Removing the first block
+// reads its current coverage, not the stale stamp naming that number, so
+// the pushed block is left alone.
+#[test]
+fn remove_block_after_update_reads_the_current_coverage() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = *bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::HopCount)
+        .expect("the bundle carries a Hop Count block")
+        .0;
+    let (encrypted, bytes) = encrypt(&bundle, &data, hop, &aes_key());
+    let bcb = *encrypted
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::BlockSecurity)
+        .expect("the bundle carries a BCB")
+        .0;
+
+    let editor = ok(Editor::new(&encrypted, &bytes).update_block(hop))
+        .with_data(hop_count_body().into_vec().into())
+        .rebuild();
+    let pushed = ok(editor.push_block(block::Type::Unrecognised(200)))
+        .with_data(b"ext-data".as_slice().into());
+    assert_eq!(
+        pushed.block_number(),
+        bcb,
+        "precondition: the pushed block reuses the BCB's number"
+    );
+    let rebuilt = ok(pushed.rebuild().remove_block(hop))
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &bytes))
+        .expect("rebuild the edited bundle");
+    let rebuilt = reparse(&rebuilt);
+    assert!(!rebuilt.blocks.contains_key(&hop));
+    assert_eq!(
+        rebuilt.blocks[&bcb].block_type,
+        block::Type::Unrecognised(200)
+    );
+}
