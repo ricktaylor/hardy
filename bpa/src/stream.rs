@@ -143,6 +143,7 @@ impl<T: Send> Receiver<T> for CancellableReceiver<'_, T> {
 ///
 /// `Final` marks the last segment of the bundle. The payload may be empty
 /// (`Final(Bytes::new())`) to signal end-of-stream without additional data.
+/// A `Next` may be empty too: it carries nothing, and consumers skip it.
 /// `Final` is the end-of-stream signal: consumers stop pulling once they
 /// hold it. A stray `recv` after `Final` returns `Err(`[`RecvError`]`)`
 /// from a channel-backed stream (the producer has dropped its sender), but
@@ -152,7 +153,7 @@ impl<T: Send> Receiver<T> for CancellableReceiver<'_, T> {
 /// consumers treat that as an error, never a completion.
 #[derive(Debug)]
 pub enum Segment {
-    /// The next segment of the bundle
+    /// The next segment of the bundle (may be empty)
     Next(crate::Bytes),
     /// The last segment (may be empty)
     Final(crate::Bytes),

@@ -32,14 +32,15 @@ use crate::{
 /// were resident at the header pass or drained.
 #[derive(Debug, Error)]
 pub enum ValidationFailure {
-    /// The stream ended before the bundle's outer break: the producer went
-    /// away mid-bundle. A resend may complete it, so the transfer is
-    /// refused (the CLA withholds its acknowledgement).
-    #[error("the stream ended before the bundle's outer break")]
+    /// The stream ended before its `Final`, mid-bundle or after the outer
+    /// break: the producer went away. A resend may complete it, so the
+    /// transfer is refused (the CLA withholds its acknowledgement).
+    #[error("the stream ended before its final segment")]
     Truncated,
     /// The payload's bytes were structurally invalid — payload CRC mismatch,
-    /// a malformed trailer, or bytes past the outer break. The bundle is
-    /// complete but unacceptable: accepted and dropped, never refused.
+    /// a malformed trailer, bytes past the outer break, or a payload the
+    /// stream's `Final` cut short. The transfer is complete but the bundle
+    /// unacceptable: accepted and dropped, never refused.
     #[error("invalid payload bytes: {0}")]
     Invalid(hardy_bpv7::Error),
     /// A deferred payload BIB failed integrity over the streamed body
@@ -64,6 +65,16 @@ impl ValidationFailure {
     }
 }
 
+// Where a drain stands. Only an open drain pulls.
+enum Progress {
+    // The stream has not yet delivered its `Final`.
+    Open,
+    // The stream delivered its `Final`, and every segment absorbed cleanly.
+    Final,
+    // A pull failed: the bytes were bad, or the producer went away.
+    Failed(ValidationFailure),
+}
+
 /// A [`Receiver<Segment>`] decorator that validates a bundle's payload tail
 /// as it streams through — see the [module docs](self).
 ///
@@ -77,9 +88,7 @@ pub struct ValidatingReceiver<'a> {
     // Each deferred payload BIB, paired with its block number for failure
     // attribution.
     verifiers: Vec<(u64, bib::Verifier)>,
-    // Set by the first failing pull; a later pull short-circuits and
-    // `finish` reports it.
-    failure: Option<ValidationFailure>,
+    progress: Progress,
 }
 
 impl<'a> ValidatingReceiver<'a> {
@@ -102,23 +111,31 @@ impl<'a> ValidatingReceiver<'a> {
             inner,
             tail,
             verifiers,
-            failure: None,
+            progress: Progress::Open,
         }
     }
 
     /// Settle the drain: assert the bundle completed and every deferred BIB
-    /// verifies. `Ok` once the outer break was consumed and each verifier's
-    /// tag matches; otherwise the categorised [`ValidationFailure`] — an
-    /// inline structural rejection seen during draining, a truncation, or a
-    /// payload-BIB integrity failure.
+    /// verifies. `Ok` once the stream's `Final` has passed with the outer
+    /// break consumed and each verifier's tag matching; otherwise the
+    /// categorised [`ValidationFailure`] — an
+    /// inline structural rejection seen during draining, a payload the
+    /// stream's `Final` cut short ([`Invalid`](ValidationFailure::Invalid)),
+    /// a stream that ended before its `Final`
+    /// ([`Truncated`](ValidationFailure::Truncated)), or a payload-BIB
+    /// integrity failure.
     pub fn finish(self) -> Result<(), ValidationFailure> {
-        if let Some(failure) = self.failure {
-            return Err(failure);
+        match self.progress {
+            Progress::Failed(failure) => return Err(failure),
+            // An unfinished tail after the stream's `Final` is a short bundle
+            // in a complete transfer: invalid, as the header pass treats a
+            // payload cut short at `Final`, so the transfer is accepted and
+            // the bundle dropped.
+            Progress::Final => self.tail.finish().map_err(ValidationFailure::Invalid)?,
+            // Before `Final`, the transfer is unconfirmed, whatever the tail's
+            // phase: a truncation, and a resend may complete it.
+            Progress::Open => return Err(ValidationFailure::Truncated),
         }
-        // A stream that ended before the outer break is a truncation.
-        self.tail
-            .finish()
-            .map_err(|_| ValidationFailure::Truncated)?;
         for (bib, verifier) in self.verifiers {
             verifier
                 .finish()
@@ -147,17 +164,31 @@ impl<'a> ValidatingReceiver<'a> {
 #[async_trait]
 impl Receiver<Segment> for ValidatingReceiver<'_> {
     async fn recv(&mut self) -> Result<Segment, RecvError> {
-        // A prior failure is terminal: never yield more bytes downstream.
-        if self.failure.is_some() {
+        // A failure is terminal: never yield more bytes downstream. After
+        // `Final` the stream has nothing left, and a stray pull must not read
+        // the producer's departure as a truncation.
+        if !matches!(self.progress, Progress::Open) {
             return Err(RecvError);
         }
-        let segment = self.inner.recv().await?;
-        let bytes: &Bytes = match &segment {
-            Segment::Next(bytes) | Segment::Final(bytes) => bytes,
+        let segment = match self.inner.recv().await {
+            Ok(segment) => segment,
+            // A producer that goes away before `Final` has abandoned the
+            // transfer, even past the outer break.
+            Err(e) => {
+                self.progress = Progress::Failed(ValidationFailure::Truncated);
+                return Err(e);
+            }
+        };
+        let (bytes, last): (&Bytes, bool) = match &segment {
+            Segment::Next(bytes) => (bytes, false),
+            Segment::Final(bytes) => (bytes, true),
         };
         if let Err(failure) = self.absorb(bytes) {
-            self.failure = Some(failure);
+            self.progress = Progress::Failed(failure);
             return Err(RecvError);
+        }
+        if last {
+            self.progress = Progress::Final;
         }
         Ok(segment)
     }
@@ -178,15 +209,19 @@ mod tests {
         // this file; alias the bpv7 structural parser it collides with.
         parse::{self as bpv7_parse, BundleParser, ParserProgress},
     };
+    use rand::{TryRng, rngs::SysRng};
 
     use super::*;
 
     const PAYLOAD: usize = 50_000;
     const CHUNK: usize = 1000;
 
+    // The signing key: its value is immaterial, so it is generated.
     fn sign_key() -> Key {
+        let mut k = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut k).unwrap();
         Key {
-            key_type: Type::octet_sequence(b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice()),
+            key_type: Type::octet_sequence(k),
             key_algorithm: Some(KeyAlgorithm::HS256),
             enc_algorithm: None,
             operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
@@ -195,16 +230,17 @@ mod tests {
         }
     }
 
-    // An oversized-payload bundle, optionally BIB-signed over block 1.
-    fn oversized_bundle(sign: bool) -> Bytes {
+    // An oversized-payload bundle, BIB-signed over block 1 with `key` when
+    // given.
+    fn oversized_bundle(key: Option<&Key>) -> Bytes {
         let (_, base) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_payload(vec![0xAB_u8; PAYLOAD].as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
         let base = Bytes::from(base);
-        if !sign {
+        let Some(key) = key else {
             return base;
-        }
+        };
         let parsed = bpv7_parse::parse(base).expect("parse the built bundle");
         Bytes::from(
             Signer::new(&parsed.bundle, &parsed.data)
@@ -212,7 +248,7 @@ mod tests {
                     1,
                     Context::HMAC_SHA2(Default::default()),
                     "ipn:2.1".parse().unwrap(),
-                    &sign_key(),
+                    key,
                 )
                 .map_err(|(_, e)| e)
                 .expect("sign block 1")
@@ -272,7 +308,7 @@ mod tests {
     // A valid tail passes through byte-for-byte and settles Ok.
     #[tokio::test]
     async fn valid_tail_passes_through_and_settles() {
-        let full = oversized_bundle(false);
+        let full = oversized_bundle(None);
         let (consumed, tail) = to_partial(&full);
         let rest = full.slice(consumed.len()..);
 
@@ -287,7 +323,7 @@ mod tests {
     // bundle (accepted then dropped), reported as `Invalid`.
     #[tokio::test]
     async fn corrupt_payload_is_invalid() {
-        let full = oversized_bundle(false);
+        let full = oversized_bundle(None);
         let (consumed, tail) = to_partial(&full);
         let mut rest = full.slice(consumed.len()..).to_vec();
         rest[10] ^= 0xFF; // inside the streamed body, before the CRC/breaks
@@ -312,7 +348,7 @@ mod tests {
     // A producer that drops before the outer break is a truncation.
     #[tokio::test]
     async fn short_stream_is_truncated() {
-        let full = oversized_bundle(false);
+        let full = oversized_bundle(None);
         let (consumed, tail) = to_partial(&full);
         let rest = full.slice(consumed.len()..);
 
@@ -341,6 +377,172 @@ mod tests {
         );
     }
 
+    // A producer that drops past the outer break but before `Final` has
+    // abandoned the transfer: still a truncation, so the transfer is refused.
+    #[tokio::test]
+    async fn stream_ending_without_final_is_truncated() {
+        let full = oversized_bundle(None);
+        let (consumed, tail) = to_partial(&full);
+        let rest = full.slice(consumed.len()..);
+
+        // The whole remainder arrives in `Next` segments; the producer then
+        // drops without sending `Final`.
+        let chunks: Vec<&[u8]> = rest.chunks(CHUNK).collect();
+        let (tx, mut rx) = hardy_async::channel::bounded(chunks.len());
+        for chunk in chunks {
+            tx.send(Segment::Next(Bytes::copy_from_slice(chunk)))
+                .await
+                .expect("channel open");
+        }
+        drop(tx);
+
+        let mut tr = ValidatingReceiver::new(&mut rx, tail, Vec::new(), &[]);
+        assert!(
+            matches!(drain(&mut tr).await, Err(RecvError)),
+            "the stream ends without `Final`"
+        );
+        let failure = tr
+            .finish()
+            .expect_err("a stream without `Final` is Truncated");
+        assert!(matches!(failure, ValidationFailure::Truncated));
+    }
+
+    // A transfer that delivers its `Final` with the payload short is
+    // complete: the bundle is invalid (accepted and dropped, reported as an
+    // unintelligible block), not truncated, so the peer does not resend it.
+    #[tokio::test]
+    async fn a_short_final_is_invalid_not_truncated() {
+        let full = oversized_bundle(None);
+        let (consumed, tail) = to_partial(&full);
+        // The remainder less its last 100 bytes, ending in a `Final`: short
+        // by more than the 6-byte trailer, so the cut lands in the body.
+        let short = full.slice(consumed.len()..full.len() - 100);
+
+        let mut inner = segment_stream(&short).await;
+        let mut tr = ValidatingReceiver::new(&mut inner, tail, Vec::new(), &[]);
+        drain(&mut tr)
+            .await
+            .expect("the short stream drains to its `Final`");
+        let failure = tr.finish().expect_err("a short bundle does not settle Ok");
+        assert!(
+            matches!(
+                failure,
+                ValidationFailure::Invalid(hardy_bpv7::Error::InvalidCBOR(_))
+            ),
+            "a payload cut short at `Final` is Invalid, got {failure:?}"
+        );
+        assert_eq!(failure.reason_code(), Some(ReasonCode::BlockUnintelligible));
+    }
+
+    // A stray pull after `Final` finds the producer gone (the stream's
+    // sender dropped once it was sent). The pull fails without recording a
+    // truncation: the transfer completed, and settles Ok.
+    #[tokio::test]
+    async fn a_pull_after_final_does_not_latch() {
+        let full = oversized_bundle(None);
+        let (consumed, tail) = to_partial(&full);
+        let rest = full.slice(consumed.len()..);
+
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = ValidatingReceiver::new(&mut inner, tail, Vec::new(), &[]);
+        drain(&mut tr)
+            .await
+            .expect("the tail drains to its `Final`");
+        assert!(
+            matches!(tr.recv().await, Err(RecvError)),
+            "nothing follows `Final`"
+        );
+        tr.finish()
+            .expect("a complete transfer settles Ok after a stray pull");
+    }
+
+    // A drain settled before the stream's `Final`, every pull having
+    // succeeded, is an unfinished transfer: Truncated, never a short bundle.
+    #[tokio::test]
+    async fn finish_before_final_is_truncated() {
+        let full = oversized_bundle(None);
+        let (consumed, tail) = to_partial(&full);
+        let rest = full.slice(consumed.len()..);
+
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = ValidatingReceiver::new(&mut inner, tail, Vec::new(), &[]);
+        assert!(
+            matches!(tr.recv().await, Ok(Segment::Next(_))),
+            "first pull yields"
+        );
+        let failure = tr
+            .finish()
+            .expect_err("an unfinished tail before `Final` does not settle Ok");
+        assert!(
+            matches!(failure, ValidationFailure::Truncated),
+            "got {failure:?}"
+        );
+    }
+
+    // A drain settled with every byte through the outer break pulled in
+    // `Next` segments, its `Final` never pulled, is an unconfirmed transfer:
+    // Truncated, though the tail is complete.
+    #[tokio::test]
+    async fn finish_at_a_complete_tail_before_final_is_truncated() {
+        let full = oversized_bundle(None);
+        let (consumed, tail) = to_partial(&full);
+        let rest = full.slice(consumed.len()..);
+
+        let chunks: Vec<&[u8]> = rest.chunks(CHUNK).collect();
+        let (tx, mut rx) = hardy_async::channel::bounded(chunks.len() + 1);
+        for chunk in &chunks {
+            tx.send(Segment::Next(Bytes::copy_from_slice(chunk)))
+                .await
+                .expect("channel open");
+        }
+        tx.send(Segment::Final(Bytes::new()))
+            .await
+            .expect("channel open");
+
+        let mut tr = ValidatingReceiver::new(&mut rx, tail, Vec::new(), &[]);
+        for _ in &chunks {
+            assert!(matches!(tr.recv().await, Ok(Segment::Next(_))));
+        }
+        let failure = tr
+            .finish()
+            .expect_err("a transfer whose `Final` was never pulled does not settle Ok");
+        assert!(
+            matches!(failure, ValidationFailure::Truncated),
+            "got {failure:?}"
+        );
+    }
+
+    // The trailer can straddle segments. The Builder's payload block is a
+    // definite-length array with a CRC-32, so the bundle ends in six bytes:
+    // the CRC head `0x44`, the 4-byte CRC value, and the outer break `0xFF`.
+    // Split before each of them and the tail still settles Ok, byte for byte.
+    #[tokio::test]
+    async fn a_trailer_straddling_segments_settles() {
+        const TRAILER: usize = 6;
+        let full = oversized_bundle(None);
+        let (consumed, _) = to_partial(&full);
+        let rest = full.slice(consumed.len()..);
+        assert_eq!(rest[rest.len() - TRAILER], 0x44, "the CRC-32 head");
+        assert_eq!(rest[rest.len() - 1], 0xFF, "the outer break");
+        for from_end in 1..=TRAILER {
+            let split = rest.len() - from_end;
+            let (_, tail) = to_partial(&full);
+            let (tx, mut rx) = hardy_async::channel::bounded(2);
+            tx.send(Segment::Next(rest.slice(..split)))
+                .await
+                .expect("channel open");
+            tx.send(Segment::Final(rest.slice(split..)))
+                .await
+                .expect("channel open");
+
+            let mut tr = ValidatingReceiver::new(&mut rx, tail, Vec::new(), &[]);
+            let yielded = drain(&mut tr).await.expect("the tail drains");
+            assert_eq!(yielded, rest, "split {split}: every byte is yielded");
+            tr.finish()
+                .unwrap_or_else(|e| panic!("split {split}: the tail settles Ok, got {e:?}"));
+        }
+    }
+
     // The reason a drain failure hands the reporting path: a failed deferred
     // BIB is a failed security operation (RFC 9172).
     #[test]
@@ -354,7 +556,7 @@ mod tests {
     // Bytes past the outer break are trailing data — rejected as Invalid.
     #[tokio::test]
     async fn trailing_data_is_invalid() {
-        let full = oversized_bundle(false);
+        let full = oversized_bundle(None);
         let (consumed, tail) = to_partial(&full);
         let mut rest = full.slice(consumed.len()..).to_vec();
         rest.push(0x00); // one byte past the bundle's outer break
@@ -373,12 +575,16 @@ mod tests {
         );
     }
 
-    // Build the deferred-BIB verifiers for a signed bundle: the keyed header
-    // pass begins them itself. Returns the verifiers, the header prefix, the
-    // tail, and the resident body-prefix.
-    async fn signed_setup(full: &Bytes) -> (Vec<(u64, bib::Verifier)>, Bytes, PayloadTail, Bytes) {
-        let keys = |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
-            Box::new(KeySet::new(vec![sign_key()]))
+    // Build the deferred-BIB verifiers for a bundle signed with `key`: the
+    // keyed header pass begins them itself. Returns the verifiers, the header
+    // prefix, the tail, and the resident body-prefix.
+    async fn signed_setup(
+        full: &Bytes,
+        key: &Key,
+    ) -> (Vec<(u64, bib::Verifier)>, Bytes, PayloadTail, Bytes) {
+        let key = key.clone();
+        let keys = move |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
+            Box::new(KeySet::new(vec![key]))
         };
         let mut rx = segment_stream(full).await;
         let (hv, headers, tail, _) = parse::parse_headers(&mut rx, 1 << 20, keys)
@@ -402,8 +608,9 @@ mod tests {
     // settles Ok.
     #[tokio::test]
     async fn deferred_bib_verifies_over_stream() {
-        let full = oversized_bundle(true);
-        let (verifiers, headers, tail, initial_body) = signed_setup(&full).await;
+        let key = sign_key();
+        let full = oversized_bundle(Some(&key));
+        let (verifiers, headers, tail, initial_body) = signed_setup(&full, &key).await;
         assert_eq!(verifiers.len(), 1);
 
         let rest = full.slice(headers.len()..);
@@ -413,25 +620,24 @@ mod tests {
         tr.finish().expect("the deferred payload BIB verifies");
     }
 
-    // Tampering a streamed body byte fails the deferred BIB at settle.
+    // Tampering a streamed body byte fails the deferred BIB at settle, named
+    // by the BIB that made the claim. The Signer strips its target's CRC, so
+    // the integrity check is the only one the tamper can fail.
     #[tokio::test]
     async fn deferred_bib_tamper_fails() {
-        let full = oversized_bundle(true);
-        let (verifiers, headers, tail, initial_body) = signed_setup(&full).await;
+        let key = sign_key();
+        let full = oversized_bundle(Some(&key));
+        let (verifiers, headers, tail, initial_body) = signed_setup(&full, &key).await;
+        let signed_by = verifiers[0].0;
 
-        // Flip a byte well inside the streamed body (after the header
-        // prefix), leaving the payload CRC intact by recomputing? No — the
-        // CRC would also fail; assert the failure is one of the two. To
-        // isolate the BIB, tamper a body byte and accept either verdict
-        // ordering, then require it is not Ok.
         let mut rest = full.slice(headers.len()..).to_vec();
-        rest[5] ^= 0xFF;
+        rest[5] ^= 0xFF; // inside the streamed body, after the header prefix
         let mut inner = segment_stream(&rest).await;
         let mut tr = ValidatingReceiver::new(&mut inner, tail, verifiers, &initial_body);
-        let _ = drain(&mut tr).await;
+        drain(&mut tr).await.expect("a CRC-free payload drains");
         assert!(
-            tr.finish().is_err(),
-            "a tampered signed payload must not settle Ok"
+            matches!(tr.finish(), Err(ValidationFailure::IntegrityFailed { bib }) if bib == signed_by),
+            "the tampered payload fails the BIB that signed it"
         );
     }
 

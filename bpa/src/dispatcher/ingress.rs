@@ -99,7 +99,8 @@ impl Dispatcher {
         // keyed header verification — both in `bundle::parse`, before a payload
         // still arriving is spooled. `Err` carries an optional recoverable bundle to
         // report before dropping (reporting stays here — we own the machinery);
-        // a structural / truncation drop carries no recoverable bundle.
+        // a structural failure, or a stream that ended inside the headers,
+        // carries none.
         let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
             stream,
             self.max_bundle_size_mem(),
@@ -121,9 +122,10 @@ impl Dispatcher {
                     Some((bundle, reception, reason)) => {
                         // Complete but invalid, with a recoverable id: the
                         // drop is reported like the sibling gate and drain
-                        // drops (RFC 9171 §5.6/§5.10). A structural failure
-                        // (`None`) has no id to report: the §4.1 discard,
-                        // outside the reception state machine.
+                        // drops (RFC 9171 §5.6/§5.10). A structural failure,
+                        // or a stream that ended inside the headers (`None`),
+                        // has no id to report: the §4.1 discard, outside the
+                        // reception state machine.
                         self.report_bundle_reception(
                             &bundle,
                             metadata.received_at(),

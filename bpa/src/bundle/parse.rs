@@ -152,6 +152,27 @@ pub fn reception_report_for(
     }
 }
 
+// The report for a header-pass rejection that precedes the keyed header
+// verification: the parsed bundle, the reception facts its own blocks
+// establish (the §A classification's `report_on_failure` flags), and the
+// deletion reason `error` maps to.
+fn reported_drop(
+    parsed: parse::Parsed,
+    error: &hardy_bpv7::Error,
+) -> (Bpv7Bundle, ReceptionReport, ReasonCode) {
+    let (classification, _) = checks::classify_unsupported_and_verdict(
+        &parsed.bundle.blocks,
+        &parsed.bcbs,
+        &parsed.bibs,
+        &[],
+    );
+    (
+        parsed.bundle,
+        reception_report_for(&classification, false),
+        status_report_reason_for(error),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Validate — one-shot keyed validation of a complete buffer, no rewriting
 // ---------------------------------------------------------------------------
@@ -391,25 +412,63 @@ where
             });
         }
         match parser.push(bytes) {
+            // The stream ended inside the header region: with no parsed
+            // headers there is no bundle id to report — the §4.1 discard.
             Ok(parse::ParserProgress::NeedMore(_)) if last => {
-                debug!("Truncated bundle");
+                debug!("Truncated bundle: the stream ended inside its headers");
                 return Err(HeaderFailure::Invalid(None));
             }
             Ok(parse::ParserProgress::NeedMore(_)) => {}
             Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
-                Ok(parsed) => break (parsed, whole, None),
+                Ok(parsed) => {
+                    // A bundle complete before its stream's `Final` commits
+                    // only once the stream confirms the end: until then the
+                    // producer can still abandon the transfer. Empty `Next`
+                    // segments are padding the `Segment` contract allows.
+                    let mut ended = last;
+                    while !ended {
+                        match stream.recv().await {
+                            Ok(Segment::Next(b)) if b.is_empty() => {}
+                            Ok(Segment::Final(b)) if b.is_empty() => ended = true,
+                            // Reported as the payload drain reports bytes
+                            // past the outer break.
+                            Ok(_) => {
+                                debug!("Bytes follow a complete bundle");
+                                return Err(HeaderFailure::Invalid(Some(reported_drop(
+                                    parsed,
+                                    &hardy_bpv7::Error::AdditionalData,
+                                ))));
+                            }
+                            Err(_) => {
+                                debug!("Bundle stream cancelled after a complete bundle");
+                                return Err(HeaderFailure::Cancelled);
+                            }
+                        }
+                    }
+                    break (parsed, whole, None);
+                }
                 Err(e) => {
                     debug!("Bundle BPSec structural validation failed: {e}");
                     return Err(HeaderFailure::Invalid(None));
                 }
             },
-            // A `Partial` after the stream has already ended is a truncated
-            // bundle: the declared payload cannot complete (`tail.remaining()`
-            // is positive), so reject it exactly like `NeedMore` at end-of-
-            // stream instead of handing an exhausted stream to the payload drain.
-            Ok(parse::ParserProgress::Partial { .. }) if last => {
-                debug!("Truncated bundle (oversized payload, stream ended)");
-                return Err(HeaderFailure::Invalid(None));
+            // A `Partial` from the stream's last segment is a short bundle in
+            // a complete transfer: its payload block cannot complete. It is
+            // never handed to the payload drain, whose stream is exhausted;
+            // its headers parsed, so the drop is reported as the drain reports
+            // a payload a `Final` cut short.
+            Ok(parse::ParserProgress::Partial { consumed, tail }) if last => {
+                debug!("Short bundle: the stream ended inside its payload block");
+                let error = tail
+                    .finish()
+                    .expect_err("a `Partial` tail has bytes still to come");
+                let Ok(parsed) = parser
+                    .finish(consumed)
+                    .inspect_err(|e| debug!("Bundle BPSec structural validation failed: {e}"))
+                else {
+                    return Err(HeaderFailure::Invalid(None));
+                };
+                return Err(HeaderFailure::Invalid(Some(reported_drop(parsed, &error))));
             }
             Ok(parse::ParserProgress::Partial { consumed, tail }) => {
                 match parser.finish(consumed.clone()) {
@@ -649,6 +708,7 @@ fn extract_extension_block_fields<V: AsRef<[u8]>>(
 
 #[cfg(test)]
 mod tests {
+    use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
     use hex_literal::hex;
 
     use super::*;
@@ -995,5 +1055,144 @@ mod tests {
             status_report_reason_for(&bpsec::Error::NoKey.into()),
             ReasonCode::BlockUnintelligible
         );
+    }
+
+    // A small bundle the header pass completes from one segment, with the
+    // structural bundle its id is read from.
+    fn small_bundle() -> (Bpv7Bundle, Bytes) {
+        let (bundle, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"complete at head".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        (bundle, Bytes::from(data))
+    }
+
+    // A stream carrying `segments`, whose producer has gone away once they
+    // are drained.
+    async fn stream_of(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment> {
+        let (tx, rx) = hardy_async::channel::bounded(segments.len());
+        for segment in segments {
+            tx.send(segment).await.expect("channel open");
+        }
+        rx
+    }
+
+    // A bundle complete on a non-final segment commits once `Final` follows,
+    // past any empty `Next` padding.
+    #[tokio::test]
+    async fn complete_at_head_commits_at_final() {
+        let (_, data) = small_bundle();
+        let mut rx = stream_of(vec![
+            Segment::Next(data.clone()),
+            Segment::Next(Bytes::new()),
+            Segment::Final(Bytes::new()),
+        ])
+        .await;
+
+        let Ok((_, headers, tail, _)) = parse_headers(&mut rx, 1 << 20, bpsec::no_keys).await
+        else {
+            panic!("a bundle confirmed by `Final` must pass the header pass");
+        };
+        assert_eq!(headers, data, "the whole bundle is resident");
+        assert!(tail.is_none(), "nothing is left to drain");
+    }
+
+    // A producer that goes away after a complete bundle but before `Final`
+    // has abandoned the transfer: cancelled, so the CLA refuses it and
+    // withholds its acknowledgement.
+    #[tokio::test]
+    async fn complete_at_head_without_final_is_cancelled() {
+        let (_, data) = small_bundle();
+        let mut rx = stream_of(vec![Segment::Next(data)]).await;
+
+        assert!(matches!(
+            parse_headers(&mut rx, 1 << 20, bpsec::no_keys).await,
+            Err(HeaderFailure::Cancelled)
+        ));
+    }
+
+    // Bytes after a complete bundle are trailing data: the bundle is
+    // dropped and reported, as the payload drain treats bytes past the
+    // outer break.
+    #[tokio::test]
+    async fn bytes_after_a_complete_bundle_are_invalid() {
+        let (bundle, data) = small_bundle();
+        let mut rx = stream_of(vec![
+            Segment::Next(data),
+            Segment::Final(Bytes::from_static(&[0x00])),
+        ])
+        .await;
+
+        let Err(HeaderFailure::Invalid(Some((reported, _, reason)))) =
+            parse_headers(&mut rx, 1 << 20, bpsec::no_keys).await
+        else {
+            panic!("trailing bytes must reject the bundle with a report");
+        };
+        assert_eq!(
+            reported.primary.id, bundle.primary.id,
+            "the report names the bundle"
+        );
+        assert_eq!(reason, ReasonCode::BlockUnintelligible);
+    }
+
+    // A small bundle carrying an unrecognised block flagged
+    // `report_on_failure`: a reception report it demands (§5.6 Step 4).
+    fn report_flagged_bundle() -> Bytes {
+        let (_, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .add_extension_block(block::Type::Unrecognised(999))
+            .unwrap()
+            .with_flags(block::Flags {
+                report_on_failure: true,
+                ..Default::default()
+            })
+            .build(b"unknown".as_slice().into())
+            .with_payload(b"complete at head".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        Bytes::from(data)
+    }
+
+    // Trailing bytes reject the bundle before any keyed verification runs,
+    // yet the report keeps the facts the bundle's own blocks establish.
+    #[tokio::test]
+    async fn bytes_after_a_complete_bundle_keep_the_block_facts() {
+        let mut rx = stream_of(vec![
+            Segment::Next(report_flagged_bundle()),
+            Segment::Final(Bytes::from_static(&[0x00])),
+        ])
+        .await;
+
+        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
+            parse_headers(&mut rx, 1 << 20, bpsec::no_keys).await
+        else {
+            panic!("trailing bytes must reject the bundle with a report");
+        };
+        assert_eq!(
+            reception,
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
+        );
+        assert_eq!(reason, ReasonCode::BlockUnintelligible);
+    }
+
+    // A `Final` that ends the stream inside the payload block: the bundle is
+    // reported from its parsed headers, with the facts its blocks establish,
+    // as unintelligible.
+    #[tokio::test]
+    async fn a_short_final_is_reported_with_the_block_facts() {
+        let data = report_flagged_bundle();
+        // Short by four bytes: inside the CRC value, as the payload's CRC-32
+        // trailer is `44 c0 c1 c2 c3 FF`.
+        let mut rx = stream_of(vec![Segment::Final(data.slice(..data.len() - 4))]).await;
+
+        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
+            parse_headers(&mut rx, 1 << 20, bpsec::no_keys).await
+        else {
+            panic!("a short Final must reject the bundle with a report");
+        };
+        assert_eq!(
+            reception,
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
+        );
+        assert_eq!(reason, ReasonCode::BlockUnintelligible);
     }
 }

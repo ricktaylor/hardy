@@ -1579,6 +1579,107 @@ async fn cla_streamed_ingress_truncation_is_refused() {
     bpa.shutdown().await;
 }
 
+// A CLA-door node with an application on ipn:0.1.42, for the abandoned
+// transfer tests: the BPA, the application's delivery receiver, and the CLA.
+async fn abandoned_transfer_setup() -> (
+    Bpa,
+    Arc<TestApp>,
+    flume::Receiver<(Eid, Bytes)>,
+    Arc<PipelineCla>,
+) {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    (bpa, app, app_rx, cla)
+}
+
+// Sends `segments` (no `Final` among them), drops the producer, and returns
+// the sink's verdict.
+async fn dispatch_abandoned(cla: &PipelineCla, segments: Vec<Segment>) -> cla::Acceptance {
+    let (tx, mut rx) = hardy_async::channel::bounded(segments.len());
+    for segment in segments {
+        hardy_async::channel::Sender::send(&tx, segment)
+            .await
+            .unwrap();
+    }
+    drop(tx); // no Final
+
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(None, None, &mut rx)
+        .await
+        .unwrap()
+}
+
+/// A whole bundle sent in `Segment::Next` whose producer then dies before
+/// `Final` is an abandoned transfer: the sink refuses it (so a CLA withholds
+/// its transfer ack) and nothing is delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_complete_at_head_without_final_is_refused() {
+    let (bpa, _app, app_rx, cla) = abandoned_transfer_setup().await;
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let inbound = build_bundle(&remote_source, &local_dest, b"abandoned");
+
+    assert_eq!(
+        dispatch_abandoned(&cla, vec![Segment::Next(inbound)]).await,
+        cla::Acceptance::Refused
+    );
+
+    // The completed shutdown is the barrier proving nothing was delivered.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+}
+
+/// The same for a bundle segmented past its outer break: the
+/// producer dies after the last byte but before `Final`, and the sink refuses
+/// the transfer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_segmented_without_final_is_refused() {
+    let (bpa, _app, app_rx, cla) = abandoned_transfer_setup().await;
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let inbound = build_bundle(&remote_source, &local_dest, &vec![0xA5_u8; 20_000]);
+
+    // Every byte arrives, in 1000-byte `Next` segments (forces Partial).
+    let segments = inbound
+        .chunks(1000)
+        .map(|chunk| Segment::Next(Bytes::copy_from_slice(chunk)))
+        .collect();
+    assert_eq!(
+        dispatch_abandoned(&cla, segments).await,
+        cla::Acceptance::Refused
+    );
+
+    // The completed shutdown is the barrier proving nothing was delivered.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+}
+
 // ---------------------------------------------------------------------------
 // Streamed ingress: a CLA delivers a bundle split across many segments, its
 // payload arriving after its header — exercising the `Partial` /
@@ -2648,14 +2749,86 @@ async fn step4_forced_report_suppressed_for_null_report_to() {
     );
 }
 
-// R-01: a single `Segment::Final` carrying a bundle whose declared payload is
-// truncated — the parser takes the streaming fallback (`Partial`) though the
-// stream has already ended — must be an internal drop, not handed to the
-// payload drain (which would await an exhausted stream: a hang, or a spurious
-// `StreamCancelled` driving unbounded peer retransmit of a permanently-invalid
-// bundle).
+// A transfer that delivers its `Final` with the bundle short is complete: the
+// bundle is invalid, so it is accepted and dropped, never refused (a custodial
+// peer would resend the same bytes until they expire), and its headers parsed,
+// so the drop is reported. A single `Final` carrying a bundle whose payload is
+// cut short is never handed to the payload drain, whose stream is exhausted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
+async fn a_short_bundle_in_one_final_is_reported() {
+    assert_short_final_is_reported(short_bundle(), None).await;
+}
+
+// The same short bundle in 1000-byte segments: the header pass reaches
+// `Partial` on a `Next`, so the short payload ends in the payload drain's
+// `Final`, which reports it the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_short_bundle_in_segments_is_reported() {
+    assert_short_final_is_reported(short_bundle(), Some(1000)).await;
+}
+
+// A bundle short by less than one parser chunk, in a single `Final`, is
+// reported too: the parser does not wait for bytes that will never come.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_final_short_within_one_parser_chunk_is_reported() {
+    let full = reporting_bundle(10_000);
+    assert_short_final_is_reported(full.slice(..full.len() - 100), None).await;
+}
+
+// The same short bytes without their `Final` are an abandoned transfer, not a
+// reception: refused, so the peer may resend, and never reported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abandoned_short_transfer_is_refused_and_unreported() {
+    let (bpa, _app, app_rx, cla, forwarded_rx) = short_final_setup().await;
+    let segments = short_bundle()
+        .chunks(1000)
+        .map(|chunk| Segment::Next(Bytes::copy_from_slice(chunk)))
+        .collect();
+    assert_eq!(
+        dispatch_abandoned(&cla, segments).await,
+        cla::Acceptance::Refused
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+    assert!(
+        forwarded_rx.is_empty(),
+        "an abandoned transfer is never reported"
+    );
+}
+
+// A bundle from the remote source to the local application, requesting
+// reception and deletion reports.
+fn reporting_bundle(payload_len: usize) -> Bytes {
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_flags(Flags {
+            receipt_report_requested: true,
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Owned(vec![0xA5_u8; payload_len]))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    Bytes::from(data)
+}
+
+// A 20 KB-payload reporting bundle cut to 8 KB: the payload's byte-string
+// header still claims 20 KB, but the body is short.
+fn short_bundle() -> Bytes {
+    reporting_bundle(20_000).slice(..8_000)
+}
+
+// A node that observes how a short transfer ends: status reports on, the
+// local application registered, and a peer for the remote source's node —
+// the route for the reports (report-to defaults to the source).
+async fn short_final_setup() -> (
+    Bpa,
+    Arc<TestApp>,
+    flume::Receiver<(Eid, Bytes)>,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
@@ -2664,13 +2837,18 @@ async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
     bpa.start(false).await;
     let (app, app_rx) = TestApp::new();
     bpa.register_application(Service::Ipn(42), app.clone())
         .await
         .unwrap();
-    let (cla, _fwd) = PipelineCla::new();
+    let (cla, forwarded_rx) = PipelineCla::new();
     bpa.register_cla(
         "test".to_string(),
         cla.clone(),
@@ -2679,34 +2857,77 @@ async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
     )
     .await
     .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            from_ref(&remote_node),
+        )
+        .await
+        .unwrap();
+    (bpa, app, app_rx, cla, forwarded_rx)
+}
 
-    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
-    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
-    // A 20 KB-payload bundle truncated to 8 KB: the payload byte-string header
-    // still claims 20 KB (shortfall exceeds the 4096 parser chunk, forcing
-    // `Partial`), but the body is short and the stream ends in this one `Final`.
-    let full = build_bundle(&remote_source, &local_dest, &vec![0xA5_u8; 20_000]);
-    let truncated = Bytes::copy_from_slice(&full[..8_000]);
-    let mut stream = SegmentReceiver::new(&truncated, truncated.len()); // one Final
+// Dispatches `short` in `chunk`-byte segments ending in a `Final` (a single
+// `Final` for `None`), and asserts the transfer is accepted, the bundle never
+// delivered, and exactly one status report leaves: reception and deletion
+// asserted, the deletion citing `BlockUnintelligible`.
+async fn assert_short_final_is_reported(short: Bytes, chunk: Option<usize>) {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
 
-    // The timeout only bounds a regression: before the fix this parked forever
-    // on the exhausted stream (or returned StreamCancelled).
+    let (bpa, _app, app_rx, cla, forwarded_rx) = short_final_setup().await;
+    let mut stream = SegmentReceiver::new(&short, chunk.unwrap_or(short.len()));
+
+    // The timeout only bounds a regression: a short `Final` handed to the
+    // payload drain would await its exhausted stream.
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         cla.sink.get().unwrap().dispatch(None, None, &mut stream),
     )
     .await
-    .expect("a truncated Final must not hang the ingress task");
+    .expect("a short Final must not hang the ingress task");
     assert!(
-        result.is_ok(),
-        "a truncated complete transfer is an internal drop, not StreamCancelled: {result:?}"
+        matches!(result, Ok(cla::Acceptance::Accepted)),
+        "a short bundle in a complete transfer is accepted and dropped: {result:?}"
     );
 
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(Duration::from_secs(5), forwarded_rx.recv_async())
+        .await
+        .expect("Timeout waiting for the status report")
+        .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        parsed.bundle.primary.flags.is_admin_record,
+        "only the status report may leave the node"
+    );
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, "ipn:0.2.1".parse::<Eid>().unwrap());
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnintelligible);
+
+    // The completed shutdown is the barrier proving nothing else left the
+    // node, and that the bundle was never delivered.
     bpa.shutdown().await;
     assert!(
-        app_rx.is_empty(),
-        "the truncated bundle must not be delivered"
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
     );
+    assert!(app_rx.is_empty(), "the short bundle must not be delivered");
 }
 
 // R-04: the ingress size cap refuses an over-cap bundle at both
