@@ -1412,3 +1412,187 @@ async fn key_holding_relay_updates_an_encrypted_hop_count_outside_the_bib() {
         .expect("the payload is resident");
     assert_eq!(payload.as_ref(), b"relay me");
 }
+
+// A bundle from ipn:1.3.1, asking for deletion reports at ipn:1.2.9 (behind
+// the relay's peer), whose `block_type` block (Previous Node or Bundle Age)
+// its source signed then encrypted, so the BIB over it is encrypted too. With
+// `encrypt_payload` the payload is encrypted as well, and only a key holder
+// can see what the encrypted BIB covers.
+#[cfg(feature = "rfc9173")]
+fn per_hop_under_encrypted_bib(
+    block_type: block::Type,
+    encrypt_payload: bool,
+    sign_key: &Key,
+    enc_key: &Key,
+) -> Parsed {
+    let source: Eid = "ipn:1.3.1".parse().unwrap();
+    let body = if block_type == block::Type::PreviousNode {
+        hardy_cbor::encode::emit(&Eid::from(relay_node(4))).0
+    } else {
+        hardy_cbor::encode::emit(&5_000u64).0
+    };
+    let (_, data) = Builder::new(source.clone(), "ipn:1.2.99".parse().unwrap())
+        .with_flags(BundleFlags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_report_to("ipn:1.2.9".parse().unwrap())
+        .add_extension_block(block_type)
+        .expect("add the per-hop block")
+        .build(body.into())
+        .with_payload(b"relay me".as_slice().into())
+        .build(CreationTimestamp::now())
+        .expect("build the bundle");
+    let built = hardy_bpv7::parse::parse(Bytes::from(data)).unwrap();
+    let target = *built
+        .bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block_type)
+        .expect("the per-hop block is present")
+        .0;
+    let signed = hardy_bpv7::parse::parse(Bytes::from(
+        Signer::new(&built.bundle, &built.data)
+            .sign_block(
+                target,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                source.clone(),
+                sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the per-hop block")
+            .rebuild()
+            .expect("rebuild the signed bundle"),
+    ))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let mut encrypting = Encryptor::new(&signed.bundle, &signed.data)
+        .encrypt_block(
+            target,
+            encryptor::Context::AES_GCM(flags.clone()),
+            source.clone(),
+            enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the per-hop block, and so its BIB");
+    if encrypt_payload {
+        encrypting = encrypting
+            .encrypt_block(1, encryptor::Context::AES_GCM(flags), source, enc_key)
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload");
+    }
+    hardy_bpv7::parse::parse(Bytes::from(
+        encrypting.rebuild().expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap()
+}
+
+// Hand `received` to a relay holding `keys`, and return the reason of the
+// deletion report it sends in the bundle's place.
+#[cfg(feature = "rfc9173")]
+async fn relay_refusal(received: &Parsed, keys: Vec<Key>) -> ReasonCode {
+    let bpa = Bpa::builder()
+        .node_ids(
+            hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice())
+                .unwrap(),
+        )
+        .key_provider(Arc::new(FixedKeys(keys)))
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (ingress, _) = BufferedCla::new();
+    bpa.register_cla(
+        "ingress".to_string(),
+        ingress.clone(),
+        None,
+        ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let (egress, events_rx) = BufferedCla::new();
+    bpa.register_cla(
+        "egress".to_string(),
+        egress.clone(),
+        None,
+        ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    egress
+        .sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(relay_node(2))],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        ingress
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut received.data.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // The timeout only bounds a regression.
+    let Event::Forward(report) = recv_event(&events_rx, 5).await else {
+        panic!("Expected the deletion report");
+    };
+    let report = hardy_bpv7::parse::parse(report).expect("the report parses");
+    assert!(
+        report.bundle.primary.flags.is_admin_record,
+        "only a status report leaves the relay"
+    );
+    let AdministrativeRecord::BundleStatusReport(report) = report.bundle.blocks[&1]
+        .extract::<AdministrativeRecord>(&report.data)
+        .expect("the payload is an administrative record")
+        .expect("the report payload is resident");
+    assert_eq!(report.bundle_id, received.bundle.primary.id);
+    assert!(report.deleted.is_some(), "the report asserts the deletion");
+
+    // shutdown() joins the pools: the bundle itself never left the node.
+    bpa.shutdown().await;
+    assert!(events_rx.is_empty());
+    report.reason
+}
+
+/// An encrypted BIB over a Bundle Age block is a combination no valid bundle
+/// carries, and with that block the only encrypted one besides the BIB, a
+/// keyless relay can prove it from the structure: the bundle is refused at
+/// ingress as a conflicting security operation rather than parked at every
+/// egress attempt.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyless_relay_refuses_an_encrypted_bib_over_a_per_hop_block() {
+    let received =
+        per_hop_under_encrypted_bib(block::Type::BundleAge, false, &sign_key(), &enc_key());
+    assert_eq!(
+        relay_refusal(&received, Vec::new()).await,
+        ReasonCode::ConflictingSecurityOperation
+    );
+}
+
+/// With the payload encrypted too, only a key holder sees that the encrypted
+/// BIB covers the Previous Node block, and it refuses the bundle the same way.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn key_holding_relay_refuses_an_encrypted_bib_over_a_per_hop_block() {
+    let enc_key = enc_key();
+    let received =
+        per_hop_under_encrypted_bib(block::Type::PreviousNode, true, &sign_key(), &enc_key);
+    assert_eq!(
+        relay_refusal(&received, vec![enc_key]).await,
+        ReasonCode::ConflictingSecurityOperation
+    );
+}

@@ -1301,3 +1301,166 @@ mod deferred_payload_bib_tests {
         );
     }
 }
+
+// A bundle from ipn:1.3.1 whose `block_type` block its source signed then
+// encrypted, so the BIB over that block is encrypted too; with
+// `encrypt_payload` the payload is encrypted as well, and the structure
+// alone no longer shows which block the encrypted BIB covers. Returns the
+// keyless parse, the signed block's number and the encryption key.
+fn signed_then_encrypted(
+    block_type: block::Type,
+    encrypt_payload: bool,
+) -> (Parsed, u64, bpsec::key::Key) {
+    use bpsec::{encryptor, key::Key, rfc9173::ScopeFlags, signer};
+    use core::num::NonZeroU8;
+    use hardy_bpv7::hop_info::HopInfo;
+    use hardy_cbor::encode::emit;
+
+    let source: eid::Eid = "ipn:1.3.1".parse().unwrap();
+    let body = if block_type == block::Type::PreviousNode {
+        emit(&source).0
+    } else if block_type == block::Type::BundleAge {
+        emit(&5_000u64).0
+    } else {
+        emit(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .0
+    };
+    let (_, data) = builder::Builder::new(source.clone(), "ipn:1.2.99".parse().unwrap())
+        .add_extension_block(block_type)
+        .expect("add the per-hop block")
+        .build(body.into())
+        .with_payload(b"per-hop".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let built = parse::parse(Bytes::from(data)).unwrap();
+    let target = *built
+        .bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block_type)
+        .unwrap()
+        .0;
+
+    // Immaterial key values: generated per the no-literal-keys rule.
+    let sign_key: Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:1.3.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(32)
+    }))
+    .unwrap();
+    let enc_key: Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:1.3.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+
+    let signed = parse::parse(Bytes::from(
+        signer::Signer::new(&built.bundle, &built.data)
+            .sign_block(
+                target,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                source.clone(),
+                &sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the per-hop block")
+            .rebuild()
+            .expect("rebuild signed"),
+    ))
+    .unwrap();
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let mut encrypting = encryptor::Encryptor::new(&signed.bundle, &signed.data)
+        .encrypt_block(
+            target,
+            encryptor::Context::AES_GCM(flags.clone()),
+            source.clone(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("encrypt the per-hop block, and so its BIB");
+    if encrypt_payload {
+        encrypting = encrypting
+            .encrypt_block(1, encryptor::Context::AES_GCM(flags), source, &enc_key)
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload");
+    }
+    let parsed = parse::parse(Bytes::from(
+        encrypting.rebuild().expect("rebuild encrypted"),
+    ))
+    .unwrap();
+    (parsed, target, enc_key)
+}
+
+// Run the keyed decrypt of every encrypted BIB over `parsed` with `key`,
+// stamping the coverage it resolves.
+fn keyed_pass(parsed: &mut Parsed, key: bpsec::key::Key) {
+    let keys = bpsec::key::KeySet::new(vec![key]);
+    let failed = checks::decrypt_and_validate_covered_bibs(
+        &parsed.data,
+        &keys,
+        &mut parsed.bundle.blocks,
+        &parsed.bcbs,
+        &mut parsed.bibs,
+        &mut HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("the keyed pass decrypts the BIB");
+    assert!(failed.is_empty(), "the BIB decrypts");
+}
+
+// An encrypted BIB over a Previous Node or Bundle Age block is a
+// combination no valid bundle carries. With that block the only encrypted
+// one besides the BIB, the structure alone proves it.
+#[test]
+fn the_structure_proves_an_encrypted_bib_over_a_per_hop_block() {
+    for block_type in [block::Type::PreviousNode, block::Type::BundleAge] {
+        let (parsed, target, _) = signed_then_encrypted(block_type, false);
+        assert!(
+            matches!(
+                checks::reject_per_hop_integrity_in_encrypted_bib(&parsed.bundle.blocks),
+                Err(Error::InvalidBPSec(bpsec::Error::EncryptedBibCoversPerHopBlock(n))) if n == target
+            ),
+            "{block_type:?} under an encrypted BIB is refused"
+        );
+    }
+}
+
+// With the payload encrypted too, a keyless node cannot tell which block the
+// encrypted BIB covers, and passes the bundle; a keyed pass that decrypts
+// the BIB resolves the coverage and proves it.
+#[test]
+fn a_keyed_pass_proves_an_encrypted_bib_over_a_per_hop_block() {
+    let (mut parsed, target, enc_key) = signed_then_encrypted(block::Type::PreviousNode, true);
+    assert!(
+        checks::reject_per_hop_integrity_in_encrypted_bib(&parsed.bundle.blocks).is_ok(),
+        "without the key, nothing proves the coverage"
+    );
+
+    keyed_pass(&mut parsed, enc_key);
+    assert!(matches!(
+        checks::reject_per_hop_integrity_in_encrypted_bib(&parsed.bundle.blocks),
+        Err(Error::InvalidBPSec(bpsec::Error::EncryptedBibCoversPerHopBlock(n))) if n == target
+    ));
+}
+
+// The Hop Count is exempt: its increment is a SHOULD, so a signature on a
+// count no node has incremented can stand inside an encrypted BIB.
+#[test]
+fn a_hop_count_under_an_encrypted_bib_passes() {
+    let (mut parsed, _, enc_key) = signed_then_encrypted(block::Type::HopCount, false);
+    assert!(checks::reject_per_hop_integrity_in_encrypted_bib(&parsed.bundle.blocks).is_ok());
+    keyed_pass(&mut parsed, enc_key);
+    assert!(checks::reject_per_hop_integrity_in_encrypted_bib(&parsed.bundle.blocks).is_ok());
+}
