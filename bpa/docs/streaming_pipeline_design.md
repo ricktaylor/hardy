@@ -406,7 +406,7 @@ The `Span` model is **not needed at ingress** — it is internal to the Editor. 
 
 ### 5.3. Filters in the Streaming Pipeline
 
-Filter design — kinds, hooks, registration, metadata, restart re-admission — is owned by [`filter_subsystem_design.md`](filter_subsystem_design.md). What matters to the byte pipeline is the shape of the contract: all three kinds (parallel **Verifier**; sequential **Classifier** at the input hooks; extension-block **Rewriter** at the output hooks) need no payload to decide (a filter may still read a resident payload), and each boundary has exactly one single-pass hook — Ingress on the pre-drain gate (§5.4), Originate pre-store, Egress in ClaSend between the per-hop rewrite and the BPSec seam, Deliver before payload decrypt.
+Filter design — kinds, hooks, registration, metadata, restart re-admission — is owned by [`filter_subsystem_design.md`](filter_subsystem_design.md). What matters to the byte pipeline is the shape of the contract: all three kinds (parallel **Verifier**; sequential **Classifier** at the input hooks; extension-block **Rewriter** at the output hooks) need no payload to decide (a filter may still read a resident payload), and each boundary has exactly one single-pass hook — Ingress on the pre-drain gate (§5.4), Originate pre-store, Egress in ClaSend before the per-hop writes, which precede the BPSec seam, Deliver before payload decrypt.
 
 The byte contract keeps filters off the streaming path entirely:
 

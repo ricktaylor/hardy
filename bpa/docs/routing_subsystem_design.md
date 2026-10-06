@@ -107,6 +107,8 @@ The `service-priority` configuration controls where service routes sit in the pr
 
 When no route matches a bundle's destination, the bundle waits for a future opportunity rather than being dropped. A destination on one of this node's own service EIDs with no registered service parks as `BundleStatus::WaitingForService`, recovered by `poll_service_waiting()` when a service registers on that EID; any other destination parks as `BundleStatus::Waiting`, re-dispatched by `poll_waiting()` when the route table changes.
 
+A park cannot miss a route change that lands while the bundle is in flight, invisible to that change's poll. A forward or delivery attempt takes a `RibSnapshot` as it begins (`Rib::table_snapshot`; every RIB mutation publishes a fresh table, so identity is the change test), and `Dispatcher::park_bundle`, after winning the park, re-dispatches the bundle once if `Rib::table_changed_since` that snapshot. The re-check is loop-free: one re-dispatch per park, never a spin.
+
 Operators who want specific service ranges to be rejected rather than deferred can configure explicit `Drop` rules via static routes or TVR contact plans at a priority that will be checked before the (absent) service route.
 
 ## Peer Table
