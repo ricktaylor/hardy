@@ -168,7 +168,7 @@ Covered by interop test suite (`tests/interop/`). All 7 implementations passing 
 | §4B | Echo Round-Trip | **Implemented** — `tests/pipeline.rs::echo_round_trip` |
 | §4B+ | Local Delivery | **Implemented** — `tests/pipeline.rs::local_delivery` |
 | §4C | Fragment Reassembly | Not implemented as pipeline test (unit test covers reassembly logic) |
-| §5 | Throughput (PERF-01) | **Implemented** — `tests/pipeline.rs::throughput` (5,130 bundles/sec) + `benches/bundle_bench.rs` (criterion: 8,026/sec). REQ-13 target: >1,000/sec |
+| §5 | Throughput (PERF-01) | **Measured, not gated** — `tests/pipeline.rs::throughput` (5,130 bundles/sec) + `benches/bundle_bench.rs` (criterion: 8,026/sec). REQ-13 target: >1,000/sec; neither fails below it, and no CI job runs the benchmark |
 | §5.1 | Latency (PERF-LAT-01) | **Implemented** — `tests/pipeline.rs::forwarding_latency` (P50=536µs, P95=1.19ms, P99=1.31ms) + criterion (125µs median) |
 | §5.2 | BPSec Performance (PERF-SEC-01 to SEC-03) | Not implemented |
 

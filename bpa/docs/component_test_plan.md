@@ -148,5 +148,5 @@ The unit testing strategy focuses on isolating complex logic from the async runt
  | ----- | ----- | ----- |
 | **Unit** | `cargo test` | Status Reports, Route Lookup |
 | **Fuzz** | `cargo fuzz` | Pipeline Stability, Deadlocks |
-| **Benchmark** | `cargo bench` | Throughput (REQ-13) |
+| **Benchmark** | `cargo bench` | Throughput (REQ-13), measured; nothing gates on it |
 | **Integration** | `bash` + `tools/ping` | Full Stack Data Flow |
