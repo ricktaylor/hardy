@@ -13,19 +13,30 @@ use hardy_bpv7::{
 use super::*;
 use crate::{
     bundle::parse,
-    stream::{ConcatError, Receiver, Segment, concat_stream},
+    stream::{Receiver, Segment, concat_stream},
 };
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self, payload)))]
+    /// Dispatch a payload from a segment stream (for the Application trait).
+    ///
+    /// Accumulates the stream (bounded by `max_bundle_size`, like the other
+    /// doors) before building: canonical CBOR needs the payload's definite
+    /// length up front, so the ADU is whole before the bundle exists. A
+    /// producer that goes away before the final segment cancels the send:
+    /// nothing has been stored, and the caller gets
+    /// [`StreamCancelled`](services::Error::StreamCancelled).
+    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     pub async fn local_dispatch(
         self: &Arc<Self>,
         source: Eid,
         destination: Eid,
-        payload: Bytes,
         lifetime: Duration,
         flags: Option<services::SendOptions>,
+        size_hint: Option<u64>,
+        stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id, services::Error> {
+        let payload = concat_stream(stream, self.max_bundle_size_mem(), size_hint).await?;
+
         // Build bundle and run the Originate chain before storing. The bundle
         // id is unique within this process by construction —
         // `CreationTimestamp::now` issues process-monotonic `(time,
@@ -85,15 +96,7 @@ impl Dispatcher {
         expected_source: &Eid,
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id, services::Error> {
-        let data = concat_stream(stream, self.max_bundle_size_mem())
-            .await
-            .map_err(|e| match e {
-                ConcatError::Cancelled => services::Error::StreamCancelled,
-                ConcatError::TooLarge { size, max } => services::Error::PayloadTooLarge {
-                    size: size as u64,
-                    max: max as u64,
-                },
-            })?;
+        let data = concat_stream(stream, self.max_bundle_size_mem(), None).await?;
         self.local_dispatch_raw(expected_source, data).await
     }
 

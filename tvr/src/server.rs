@@ -1,33 +1,34 @@
+use std::{collections::HashSet, net::SocketAddr, sync::Arc};
+
+use anyhow::Context;
+use hardy_async::TaskPool;
+use hardy_bpa::routing::RouteAction;
+use tokio::sync::oneshot;
+use tonic::transport::{Server, server::TcpIncoming};
+// `tonic::Status` is the in-process status; the aliased one is its wire
+// form, the `google.rpc.Status` message carried in `ServerMessage`.
+use tonic_types::pb::Status as RpcStatus;
+use tracing::{debug, info, warn};
+
 use crate::contacts::{Contact, Schedule, TvrAgent};
 use crate::cron::CronExpr;
-use hardy_bpa::routing::RouteAction;
-use std::collections::HashSet;
-use std::sync::Arc;
-use tracing::{debug, info, warn};
 
 mod proto {
     pub mod tvr {
         tonic::include_proto!("tvr");
     }
-
-    pub mod google {
-        pub mod rpc {
-            tonic::include_proto!("google.rpc");
-
-            impl From<tonic::Status> for Status {
-                fn from(value: tonic::Status) -> Self {
-                    Self {
-                        code: value.code().into(),
-                        message: value.message().to_string(),
-                        details: Vec::new(),
-                    }
-                }
-            }
-        }
-    }
 }
 
 use proto::tvr::*;
+
+// The wire form of a status, as carried in a `ServerMessage`.
+fn rpc_status(status: tonic::Status) -> RpcStatus {
+    RpcStatus {
+        code: status.code().into(),
+        message: status.message().to_string(),
+        details: Vec::new(),
+    }
+}
 
 // ── Proto → internal conversion ─────────────────────────────────────
 
@@ -288,9 +289,9 @@ async fn handle_message(
             warn!("TVR session '{session_name}': duplicate OpenSession");
             Some(ServerMessage {
                 msg_id,
-                msg: Some(server_message::Msg::Status(
-                    tonic::Status::already_exists("Session already open").into(),
-                )),
+                msg: Some(server_message::Msg::Status(rpc_status(
+                    tonic::Status::already_exists("Session already open"),
+                ))),
             })
         }
         Some(client_message::Msg::Add(req)) => {
@@ -303,7 +304,7 @@ async fn handle_message(
                 Err(e) => {
                     return Some(ServerMessage {
                         msg_id,
-                        msg: Some(server_message::Msg::Status(e.into())),
+                        msg: Some(server_message::Msg::Status(rpc_status(e))),
                     });
                 }
             };
@@ -333,7 +334,7 @@ async fn handle_message(
                 Err(e) => {
                     return Some(ServerMessage {
                         msg_id,
-                        msg: Some(server_message::Msg::Status(e.into())),
+                        msg: Some(server_message::Msg::Status(rpc_status(e))),
                     });
                 }
             };
@@ -356,7 +357,7 @@ async fn handle_message(
                 Err(e) => {
                     return Some(ServerMessage {
                         msg_id,
-                        msg: Some(server_message::Msg::Status(e.into())),
+                        msg: Some(server_message::Msg::Status(rpc_status(e))),
                     });
                 }
             };
@@ -383,23 +384,35 @@ async fn handle_message(
     }
 }
 
-// Create and start the TVR gRPC server.
-pub async fn start(
-    listen_addr: std::net::SocketAddr,
+// Create and start the TVR gRPC server. The listener is bound here, so
+// a bad or occupied address fails startup rather than a spawned task.
+// A serve failure after that is sent on the returned channel: the main
+// loop waits on it alongside the routing session and exits nonzero with
+// it, so the daemon does not run on without its control plane. A
+// cancel-driven shutdown ends the serve task cleanly, which drops the
+// sender without firing it.
+pub fn start(
+    listen_addr: SocketAddr,
     agent: &Arc<TvrAgent>,
-    tasks: &hardy_async::TaskPool,
-) {
+    tasks: &TaskPool,
+) -> anyhow::Result<oneshot::Receiver<anyhow::Error>> {
+    let incoming = TcpIncoming::bind(listen_addr)
+        .with_context(|| format!("Failed to bind TVR gRPC listener on {listen_addr}"))?;
     let service = TvrService::new(agent, tasks);
     let cancel_token = tasks.cancel_token().clone();
+    let (failure_tx, failure_rx) = oneshot::channel();
 
     hardy_async::spawn!(tasks, "tvr_grpc_server", async move {
         info!("TVR gRPC server listening on {listen_addr}");
-        tonic::transport::Server::builder()
+        if let Err(e) = Server::builder()
             .add_service(tvr_server::TvrServer::new(service))
-            .serve_with_shutdown(listen_addr, cancel_token.cancelled())
+            .serve_with_incoming_shutdown(incoming, cancel_token.cancelled_owned())
             .await
-            .expect("TVR gRPC server failed");
+        {
+            let _ = failure_tx.send(anyhow::Error::new(e).context("TVR gRPC server failed"));
+        }
     });
+    Ok(failure_rx)
 }
 
 #[cfg(test)]

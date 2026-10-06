@@ -82,14 +82,16 @@ admin-endpoints:
 
 ## `grpc` — Management Interface
 
-The gRPC server enables external components (CLAs, services, routing
-agents) to connect to the BPA. It only starts if at least one service
-is enabled.
+The gRPC server enables external components (CLAs, services,
+applications, routing agents) to connect to the BPA. An absent `grpc`
+section runs no gRPC server; a present section must enable at least one
+service, or parsing fails.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `address` | IP:port string | `[::1]:50051` | Listen address for gRPC connections. |
-| `services` | List of service names | `[]` | Services to enable. Server does not start if empty. |
+| `address` | IP:port string | `[::1]:50051` | Listen address for gRPC connections; the port is claimed at startup, so a conflict is a startup error. |
+| `services` | A list drawn from `cla`, `service`, `application`, `routing`. `service` components exchange whole BPv7 bundles; `application` components exchange payloads (ADUs) | - | Required; list at least one, with no repeats, or parsing fails. A typo'd name is a parse error listing the known ones. |
+| `drain-timeout` | humantime duration string, e.g. `5s`, `1m 30s`; `0s` cuts open connections immediately | `5s` | How long a graceful shutdown waits for open gRPC connections to drain before abandoning them (a client holding an unread response stream can otherwise stall shutdown indefinitely). |
 
 Example (standalone deployment):
 
@@ -105,6 +107,34 @@ Example (distributed deployment with external CLAs and routing agents):
 grpc:
   address: "[::]:50051"
   services: ["application", "cla", "service", "routing"]
+```
+
+### `grpc.limits` — Stall Defences
+
+Every gRPC service registration is a long-lived session, and the BPA offers a component its deliveries or forwardings one at a time. A component that stops answering therefore blocks a queue rather than a single bundle, and it costs nothing to do so, so each session is bounded. A session that exceeds a bound is closed, its calls in flight end with `DEADLINE_EXCEEDED`, and any bundle it was holding is kept by the BPA and offered again later. These bounds sit above the transport deliberately: a client that answers HTTP/2 keep-alive pings while refusing to read or write is invisible to keep-alive.
+
+The whole `limits` section is optional, and so is every key in it. Raise the durations on long-RTT links.
+
+| Key | Valid Values | Default | Description |
+|-----|-------------|---------|-------------|
+| `handshake` | humantime duration string; must not be zero | `10s` | How long a new call may take to send its first message: the registration that opens a session, or the metadata that opens a streaming data call. Only that call fails, because no session has been named yet. |
+| `idle` | humantime duration string; must not be zero | `30s` | How long a live session may leave any single wait unanswered: the next chunk of an inbound transfer, room for the next chunk of an outbound one, the acknowledgement after the last chunk, or room on the session stream for the next event. A convergence layer whose transmission may take longer than this must accept the transfer and report its outcome afterwards rather than hold the result. |
+| `claim` | humantime duration string; must not be zero | `30s` | How long an announced delivery or forwarding waits for the call that collects it. |
+| `grace` | humantime duration string; must not be zero | `30s` | How long a transfer runs before `min-rate` starts to apply. Unused when `min-rate` is `0`. |
+| `min-rate` | bytes per second; `0` disables the rate floor | `1024` | The rate a transfer must sustain once its grace is spent. Time is earned only by moving bytes, so a client sending one byte at a time cannot hold a transfer open by resetting `idle`. The rule can only tighten a deadline, never extend one past `idle`. |
+| `max-sessions` | positive integer | `64` | Live sessions per service. A registration that finds no free slot is refused with `RESOURCE_EXHAUSTED` before it registers anything, and a slot is held for the life of its session. A stalled application or service session holds at most 73 MiB of buffers (four inbound transfers of one 16 MiB message and one 1 MiB chunk each, plus one collection of five 1 MiB chunks), so this cap times that footprint is the memory such a service can have committed to clients that stopped answering. A CLA session is forwarded to once per peer queue concurrently, so its footprint grows with its peers. |
+
+A zero duration is refused at parse time, because it disables the protection rather than relaxing it: a zero `handshake` refuses every registration, a zero `idle` or `claim` closes every session at its first quiet moment, and a zero `grace` puts the rate deadline in the past before a single byte has moved.
+
+```yaml
+grpc:
+  address: "[::]:50051"
+  services: ["application", "cla", "service", "routing"]
+  limits:
+    idle: "2m"
+    claim: "2m"
+    min-rate: 0
+    max-sessions: 16
 ```
 
 Available service names:
@@ -285,6 +315,20 @@ ipn-legacy-nodes:
   - "ipn:10.*"           # All endpoints on node 10
   - "ipn:20.0"           # Node 20's admin endpoint
   - "ipn:[100-199].*"    # Nodes 100-199 (range pattern)
+```
+
+## Private Key Files
+
+Two keys name private-key files: `bpsec.keys-file`, the JWK Set (RFC 7517) holding the BPSec symmetric keys, and `tls.identity.key-file` in a `tcpclv4` CLA entry (see [Convergence Layers](convergence-layers.md)). On Unix, each must be owner-only, mode `0600` or `0400`: a file readable by group or other is refused when the configuration parses, naming the file and its mode, and a `bpsec.keys-file` replaced while `bpsec.watch` is enabled is held to the same rule on reload (a loosened file is refused and the previously loaded keys are kept). A path that does not exist yet passes the check; its absence surfaces when the file is opened.
+
+Kubernetes and Docker mount secrets as mode `0644` by default, which this check refuses. Set `defaultMode: 0400` on the secret volume (Kubernetes) or `mode: 0400` on the secret (Docker Compose) for the files these keys name, and run the container as the user that owns them.
+
+```yaml
+volumes:
+  - name: bpsec-keys
+    secret:
+      secretName: hardy-bpsec-keys
+      defaultMode: 0400
 ```
 
 ## Complete Example

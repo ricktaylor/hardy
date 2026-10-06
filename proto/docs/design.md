@@ -1,285 +1,185 @@
 # hardy-proto Design
 
-gRPC protocol definitions and Rust proxy implementations for distributed BPA deployment.
+The gRPC wire contract of the Hardy BPA: versioned protobuf schemas for connecting remote applications, low-level services, convergence-layer adapters, and routing agents to a BPA, together with the server implementations that serve those schemas against a `hardy_bpa::Bpa` and the client SDK that registers local components against a remote one.
+
+This document says why the crate is built the way it is. What a server does on the wire is stated in the comments of the `.proto` files under [`proto/`](../proto/), which are the contract a foreign implementation is written against; where this document and the schemas disagree, the schemas win.
 
 ## Design Goals
 
-- **Multi-process deployment.** Enable CLAs and application services to run as separate processes from the BPA, communicating over gRPC. This allows independent scaling, fault isolation, and deployment flexibility.
-
-- **Language-agnostic interface.** The protobuf specifications serve as an open interface that can be implemented in any language with gRPC support. External systems can integrate with Hardy without using Rust.
-
-- **Transparent proxying.** Rust clients use the same traits (`Cla`, `Sink`, `Application`, `Service`) whether communicating in-process or over gRPC. The proxy layer handles protocol translation invisibly.
+- **One open, versioned contract per kind of component.** Each of the four component APIs is its own gRPC service in its own protobuf package (`hardy.application.v1`, `hardy.service.v1`, `hardy.cla.v1`, `hardy.routing.v1`). The `.proto` files are the authoritative interface specification: any language with gRPC support can implement a component against a Hardy BPA without touching Rust, and the `v1` package names version the contract so it can evolve without ambiguity.
+- **A thin server.** gRPC already provides call correlation, deadlines, statuses, and HTTP/2 flow control. The crate adds only what the wire's semantics require: session identity, announced work, and the seams into `hardy_bpa`. There is no protocol machinery of its own, no message-id bookkeeping, and no reimplementation of backpressure.
+- **Streaming end-to-end wherever `hardy_bpa` has a seam.** Bundle bytes flow from wire chunk to `hardy_bpa::stream` segment without materialising in the server, on every path in both directions: each ingress door pumps the wire's chunks straight into the BPA, and each egress door drains the BPA's segment stream onto the wire. Where a whole ADU must still be assembled (an application `Send`, because canonical CBOR needs the payload's definite length before the bundle can be built), the BPA does it behind its own bundle size bound (see the streaming decision below).
+- **Cancellation-correct.** Every way a transfer or a session can end (an in-band `cancel` message, stream closure, unregistration from either side, host shutdown) releases resources promptly, and every abandoned delivery or forwarding stays parked in the BPA for a later attempt instead of being lost.
+- **Possession-is-proof authorization.** Resolving any data-plane call to its session costs one concurrent-map probe. No per-call cryptography runs on the hot path.
 
 ## Architecture Overview
 
-The package provides two main components:
+The crate is three parts in one package, selected by feature flags:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Proto Definitions (*.proto)                                │
-│  ├── cla.proto      - CLA ↔ BPA bidirectional streaming     │
-│  ├── service.proto  - Application/Service ↔ BPA streaming   │
-│  └── routing.proto  - RoutingAgent ↔ BPA streaming          │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Rust Proxy Module                                          │
-│  ├── proxy.rs       - Split reader/writer RpcProxy          │
-│  ├── server/        - BPA-side gRPC service implementations │
-│  │   ├── cla.rs     - Implements hardy_bpa::cla::{Cla,Sink} │
-│  │   ├── routing.rs - Implements routes::RoutingAgent       │
-│  │   ├── service.rs - Implements services::Service          │
-│  │   └── application.rs - Implements services::Application  │
-│  └── client/        - Remote-side proxy implementations     │
-│      ├── cla.rs     - register_cla()                        │
-│      ├── routing.rs - register_routing_agent()              │
-│      ├── service.rs - register_endpoint_service()           │
-│      └── application.rs - register_application_service()    │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **The contract** (no features). The five schemas under `proto/` are compiled into one generated root module per package: `hardy_proto::common`, `hardy_proto::application`, `hardy_proto::service`, `hardy_proto::cla`, and `hardy_proto::routing`. Alongside the generated types live the wire constants; the conversions to and from `hardy_bpa`/`hardy_bpv7` domain types (send options, status assertions, CLA addresses, route actions) and the chunked-transfer grammar are compiled in only when the `client` or `server` feature is enabled. A consumer that only wants to speak the wire, such as a component written against the generated clients, depends on nothing else.
+2. **The servers** (`server` feature). One rpc service per API (`ApplicationServiceImpl`, `ServiceServiceImpl`, `ClaServiceImpl`, `RoutingServiceImpl`), each implementing its generated service trait directly against the public `hardy_bpa::bpa::BpaRegistration` trait. The shared machinery (each API's live-session index, the per-stage stall defence in `server::watchdog` and each API's session slot semaphore, the request-side reader in `server::services`, the token type, the transfer writers, and the one translation from a BPA error to a status in `server::status`) is private: what a host sees is deliberately the four `*ServiceImpl` types and `Limits`, nothing more. The feature also activates the server-only dependencies (`dashmap`, `foldhash`, `rand`), keeping the default contract-only build light.
+3. **The client SDK** (`client` feature). `BpaClient` lets a local component register against a remote BPA with the same component traits a local `Bpa` takes (`Application`, `Service`, `Cla`, `RoutingAgent` and their sinks). The SDK owns the sessions, tokens, event loops, and data-plane calls; the component neither sees nor speaks gRPC.
 
-All protocols use bidirectional streaming with message correlation, enabling asynchronous request/response patterns over a single gRPC stream.
+Four constants shape every data-plane exchange. `MAX_MESSAGE_SIZE` (16 MiB) caps a single encoded gRPC message in either direction. `chunking::DEFAULT_CHUNK_SIZE` (1 MiB) is one slice of a data-plane transfer: large enough to amortise per-message overhead, small enough to interleave fairly with other HTTP/2 streams on the connection. It is what a session runs at unless its client asked for less, and the ceiling this server negotiates down from, never up. `chunking::MAX_CHUNK_SIZE` (15 MiB) is the widest a `MaxChunkSize` can be at all, the largest whole multiple of `DEFAULT_CHUNK_SIZE` that still leaves room in one message for the rest of its fields; only an announcement from a server this crate did not write can reach it. `MAX_TRANSFER_SIZE` (8 GiB) is a declaration bound the server pre-flights a client-declared transfer size against, not the enforced ceiling: the actual limit on what a peer can make the server hold is the BPA's own `max_bundle_size`, applied as the ADU is assembled. A fifth, `DEFAULT_MAX_FRAME_SIZE`, is the HTTP/2 frame size the SDK's default endpoint asks for, so that a chunk crosses the connection in as few frames as the protocol allows.
+
+### Sessions, tokens, and doors
+
+Every API follows the same three-concept design:
+
+1. **A session is one `Subscribe` stream.** The client opens the bidirectional stream and sends `Register` as its first message; the server registers the component with the BPA and answers with a `Registration` event carrying a bearer session token; from then on the down direction is a pure event stream of small messages (deliveries, status reports, forwardings), and bundle bytes never ride it. Closing the stream, or sending `Unregister`, terminates the registration and invalidates the token. A failed registration is a plain gRPC error on the call, so there is no orphan state to clean up.
+2. **Doors are stateless.** Every other RPC (the streaming data-plane calls `Send`, `Receive`, `Dispatch`, `Forward`, and the unary calls for peers, routes, and transfer outcomes) presents the session token in its first message and resolves it to the live session in a single concurrent-map probe. The doors hold no state of their own between calls.
+3. **Announced work is keyed by the wire's one identity.** A `Delivery` (application, service) or `Forwarding` (CLA) event announces a bundle by its RFC 9171 bundle id; the remote collects or executes it through a door presenting the same id; completing the door call completes the work. Work that is announced but never completed survives the session: the BPA keeps the bundle parked and announces it again to a later registration.
+
+The routing API is this template minus the data plane: routing agents are push-only, so their session carries only the initial `Registration` and then anchors the registration's liveness, and the two unary doors (`AddRoute`, `RemoveRoute`) drive the RIB directly.
+
+### The chunked-transfer grammar
+
+All four streaming data-plane calls speak one grammar, defined in the crate-private `grammar` module and implemented as capabilities (`Chunk`, `Cancel`, `Ack`, `Register`, `Registration`, `Unregister`) on the generated message types, each trait beside the macro that implements it. Bundle bytes travel as a run of `chunk` messages ended by `last_chunk` (possibly the only message, possibly empty), and the `last_chunk` is the commit signal: a stream that ends without it was truncated, and nothing incomplete is ever committed. An in-band `cancel` from the sending side abandons the transfer, and a delivery or forwarding the BPA withdraws mid-transfer ends the call with `ABORTED`; the response messages of `Receive` and `Forward` carry no cancellation of their own, and the field that once did is reserved. Truncation-is-an-error is the load-bearing rule: a partial ADU is never submitted, a partial bundle is never dispatched, and a CLA must never transmit a bundle whose stream ended without its last chunk.
+
+The CLA dispatch half of that rule reads the same way: a stream that ends early fails the call with `ABORTED`, an in-band `cancel` fails it with `CANCELLED`, and the partial bundle is discarded. The call answers once the BPA's `dispatch` has returned, and `Ok` is what becomes `ACCEPTANCE_ACCEPTED`.
+
+Dispatch is the one transfer whose outcome the sender must know, because a CLA that acknowledges a transfer to its peer releases the only other copy of the bundle. So `DispatchResponse` carries an acceptance verdict, and it is the sole carrier: acceptance covers the bundles the BPA takes and then disposes of internally (invalid, unwanted, duplicate), refusal is reserved for the transfers it could not take at all, and anything that is not an explicit acceptance, including a call that ended with a status, is read as a refusal. The safe reading is the default one, so a peer keeps a bundle the BPA never confirmed rather than a CLA releasing one that was never taken. Today's BPA reports acceptance as `Ok` and its refusals as errors, so the door can only answer accepted; [`TODO.md`](TODO.md) names the change that gives it the other value.
+
+### Glossary
+
+The crate's vocabulary, in one place; the design sections above define each term in context.
+
+| Term | Meaning |
+|------|---------|
+| **API** | One of the four component-facing wire contracts (`application`, `service`, `cla`, `routing`): a gRPC service in its own versioned package, with a `*ServiceImpl` on the server side and an SDK module on the client side. |
+| **Session** | One `Subscribe` stream: the registration handshake, then a pure event stream from the BPA. A session's death is a registration's death. |
+| **Token** | The bearer credential minted at registration (the crate-private `Token` type): the session-map key every door presents, possession being the proof. |
+| **Door** | Any RPC other than `Subscribe`: stateless, token-gated, resolved to its live session in one probe of the API's session index. |
+| **Handler** | The server side of one session: the `Grpc*` struct an API builds per `Subscribe`, which is both the component the BPA registers and what a door resolves its token to. Each API indexes its own, in a `DashMap` from token to handler. |
+| **Component** | The registered entity behind a session, as the BPA sees it: an application, service, CLA, or routing agent. |
+| **Sink** | The BPA-provided handle a registration receives; on the client, the SDK's sink speaks the wire, and on the server the component proxies the remote peer. |
+| **Grammar** | The chunked-transfer message vocabulary (`chunk`/`last_chunk`/`cancel`/`ack`): capabilities of the generated message types, in the crate-private `grammar` module. |
+| **Transfer** | One data-plane run of the grammar (a Send, Receive, Dispatch, or Forward), chunked by the `chunking` module. |
+| **Announcement** | A `Delivery` or `Forwarding` event naming a bundle by its RFC 9171 id: work offered, not yet moved. |
+| **Collection** | The client's Receive of an announced delivery; it commits only on the in-band `ack`. |
+| **Announced / parked** | An announced delivery waits in the handler's per-session `Announcements` table for its Receive; a parked bundle waits in the BPA for a later registration after an announcement went uncollected. |
+| **Verdict** | The client's ruling on a collection, read from the Receive request side: an `ack` commits, anything else abandons. |
+| **Stage** | The named point in a live session at which a client can stall (`claim`, `feed`, `drain`, `ack`, `event`). The `server::Watchdog` bounds each one and records the first to fire; the session's own task is what closes on it. |
+| **Slot** | One unit of an API's live-session ceiling, held for the whole session by an `OwnedSemaphorePermit` and released when the session ends. |
+| **Solicited close** | A session ending this side asked for (an unregister of ours, or our shutdown). The server answers it with a clean end of stream, so the SDK reads it off the wire rather than inferring it. |
 
 ## Key Design Decisions
 
-### Bidirectional Streaming with Message Correlation
+### The servers live in hardy-proto behind a feature, not in bpa-server
 
-Rather than separate RPC calls for each operation, all protocols use a single bidirectional stream per connection. The stream is established via a `Register()` RPC and remains open for the session lifetime.
+The server implementations are part of this crate, behind the `server` feature, rather than application code in `bpa-server`. The rationale is Hardy's extension model: closed-source hosts embed the unmodified `bpa` crate and compose their own binaries, and they depend only on the public `hardy_bpa::bpa::BpaRegistration` trait, so any host embedding a `Bpa` can serve the wire by mounting the four `*ServiceImpl` types into its own tonic transport. Keeping them in `bpa-server` was considered and rejected because it would have made the ready-made servers available only to consumers of that binary crate; a separate crate for them was also rejected because a feature on the contract crate provides the same dependency isolation (the contract-only default pulls in none of the server dependencies) without another package to version. `bpa-server` keeps only what is genuinely its own: transport composition, configuration, and shutdown ordering.
 
-**Stream message structure:**
+### Possession-is-proof session tokens
 
-```protobuf
-message ClaToBpa {
-  uint32 msg_id = 1;           // Correlation ID
-  oneof msg {
-    google.rpc.Status status = 2;  // Error response
-    RegisterClaRequest register = 3;
-    DispatchBundleRequest dispatch = 4;
-    // ... other message types
-  }
-}
-```
+Registration mints a bearer token, and the token itself is the key of the API's live-session index (a `DashMap` from token to handler, one per API). Resolving a data-plane call is therefore one map probe: a forged or retired token is simply absent, and the call fails with `UNAUTHENTICATED`. The token is a subject prefix naming the API and the registration's identity, cut to 64 bytes so a client-chosen name cannot size it and kept for observability only, then a `.`, then 128 bits from the operating system's random source as hexadecimal; there is no signature and none is verified per call, because the token embeds an unguessable random session id and possession is the proof. Tokens do not expire, because the index is the sole authority on liveness and an expiring token would break a long-lived quiet peer. Because the keys are server-minted random values rather than attacker-chosen strings, the map trades the DoS-resistant default hasher for the faster `foldhash` without opening a collision vector. The token is not key material: it lives in plain memory for the life of its session, as it does in every message that carries it, so the generated messages that carry it, and the `Token` type itself, print its length and never its bytes under `Debug`. The plain-bearer shape leaves room for evolutions such as reconnectable sessions, which would add a verifiable token; that is not in v1.
 
-Each direction has a wrapper message containing:
+### Announce-and-collect delivery
 
-- `msg_id` - Correlation identifier for request/response matching
-- `oneof msg` - The actual payload, one of several message types
+Deliveries and forwardings are announced on the session stream and pulled through a door, rather than pushed as payloads. The announcement is small and fire-and-forget: a dead session drops it, and the BPA announces the parked bundle again to a later registration. The pull is paced by the consumer: the `Receive` and `Forward` exchanges pump the BPA's segment stream as wire chunks through a shallow buffer, so HTTP/2 flow control paces the BPA to the remote's read rate, and nothing is queued that the remote may never read. Completion is structural: the server pulls the BPA's final segment only after the previous chunks are queued and no abandonment is pending, so every abandoned path (in-band cancel, truncation, session death) leaves the bundle parked, which implements RFC 9171 delivery deferral for free. Collection is repeatable until it completes.
 
-**Protocol flow:**
+Both directions collect through a rendezvous, because the BPA's `on_deliver` and `Cla::forward` calls arrive holding a borrowed stream that must stay alive for the whole transfer and must return the exchange's outcome. The awaiting call parks a one-shot keyed by the announced bundle id, announces its event, and drives the transfer inline when the door hands its call's streams back; the door's collect is single-use, making that call the work's sole collector and a second one, or one for an unannounced id, a `NOT_FOUND`. Nothing but the two stream ends crosses the table, and no bundle byte ever materialises in the server. The announcement the announcer holds is itself the drop guard: it is what the wait for the collecting call is made on, and it removes the rendezvous however the exchange ends, so an abandoned announcement can never leak an entry.
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Server
+Both sides of that rendezvous are the table's, which is what keeps four APIs from each holding a copy of it. An API announces, sends its event, and waits; a door resolves its session and calls `collect`, which is the whole of the door's part: the wire key that does not parse, the id never announced, the one already collected or withdrawn, and the announcer that stopped awaiting between the announce and the handover all come back as the one `None` that means not-found, and a live announcement comes back as the response stream the door returns, its depth (`BUFFERED_CHUNKS`) being a property of the collection rather than of any API. What is left in an API is only what is genuinely its own: the event it announces with, and what its component is owed when the exchange does not happen.
 
-    Client->>Server: Register() RPC
-    Note over Client,Server: Bidirectional Stream established
+The two differ only past the handover, in what the peer's answer means. Both read that answer with one call, raced against the push and awaited again once the client has taken the last chunk off the collection channel, because either answer may arrive at any point of the transfer and always ends it: losing that race drops the writer, and with it the hold on the BPA's stream. For a delivery the answer is the client's verdict, and an ack before the last chunk is a protocol violation, since a conforming client cannot acknowledge what it has not received; the whole exchange is bounded by what is left of the bundle's lifetime. For a forwarding it is the CLA's result (`sent`, `no_neighbour`, `accepted`), and the same test applies with one exception: a neighbour can go away at any point of a transfer, so an early `no_neighbour` ends the forwarding where it lands, while an early `sent` or `accepted` is refused, being a claim about bytes the CLA was never given. An `accepted` result is finalised later by the unary `ReportTransferOutcome`.
 
-    Client->>Server: RegisterRequest (msg_id=0)
-    Server->>Client: RegisterResponse (msg_id=0)
+### A stalled client is caught by a deadline, a rate floor, and a session ceiling
 
-    Client->>Server: DispatchBundle (msg_id=1)
-    Note right of Client: Client-initiated (concurrent)
-    Client->>Server: AddPeer (msg_id=2)
-    Server->>Client: DispatchResponse (msg_id=1)
-    Server->>Client: AddPeerResponse (msg_id=2)
+The BPA's two offer paths are strictly serialised: one `on_deliver` at a time per service, one `forward` at a time per `(peer, queue)`. An announcement nobody answers is therefore head-of-line blocking of a whole queue, not one stalled bundle, and it costs a hostile or broken client nothing to cause: subscribe, then never open the matching door. The threat is not the client that is slow, it is the client that is deliberately, indefinitely not finishing, so the defence is three rules rather than one dial. All three sit above the transport on purpose: neither tonic nor hyper offers a per-stream idle timeout or a minimum-rate rule, and a client that answers HTTP/2 pings while refusing to read or to send is invisible to keepalive. What the transport can see (a half-open connection, streams per connection, message size) is left to the transport's own configuration.
 
-    Server->>Client: ForwardBundleRequest (msg_id=3)
-    Note left of Server: Server-initiated
-    Client->>Server: ForwardBundleResponse (msg_id=3)
-```
+**An idle bound on every wait a client can extend.** Each such wait names the stage it belongs to, and `server::Watchdog` gives it a deadline: `claim` from announcement to collection, `feed` for the client's next inbound chunk, `drain` for one outbound chunk waiting for room on the response side, `ack` from the client taking the last chunk to its verdict, and `event` for a push onto a full session stream. The handshake is the one bound that is not a stage: the wait for a `Register`, or for a door's metadata message, is the wait for the very message that would name the session, so there is nothing yet to attribute a stall to or to tear down. It is a plain deadline on that one call, defaulting to 10 seconds because a stream that has not identified itself is worth nothing to anyone, while the stages default to 30. All of them are collected in `server::Limits`, which a host can replace through each `*ServiceImpl`'s `with_limits`. This is Envoy's `stream_idle_timeout` applied per stage: a gRPC deadline is the client's to set and so is no defence at all against a client that does not want one.
 
-The first message must always be a registration request with `msg_id=0`. After registration succeeds, either side can initiate messages. The sender assigns a unique `msg_id`; the receiver echoes it in the response, allowing the sender to match responses to requests even when multiple operations are in flight.
+**A minimum rate on every transfer.** An idle timeout alone is structurally incapable of catching a drip-feeder, because one byte every twenty-nine seconds resets it forever. So the `Transfer` a `Watchdog` hands out bounds the whole exchange rather than the gap: the deadline is `min(now + idle, started + grace + moved / min_rate)`, with `grace` and `min_rate` defaulting to 30 seconds and 1024 bytes per second. A transfer earns time only by moving bytes, and the idle rule stays the ceiling on any single gap, so the rate rule can only ever tighten the bound, never extend it past `idle`. The tail of an outbound transfer stays under this rule too: the writer returns only once the client has taken the last chunk off the collection channel, so the wait for the verdict starts from a client that provably holds the bytes. The precedent is Apache's `mod_reqtimeout MinRate` and IIS's `minBytesPerSecond`, which exist for exactly the Slowloris shape; the counter-example is nginx before it grew the same rule.
 
-**Unregister vs OnUnregister:**
+**A ceiling on live sessions, because eviction is free to re-open.** Closing a stalled session costs the attacker nothing but a reconnect, so every API holds a `Semaphore` of `max_sessions` permits: a subscription takes a slot once it has read its `Register`, before it registers or mints a token, keeps it for the whole session, and releases it on the way out; a subscription that finds no slot is refused `RESOURCE_EXHAUSTED`. This is admission control rather than punishment, and it is deliberately memoryless. A fail2ban-style quarantine keyed on the session subject was considered and rejected: it is not the gRPC shape (the ecosystem's answer is `RESOURCE_EXHAUSTED` and a client-side backoff policy, with repeat-offender blocking pushed to the edge), it holds per-subject state the server then has to bound and sweep, and keying a ban on a name a client can choose lets a hostile client lock a legitimate owner out of its own service id.
 
-Each protocol defines two unregistration message pairs:
+The ceiling is what bounds memory under a full stall, and two constants say what one session can hold. `MAX_INBOUND_TRANSFERS` (4) is the number of `Send` or `Dispatch` calls a session may have open at once; a further call waits its turn, holding only its metadata, and the client is the one waiting. Each open transfer holds one inbound message being decoded, at most `MAX_MESSAGE_SIZE`, and one chunk in flight to the BPA; a collection holds `BUFFERED_CHUNKS` chunks ahead of the client plus the slot reserved for its ending. `SESSION_FOOTPRINT` (73 MiB) is their sum, the most a stalled application or service session holds, so `max_sessions` (64 by default) times that footprint is the memory such an API can have committed to clients that have stopped answering. A CLA session is not bounded this way: the BPA forwards to it once per peer queue concurrently, so its collections scale with the peers it has. The ceiling is per API, each holding its own semaphore, so a simultaneous stall across all four costs four times what a stall on one does. Lowering the per-stream buffering, which is transport configuration, is what shrinks the footprint.
 
-- `Unregister` — Client-initiated: client sends `UnregisterRequest`, server responds with `UnregisterResponse`
-- `OnUnregister` — Server-initiated (BPA shutdown): server sends `OnUnregisterRequest`, client responds with `OnUnregisterResponse`
+**Every size is announced, and the chunk size is negotiated.** A `hardy.common.v1.Sizes` on every `Registration` carries the message cap, the transfer cap and the chunk size this session runs at. A client therefore sizes its buffers from what this server said rather than from constants agreed out of band, an operator can raise a cap on one side without a coordinated release of both, and a foreign implementer reads the numbers instead of inferring them from a schema comment. The chunk size is the one the two ends agree on: a client that cannot hold a megabyte asks for a smaller ceiling in its `Register.max_chunk_size`, and the server answers with `min(DEFAULT_CHUNK_SIZE, asked)` in `Sizes.max_chunk_size`, which both ends then chunk under. An ask is a ceiling and never a floor, so a client can only ever lower the size, and below a 1 KiB minimum the server refuses the registration rather than answering above what was asked, a session that small spending more of every message on its envelope than on payload. What the agreed size is not is a chunk length: it says how large a buffer either end must hold, not how large a chunk must be, so any shorter chunk is legal at whatever rate the client can send it. The server imposes no pace of its own on top of that, because it reads an inbound chunk only when the BPA asks for one and HTTP/2 flow control already paces the client to that rate. The single exception is an empty chunk before the last, refused with `INVALID_ARGUMENT`: it carries nothing and ends nothing, so a stream of them is the one transfer that neither grows towards a size bound nor stalls into a deadline. The deadlines and the minimum rate are not announced: they bound the server's patience rather than the client's buffers, and a client has nothing to do with the numbers but stall right up to them.
 
-Both use standard msg_id correlation.
+`claim` belongs to the announcement table rather than to an API: `Announcements::new` takes the session's `Watchdog`, and `Announcements::announce` both offers the bundle and waits for a door, applying the bound itself, so no API can open an unguarded offer by forgetting to wrap one. The same call is how a session's teardown reaches a waiting announcer, and it clears the entry either way, so an offer nobody can answer never outlives the announcer that made it.
 
-**Mapping to Component/Sink traits:**
+A stall never costs the bundle. The exchange ends, so the BPA keeps the bundle parked exactly as it does for an in-band cancel, and the client's call carries the reason as `DEADLINE_EXCEEDED`. What it does cost is the session: `Watchdog` records the first stage to fire and wakes whoever is waiting on it, and the session's own task is what selects on that and fires the cancellation token, so the first stall tears the session down through the same single exit sequence every other ending uses, the subscription stream ends with `DEADLINE_EXCEEDED` too, and the registration's work is re-announced to a registration that will collect it. The stage is logged rather than sent, because it names the server's internals and a client can do nothing with it that it cannot do with the fact that it was too slow. Per-session rather than per-bundle is deliberate: the client that stops answering is the failure, and the BPA's own parking already handles the bundle nobody can take. Closing on the first stall rather than counting them is Kafka's `max.poll.interval.ms` eviction rather than JetStream's per-message `MaxDeliver`, and the rate floor is what makes it fair: a client that is merely slow now proves it by moving bytes, so the client that trips the rule is not slow, it is gone.
 
-The bidirectional stream directly mirrors the BPA's Component/Sink trait pattern (see [BPA design](../../bpa/docs/design.md#component-registry-and-sink-pattern)):
+One wait is deliberately left unguarded: `ChunkSender::send_all` awaits the BPA's producer, so bounding it would charge the client for the server's slowness. The CLA's forward result is not a second one. It looks like it should be, because a CLA that answers `sent` only when the bytes are actually on the link can legitimately take minutes over a real radio link, which is far longer than `idle`. The wire's answer is `accepted` plus a later `ReportTransferOutcome`, and that answer only means anything if the wait for it is bounded: the `ack` stage bounds the wait for one of the two verdicts, not the wait for the link. A CLA whose transmission may outlast `idle` must therefore answer `accepted`, which `cla.proto` says on the `Forward` rpc; one that holds its result back until the link has drained loses the session, and the bundle is requeued.
 
-| Direction | In-Process | Over gRPC |
-|-----------|------------|-----------|
-| BPA → Component | Component trait methods (`on_register`, `forward`) | Server-initiated stream messages |
-| Component → BPA | Sink trait methods (`dispatch`, `add_peer`) | Client-initiated stream messages |
+One piece of the industry shape is absent: there is no way for a client to say "still working" and extend a bound, as JetStream's `AckProgress`, SQS's `ChangeMessageVisibility` and Temporal's activity heartbeat all allow. Those exist because their bound covers a handler running arbitrary user code; here `claim` covers making one rpc call and `ack` covers confirming bytes the client already holds, and the stage that does cover arbitrary work already has the better answer in `accepted` plus a later `ReportTransferOutcome`. It is left out rather than deferred, and [`TODO.md`](./TODO.md) records what would bring it back.
 
-This symmetry allows the proxy module to implement the same traits used for in-process components, making deployment topology transparent to the component implementation.
+### One `CancellationToken` per session, one exit sequence
 
-### RpcProxy: Split Reader/Writer Architecture
+Each session owns a single cancellation token, created as a child of the host's `TaskPool` token, and every way a session can end converges on firing it: the client's `Unregister` or half-close (read by `wait_for_unregister` in `server::services`), the rpc dying for any reason (tonic exposes no per-request cancellation signal, so the session waits on `events_tx.closed()`, which resolves when the client drops the response stream), the BPA's `on_unregister` callback, and pool shutdown (the parent token's broadcast). The one task a session owns then runs the one exit sequence, ordered by what the client must observe as done: fire the token, retire it from the index, unregister the sink from the BPA, then end the stream last, so that by the time the client sees the stream end the token is dead and the registration's identity is reusable. Everything long-lived in the session either selects on the token or fails through the channel closure it causes: the event sender races sends against teardown (so a full buffer can never wedge a dying session), in-flight door streams end with `UNAVAILABLE`, and a `forward` awaiting its door resolves as disconnection.
 
-The `RpcProxy` struct manages the bidirectional stream using independent reader and writer tasks, following the pattern established by TCPCLv4:
+The stream's ending is the exit sequence's last act rather than a consequence of the token, which is what lets it carry a status. An ending the client did not ask for is written onto the event channel as a terminal status, into a slot reserved out of that channel when the session opened, one beyond `EVENT_DEPTH`: a client that stops reading can fill the buffer it is served from, but it cannot take the slot the session says why it ended in. The stream then ends because the senders go out of scope with the task that ran the session. That is the whole of the closing, and it is deterministic only because the handler the BPA and the doors hold keeps a `WeakSender`: a door that resolved its token an instant before teardown cannot hold the rpc open past the session, so `TaskPool::shutdown` always drains.
 
-```
-                 ┌─────────────────────┐
-                 │    Writer Task      │
- write_tx ──────►│  write_rx → stream  │──► gRPC outbound
-                 └─────────────────────┘
-                        ▲
-                        │ write_tx.send()
-                        │
-                 ┌──────┴──────────────┐
-                 │    Reader Task      │
- gRPC inbound ──►│  stream → dispatch  │
-                 │                     │
-                 │  if response:       │
-                 │    complete oneshot │
-                 │  if request:        │
-                 │    spawn handler    │──► TaskPool
-                 └─────────────────────┘
-```
+The response stream also enforces one ordering invariant by construction: the `Registration` event is prepended to the event channel's stream rather than sent on it, so the client reads it ahead of anything already buffered. Prepending is what it takes, because the registration cannot be sent first: it carries the endpoint id `register_*` returns, and the BPA announces parked bundles from inside `register_*` itself, so by the time the event exists the channel may already hold deliveries the client must not see before the token that authorizes collecting them.
 
-**Writer task**: Dedicated task owning the outbound stream direction. Anyone sends by cloning `write_tx`. Exits on parent cancellation or when all senders drop.
+### Each API writes its own `Subscribe`
 
-**Reader task**: Owns the inbound stream. Responses are matched to pending callers via msg_id oneshots. Requests spawn handler tasks on the caller's `TaskPool`.
+All four APIs subscribe the same way: read `Register`, take a session slot, register with the BPA, publish the token, serve the stream until the subscription ends, then unregister. Each of them writes that sequence out. What is shared is what carries state or policy across APIs (the watchdog, the session slots, the announcement table, the token, the transfer writer) plus the one loop with nothing API-specific in it, `wait_for_unregister` in `server::services`, which reads the request half until an unregister, a half-close, or a failure, and reports which it was. The lifecycle itself stays in each API's `run_session`, because the four are not the same session: a routing agent raises no events at all, a CLA reads back the bundle size limit the BPA agreed to at registration and mints its token from a CLA name rather than an endpoint's service id, and what a door resolves a token to differs in every case. Driving all four from a generic workflow behind a handler trait was tried and removed: the differences did not go away, they became trait methods and generic parameters, and the order that actually has to be checked in review (what is opened before the BPA registration, what is published and when, what teardown does in which order) stopped being readable in any one place. Four short bodies that can be diffed against each other beat one indirection that has to be reassembled in the reader's head.
 
-**msg_id correlation**: `call()` allocates a msg_id, registers a oneshot in a shared pending map (`Arc<Mutex<Option<HashMap>>>`), sends via `write_tx`, and awaits the oneshot. The reader completes the oneshot when it sees the matching response.
+Each `run_session` runs on a pool task, not in the rpc handler, and that is load-bearing. The BPA commits the registration inside `register_*`, and an rpc can die at any await, so a handler registering inline would have to notice its own disappearance mid-commit, leaving the BPA holding state neither side can unwind. A task cannot be cancelled by the client, so the registration always completes; the task then asks one ordinary question, whether anyone is still there to receive the stream, and unregisters on the spot if not. The rpc handler is left as a proxy that spawns the task and awaits its answer through a one-shot, and the ending is an explicit branch on the success path of the function that registered rather than a `Drop` impl racing the commit.
 
-**Hierarchical cancellation**: `run()` takes a `&TaskPool` and creates a child cancel token. Server shutdown (parent cancel) cascades to all proxies. `close()` cancels only the proxy's child token without affecting siblings.
+### Streaming: native at every seam
 
-**Graceful handler drain**: When the reader exits (stream closed by remote), it closes the pending map (`Option` → `None`) and drops its `write_tx` clone, but does NOT cancel the child token. In-flight handler tasks finish their work and send responses through their own `write_tx` clones. The writer stays alive until all handlers complete, then exits naturally when `write_rx` closes. Future `call()` attempts see the closed pending map and return immediately.
+| Path | `hardy_bpa` seam | Server behaviour |
+|---|---|---|
+| CLA `Dispatch` (in) | `Sink::dispatch` | The wire's request stream is adapted into the segment stream the BPA pulls (`receiver::ChunkReceiver`); the BPA parses, validates, and caps the reassembly with its own bundle size limit; nothing materialises in the server. A declared `bundle_size` above the limit agreed for the registration, or above `MAX_TRANSFER_SIZE`, is refused before any byte moves |
+| Service `Send` (in) | `ServiceSink::send` | Same reader; no server-side accumulation |
+| Application `Send` (in) | `ApplicationSink::send` | Same reader; the BPA assembles the ADU behind its own bundle size bound (canonical CBOR needs the payload's definite length before the bundle can be built), and a declared `adu_size` above `MAX_TRANSFER_SIZE` is still rejected before any bytes arrive |
+| Deliveries (out: application and service `Receive`) | `on_deliver` awaits the collection, borrowing its stream | A rendezvous, not a lazy map: the awaiting `on_deliver` parks a one-shot keyed by bundle id, announces `Delivery`, and drives the transfer inline when the `Receive` door hands its call back, because the borrowed stream lives only for that call; segments become wire chunks of the session's chunk size through a shallow buffer, and the client's in-band ack after the final chunk is the completion signal (anything short of it parks the bundle) |
+| CLA `Forward` (down) | `Cla::forward` awaits the outcome, borrowing its stream | The same rendezvous, with the result riding `forward`'s return value: the CLA may answer at any point of the transfer, though before the last chunk only `no_neighbour` is admitted |
 
-**Spin Mutex**: The pending map and msg_id counter use `hardy_async::sync::spin::Mutex` — all operations are O(1) HashMap insert/remove/lookup with no blocking or I/O.
+Every ingress door takes an optional declared size, `adu_size` on an application `Send` and `bundle_size` on a service `Send` and a CLA `Dispatch`, and the declaration binds. A size above `MAX_TRANSFER_SIZE`, or above what the platform can address, is refused with `RESOURCE_EXHAUSTED` before a byte arrives; a transfer that then ends at a different count is `INVALID_ARGUMENT`, carrying both numbers. When it is absent, `last_chunk` alone delimits the transfer. What the declaration never does is reserve anything: allocation follows arrival, so declaring a transfer and not sending it costs the server nothing. The accumulation an ADU still needs, because the BPA builds the bundle around it and canonical CBOR needs the payload's definite length, happens in the BPA behind its own bound rather than in the server, and the server passes the BPA the declared size, when there is one, as the trait's size hint.
 
-### Spawned Handshake Pattern
+The client SDK is the mirror image, and it is where the end-to-end story completes: the sinks it hands to components are streaming producers. `dispatch` and `send` pump the component's segments onto wire chunks while the call runs (tonic wants an owned request stream and the segment stream is borrowed for the call, so a channel writer raced against the call bridges the two: the response is what ends the transfer, so a server that answers early, with a refusal or with the status of a dead session, is never held behind a producer that has stalled). The SDK never fills `adu_size` or `bundle_size` from the trait's `size_hint`, because the hint is advisory on the trait and a binding declaration on the wire: a component whose hint was wrong would see its transfer refused for a number it never promised. A foreign client that declares a size is held to it. Deliveries arrive as a wire-backed stream on `on_deliver`: the `Receive` RPC is opened on the announcement, before the component is asked for the delivery, because the server parks the bundle awaiting that call and ending the call is the only way to refuse it, so a component that declines without reading a byte still declines the announcement end to end rather than leaving the bundle parked until it expires. The collection is the client `receiver::ChunkReceiver`, a pull stream whose `recv` fetches one wire chunk at a time, and reading is all it does: it borrows the response stream rather than owning it, so the borrow ends where the component's call returns and the SDK finishes the exchange on its own stream. What ends a collection is a message the SDK sends on the request side once `on_deliver` has returned, either the ack that commits it or the in-band cancel that abandons it, leaving the bundle parked. The ack is awaited rather than best-effort, because it is the server's licence to destroy the bundle: only a closed channel, meaning the call has already ended, can fail it. Which of the two goes out is the component's `Ok`/`Err`, taken at its word: `on_deliver` returning `Ok` is the trait's assertion that the implementation holds the whole ADU, and keeping that is the implementation's part of the contract, not something the SDK re-derives from how far the stream was pulled. The SDK never drops the component's `on_deliver` or `forward` future on cancellation: the session's cancellation ends the stream the component is reading, so the callback returns on its own terms, exactly as it does against an in-process BPA, and a component unwinds the same way on either side of the wire. A remote CLA transfer thus flows link segment to wire chunk to the server to `dispatch` with no whole-bundle materialisation anywhere in this crate.
 
-The `register()` gRPC method must return the response stream immediately so tonic can establish the bidirectional channel. The registration handshake (receive request, register with BPA, send response, start proxy) runs in a spawned task:
+### Errors are gRPC statuses, and no Rust type crosses the wire
 
-```rust
-async fn register(&self, request: ...) -> Result<Response<RegisterStream>> {
-    let (channel_sender, rx) = mpsc::channel(size);
-    let channel_receiver = request.into_inner();
+Errors on the wire are native gRPC statuses; the schemas deliberately contain no status or error payload messages, and no protobuf enum of Hardy-specific reasons either. A status is a code and a short message, and nothing else. The code is the machine-readable part, and is all a client, a proxy, a retry policy or a dashboard reads. The message is a phrase for a developer reading a log: it rides the `grpc-message` header percent-encoded on every failed call, so it stays short, and it never reflects anything the client sent, because a client already holds its own request and a message whose length is the client's to choose can push the status past the HTTP/2 header cap and arrive as nothing at all. The comments on each rpc in the `.proto` files name the codes it can end with; a code they do not name for a call came from the transport, not the BPA.
 
-    // Spawn — return stream immediately
-    hardy_async::spawn!(self.session_tasks, "session", async move {
-        run_session(channel_sender, channel_receiver, bpa, &tasks).await;
-    });
+Two richer shapes were tried and removed. A `hardy.error.v1.Reason` protobuf enum, with each value's code fixed in the schema, had grown to thirty-nine values whose names only made sense next to their comments, several of them distinguishable only by which Rust enum variant an SDK was going to pick, and it made the wire contract depend on the shape of this crate's internal error types. The standard `google.rpc` rich error model, an `ErrorInfo` reason plus one typed detail in the `grpc-status-details-bin` trailer, replaced it and was in turn removed: every reason it carried was either something the client could already derive from the request it still held, or a distinction no client acted on differently, and the vocabulary it needed had to be specified somewhere outside the schemas. The test that governs the contract is this: **a client in any language must be writable from the `.proto` files alone, with no reference to any Rust type or to any document outside them.** The rule that follows is that no field exists on the wire solely so an SDK can pick an enum variant.
 
-    Ok(Response::new(ReceiverStream::new(rx)))
-}
-```
+Inside the servers, `proto` is a boundary with no error vocabulary of its own. A call handler writes the status for a fault it finds itself, where it finds it, as a bare `tonic::Status` with a hand-written message; the one translation that must be written once, a BPA error becoming the status its call ends with, lives in `server::status`, one function per API (`service_status`, `cla_status`, `routing_status`). That mapping is many-to-one and deliberately lossy: nothing in the status names a BPA type, a fault the server does not disclose is logged at `error` and sent as `INTERNAL` with no cause, and what the SDK cannot rebuild from the status and the request it already holds becomes the component's own `Internal`, which keeps the status whole. On the streamed inbound paths the reader records the status the transfer ended with and the door reports that one, because it outranks the generic stream error the BPA observed.
 
-Session tasks are spawned on the server's `TaskPool`, tracked for graceful shutdown.
+The SDK maps statuses back in one function per concern, in [`client/services/`](../src/client/services/), and reads the code alone. A code the server only ever sends when it has ended the session, `UNAUTHENTICATED`, `UNAVAILABLE` or `DEADLINE_EXCEEDED`, is `Disconnected`; every deadline the server sends is a stall it has already closed the session over, so it is a disconnection and not one lost exchange. On a data-plane call, `CANCELLED` and `ABORTED` end one exchange and are `StreamCancelled`, `ALREADY_EXISTS` is `DuplicateBundle`, and `FAILED_PRECONDITION` is `Dropped`. At registration, `ALREADY_EXISTS` is `ServiceIdInUse` or `AlreadyExists`, filled with the id or name the client asked for, and `FAILED_PRECONDITION` is `NoIpnNodeId` or `NoDtnNodeId` by the scheme the client asked for, which is how the SDK rebuilds a typed error from a status that carries no field: the client asked, so it already knows what was refused. Everything else is `Internal`, carrying the status whole with its message intact. That the SDK returns a `hardy_bpa` error at all is our choice, not the contract's: the trait pattern is what lets a component register in-process or over gRPC in the same way, and a second SDK, with another pattern or in another language, owes the wire nothing more than reading the code.
 
-### Interfaces Not Exposed via gRPC
+A session's own ending is classified along a different axis, not by what kind of failure it was but by who asked for it, and the server states which on the wire: an ending the client asked for, its `Unregister` or its half-close, is a clean end of stream, and every other ending closes the stream with the status that says why. A teardown racing an ending the client asked for lands in the second case, because the session's request loop checks its token before it reads the next request: a client that unregisters as the BPA drops its registration is told the BPA went away, which is the more useful of the two true answers. The SDK therefore reads the ending instead of inferring it: a clean end, and this side's own cancellation, resolve the registration handle `Ok(())`; a status resolves it to the error the code says. A stream that *failed* needs no separate vocabulary, because it arrives the same way, and any failure the SDK cannot name is carried whole, its source chain intact, so awaiting the handle shows the actual failure (a severed transport arrives as tonic's `UNKNOWN` with the I/O error as its source, inside `Internal`). Two earlier shapes were tried and removed: leaving the classification to the caller, where each daemon re-derived the ending from its own cancellation state, which duplicated the inference three times and made it depend on reading the token before shutting the pool down; and having the SDK record its own half of the exchange as it happened, which inferred from local state what the server already knew and could say only whether the client asked, never why the session went away. The load-bearing mappings: a dead or forged token is `UNAUTHENTICATED`; a door for a bundle that was never announced is `NOT_FOUND`; the size guards and the session ceiling are `RESOURCE_EXHAUSTED`; an in-band cancel on an inbound transfer ends its call with `CANCELLED`, while a cancel on a collection is an ending the client asked for, so the server stops there and closes the response and the call ends `OK`; truncation ends it with `ABORTED`, as does a bundle the BPA withdraws mid-transfer, and session death with `UNAVAILABLE`; a stall is `DEADLINE_EXCEEDED`; a malformed message is `INVALID_ARGUMENT`; a bundle a filter refused is `FAILED_PRECONDITION`, because the bundle is exactly what the BPA declines to carry and resending it unchanged will be declined again.
 
-Two BPA interfaces are intentionally kept in-process only:
+The delivery doors commit on the client's acknowledgement, and on nothing else: after the final chunk, the client sends the wire's in-band ack, and only then does the BPA finalize and delete the bundle. Everything short of the ack (a cancel before or after the final chunk, a request stream ending without one, a failed stream, session death, expiry) parks the bundle for a later registration, because silence must never commit: a crashed client is silent. The cancel is the one of those the client asked for, so it is owed no error: the server stops where it was told to, closes the response, and the call ends `OK`, since the absence of an ack is the whole of the answer. An ack racing the drain is a protocol violation refused with `INVALID_ARGUMENT`, so a client can never finalize a bundle it provably has not received. Delivery is therefore at-least-once: an ack lost with its connection resolves as a duplicate re-delivery, never a lost bundle, and clients accept idempotently, keyed on the bundle id.
 
-**Filter interface**: Filters run in the bundle processing hot path. The latency of gRPC serialization would impact throughput unacceptably. Filters must be compiled into the BPA process.
+### Origination is at-least-once, and v1 says so
 
-**Storage interface**: Storage backends that need remote access (PostgreSQL, S3) already provide their own protocols. Adding a gRPC layer would introduce unnecessary overhead. Storage implementations link directly into the BPA.
+Delivery is at-least-once and the client closes the gap by being idempotent on the bundle id. Origination has the mirror problem and no such key of its own: a client whose connection dies between `last_chunk` and the `SendResponse` cannot tell whether the BPA created a bundle, and retrying risks originating it twice while not retrying risks losing it. Nothing on the wire answers that, because the bundle id is what the response would have carried.
 
-### Two Service API Levels
+An idempotency key on `SendMetadata` is the answer, and it is not in v1. The window of recent keys it needs must never evict a key a live call still holds, and `MAX_INBOUND_TRANSFERS` now gives it a bound on live calls to be sized against; the key and the window still belong in one change, and [`TODO.md`](TODO.md) carries it. Until then the contract states the guarantee it actually offers rather than leaving it to be discovered, and a client that cannot tolerate a duplicate carries its own key inside the ADU. `Dispatch` needs none of this, because a CLA already has its answer in the acceptance verdict: it does not release its peer's copy until the BPA says it took the bundle.
 
-The service protocol exposes both the Application API (payload-only) and Service API (full bundle access) described in the [BPA design](../../bpa/docs/design.md). The gRPC messages mirror the trait method signatures, with the BPA validating all service-constructed bundles as a security boundary.
+### The wire is the trust boundary
 
-### Trust Model
-
-The gRPC layer is the **security boundary** for the BPA. Two deployment modes exist:
-
-**In-process components** (CLAs, services, filters compiled into the BPA) are fully trusted. They share the same process—if compromised, the entire BPA is compromised. No authorization checks are performed on in-process calls.
-
-**Remote components** (connecting via gRPC) are authenticated and authorized at the gRPC layer:
-
-```mermaid
-graph BT
-    remote["Remote CLA / Service / App"] -- "gRPC + mTLS" --> grpc
-
-    subgraph bpa_server["bpa-server process"]
-        subgraph grpc["gRPC handlers — TRUST BOUNDARY"]
-            mtls["mTLS authentication (certificate = identity)"]
-            ns["Namespace validation at registration"]
-            policy["Policy enforcement (rate limits, quotas)"]
-        end
-        grpc -- "direct Rust calls" --> core["bpa (core) — trusts all callers"]
-    end
-```
-
-**Resource ownership** is enforced structurally by the Sink pattern (see [BPA design](../../bpa/docs/design.md#authorization-and-ownership)). Each gRPC connection receives a Sink bound to its own resources—a client cannot affect another client's registrations because it has no reference to them.
-
-**Security layers** (when mTLS is enabled):
-
-1. **Authentication**: Client certificate required; CN/SAN establishes identity
-2. **Registration validation**: Namespace checks on requested EIDs
-3. **Ownership enforcement**: Structural via Sink pattern (no token needed)
-4. **Policy enforcement**: Rate limits and quotas per connection
-
-The `bpa/` crate remains security-agnostic—all authorization logic lives in `bpa-server/src/grpc/`.
-
-### Error Handling via google.rpc.Status
-
-Errors are embedded in the stream as `google.rpc.Status` messages rather than terminating the stream. This allows granular error reporting for individual operations. Fatal errors (like registration failure) close the stream.
-
-## Protocol Definitions
-
-The `.proto` files define the wire format for each interface:
-
-- **`cla.proto`** - CLA registration, bundle dispatch/forwarding, peer management, and unregistration. Maps to the `Cla` and `cla::Sink` traits.
-
-- **`service.proto`** - Endpoint registration, send/receive, status notifications, and unregistration. Defines separate message types for Application API (payload-only) and Service API (full bundle). Maps to the `Application`, `Service`, and corresponding Sink traits.
-
-- **`routing.proto`** - Routing agent registration, route add/remove, and unregistration. Maps to the `RoutingAgent` and `RoutingSink` traits.
-
-## Proxy Module
-
-The `proxy` module provides Rust implementations of BPA traits that communicate over gRPC:
-
-- `register_cla()` - Connect a CLA implementation to a remote BPA
-- `register_routing_agent()` - Connect a RoutingAgent to a remote BPA
-- `register_application_service()` - Connect an Application to a remote BPA
-- `register_endpoint_service()` - Connect a Service to a remote BPA
-
-Internal traits abstract over message handling:
-
-- `SendMsg` - Compose messages with correlation IDs
-- `RecvMsg` - Extract message content and handle status errors
-- `ProxyHandler` - Handle incoming notifications and manage lifecycle
-
-The `RpcProxy` struct manages the bidirectional stream via split reader/writer tasks, correlating requests with responses via a closeable pending map.
+The wire is also the trust boundary it always was: the BPA parses and validates everything that arrives through it (a service's bundle must parse, and must claim the registration's own endpoint as its source), and the session token is the only credential the wire itself carries, so transport-level protection and peer authentication remain the host's composition concern.
 
 ## Integration
 
 ### With hardy-bpa
 
-The BPA library defines the traits (`Cla`, `Sink`, `Application`, `Service`, `RoutingAgent`, `RoutingSink`). hardy-proto provides gRPC-based implementations that proxy method calls over the network.
+The servers consume exactly one trait, `hardy_bpa::bpa::BpaRegistration`, and each holds it as `Arc<dyn BpaRegistration>`, so a host passes its `Bpa` directly. Components on the far side implement the unchanged component traits; the handler structs (`GrpcApplication`, `GrpcService`, `GrpcCla`, `GrpcRoutingAgent`) are those traits' implementations as the BPA sees them, translating callbacks into session events. One integration note: the wire's `register_cla` carries no egress policy, because a policy is an in-process trait object the wire cannot express; remote CLAs run under the host's policy configuration.
 
-### With hardy-bpa-server
+### Hosting the servers
 
-The server implements the gRPC service handlers, translating between protobuf messages and BPA trait calls. It manages stream lifecycle, connection authentication, and error propagation. Session tasks and proxy tasks are spawned on a shared `TaskPool` for hierarchical cancellation during shutdown.
+A host passes its `TaskPool` and its `Bpa` to each API it wants to serve, optionally through `with_limits` if the default stall bounds do not suit its links, wraps each with `into_server`, which applies `MAX_MESSAGE_SIZE` as the encoding and decoding cap of the generated `*ServiceServer`, and mounts them on its transport. `bpa-server` does exactly this behind its `grpc` feature: its configuration validates a non-empty, duplicate-free list of APIs to serve, mounts each next to the gRPC health service, arms HTTP/2 keepalive so a silently dead peer cannot hold sessions and parked door calls indefinitely, enables the adaptive flow-control window and the chunk-sized frame cap that the SDK's default endpoint also asks for, and caps concurrent streams per connection, which nothing else bounds. Shutdown order matters and is the host's job: stop accepting on the transport, then shut down the pool (which tears every session and drives unregistration against the still-live BPA), then shut down the BPA.
 
-### With External Clients
+### The client SDK
 
-Any gRPC client can implement these protocols. Python, Go, or C++ applications can register as services, CLAs, or routing agents without depending on Rust code. The `.proto` files serve as the authoritative interface specification.
+`BpaClient` holds one or more lazily connected channels to the BPA (one by default; `with_connections` and `with_endpoint_connections` open more, and `connection_count` reports how many) and exposes six inherent registration methods mirroring the shape of `BpaRegistration` (`register_application`, `register_dynamic_application`, `register_service`, `register_dynamic_service`, `register_cla`, `register_routing_agent`); it does not implement the trait itself, because the wire's registration differs where the wire must (no egress policy parameter). A registration takes the next connection in turn and keeps every call of its session on it, so several connections spread sessions, not the calls of one session: busy components stop sharing one HTTP/2 connection's flow-control window, and a single component gains nothing from more than one. Each registration spawns one event-loop task on the client's `TaskPool` that translates session events onto the local trait; each announced delivery collects on its own task under a small bound (beyond it the announcement loop waits, backpressuring the BPA by design), and each CLA forwarding executes on its own task so a slow transfer never stalls the next announcement. Every way a registration ends (explicit `unregister`, dropping the sink, connection loss, BPA shutdown, pool shutdown) converges on the component's `on_unregister`, and the `RegistrationHandle` each `register_*` returns, which is itself a `Future` and also offers `join()`, reports which of them it was: `Ok(())` for an ending this side asked for, an error for every other. `BpaClient::new` connects with the transport defaults of `default_endpoint` (keepalive, adaptive window, chunk-sized frames); `with_endpoint` leaves transport settings entirely to the caller. `tvr` is the SDK's first consumer; the `bp` tool hosts the CLA API through `ClaServiceImpl` rather than registering through the SDK.
 
-## Dependencies
+### External clients
 
-| Crate | Purpose |
-|-------|---------|
-| hardy-bpa | Trait definitions being proxied |
-| hardy-bpv7 | EID and bundle types |
-| hardy-async | TaskPool, spawn macro, spin Mutex |
-| tonic | gRPC server/client framework |
-| prost | Protocol buffer serialization |
-| tokio-stream | Async stream utilities |
+Any gRPC stack can implement a component against the schemas in `proto/`. The schemas carry the message vocabulary, the behaviour of each call, and the gRPC code each exit ends with; this document says why they are shaped as they are. Between them a non-Rust implementation needs no knowledge of this crate's Rust API, and where this document disagrees with the schemas, the schemas win: this one says why, they say what.
+
+## Standards Compliance
+
+This crate implements no protocol RFC of its own; it is Hardy's component API on the wire, and it speaks RFC 9171 vocabulary throughout: registrations, ADUs, bundle status report assertions (received, forwarded, delivered, deleted) with their reason codes and optional status time, the per-transmission flags, and the RFC 9171 bundle id as the one identity across announcements, collection, send results, and status reports. The announce-and-collect model implements delivery deferral (an uncollected delivery is re-announced to a later registration), and the truncation-is-an-error contract preserves transfer acknowledgement semantics: a CLA acknowledges only what the BPA has accepted in full. Bundle-format and BPA-behaviour compliance are the concern of `hardy-bpv7` and `hardy-bpa` (see the [BPA design](../../bpa/docs/design.md)); the wire neither adds to nor relaxes them.
 
 ## Testing
 
-- [Component Test Plan](component_test_plan.md) - gRPC streaming interface verification
-- ION interoperability tests (`tests/interop/ION/`) - end-to-end via STCP
-
-### Test Coverage Gaps
-
-The following unit tests would improve confidence in the proxy mechanism:
-
-- **Registration handshake** — all four server types complete without deadlock
-- **Client-initiated unregister** — `Unregister` request/response with msg_id correlation
-- **BPA-initiated unregister** — `OnUnregister` request/response with msg_id correlation
-- **Concurrent handler messages** — handler sends through proxy while another message is being processed
-- **Slow handler doesn't block reader** — reader continues correlating responses while a handler is blocked
-- **Clean shutdown** — `close()` and parent cancellation complete without hanging; in-flight handlers drain
+- [Component Test Plan](component_test_plan.md) (COMP-GRPC-01): the servers and the SDK exercised over real sockets against a real `Bpa`, per API, including every cancellation direction.
+- [Test Coverage Report](test_coverage_report.md): the current test inventory and the known gaps, including the scenarios deferred to a cross-crate lifecycle suite.

@@ -1,0 +1,284 @@
+syntax = "proto3";
+
+package hardy.service.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+
+// Low-level bundle service API.
+//
+// A service registers an endpoint on the BPA and exchanges complete
+// BPv7 bundles with it, building and parsing them itself. The
+// application API is the same exchange with ADUs in place of
+// bundles.
+//
+// The registration lives in one Subscribe call, the session. Its
+// first request is Register. Its first response is a Registration
+// event carrying a session token. After that, the response stream
+// carries only events. A BundleStatusReport is self-contained; a
+// Delivery expects a Receive call back to collect its bundle.
+// Bundle bytes never travel on this stream.
+//
+// Every other RPC presents the session token in its first message.
+// Send streams a bundle to the BPA and returns its id. Receive
+// collects the bundle of a Delivery and commits it with an ack.
+//
+// Unregister, or closing the Subscribe stream, ends the
+// registration and invalidates the token. A Delivery left
+// uncollected is pushed again to a later registration.
+//
+// A failed call ends with a gRPC status: a code and a short message,
+// and nothing else. The code is what a client branches on; the message
+// is a phrase for a developer reading a log, and never reflects
+// any string the client sent. A status with a code this file does not
+// name for the call came from the transport, not the BPA.
+//
+// Every call opens the same way, so any call can end with:
+//
+//   INVALID_ARGUMENT   the first message is not the one the call
+//                      opens with, or a field of it is not valid.
+//   UNAUTHENTICATED    the session token is unknown or expired;
+//                      every call but Subscribe presents one.
+//   DEADLINE_EXCEEDED  the first message did not arrive in time, or
+//                      the client later made the server wait past a
+//                      bound the Registration announced.
+//   UNAVAILABLE        the server is shutting down, or the
+//                      registration has closed.
+//   INTERNAL           the server failed for a cause it does not
+//                      disclose; the detail is in its log.
+//
+// A request stream that breaks before its first message is decoded
+// fails with the transport's own status, which this file does not
+// name; after that it is ABORTED. The comments below name only what
+// each call adds to this list.
+service ServiceService {
+  // -- Control plane ---------------------------------------------------
+
+  // Establishes the session and registers the endpoint.
+  //
+  // The first request must be Register; the first response is a
+  // Registration event carrying the session token. The stream then
+  // carries only events. Unregister, or closing the stream, ends the
+  // registration.
+  // Adds ALREADY_EXISTS if the service id is registered on another
+  // session, FAILED_PRECONDITION if the node has no node id this
+  // registration can use, and RESOURCE_EXHAUSTED if the server is at
+  // its session limit.
+  rpc Subscribe(stream SubscribeRequest) returns (stream SubscribeResponse);
+
+  // -- Data plane ------------------------------------------------------
+
+  // Sends a complete BPv7 bundle.
+  //
+  // The first message must be the metadata, which carries the
+  // session token; the bundle follows as chunk messages ended by
+  // last_chunk. A transfer that ends without last_chunk is
+  // discarded.
+  // INVALID_ARGUMENT also covers the bundle itself: bytes that do
+  // not parse, and a source that is not this registration's
+  // endpoint. Adds RESOURCE_EXHAUSTED if a size is above one the
+  // Registration announced or above what the BPA accepts, or if the
+  // session has as many transfers open as the server allows and none
+  // ends within the idle bound, ALREADY_EXISTS if the bundle is a
+  // duplicate, FAILED_PRECONDITION if a filter refused it, CANCELLED
+  // if the client cancelled the transfer, and ABORTED if the request
+  // stream ends before last_chunk.
+  rpc Send(stream SendRequest) returns (SendResponse);
+
+  // Receives the bundle of an earlier Delivery event.
+  //
+  // The first message must be the metadata, which carries the
+  // session token; the bundle streams back as chunk messages ended
+  // by last_chunk. Only an ack after last_chunk completes the
+  // delivery; in every other case the BPA keeps the bundle and
+  // pushes a new Delivery to a later registration. Each Delivery
+  // permits a single Receive call.
+  // Adds NOT_FOUND if no uncollected Delivery carries that bundle
+  // id, ABORTED if the BPA withdraws the bundle while this call
+  // holds it, and CANCELLED if the request stream closes before the
+  // ack.
+  rpc Receive(stream ReceiveRequest) returns (stream ReceiveResponse);
+}
+
+// ---------------------------------------------------------------------
+// Control plane: the session stream. Small messages only.
+// ---------------------------------------------------------------------
+
+// Request message for Subscribe.
+message SubscribeRequest {
+  // The request. Register must be the first message on the stream;
+  // Unregister ends the registration.
+  oneof request {
+    // Opens the registration.
+    Register   register   = 1;
+    // Ends the registration.
+    Unregister unregister = 2;
+  }
+}
+
+// Registers an endpoint. Must be the first message on the stream.
+message Register {
+  // The service to register. If unset, the BPA assigns a free
+  // service number.
+  oneof service_id {
+    // An ipn scheme service number.
+    uint32 ipn = 1;
+    // A dtn scheme demux string.
+    string dtn = 2;
+  }
+  // The largest chunk this client wants to handle, in bytes. The
+  // server replies with the max_chunk_size it agreed, never above
+  // this.
+  // A value below 1024 fails with INVALID_ARGUMENT. If unset, the
+  // server picks.
+  optional uint64 max_chunk_size = 3;
+}
+
+// Ends the registration. Closing the request stream has the same
+// effect.
+message Unregister {}
+
+// Response message for Subscribe. If registration fails, the
+// Subscribe call itself fails with a gRPC status instead.
+message SubscribeResponse {
+  // The event. Registration is always the first; deliveries and
+  // status reports follow in any order.
+  oneof event {
+    // The registration succeeded; carries the session token.
+    Registration       registration         = 1;
+    // A bundle is ready for collection.
+    Delivery           delivery             = 2;
+    // A status report for a bundle sent through this session.
+    BundleStatusReport bundle_status_report = 3;
+  }
+}
+
+// The result of a successful registration. Always the first event on
+// the stream.
+message Registration {
+  // The registered endpoint id, e.g. "ipn:977000.42". Bundles sent
+  // through this session use it as their source.
+  string endpoint_id = 1;
+  // The token that authenticates data-plane calls for this session.
+  // Opaque; expires when the session stream closes.
+  bytes  session_token = 2;
+  // The sizes this session runs under.
+  hardy.common.v1.Sizes sizes = 3;
+}
+
+// Announces a bundle ready for collection with Receive.
+message Delivery {
+  // The bundle id. See hardy.application.v1 SendResponse.bundle_id
+  // for the encoding.
+  string                    bundle_id   = 1;
+  // The expiry time of the bundle; it is discarded afterwards.
+  google.protobuf.Timestamp expire_time = 2;
+  // The size of the bundle in bytes.
+  uint64                    bundle_size = 3;
+}
+
+// A bundle status report for a bundle sent through this session.
+// Informational only; no reply is expected.
+message BundleStatusReport {
+  // The subject bundle id. See hardy.application.v1
+  // SendResponse.bundle_id for the encoding.
+  string                             bundle_id      = 1;
+  // The endpoint id of the reporting node.
+  string                             reporting_node = 2;
+  // The status being asserted.
+  StatusAssertion                    assertion      = 3;
+  // The RFC 9171 reason code for the assertion.
+  uint64                             reason_code    = 4;
+  // The time of the asserted event, if the reporting node included
+  // it.
+  optional google.protobuf.Timestamp status_time    = 5;
+}
+
+// The status asserted by a bundle status report (RFC 9171).
+enum StatusAssertion {
+  // No assertion; a report carrying it is malformed.
+  STATUS_ASSERTION_UNSPECIFIED = 0;
+  // The reporting node received the bundle.
+  STATUS_ASSERTION_RECEIVED    = 1;
+  // The reporting node forwarded the bundle.
+  STATUS_ASSERTION_FORWARDED   = 2;
+  // The reporting node delivered the bundle to its endpoint.
+  STATUS_ASSERTION_DELIVERED   = 3;
+  // The reporting node deleted the bundle; reason_code says why.
+  STATUS_ASSERTION_DELETED     = 4;
+}
+
+// ---------------------------------------------------------------------
+// Data plane: token-gated RPCs. Bundle bytes move here.
+// ---------------------------------------------------------------------
+
+// A single message in the Send request stream.
+message SendRequest {
+  // The message. Metadata comes first, then chunks ended by
+  // last_chunk; cancel may come at any point instead.
+  oneof request {
+    // Describes the transfer. Must be the first message.
+    SendMetadata          metadata   = 1;
+    // The next fragment of bundle data. Must not be empty.
+    bytes                 chunk      = 2;
+    // Cancels the transfer; the partial bundle is discarded.
+    google.protobuf.Empty cancel     = 3;
+    // The final fragment of bundle data (possibly empty). Completes
+    // the transfer.
+    bytes                 last_chunk = 4;
+  }
+}
+
+// Describes the bundle being sent. The first message of a Send call.
+message SendMetadata {
+  // The session token from Registration.
+  bytes          session_token = 1;
+  // The size of the bundle in bytes, if declared. A declared size
+  // above the server's transfer limit fails with RESOURCE_EXHAUSTED
+  // before any byte moves; a transfer that ends at a different size
+  // fails with INVALID_ARGUMENT. If unset, last_chunk alone delimits.
+  // The server never allocates against the declaration.
+  optional uint64 bundle_size   = 2;
+}
+
+// Response message for Send.
+message SendResponse {
+  // The id of the sent bundle. Status reports reference it. See
+  // hardy.application.v1 SendResponse.bundle_id for the encoding.
+  string bundle_id = 1;
+}
+
+// A single message in the Receive request stream.
+message ReceiveRequest {
+  // The message. Metadata comes first; then either ack, once
+  // last_chunk has arrived, or cancel.
+  oneof request {
+    // Identifies the delivery to collect. Must be the first message.
+    ReceiveMetadata       metadata = 1;
+    // Abandons the collection; the bundle remains held.
+    google.protobuf.Empty cancel   = 2;
+    // Completes the collection. Valid only after last_chunk.
+    google.protobuf.Empty ack      = 3;
+  }
+}
+
+// Identifies the delivery to collect. The first message of a Receive
+// call.
+message ReceiveMetadata {
+  // The session token from Registration.
+  bytes  session_token = 1;
+  // The bundle id from the Delivery event.
+  string bundle_id     = 2;
+}
+
+// A single message in the Receive response stream.
+message ReceiveResponse {
+  // The message: chunks ended by last_chunk.
+  oneof response {
+    // The next fragment of bundle data.
+    bytes chunk      = 1;
+    // The final fragment of bundle data (possibly empty).
+    bytes last_chunk = 2;
+  }
+}

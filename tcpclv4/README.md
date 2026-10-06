@@ -41,10 +41,15 @@ use hardy_tcpclv4::Tcpclv4;
 let cla = Arc::new(Tcpclv4::builder().build()?);
 
 // Register with a BPA (local or remote), then dial a peer
-bpa.register_cla("tcp0".to_string(), cla.clone(), None).await?;
+bpa.register_cla("tcp0".to_string(), cla.clone(), None, cla.cla_init())
+    .await?;
 cla.connect(&remote_addr).await?;
 
-// Clean shutdown
+// Withdraw from the BPA without stopping the process: `unregister` asks
+// the BPA to release the registration in-band. It is not needed for
+// shutdown; tearing the registration down (the host's task teardown, or
+// a remote session ending any way at all) unregisters just the same,
+// and `on_unregister` fires exactly once either way.
 cla.unregister().await;
 ```
 
