@@ -347,7 +347,7 @@ The fourth, **latest-only delivery, is deliberately not filter material** — an
 
 ## Open items
 
-- **Drop reporting from Originate/Deliver Verifiers.** Gate-pattern reporting is defined (and implemented) for Ingress; the other hooks keep their per-hook behaviour (Originate returns the reason to the service; Deliver drops with reason or deletes). The formal semantics land with the rest of Phase 3, on the conforming §5.6/§5.10 report shape the Ingress gate already emits ([`TODO.md`](TODO.md), "Ingress status-report conformance").
+- **Drop reporting from Originate/Deliver Verifiers.** Gate-pattern reporting is defined (and implemented) for Ingress; the other hooks keep their per-hook behaviour (Originate returns the reason to the service; Deliver drops with reason or deletes). The formal semantics land with the rest of Phase 3, on the conforming §5.6/§5.10 report shape the Ingress gate already emits ([`design.md`](design.md#ingress-status-reports)).
 - **Scanner component.** Queue/verdict shape: a new registry row + queue wiring — how much lands with the queue-architecture work vs later; the provenance-chained shape waits on the virtual-CLA re-forward entry point in the routing work.
 - **Fixed-vs-pluggable split for stripping the standard transport blocks at Deliver.** The RFC-defined blocks (Previous Node, Hop Count, Bundle Age) may be stripped by fixed machinery; the pluggable Deliver Rewriter targets embedder-defined transport blocks. The fixed strip is Phase 3 material.
 - **Intra-chain classification reads.** Whether a later Classifier should read a predecessor's *pending* class assignment through the reader (it currently sees applied deltas, which is sufficient for slots); revisit when `class` arrives with the policy tranche.
