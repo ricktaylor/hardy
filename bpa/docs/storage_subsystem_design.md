@@ -249,6 +249,8 @@ The reaper runs as a background task with the following behavior:
 3. **Expire** all bundles past their lifetime via `drop_bundle()`, except in-flight hand-offs (`ForwardAckPending`, `DeliveryAckPending`), which cannot be recalled and resolve their expiry when the hand-off does
 4. **Refill** cache from storage when depleted
 
+The hand-off exemption keeps the BPA from reporting what it cannot make true. Work in an external party's hands cannot be recalled, so a bundle that expires while a service consumes it in `on_deliver` reports *delivered*, not "deleted: lifetime expired", and a transfer the CLA completes is not reported deleted. Expiry is enforced at checkpoints instead: dispatch checks before acting on a bundle, and delivery checks before `on_deliver`, so a hand-off never commences for an already-expired bundle. Reaping only the parked statuses (`Waiting`, `WaitingForService`) was rejected: `AduFragment` and backpressured `*Pending` queues are unbounded pauses too, and reaping a queued status is always truthful under the claim-CAS discipline. The refill skips the hand-off statuses, so a held-open hand-off cannot spin it; their exits re-arm the watch.
+
 The reaper uses `select_biased!` to prioritize shutdown handling. See `Reaper::run()` in `src/storage/reaper.rs` for implementation.
 
 ### Watch Bundle
