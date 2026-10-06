@@ -630,6 +630,73 @@ pub fn verify(
     Ok(facts)
 }
 
+/// Refuses a bundle in which an encrypted BIB provably carries an integrity
+/// operation on a Previous Node or Bundle Age block.
+///
+/// No valid bundle has one, whoever receives it. Only the forwarder that
+/// inserted a per-hop block can source an operation on it: if it signed and
+/// then encrypted the block, RFC 9172 §3.9 forbids the pair to one source,
+/// and an earlier node's signature had to go when the block changed. The
+/// Hop Count is exempt, since its increment is a SHOULD (RFC 9171 §4.4.3):
+/// a signature on a count no node has incremented can stand.
+///
+/// Two facts prove the operation. A keyed pass ([`verify`]) that decrypted
+/// the BIB stamps the block's coverage with it. Without the key, the
+/// structure proves it when every BCB-covered block other than a BIB is a
+/// Previous Node or Bundle Age block: an encrypted BIB must target a
+/// BCB-covered block (RFC 9172 §3.8) and cannot target a BIB or a BCB
+/// (§3.7), so it covers one of them. Anything short of proof passes, as a
+/// keyless node rightly treats a per-hop block in a valid bundle as covered
+/// by no encrypted BIB.
+///
+/// # Errors
+///
+/// [`bpsec::Error::EncryptedBibCoversPerHopBlock`], naming the lowest such
+/// block.
+pub fn reject_per_hop_integrity_in_encrypted_bib(
+    blocks: &HashMap<u64, block::Block>,
+) -> Result<(), Error> {
+    // Compared by encoding, so an alias of either type counts.
+    let per_hop = |b: &block::Block| {
+        b.block_type == block::Type::PreviousNode || b.block_type == block::Type::BundleAge
+    };
+    let encrypted_bib = |n: &u64| {
+        blocks
+            .get(n)
+            .is_some_and(|b| b.block_type == block::Type::BlockIntegrity && b.bcb.is_some())
+    };
+
+    // The keyed pass resolved the coverage.
+    let proven = blocks
+        .iter()
+        .filter(|(_, b)| per_hop(b))
+        .filter(|(_, b)| matches!(&b.bib, block::BibCoverage::Some(bib) if encrypted_bib(bib)))
+        .map(|(&n, _)| n)
+        .min();
+
+    // The structure alone proves it.
+    let proven = proven.or_else(|| {
+        if !blocks.keys().any(encrypted_bib) {
+            return None;
+        }
+        let covered: Vec<(u64, &block::Block)> = blocks
+            .iter()
+            .filter(|(_, b)| b.bcb.is_some() && b.block_type != block::Type::BlockIntegrity)
+            .map(|(&n, b)| (n, b))
+            .collect();
+        if covered.iter().all(|(_, b)| per_hop(b)) {
+            covered.iter().map(|&(n, _)| n).min()
+        } else {
+            None
+        }
+    });
+
+    match proven {
+        Some(n) => Err(bpsec::Error::EncryptedBibCoversPerHopBlock(n).into()),
+        None => Ok(()),
+    }
+}
+
 // Per-OperationSet structural checks live as `check` methods on
 // `bpsec::bib::OperationSet` / `bpsec::bcb::OperationSet`, the single
 // source of truth shared with the structural parser.
