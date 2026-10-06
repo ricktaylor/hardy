@@ -68,11 +68,12 @@ pub fn extract_from_built(
 ///
 /// The RFC 9172 codes selectable here are the ones detectable without security
 /// policy: `UnknownSecurityOperation` (an operation this node cannot understand
-/// — unknown context id or parameter) and `FailedSecurityOperation` (an
-/// operation that failed to verify/decrypt). `Missing`/`Unexpected` need
-/// verifier/acceptor role policy that does not exist yet, and `Conflicting`
-/// (BPSec protocol violations between operations) is rejected by the
-/// structural parser before any reportable bundle exists. Per RFC 9172 §7.1,
+/// — unknown context id or parameter), `FailedSecurityOperation` (an
+/// operation that failed to verify/decrypt) and `ConflictingSecurityOperation`
+/// (an encrypted BIB over a Previous Node or Bundle Age block, which the keyed
+/// pass or the structure proves; the structural parser rejects the other
+/// conflicts before any reportable bundle exists). `Missing`/`Unexpected` need
+/// verifier/acceptor role policy that does not exist yet. Per RFC 9172 §7.1,
 /// policy SHOULD gate when security reason codes are sent at all; the global
 /// `status_reports` switch is that gate for now.
 pub fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
@@ -84,6 +85,9 @@ pub fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
         hardy_bpv7::Error::InvalidBPSec(
             bpsec::Error::DecryptionFailed | bpsec::Error::IntegrityCheckFailed,
         ) => ReasonCode::FailedSecurityOperation,
+        hardy_bpv7::Error::InvalidBPSec(bpsec::Error::EncryptedBibCoversPerHopBlock(_)) => {
+            ReasonCode::ConflictingSecurityOperation
+        }
         _ => ReasonCode::BlockUnintelligible,
     }
 }
@@ -759,6 +763,12 @@ fn verify_headers(
             &to_update_seed,
         )?;
 
+        // An encrypted BIB over a Previous Node or Bundle Age block is a
+        // combination no valid bundle carries; where the keyed pass or the
+        // structure proves one, the bundle is refused as a conflicting
+        // security operation rather than parking at every egress attempt.
+        checks::reject_per_hop_integrity_in_encrypted_bib(&hv.bundle.blocks)?;
+
         // RFC 9172 §5.1.1 failure-drop. `facts.failed` carries only blocks whose
         // ciphertext failed authentication (corrupt) — undecipherable (NoKey) blocks
         // go to `facts.nokey_ext` and are handled below. A corrupt *payload* (block 1)
@@ -1283,6 +1293,10 @@ mod tests {
         assert_eq!(
             status_report_reason_for(&bpsec::Error::NoKey.into()),
             ReasonCode::BlockUnintelligible
+        );
+        assert_eq!(
+            status_report_reason_for(&bpsec::Error::EncryptedBibCoversPerHopBlock(2).into()),
+            ReasonCode::ConflictingSecurityOperation
         );
     }
 
