@@ -2170,7 +2170,7 @@ impl cla::Cla for DeferringCla {
         let _ = self.offers_tx.send(bundle_id.clone());
         if self
             .remaining_accepts
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
             Ok(cla::ForwardBundleResult::Accepted)
