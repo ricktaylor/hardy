@@ -836,6 +836,7 @@ dependencies = [
  "bytes",
  "hardy-bpv7",
  "hex-literal",
+ "rand 0.10.2",
  "serde_json",
 ]
 
