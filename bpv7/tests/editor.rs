@@ -9,13 +9,16 @@ use bytes::Bytes;
 use hardy_bpv7::{
     Bundle, block,
     bpsec::{encryptor, key, rfc9173::ScopeFlags, signer},
-    builder, checks, crc, creation_timestamp,
+    builder, bundle, checks, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
     eid,
     extension_editor::{self, ExtensionEditor},
     hop_info, parse,
 };
-use hardy_cbor::encode::emit;
+// Aliased: the parser's error, beside the editor's `Error` imported above.
+use hardy_bpv7::Error as Bpv7Error;
+// Aliased: the CBOR codec's error, beside the two above.
+use hardy_cbor::{decode::Error as CborError, encode::emit};
 
 mod common;
 use self::common::rand_k;
@@ -53,7 +56,9 @@ fn ok<T>(result: Result<T, (Editor, Error)>) -> T {
 
 // Edit a bundle, rebuild, re-parse, and return the parsed Bundle.
 fn reparse(data: &[u8]) -> Bundle {
-    parse::parse(Bytes::copy_from_slice(data)).unwrap().bundle
+    parse::parse(Bytes::copy_from_slice(data))
+        .unwrap_or_else(|e| panic!("the rebuilt bundle must re-parse: {e:?}"))
+        .bundle
 }
 
 #[test]
@@ -245,6 +250,12 @@ fn assert_rebuild_matches_parse(bundle: &Bundle, data: &[u8]) {
         ),
         "CRC type mismatch"
     );
+    // Equality compares the encoding, so canonical form is checked apart:
+    // the rebuilt view holds what the bytes hold, not an alias of it.
+    assert!(
+        bundle.primary.flags.is_canonical(),
+        "primary flags not canonical"
+    );
     assert_eq!(bundle.primary.flags, reparsed.primary.flags);
 
     // Same set of block numbers
@@ -257,6 +268,10 @@ fn assert_rebuild_matches_parse(bundle: &Bundle, data: &[u8]) {
     // Block fields match and ranges index validly into the data
     for (block_number, block) in &bundle.blocks {
         let reparsed_block = reparsed.blocks.get(block_number).unwrap();
+        assert!(
+            block.block_type.is_canonical() && block.flags.is_canonical(),
+            "Block {block_number} type or flags not canonical"
+        );
         assert_eq!(
             block.block_type, reparsed_block.block_type,
             "Block {block_number} type mismatch"
@@ -325,6 +340,46 @@ fn rebuild_bundle_change_destination() {
     assert_eq!(new_bundle.primary.destination, new_dest);
     assert_eq!(new_bundle.primary.id.source, bundle.primary.id.source);
     assert_rebuild_matches_parse(&new_bundle, &new_data);
+}
+
+// The owner editor canonicalizes the flags it is handed, so the `Bundle`
+// `rebuild_bundle()` returns holds what the bytes hold: the admin-record
+// bit carried in `unrecognised` makes an administrative record while a
+// genuinely unrecognised bit passes through, and `report_on_failure`'s bit
+// makes an inserted block report.
+#[test]
+fn rebuild_bundle_canonicalizes_flag_aliases() {
+    let (bundle, data) = make_bundle();
+    let aliased = bundle::Flags {
+        unrecognised: (1 << 1) | (1 << 24),
+        ..Default::default()
+    };
+    let (new_bundle, new_data) = ok(Editor::new(&bundle, &data).with_bundle_flags(aliased))
+        .rebuild_bundle()
+        .map(|(b, c)| (b, Chunk::flatten(c, &data)))
+        .unwrap();
+    assert!(new_bundle.primary.flags.is_admin_record);
+    assert_eq!(new_bundle.primary.flags.unrecognised, 1 << 24);
+    assert_rebuild_matches_parse(&new_bundle, &new_data);
+
+    let editor = ok(Editor::new(&bundle, &data).insert_block(block::Type::Unrecognised(200)));
+    let inserted = editor.block_number();
+    let (new_bundle, new_data) = editor
+        .with_flags(block::Flags {
+            unrecognised: 1 << 1,
+            ..Default::default()
+        })
+        .with_data((&[0x01, 0x02][..]).into())
+        .rebuild()
+        .rebuild_bundle()
+        .map(|(b, c)| (b, Chunk::flatten(c, &data)))
+        .unwrap();
+    assert!(new_bundle.blocks[&inserted].flags.report_on_failure);
+    assert!(new_bundle.blocks[&inserted].flags.is_canonical());
+    assert_eq!(
+        new_bundle.blocks[&inserted].flags,
+        reparse(&new_data).blocks[&inserted].flags
+    );
 }
 
 #[test]
@@ -536,27 +591,133 @@ fn remove_block_rejects_security_block() {
     );
 }
 
+// RFC 9171 §4.2.3-4/-5 against the final primary: the owner editor refuses
+// a forbidden `report_on_failure` when it rebuilds, whichever order the
+// flag and the forbidding primary were set in, and whether an edit set the
+// flag or a kept block carried it under the primary the edits replaced.
+#[test]
+fn owner_editor_refuses_the_forbidden_flag_at_rebuild() {
+    fn with_reporting_block(editor: Editor<'_>) -> Editor<'_> {
+        ok(editor.push_block(block::Type::Unrecognised(200)))
+            .with_flags(block::Flags {
+                report_on_failure: true,
+                ..Default::default()
+            })
+            .with_data(b"ext-data".as_slice().into())
+            .rebuild()
+    }
+    fn refused(result: Result<(Bundle, Vec<Chunk>), Error>, block_number: u64) {
+        assert!(
+            matches!(result, Err(Error::ReportOnFailureForbidden(n)) if n == block_number),
+            "refused, naming block {block_number}"
+        );
+    }
+    // The pushed block takes the first free number: 2 on a bundle of a
+    // primary and a payload.
+    let pushed = 2;
+    let admin = bundle::Flags {
+        is_admin_record: true,
+        ..Default::default()
+    };
+
+    // The flag set on a bundle that already forbids it.
+    let (bundle, data) = make_bundle_from(
+        "dtn:none",
+        bundle::Flags {
+            do_not_fragment: true,
+            ..Default::default()
+        },
+    );
+    refused(
+        with_reporting_block(Editor::new(&bundle, &data)).rebuild_bundle(),
+        pushed,
+    );
+
+    // The flag set first, then the primary made to forbid it.
+    let (bundle, data) = make_bundle();
+    let editor = with_reporting_block(Editor::new(&bundle, &data));
+    refused(
+        ok(editor.with_bundle_flags(admin.clone())).rebuild_bundle(),
+        pushed,
+    );
+    let editor = with_reporting_block(Editor::new(&bundle, &data));
+    refused(
+        ok(editor.with_source(eid::Eid::Null)).rebuild_bundle(),
+        pushed,
+    );
+
+    // A kept block: the Hop Count reports on an ordinary bundle, then the
+    // bundle becomes an administrative record. Both rebuild paths refuse.
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop_count = *bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::HopCount)
+        .expect("the bundle carries a Hop Count block")
+        .0;
+    refused(
+        ok(Editor::new(&bundle, &data).with_bundle_flags(admin.clone())).rebuild_bundle(),
+        hop_count,
+    );
+    assert!(matches!(
+        ok(Editor::new(&bundle, &data).with_bundle_flags(admin.clone())).rebuild(),
+        Err(Error::ReportOnFailureForbidden(n)) if n == hop_count
+    ));
+
+    // Three flagged blocks, the kept Hop Count and two pushed above it: the
+    // refusal names the lowest, whatever the iteration order. Each fresh
+    // editor iterates its blocks in its own hash order, so the loop covers
+    // many orders on both rebuild paths.
+    assert_eq!(hop_count, 2, "precondition: the Hop Count holds block 2");
+    for _ in 0..16 {
+        let editor = with_reporting_block(with_reporting_block(Editor::new(&bundle, &data)));
+        refused(
+            ok(editor.with_bundle_flags(admin.clone())).rebuild_bundle(),
+            hop_count,
+        );
+        let editor = with_reporting_block(with_reporting_block(Editor::new(&bundle, &data)));
+        assert!(matches!(
+            ok(editor.with_bundle_flags(admin.clone())).rebuild(),
+            Err(Error::ReportOnFailureForbidden(n)) if n == hop_count
+        ));
+    }
+
+    // Control: an ordinary bundle keeps the flag.
+    let (bundle, data) = make_bundle();
+    let (rebuilt, chunks) = with_reporting_block(Editor::new(&bundle, &data))
+        .rebuild_bundle()
+        .expect("an ordinary bundle permits the flag");
+    assert_rebuild_matches_parse(&rebuilt, &Chunk::flatten(chunks, &data));
+}
+
 // `Type::canonicalize` folds an `Unrecognised` alias of a known code back
 // to the named variant it encodes as, and leaves everything else alone.
+// Matched structurally: equality already counts an alias as its variant.
 #[test]
 fn canonicalize_folds_reserved_aliases() {
-    assert_eq!(
+    assert!(matches!(
         block::Type::Unrecognised(0).canonicalize(),
         block::Type::Primary
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         block::Type::Unrecognised(11).canonicalize(),
         block::Type::BlockIntegrity
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         block::Type::Unrecognised(12).canonicalize(),
         block::Type::BlockSecurity
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         block::Type::Unrecognised(192).canonicalize(),
         block::Type::Unrecognised(192)
-    );
-    assert_eq!(block::Type::Payload.canonicalize(), block::Type::Payload);
+    ));
+    assert!(matches!(
+        block::Type::Payload.canonicalize(),
+        block::Type::Payload
+    ));
+    assert!(!block::Type::Unrecognised(11).is_canonical());
+    assert!(block::Type::Unrecognised(192).is_canonical());
+    assert!(block::Type::BlockIntegrity.is_canonical());
 }
 
 // Reserved wire codes must be refused whatever `Type` variant carries them:
@@ -746,7 +907,7 @@ fn extension_editor_maps_singleton_duplicates_through() {
             block::Type::HopCount,
             block::Flags::default(),
             crc::CrcType::None,
-            b"x".as_slice().into(),
+            hop_count_body(),
         ),
         Err(extension_editor::Error::Editor(Error::IllegalDuplicate(
             block::Type::HopCount
@@ -1045,6 +1206,290 @@ fn extension_editor_materialises_inserts_and_skips_untouched() {
     assert!(matches!(block.block_type, block::Type::Unrecognised(202)));
     assert_eq!(block.payload(&new_data).expect("resident"), b"materialised");
     assert_eq!(new_bundle.blocks.len(), reparsed.blocks.len());
+}
+
+// === ExtensionEditor: the parser's accept-set at call time =============
+
+// A well-formed Hop Count body.
+fn hop_count_body() -> Box<[u8]> {
+    emit(&hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 0,
+    })
+    .0
+    .into()
+}
+
+// A parsed bundle built with the given source and bundle flags.
+fn make_bundle_from(source: &str, flags: bundle::Flags) -> (Bundle, Box<[u8]>) {
+    let (_, data) = builder::Builder::new(source.parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_flags(flags)
+        .with_payload(b"Hello".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let bundle = reparse(&data);
+    (bundle, data)
+}
+
+// Insert an Unrecognised(200) block with `report_on_failure` set.
+fn insert_reporting_block(editor: &mut ExtensionEditor) -> extension_editor::Result<u64> {
+    editor.insert(
+        block::Type::Unrecognised(200),
+        block::Flags {
+            report_on_failure: true,
+            ..Default::default()
+        },
+        crc::CrcType::None,
+        b"ext-data".as_slice().into(),
+    )
+}
+
+#[test]
+fn extension_editor_refuses_report_on_failure_the_bundle_forbids() {
+    // RFC 9171 §4.2.3-4/-5: a null-source bundle (which must also be
+    // unfragmentable) and an administrative record both forbid the flag.
+    let null_source = make_bundle_from(
+        "dtn:none",
+        bundle::Flags {
+            do_not_fragment: true,
+            ..Default::default()
+        },
+    );
+    let admin_record = make_bundle_from(
+        "ipn:1.0",
+        bundle::Flags {
+            is_admin_record: true,
+            ..Default::default()
+        },
+    );
+    for (bundle, data) in [&null_source, &admin_record] {
+        assert!(
+            bundle.primary.forbids_report_on_failure(),
+            "precondition: the fixture forbids report_on_failure"
+        );
+        let mut editor = ExtensionEditor::new(bundle, data);
+        assert!(matches!(
+            insert_reporting_block(&mut editor),
+            Err(extension_editor::Error::Invalid(Bpv7Error::InvalidFlags))
+        ));
+        assert!(!editor.is_modified(), "a refusal is not an edit");
+    }
+
+    // Control: an ordinary bundle takes the same insert, and the rewrite
+    // re-parses.
+    let (bundle, data) = make_bundle();
+    assert!(!bundle.primary.forbids_report_on_failure());
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let inserted = insert_reporting_block(&mut editor).expect("the insert is accepted");
+    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let rewritten = reparse(&Chunk::flatten(chunks, &data));
+    assert!(rewritten.blocks[&inserted].flags.report_on_failure);
+}
+
+// A named bit carried in `unrecognised` is the flag it encodes: the editor
+// refuses `report_on_failure`'s alias on an administrative record as the
+// forbidden flag, and on an ordinary bundle the alias reports, with a
+// genuinely unrecognised bit passing through.
+#[test]
+fn extension_editor_canonicalizes_unrecognised_aliases_of_named_flags() {
+    fn aliased() -> block::Flags {
+        block::Flags {
+            unrecognised: (1 << 1) | (1 << 8),
+            ..Default::default()
+        }
+    }
+
+    let (bundle, data) = make_bundle_from(
+        "ipn:1.0",
+        bundle::Flags {
+            is_admin_record: true,
+            ..Default::default()
+        },
+    );
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    assert!(matches!(
+        editor.insert(
+            block::Type::Unrecognised(200),
+            aliased(),
+            crc::CrcType::None,
+            b"ext-data".as_slice().into(),
+        ),
+        Err(extension_editor::Error::Invalid(Bpv7Error::InvalidFlags))
+    ));
+    assert!(!editor.is_modified(), "a refusal is not an edit");
+
+    let (bundle, data) = make_bundle_from("ipn:1.0", bundle::Flags::default());
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let inserted = editor
+        .insert(
+            block::Type::Unrecognised(200),
+            aliased(),
+            crc::CrcType::None,
+            b"ext-data".as_slice().into(),
+        )
+        .expect("an ordinary bundle permits the flag");
+    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let rewritten = reparse(&Chunk::flatten(chunks, &data));
+    let flags = &rewritten.blocks[&inserted].flags;
+    assert!(flags.report_on_failure);
+    assert_eq!(flags.unrecognised, 1 << 8);
+}
+
+#[test]
+fn extension_editor_refuses_an_unrecognised_crc_type() {
+    let (bundle, data) = make_bundle();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    assert!(matches!(
+        editor.insert(
+            block::Type::Unrecognised(200),
+            block::Flags::default(),
+            crc::CrcType::Unrecognised(5),
+            b"ext-data".as_slice().into(),
+        ),
+        Err(extension_editor::Error::Invalid(Bpv7Error::InvalidCrc(
+            crc::Error::InvalidType(5)
+        )))
+    ));
+    assert!(!editor.is_modified());
+
+    // Control: each recognised CRC type is accepted and the inserted block
+    // carries it — the re-parse checks the CRC value too.
+    for crc_type in [crc::CrcType::CRC16_X25, crc::CrcType::CRC32_CASTAGNOLI] {
+        let mut editor = ExtensionEditor::new(&bundle, &data);
+        let inserted = editor
+            .insert(
+                block::Type::Unrecognised(200),
+                block::Flags::default(),
+                crc_type,
+                b"ext-data".as_slice().into(),
+            )
+            .expect("a recognised CRC type is accepted");
+        let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+        let rewritten = reparse(&Chunk::flatten(chunks, &data));
+        assert_eq!(rewritten.blocks[&inserted].crc_type, crc_type);
+    }
+}
+
+// Insert `body` as `block_type` into a fresh bundle, expecting a refusal;
+// returns the parser error the refusal carries.
+fn refused_insert(block_type: block::Type, body: &[u8]) -> Bpv7Error {
+    let (bundle, data) = make_bundle();
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let result = editor.insert(
+        block_type,
+        block::Flags::default(),
+        crc::CrcType::None,
+        body.into(),
+    );
+    assert!(!editor.is_modified(), "a refusal is not an edit");
+    match result {
+        Err(extension_editor::Error::UndecodableBody {
+            block_type: checked,
+            source,
+        }) => {
+            assert_eq!(checked, block_type, "the refusal names the type checked");
+            *source
+        }
+        other => panic!("{block_type:?} must be refused as UndecodableBody, got {other:?}"),
+    }
+}
+
+#[test]
+fn extension_editor_refuses_undecodable_well_known_insert_bodies() {
+    // Each type's body decoder rejects a CBOR text string ("bad") with its
+    // own error, and the refusal carries exactly that error.
+    let bad = b"\x63bad".as_slice();
+    assert!(matches!(
+        refused_insert(block::Type::PreviousNode, bad),
+        Bpv7Error::InvalidEid(eid::Error::InvalidCBOR(CborError::IncorrectType(..)))
+    ));
+    assert!(matches!(
+        refused_insert(block::Type::BundleAge, bad),
+        Bpv7Error::InvalidCBOR(CborError::IncorrectType(..))
+    ));
+    assert!(matches!(
+        refused_insert(block::Type::HopCount, bad),
+        Bpv7Error::InvalidCBOR(CborError::IncorrectType(..))
+    ));
+    // The `Unrecognised` alias of Hop Count's code is validated as a Hop
+    // Count: a bare integer is not the Hop Count array.
+    assert!(matches!(
+        refused_insert(block::Type::Unrecognised(10), &[0x00]),
+        Bpv7Error::InvalidCBOR(CborError::IncorrectType(..))
+    ));
+
+    // Control: a valid body of each type is accepted and re-parses.
+    let valid_bodies: [(block::Type, Box<[u8]>); 3] = [
+        (
+            block::Type::PreviousNode,
+            emit(&"ipn:3.0".parse::<eid::Eid>().unwrap()).0.into(),
+        ),
+        (block::Type::BundleAge, emit(&0u64).0.into()),
+        (block::Type::HopCount, hop_count_body()),
+    ];
+    for (block_type, valid) in valid_bodies {
+        let (bundle, data) = make_bundle();
+        let mut editor = ExtensionEditor::new(&bundle, &data);
+        let inserted = editor
+            .insert(
+                block_type,
+                block::Flags::default(),
+                crc::CrcType::None,
+                valid.clone(),
+            )
+            .expect("a valid body is accepted");
+        let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+        let rewritten_data = Chunk::flatten(chunks, &data);
+        let block = &reparse(&rewritten_data).blocks[&inserted];
+        assert_eq!(block.block_type, block_type);
+        assert_eq!(block.payload(&rewritten_data), Some(&*valid));
+    }
+}
+
+#[test]
+fn extension_editor_refuses_an_undecodable_well_known_replacement() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count is present");
+    let mut editor = ExtensionEditor::new(&bundle, &data);
+    // Well-formed CBOR, but a hop limit of 0 is outside RFC 9171 §4.4.3's
+    // 1..=255: the semantic check refuses it, not just the shape check.
+    let Err(extension_editor::Error::UndecodableBody {
+        block_type: block::Type::HopCount,
+        source,
+    }) = editor.replace(hop, [0x82, 0x00, 0x00].as_slice().into())
+    else {
+        panic!("an out-of-range hop limit must be refused as UndecodableBody");
+    };
+    assert!(matches!(*source, Bpv7Error::InvalidHopLimit(0)));
+    assert!(!editor.is_modified());
+
+    // Control: a valid body is accepted, and the replace changes the data
+    // alone — the block keeps its flags and CRC type.
+    let replacement = hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 1,
+    };
+    editor
+        .replace(hop, emit(&replacement).0.into())
+        .expect("a valid body is accepted");
+    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let rewritten_data = Chunk::flatten(chunks, &data);
+    let rewritten = reparse(&rewritten_data);
+    let original = &bundle.blocks[&hop];
+    let replaced = &rewritten.blocks[&hop];
+    assert_eq!(replaced.flags, original.flags);
+    assert_eq!(replaced.crc_type, original.crc_type);
+    assert_eq!(
+        replaced
+            .extract::<hop_info::HopInfo>(&rewritten_data)
+            .unwrap(),
+        Some(replacement)
+    );
 }
 
 // === insert_block replace-by-type: BIB/BCB coverage parity =============

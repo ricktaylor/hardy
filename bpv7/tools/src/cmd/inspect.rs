@@ -1,8 +1,13 @@
-use super::*;
 use core::time::Duration;
-use hardy_bpv7::{block, bpsec, bundle, bundle_age, crc, eid, hop_info};
-use hardy_cbor::decode::{parse_exact, parse_value};
 use std::collections::HashMap;
+
+use hardy_bpv7::{
+    block, bpsec, bundle, bundle_age, crc, eid, hop_info, primary_block::PrimaryBlock,
+};
+use hardy_cbor::decode::{parse_exact, parse_value};
+
+use super::*;
+
 #[derive(Parser, Debug)]
 #[command(
     about = "Inspect and display bundle information",
@@ -251,70 +256,7 @@ fn dump_markdown(
 
     dump_crc(primary.crc_type, &output)?;
 
-    if primary.flags == bundle::Flags::default() {
-        output.append_str("Bundle Flags: None\n\n")?;
-    } else {
-        output.append_str("Bundle Flags:\n\n")?;
-
-        if primary.flags.is_fragment {
-            output.append_str("* Is a fragment\n")?;
-
-            if primary.flags.is_admin_record {
-                output.append_str("* ADU is an Administrative Record\n")?;
-            }
-
-            if primary.flags.do_not_fragment {
-                output.append_str("* Do not fragment\n")?;
-            }
-
-            if primary.flags.app_ack_requested {
-                output.append_str("* Application acknowledgement requested\n")?;
-            }
-
-            if primary.flags.report_status_time {
-                output.append_str("* Include status time with reports\n")?;
-
-                if !primary.flags.receipt_report_requested
-                    || !primary.flags.forward_report_requested
-                    || !primary.flags.delivery_report_requested
-                    || !primary.flags.delete_report_requested
-                {
-                    notes.push("Bundle flags request status time to be included with status reports, but no reports are requested.");
-                }
-            }
-
-            if primary.flags.receipt_report_requested {
-                output.append_str("* Reception report requested\n")?;
-            }
-
-            if primary.flags.forward_report_requested {
-                output.append_str("* Forwarding report requested\n")?;
-            }
-
-            if primary.flags.delivery_report_requested {
-                output.append_str("* Delivery report requested\n")?;
-            }
-
-            if primary.flags.delete_report_requested {
-                output.append_str("* Deletion report requested\n")?;
-            }
-
-            if let Some(u) = primary.flags.unrecognised {
-                output.append_str(format!("* Unrecognised: {u:#x}\n",))?;
-            }
-
-            output.append_str("\n")?;
-
-            if (primary.flags.receipt_report_requested
-                || primary.flags.forward_report_requested
-                || primary.flags.delivery_report_requested
-                || primary.flags.delete_report_requested)
-                && primary.report_to.is_null()
-            {
-                notes.push("Null endpoint EID specified for 'Report To', but status reports are requested.");
-            }
-        }
-    }
+    output.append_str(bundle_flags_markdown(primary, &mut notes))?;
 
     output.append_str(format!("Report-To: {}\n\n", primary.report_to))?;
 
@@ -349,6 +291,66 @@ fn dump_markdown(
     }
 
     Ok(())
+}
+
+// The primary block's flags section, pushing the notes its flags raise.
+fn bundle_flags_markdown(primary: &PrimaryBlock, notes: &mut Vec<&'static str>) -> String {
+    let flags = &primary.flags;
+    if *flags == bundle::Flags::default() {
+        return "Bundle Flags: None\n\n".to_string();
+    }
+
+    let any_report = flags.receipt_report_requested
+        || flags.forward_report_requested
+        || flags.delivery_report_requested
+        || flags.delete_report_requested;
+    let mut md = String::from("Bundle Flags:\n\n");
+    for (set, line) in [
+        (flags.is_fragment, "* Is a fragment\n"),
+        (flags.is_admin_record, "* ADU is an Administrative Record\n"),
+        (flags.do_not_fragment, "* Do not fragment\n"),
+        (
+            flags.app_ack_requested,
+            "* Application acknowledgement requested\n",
+        ),
+        (
+            flags.report_status_time,
+            "* Include status time with reports\n",
+        ),
+        (
+            flags.receipt_report_requested,
+            "* Reception report requested\n",
+        ),
+        (
+            flags.forward_report_requested,
+            "* Forwarding report requested\n",
+        ),
+        (
+            flags.delivery_report_requested,
+            "* Delivery report requested\n",
+        ),
+        (
+            flags.delete_report_requested,
+            "* Deletion report requested\n",
+        ),
+    ] {
+        if set {
+            md.push_str(line);
+        }
+    }
+    if flags.unrecognised != 0 {
+        md.push_str(&format!("* Unrecognised: {:#x}\n", flags.unrecognised));
+    }
+    md.push('\n');
+
+    if flags.report_status_time && !any_report {
+        notes.push("Bundle flags request status time to be included with status reports, but no reports are requested.");
+    }
+    if any_report && primary.report_to.is_null() {
+        notes
+            .push("Null endpoint EID specified for 'Report To', but status reports are requested.");
+    }
+    md
 }
 
 fn dump_crc(crc: crc::CrcType, output: &io::Output) -> anyhow::Result<()> {
@@ -406,8 +408,8 @@ fn dump_block(
             output.append_str("* Delete bundle on failure\n")?;
         }
 
-        if let Some(u) = block.flags.unrecognised {
-            output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
+        if block.flags.unrecognised != 0 {
+            output.append_str(format!("* Unrecognised: {:#x}\n", block.flags.unrecognised))?;
         }
 
         output.append_str("\n")?;
@@ -587,8 +589,11 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                     output.append_str("* Include security header\n")?;
                 }
 
-                if let Some(u) = op.parameters.flags.unrecognised {
-                    output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
+                if op.parameters.flags.unrecognised != 0 {
+                    output.append_str(format!(
+                        "* Unrecognised: {:#x}\n",
+                        op.parameters.flags.unrecognised
+                    ))?;
                 }
 
                 output.append_str("\n")?;
@@ -658,8 +663,11 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                     output.append_str("* Include security header\n")?;
                 }
 
-                if let Some(u) = op.parameters.flags.unrecognised {
-                    output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
+                if op.parameters.flags.unrecognised != 0 {
+                    output.append_str(format!(
+                        "* Unrecognised: {:#x}\n",
+                        op.parameters.flags.unrecognised
+                    ))?;
                 }
 
                 output.append_str("\n")?;
@@ -696,4 +704,69 @@ fn dump_bytes(data: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect::<Vec<_>>()
         .join("")
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
+
+    use super::*;
+
+    fn primary(flags: bundle::Flags) -> PrimaryBlock {
+        let (bundle, _) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_flags(flags)
+            .with_report_to("ipn:3.0".parse().unwrap())
+            .with_payload(b"inspect".as_slice().into())
+            .build(CreationTimestamp::now())
+            .expect("build the bundle");
+        bundle.primary
+    }
+
+    // A bundle that is not a fragment lists every flag it sets.
+    #[test]
+    fn a_non_fragment_bundle_lists_its_flags() {
+        let mut notes = Vec::new();
+        let md = bundle_flags_markdown(
+            &primary(bundle::Flags {
+                do_not_fragment: true,
+                delivery_report_requested: true,
+                ..Default::default()
+            }),
+            &mut notes,
+        );
+        assert_eq!(
+            md,
+            "Bundle Flags:\n\n* Do not fragment\n* Delivery report requested\n\n"
+        );
+        assert!(notes.is_empty());
+    }
+
+    // The status-time note fires only when no report is requested at all.
+    #[test]
+    fn the_status_time_note_needs_every_report_unrequested() {
+        let mut notes = Vec::new();
+        bundle_flags_markdown(
+            &primary(bundle::Flags {
+                report_status_time: true,
+                delivery_report_requested: true,
+                ..Default::default()
+            }),
+            &mut notes,
+        );
+        assert!(notes.is_empty(), "one requested report suppresses the note");
+
+        bundle_flags_markdown(
+            &primary(bundle::Flags {
+                report_status_time: true,
+                ..Default::default()
+            }),
+            &mut notes,
+        );
+        assert_eq!(
+            notes,
+            [
+                "Bundle flags request status time to be included with status reports, but no reports are requested."
+            ]
+        );
+    }
 }

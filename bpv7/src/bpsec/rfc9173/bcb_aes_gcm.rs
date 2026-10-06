@@ -163,6 +163,9 @@ impl ToCbor for Results {
 
 fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, Error> {
     let mut encoder = Encoder::new();
+    // RFC 9173 §4.7.2 step 1: the AAD starts with the scope flags with
+    // reserved and unassigned bits set to 0, so only the named flags are
+    // carried over.
     encoder.emit(&ScopeFlags {
         include_primary_block: flags.include_primary_block,
         include_target_header: flags.include_target_header,
@@ -237,6 +240,9 @@ impl Operation {
         scope_flags: ScopeFlags,
         args: bcb::OperationArgs,
     ) -> Result<(Self, Box<[u8]>), Error> {
+        // The emitted parameter and the IPPT/AAD below must agree on what an
+        // alias bit in `unrecognised` covers.
+        let scope_flags = scope_flags.canonicalize();
         let payload = args
             .blocks
             .block(args.target)

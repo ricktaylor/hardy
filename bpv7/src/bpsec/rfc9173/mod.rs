@@ -1,4 +1,5 @@
 use alloc::{borrow::Cow, boxed::Box, string::ToString, vec};
+use core::hash::{Hash, Hasher};
 
 use hardy_cbor::{
     decode::{FromCbor, parse_exact},
@@ -50,7 +51,15 @@ fn rand_array<const N: usize>() -> Result<[u8; N], Error> {
 // inline-tests-vs-tests/ split convention).
 
 /// Scope flags controlling which bundle fields are included in the IPPT (RFC 9173 Section 3.3/4.3).
-#[derive(Debug, Hash, Clone, PartialEq, Eq)]
+///
+/// A bit carried in [`unrecognised`](Self::unrecognised) that names a flag
+/// is an alias of that flag: it encodes as the flag's bit, so the verifier
+/// includes what the bit names. Equality and hashing compare what the value
+/// encodes, so an alias equals its named flag. Signing and encryption
+/// [`canonicalize`](Self::canonicalize) the scope before computing the
+/// IPPT or AAD, so both sides agree on what it covers. Direct field writes
+/// are not canonicalized.
+#[derive(Debug, Clone)]
 pub struct ScopeFlags {
     /// Include the primary block in the Integrity-Protected Plaintext (bit 0).
     pub include_primary_block: bool,
@@ -58,17 +67,54 @@ pub struct ScopeFlags {
     pub include_target_header: bool,
     /// Include the security block header in the IPPT (bit 2).
     pub include_security_header: bool,
-    /// Any unrecognized scope flag bits, preserved for forward compatibility.
-    pub unrecognised: Option<u64>,
+    /// Any unrecognised scope flag bits, preserved for forward
+    /// compatibility; zero when there are none.
+    pub unrecognised: u64,
 }
 
 impl ScopeFlags {
+    /// The empty scope: every flag clear, no unrecognised bits. The
+    /// [`Default`] scope is RFC 9173's, all three flags set.
     pub const NONE: Self = Self {
         include_primary_block: false,
         include_target_header: false,
         include_security_header: false,
-        unrecognised: None,
+        unrecognised: 0,
     };
+
+    /// Folds every bit of [`unrecognised`](Self::unrecognised) that names a
+    /// flag into its named field; genuinely unrecognised bits are kept.
+    ///
+    /// A hand-built `unrecognised` encodes bit for bit, so `1 << 0`
+    /// *is* `include_primary_block` to the verifier. Code that reads the
+    /// named fields must canonicalize first, or it misreads the scope the
+    /// bytes carry.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        Self::from(u64::from(&self))
+    }
+
+    /// Whether no bit of [`unrecognised`](Self::unrecognised) names a flag —
+    /// the form [`canonicalize`](Self::canonicalize) returns. Equality
+    /// cannot tell an alias from its canonical form; this can.
+    #[must_use]
+    pub fn is_canonical(&self) -> bool {
+        Self::from(self.unrecognised).unrecognised == self.unrecognised
+    }
+}
+
+impl PartialEq for ScopeFlags {
+    fn eq(&self, other: &Self) -> bool {
+        u64::from(self) == u64::from(other)
+    }
+}
+
+impl Eq for ScopeFlags {}
+
+impl Hash for ScopeFlags {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        u64::from(self).hash(state);
+    }
 }
 
 impl Default for ScopeFlags {
@@ -77,22 +123,14 @@ impl Default for ScopeFlags {
             include_primary_block: true,
             include_target_header: true,
             include_security_header: true,
-            unrecognised: None,
+            unrecognised: 0,
         }
     }
 }
 
-impl FromCbor for ScopeFlags {
-    type Error = Error;
-
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
-        let mut flags = Self {
-            include_primary_block: false,
-            include_target_header: false,
-            include_security_header: false,
-            unrecognised: None,
-        };
+impl From<u64> for ScopeFlags {
+    fn from(value: u64) -> Self {
+        let mut flags = Self::NONE;
         let mut unrecognised = value;
 
         if (value & (1 << 0)) != 0 {
@@ -108,10 +146,33 @@ impl FromCbor for ScopeFlags {
             unrecognised &= !(1 << 2);
         }
 
-        if unrecognised != 0 {
-            flags.unrecognised = Some(unrecognised);
+        flags.unrecognised = unrecognised;
+        flags
+    }
+}
+
+impl From<&ScopeFlags> for u64 {
+    fn from(value: &ScopeFlags) -> Self {
+        let mut flags = value.unrecognised;
+        if value.include_primary_block {
+            flags |= 1 << 0;
         }
-        Ok((flags, true, len))
+        if value.include_target_header {
+            flags |= 1 << 1;
+        }
+        if value.include_security_header {
+            flags |= 1 << 2;
+        }
+        flags
+    }
+}
+
+impl FromCbor for ScopeFlags {
+    type Error = Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        let (value, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
+        Ok((Self::from(value), true, len))
     }
 }
 
@@ -119,16 +180,6 @@ impl ToCbor for ScopeFlags {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        let mut flags = self.unrecognised.unwrap_or(0);
-        if self.include_primary_block {
-            flags |= 1 << 0;
-        }
-        if self.include_target_header {
-            flags |= 1 << 1;
-        }
-        if self.include_security_header {
-            flags |= 1 << 2;
-        }
-        encoder.emit(&flags)
+        encoder.emit(&u64::from(self));
     }
 }

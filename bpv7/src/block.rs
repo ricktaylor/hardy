@@ -5,7 +5,12 @@ and the generic `Block` struct that represents all extension blocks.
 */
 
 use alloc::boxed::Box;
-use core::{fmt, ops::Range};
+use core::{
+    cmp::Ordering,
+    fmt,
+    hash::{Hash, Hasher},
+    ops::Range,
+};
 
 use hardy_cbor::{
     decode::{FromCbor, parse_exact},
@@ -15,47 +20,134 @@ use hardy_cbor::{
 use crate::{Error, crc};
 /// Represents the processing control flags for a BPv7 block.
 ///
-/// These flags, defined in RFC 9171 Section 4.2.2, control how a node should
+/// These flags, defined in RFC 9171 Section 4.2.4, control how a node should
 /// process the block, especially in cases of failure or fragmentation.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+///
+/// A bit carried in [`unrecognised`](Self::unrecognised) that names a flag
+/// is an alias of that flag: it encodes as the flag's bit, so the next
+/// parser reads the flag set. Equality and hashing compare what the value
+/// encodes, so an alias equals its named flag; code that reads the named
+/// fields must [`canonicalize`](Self::canonicalize) first. Parsed values
+/// are canonical, serde canonicalizes in both directions, and the methods
+/// that take block flags canonicalize them:
+/// [`builder::BlockBuilder::with_flags`](crate::builder::BlockBuilder::with_flags),
+/// [`editor::BlockBuilder::with_flags`](crate::editor::BlockBuilder::with_flags),
+/// and [`ExtensionEditor::insert`](crate::extension_editor::ExtensionEditor::insert).
+/// Direct field writes are not canonicalized.
+#[derive(Default, Debug, Clone)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(from = "FlagsRepr", into = "FlagsRepr")
+)]
 pub struct Flags {
     /// If set, the block must be replicated in every fragment of the bundle.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub must_replicate: bool,
     /// If set, a status report should be generated if block processing fails.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub report_on_failure: bool,
     /// If set, the entire bundle should be deleted if block processing fails.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub delete_bundle_on_failure: bool,
     /// If set, this block should be deleted if its processing fails.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
-    )]
     pub delete_block_on_failure: bool,
 
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    /// A bitmask of any unrecognized flags encountered during parsing.
-    pub unrecognised: Option<u64>,
+    /// A bitmask of the flag bits this implementation does not name; zero
+    /// when there are none.
+    ///
+    /// Encoding carries every bit set here; a parsed `Flags` never holds a
+    /// named bit in it.
+    pub unrecognised: u64,
+}
+
+impl PartialEq for Flags {
+    fn eq(&self, other: &Self) -> bool {
+        u64::from(self) == u64::from(other)
+    }
+}
+
+impl Eq for Flags {}
+
+impl Hash for Flags {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        u64::from(self).hash(state);
+    }
+}
+
+// The serde form: the same fields as `Flags`, so the stored shape is the
+// plain field list; `Flags` converts through it, canonicalizing both ways.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FlagsRepr {
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    must_replicate: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    report_on_failure: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    delete_bundle_on_failure: bool,
+    #[serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")]
+    delete_block_on_failure: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    unrecognised: u64,
+}
+
+#[cfg(feature = "serde")]
+impl From<FlagsRepr> for Flags {
+    fn from(repr: FlagsRepr) -> Self {
+        Self {
+            must_replicate: repr.must_replicate,
+            report_on_failure: repr.report_on_failure,
+            delete_bundle_on_failure: repr.delete_bundle_on_failure,
+            delete_block_on_failure: repr.delete_block_on_failure,
+            unrecognised: repr.unrecognised,
+        }
+        .canonicalize()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Flags> for FlagsRepr {
+    fn from(flags: Flags) -> Self {
+        let flags = flags.canonicalize();
+        Self {
+            must_replicate: flags.must_replicate,
+            report_on_failure: flags.report_on_failure,
+            delete_bundle_on_failure: flags.delete_bundle_on_failure,
+            delete_block_on_failure: flags.delete_block_on_failure,
+            unrecognised: flags.unrecognised,
+        }
+    }
+}
+
+// serde's `skip_serializing_if` predicate for the `unrecognised` fields.
+#[cfg(feature = "serde")]
+pub(crate) const fn is_zero(bits: &u64) -> bool {
+    *bits == 0
+}
+
+impl Flags {
+    /// Folds every bit of [`unrecognised`](Self::unrecognised) that names a
+    /// flag into its named field; genuinely unrecognised bits are kept.
+    ///
+    /// A hand-built `unrecognised` encodes bit for bit, so `1 << 1`
+    /// *is* `report_on_failure` to the next parser. Policy that reads the
+    /// named fields must canonicalize first, or it misreads the flags the
+    /// bytes carry.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        Self::from(u64::from(&self))
+    }
+
+    /// Whether no bit of [`unrecognised`](Self::unrecognised) names a flag —
+    /// the form [`canonicalize`](Self::canonicalize) returns. Equality
+    /// cannot tell an alias from its canonical form; this can.
+    #[must_use]
+    pub fn is_canonical(&self) -> bool {
+        Self::from(self.unrecognised).unrecognised == self.unrecognised
+    }
 }
 
 impl From<&Flags> for u64 {
     fn from(value: &Flags) -> Self {
-        let mut flags = value.unrecognised.unwrap_or(0);
+        let mut flags = value.unrecognised;
         if value.must_replicate {
             flags |= 1 << 0;
         }
@@ -77,26 +169,24 @@ impl From<u64> for Flags {
         let mut flags = Self::default();
         let mut unrecognised = value;
 
-        if (value & 1) != 0 {
+        if (value & (1 << 0)) != 0 {
             flags.must_replicate = true;
-            unrecognised &= !1;
+            unrecognised &= !(1 << 0);
         }
-        if (value & 2) != 0 {
+        if (value & (1 << 1)) != 0 {
             flags.report_on_failure = true;
-            unrecognised &= !2;
+            unrecognised &= !(1 << 1);
         }
-        if (value & 4) != 0 {
+        if (value & (1 << 2)) != 0 {
             flags.delete_bundle_on_failure = true;
-            unrecognised &= !4;
+            unrecognised &= !(1 << 2);
         }
-        if (value & 16) != 0 {
+        if (value & (1 << 4)) != 0 {
             flags.delete_block_on_failure = true;
-            unrecognised &= !16;
+            unrecognised &= !(1 << 4);
         }
 
-        if unrecognised != 0 {
-            flags.unrecognised = Some(unrecognised);
-        }
+        flags.unrecognised = unrecognised;
         flags
     }
 }
@@ -121,20 +211,37 @@ impl FromCbor for Flags {
 impl Flags {
     /// The processing-control flags for a primary block (RFC 9171 §4.2.3):
     /// must-replicate, report-on-failure, and delete-bundle-on-failure set.
+    ///
+    /// Nominal: the primary block has no flags field on the wire, so these
+    /// describe block 0's entry in a bundle's block map and are never
+    /// encoded — a bundle that forbids `report_on_failure` on its blocks
+    /// (see [`PrimaryBlock::forbids_report_on_failure`](crate::primary_block::PrimaryBlock::forbids_report_on_failure))
+    /// still shows it here.
     pub fn primary() -> Self {
         Self {
             must_replicate: true,
             report_on_failure: true,
             delete_bundle_on_failure: true,
             delete_block_on_failure: false,
-            unrecognised: None,
+            unrecognised: 0,
         }
     }
 }
 
 /// The type of a BPv7 block, as defined in RFC 9171 Section 4.2.1.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+///
+/// An [`Unrecognised`](Type::Unrecognised) code that names a known type is
+/// an alias of that type: it encodes as the type's code. Equality, ordering
+/// and hashing compare the code, so an alias equals its named variant;
+/// pattern matching does not, so code that matches on named variants must
+/// [`canonicalize`](Type::canonicalize) first. Serde canonicalizes in both
+/// directions.
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(from = "TypeRepr", into = "TypeRepr")
+)]
 pub enum Type {
     /// Primary Block (type code 0).
     Primary,
@@ -162,10 +269,95 @@ impl Type {
     /// A hand-built `Unrecognised(v)` encodes as the raw code `v` on the
     /// wire, so `Unrecognised(11)` *is* a Block Integrity Block to the next
     /// parser. Policy that matches on named variants must canonicalize
-    /// first, or the alias walks straight past it.
+    /// first, or it misreads the type the bytes carry.
     #[must_use]
     pub fn canonicalize(self) -> Self {
         Self::from(u64::from(self))
+    }
+
+    /// Whether this is not an [`Unrecognised`](Type::Unrecognised) alias of
+    /// a known code — the form [`canonicalize`](Type::canonicalize) returns.
+    /// Equality cannot tell an alias from its named variant; this can.
+    #[must_use]
+    pub fn is_canonical(&self) -> bool {
+        match self {
+            Self::Unrecognised(code) => matches!(Self::from(*code), Self::Unrecognised(_)),
+            _ => true,
+        }
+    }
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        u64::from(*self) == u64::from(*other)
+    }
+}
+
+impl Eq for Type {}
+
+impl PartialOrd for Type {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Type {
+    fn cmp(&self, other: &Self) -> Ordering {
+        u64::from(*self).cmp(&u64::from(*other))
+    }
+}
+
+impl Hash for Type {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        u64::from(*self).hash(state);
+    }
+}
+
+// The serde form: the same variants as `Type`, so the stored shape is
+// unchanged; `Type` converts through it, canonicalizing both ways.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+enum TypeRepr {
+    Primary,
+    Payload,
+    PreviousNode,
+    BundleAge,
+    HopCount,
+    BlockIntegrity,
+    BlockSecurity,
+    Unrecognised(u64),
+}
+
+#[cfg(feature = "serde")]
+impl From<TypeRepr> for Type {
+    fn from(repr: TypeRepr) -> Self {
+        match repr {
+            TypeRepr::Primary => Self::Primary,
+            TypeRepr::Payload => Self::Payload,
+            TypeRepr::PreviousNode => Self::PreviousNode,
+            TypeRepr::BundleAge => Self::BundleAge,
+            TypeRepr::HopCount => Self::HopCount,
+            TypeRepr::BlockIntegrity => Self::BlockIntegrity,
+            TypeRepr::BlockSecurity => Self::BlockSecurity,
+            TypeRepr::Unrecognised(code) => Self::Unrecognised(code),
+        }
+        .canonicalize()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Type> for TypeRepr {
+    fn from(block_type: Type) -> Self {
+        match block_type.canonicalize() {
+            Type::Primary => Self::Primary,
+            Type::Payload => Self::Payload,
+            Type::PreviousNode => Self::PreviousNode,
+            Type::BundleAge => Self::BundleAge,
+            Type::HopCount => Self::HopCount,
+            Type::BlockIntegrity => Self::BlockIntegrity,
+            Type::BlockSecurity => Self::BlockSecurity,
+            Type::Unrecognised(code) => Self::Unrecognised(code),
+        }
     }
 }
 
@@ -355,7 +547,7 @@ impl Block {
     ///
     /// `source` MUST be the complete, contiguous bundle byte stream the
     /// block's offsets were parsed against (the `Bytes` returned by
-    /// [`parse::parse`], or the
+    /// [`parse::parse`](crate::parse::parse), or the
     /// buffer a `Builder`/`Editor` produced) — the offsets are
     /// bundle-absolute. Returns `None` if they fall outside `source`.
     ///
