@@ -6,7 +6,7 @@ The single working plan for the in-flight refactor effort: implementing the filt
 
 **Stack:** the v0.3.0 stack is merged to main — #673 (CLA streaming), #674 (bpv7 parse), #675 (parse), #676 (cbor perf), #677 (metadata) — as are #680 (service streaming) and #710 (the dispatch/delivery rationalisation below).
 
-**Update 2026-10-05:** the #712–#719 train is merged, on bpv7's #753 (the editors refuse what the parser rejects; flags compare by encoding) and #757 (editing and signing keep BPSec operations verifiable). Phase 2 (C1–C5) is complete (#712), which also seats Phase 3's Egress and Deliver hooks. The streaming sequence below is under way: ingress (#717, #718) and origination (#719) have landed; egress, delivery and streaming BPSec follow, each its own PR. What else remains: Phase 1's document pass, Phase 3's open rows, and the queue, policy, and routing tranches.
+**Update 2026-10-05:** the #712–#719 train is merged, on bpv7's #753 (the editors refuse what the parser rejects; flags compare by encoding) and #757 (editing and signing keep BPSec operations verifiable). Phase 2 (C1–C5) is complete (#712), which also seats Phase 3's Egress and Deliver hooks. The streaming sequence below is under way: ingress (#717, #718) and origination (#719) have landed; egress, delivery, storage and streaming BPSec follow, each its own PR. What else remains: Phase 1's document pass, Phase 3's open rows, and the queue, policy, and routing tranches.
 
 **Streaming seams (2026-08-17):** `refactor/cla-streaming` (#673) and `refactor/service-streaming` (#680) are merged — `Segment`/`Receiver` + capped `concat_stream` in `bpa::stream`, `Sink::dispatch`/`ServiceSink::send` taking the segment stream directly (a caller holding a whole buffer passes `Bytes`, itself a one-segment `Receiver`), truncation-as-error with ack gating, per-segment sink-side liveness, `max-bundle-size` config. **Decision of record: the pull-shaped `Receiver`/`Segment` stream is the target for all six seams** and all six are merged: CLA ingress, service originate, application originate (#719), both deliveries, and CLA egress — the last pull-shaped in the reverse direction. The reviewer's write/commit handle was rejected: parse-at-commit cannot express the pre-drain gate's parse-during-arrival, push inverts control toward the trivial party, and liveness/cap/backpressure are composable receiver decorators.
 
@@ -15,7 +15,7 @@ The single working plan for the in-flight refactor effort: implementing the filt
 1. ~~Extraction PRs and the cla-transfer-outcome chain merge~~ — done, all in main by #664.
 2. ~~Stack re-cut~~ — done (see below); the Commit 1 metadata partition rode it as planned.
 3. Filter Phases 2–3 target the current stack.
-4. The streaming sequence (below), one PR per leg so that each review covers one concern: ingress (#717, #718) → origination (#719) → egress → delivery → streaming BPSec. Egress precedes delivery because its payload is plaintext pass-through and needs no streaming cryptography; delivery must decrypt as it streams once the BPSec leg lands, and streams plaintext payloads until then. Streaming BPSec comes last because it touches both directions.
+4. The streaming sequence (below), one PR per leg so that each review covers one concern: ingress (#717, #718) → origination (#719) → egress → delivery → storage → streaming BPSec. Egress precedes delivery because its payload is plaintext pass-through and needs no streaming cryptography; delivery must decrypt as it streams once the BPSec leg lands, and streams plaintext payloads until then. The storage leg gives `BundleStorage` its streamed write and load and retires `concat_stream`. It precedes streaming BPSec, whose in-flight cryptography reads through it, and it completes the CLA, service and storage surfaces that other work builds on, so the gRPC API (#741) can land while streaming BPSec is under way. Streaming BPSec comes last because it touches both directions.
 5. Delta fields ride with their consuming tranches: `MetadataDelta` ships with annotation slots only in Phase 2; `route_key` and `route_table` ride the routing tranche's first step (#718), and `class` arrives with the queue/policy tranche.
 6. The queue, policy and routing tranches follow the streaming sequence.
 
@@ -23,7 +23,7 @@ Every step ends green: `cargo fmt --check`, `clippy --locked --all-targets --all
 
 ## The streaming sequence
 
-One PR per leg, in this order. A leg's branch is published only once its design is settled, so that each review sees one coherent scope.
+One PR per leg, in this order, so that each review sees one coherent scope. A leg's PR stays a draft until its planned work is in.
 
 ### Ingress — landed (#717, #718)
 
@@ -31,37 +31,53 @@ Bundle reception is one streamed pipeline with one metadata write: the header pa
 
 **Gate-then-drain + routing (§5.7 routing-at-commit, #718).** The RIB lookup runs at the pre-drain gate as the decision of record — an explicit Drop rejects without awaiting the payload, and the commit executes the carried decision directly (fresh arrivals skip `DispatchPending`; stale decisions self-correct through the park re-checks against the gate-time snapshot). The drain follows the gate decisions: the Ingress chain's verdict shapes the save itself (a Classifier may set the storage QoS the spool must honour), so the door decorates the arrival with a `ValidatingReceiver` and drains it through one `Store::save_stream` call only once the chain and the route lookup have settled — a rejected bundle spools nothing and is never persisted, with the door settling the decorator's verdict after the drain and discarding any save the verdict rejects.
 
-**The streamed `BundleStorage` write is the only remaining prerequisite for true streaming.** When it lands, revisit `max_bundle_size`: the 64 MiB default guards in-memory accumulation and should lift to a much larger (or unlimited-with-opt-in) default once bytes spool — the knob's meaning shifts to custody-admission policy (a half-arrived transfer has no metadata entry, so the reaper and eviction cannot touch it; the spool chokepoint still needs the bound). True retirement also needs dynamic storage-headroom admission, and streaming BPSec (below) for encrypted payloads. The ingress drain still accumulates in memory before `save`: `Store::save_stream` (`store.rs`) is the streaming seam at its target signature, but its interim body spools through `concat_stream`, because `BundleStorage` exposes only `save(Bytes)` / `load -> Option<Bytes>` and so there is nowhere to spool a payload without materialising it. Add the streamed write to `BundleStorage` (`store`, pulling a `Receiver<Segment>` — `streaming_pipeline_design.md` §3.1, the same pull shape `Store::save_stream` already takes) across `bundle_mem`, `localdisk`, and `s3`, plus the `CachedBundleStorage` decorator, then swap the backends' streamed write into that body — no caller changes.
+**The ingress drain still accumulates in memory before `save`.** `Store::save_stream` (`store.rs`) is the streaming seam at its target signature, but its interim body spools through `concat_stream`, because `BundleStorage` exposes only `save(Bytes)` / `load -> Option<Bytes>`, so there is nowhere to spool a payload without materialising it. The storage leg (below) swaps the backends' streamed write into that body; its callers change only in the error type they map.
 
 ### Origination — landed (#719)
 
 Both application doors stream: `ApplicationSink::send_streamed` builds around a segmented payload (`Builder::build_stream`), and the raw door runs the same strict header pass as CLA ingress. Both settle their gate decisions before a payload byte spools, write the record once, and execute the route decision directly. A store-side LRU settles recent duplicates at the input gates.
 
-### Egress — next (`refactor/egress-streaming`)
+### Egress — next (#759, `refactor/egress-streaming`)
 
 | Status | Task |
 |---|---|
 | ✅ | `Peer::forward` composes its own assignment record: the forward path no longer re-derives the peer identity from the channel's target status (on the branch) |
 | ✅ | An originated bundle leaves with its built Hop Count: origination is not a hop, so the next node makes the first increment (on the branch) |
-| 🔲 | A streamed load from `BundleStorage` (a pulled `Receiver<Segment>`), the egress door's source, across `bundle_mem`, `localdisk`, `s3` and the `CachedBundleStorage` decorator |
+| 🔲 | `Store::load_stream`, the egress door's source, at its target signature (a pulled `Receiver<Segment>`): its interim body loads the whole bundle as one segment until the storage leg swaps in the backends' streamed load |
 | 🔲 | The Egress Rewriters and the per-hop writes run on the resident header prefix, and the payload passes through from the streamed load untouched |
 
-### Delivery (`refactor/deliver-streaming`)
+### Delivery (#758, `refactor/deliver-streaming`)
 
 | Status | Task |
 |---|---|
 | ✅ | A delivered payload that fails to decrypt reports why: `FailedSecurityOperation`, or `UnknownSecurityOperation` for an unrecognised context; a missing key parks (on the branch) |
-| 🔲 | The Deliver chain on the resident header prefix, and streamed delivery of a plaintext payload through both service doors |
+| 🔲 | The Deliver chain on the resident header prefix, and streamed delivery of a plaintext payload through both service doors, read through `Store::load_stream` |
 | 🔲 | The fixed-vs-pluggable transport-block strip at Deliver (Phase 3 row) |
-| 🔲 | An async payload verifier, once the stored payload can be streamed: a corrupted payload is otherwise not detected until delivery and occupies storage until then; a background task could fail it early or stamp "payload verified" in the metadata |
+
+### Storage — retires `concat_stream`
+
+This is the storage tranche that `Store::save_stream` and `fragment_reassembly_redesign.md` defer to. `BundleStorage` gains its streamed write and load, and `concat_stream`, the BPA's bounded accumulator, goes. By the time it starts, the egress and delivery legs call `Store::load_stream` beside the input doors' `Store::save_stream`, both at their target signatures, so the backends swap in behind them.
+
+| Status | Task |
+|---|---|
+| 🔲 | The streamed write: `BundleStorage` saves from a pulled `Receiver<Segment>` (`streaming_pipeline_design.md` §3.1) across `bundle_mem`, `localdisk`, `s3` and the `CachedBundleStorage` decorator, swapped into `Store::save_stream`'s body. Nothing is visible under the storage name until the final segment commits, and `max_size` becomes a size-capping receiver decorator |
+| 🔲 | The streamed load across the same backends, swapped into `Store::load_stream`'s body. The leg settles the backend shape, which `streaming_pipeline_design.md` §3.1 and §10 Phase B give as a push into a `Sender<Bytes>`, and brings the design doc into line |
+| 🔲 | The streamed `replace`, keeping its atomicity (readers see the old bundle or the new, never a partial write). Its consumer is the fragment reassembly redesign's `Store::replace_stream` seam (`fragment_reassembly_redesign.md`, not yet built): if that tranche lands first, this leg swaps the streamed `replace` into the seam's interim `concat_stream` body; otherwise the seam is built streamed |
+| 🔲 | `concat_stream` and `ConcatError` removed; the input doors map the size-capping decorator's error in their place. `buffer_stream`, the implementor-side convenience over a declared exact length (the outbound doors, and `ApplicationSink::send_streamed`'s provided body), keeps its own accumulator, and its consumers move to segment-at-a-time as each needs to. The current gRPC clients' CLA `dispatch` and service `send`, whose wire has no streamed message, keep a private bounded accumulator in `proto` until the gRPC API (#741) replaces them; tcpclv4's test sink moves to `buffer_stream` or its own |
+| 🔲 | Recovery discards uncommitted spool files (`streaming_pipeline_design.md` §10, Phase A) |
+| 🔲 | Settle what `CachedBundleStorage` caches once bundles stream, and whether restart recovery, which loads and parses each stored bundle whole (`restart.rs`), streams too. Durability is a property of a backend's final-segment commit (`streaming_pipeline_design.md` §5.5) and of `recover`, not of the trait, so the streaming BPSec leg's non-durable scratch instance reuses the same trait and backends |
+| 🔲 | An async payload verifier, once the stored payload streams: the ingress drain checks the payload's CRC and BIBs, but a BCB-encrypted payload whose ciphertext fails authentication is found only at delivery and occupies storage until then; a background task holding the key could fail it early or stamp "payload verified" in the metadata |
+
+**Revisit `max_bundle_size` after this leg.** The 64 MiB default guards in-memory accumulation and should lift to a much larger (or unlimited-with-opt-in) default once bytes spool; the knob's meaning shifts to custody-admission policy (a half-arrived transfer has no metadata entry, so the reaper and eviction cannot touch it; the spool chokepoint still needs the bound). The lift also needs dynamic storage-headroom admission, and streaming BPSec for encrypted payloads, which delivery decrypts with the whole bundle resident until then.
 
 ### Streaming BPSec — the final leg
 
-It touches both directions, so it follows egress and delivery.
+It touches both directions, so it follows egress and delivery, and its in-flight cryptography reads through the storage leg's streamed load.
 
 | Status | Task |
 |---|---|
 | 🔲 | Streaming AES-GCM in bpv7 (`bpv7/docs/TODO.md`), so BCB decryption and encryption run as the payload streams. Payload-BIB verification already streams through the ingress drain; BCB decryption still needs the whole bundle resident at delivery |
+| 🔲 | A second, non-durable scratch `BundleStorage` in the BPA, which BPSec processing spools a bundle through when an operation needs the tail before it can finish: an authentication tag that must verify before the plaintext is released, or a result (a BIB's MAC, a BCB's tag) that the head carries ahead of the body it covers, rewritten once the body has passed. The scratch need not survive a crash: the stored bundle is as received, so the processing re-runs from it. `streaming_pipeline_design.md` gives the alternatives it is weighed against: decryption that releases plaintext as it streams and withholds only the stream's end until the tag verifies (§5.5), and an egress payload BIB computed in a first pass over the stored payload (§6.1.2) |
 | 🔲 | The egress BPSec seat after the per-hop writes (Phase 3 row): the BPA as a security source at egress |
 | 🔲 | The per-hop blocks' BPSec lifecycle: a node that must change or remove a per-hop block is the acceptor of every security operation on it |
 
