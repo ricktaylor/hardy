@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use core::ptr::from_ref;
 
 use hardy_cbor::encode::emit;
 use smallvec::SmallVec;
@@ -23,7 +24,7 @@ pub enum Error {
 
     /// The target block already has integrity protection from another BIB,
     /// or is already queued for signing in this session.
-    #[error("Block target {0} is already signed with another BIB")]
+    #[error("Block target {0} is already signed, or queued for signing")]
     AlreadySigned(u64),
 
     /// The target block is encrypted by a BCB; sign before encrypting.
@@ -101,9 +102,9 @@ impl<'a> Signer<'a> {
 
     /// Sign a block in the bundle.
     ///
-    /// Targets queued with the same source, context and key share one BIB
-    /// when the context lets them (see [`Context::can_share`]); otherwise
-    /// each gets its own.
+    /// Targets queued with the same source, context and key reference (the
+    /// same `&Key`, not merely an equal one) share one BIB when the context
+    /// lets them (see [`Context::can_share`]); otherwise each gets its own.
     ///
     /// # Errors
     ///
@@ -214,7 +215,7 @@ impl<'a> Signer<'a> {
                 .entry((
                     template.source,
                     template.context,
-                    core::ptr::from_ref(template.key),
+                    from_ref(template.key),
                     alone,
                 ))
                 .or_insert_with(|| (template.key, SmallVec::new()))

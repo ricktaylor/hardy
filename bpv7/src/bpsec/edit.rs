@@ -67,7 +67,9 @@ pub trait BPSecEditor: Sized {
     /// block for downstream key-holders; (d) the BIB that targets the
     /// primary block is retained while another operation's scope includes
     /// the primary ([`Editor`]'s rule), since removing it would restore the
-    /// primary's CRC and break that operation.
+    /// primary's CRC and break that operation. An encrypted BIB counts as
+    /// such an operation whether or not a key is supplied: the rule judges
+    /// the bundle before the cascade stages any decrypted BIB.
     ///
     /// Strict on the rest: requests naming the primary block, the payload
     /// block, or a BCB whose targets are not all also in `blocks` (which
@@ -242,7 +244,15 @@ impl<'a> BPSecEditor for Editor<'a> {
             }
             // All-dead shrinks fall through here too — the cascade will
             // empty the OpSet and recursively drop the BIB; no
-            // re-encryption needed.
+            // re-encryption needed. The decrypt resolves the dead targets'
+            // `Maybe` coverage to this BIB, which is what lets the cascade
+            // strip them from it; the survivors keep `Maybe`, as a keyless
+            // reader still sees them.
+            for &target in bib_opset.operations.keys() {
+                if to_remove.contains(&target) {
+                    self.set_bib_target(target, bib_num);
+                }
+            }
             staging.stage_bib_plaintext.push(bib_num);
             decrypted_plaintexts.insert(bib_num, plaintext);
         }

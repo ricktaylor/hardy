@@ -1590,7 +1590,7 @@ fn hs256_key() -> key::Key {
 // the other the payload under the default scope, whose IPPT includes the
 // primary. Every CRC goes before any IPPT is computed, so both verify in
 // whichever order the groups are built; the session repeats so that both
-// orders occur.
+// orders occur with near certainty (64 draws of the group order).
 #[test]
 fn two_groups_signing_a_crc_primary_verify_in_either_order() {
     let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
@@ -1886,15 +1886,18 @@ fn targets_under_different_keys_get_separate_bibs() {
     assert_eq!(count_blocks_of_type(&parsed, Type::BlockIntegrity), 2);
     for (target, key) in [(1, first), (ext, second)] {
         let keys = key::KeySet::new(vec![key]);
-        verify_block(
-            target,
-            &parsed.blocks,
-            &signed_bytes,
-            &bcb_ops,
-            &bib_ops,
-            &keys,
-        )
-        .expect("each target verifies under its own key");
+        assert!(
+            verify_block(
+                target,
+                &parsed.blocks,
+                &signed_bytes,
+                &bcb_ops,
+                &bib_ops,
+                &keys,
+            )
+            .expect("each target verifies under its own key"),
+            "target {target} carries a BIB"
+        );
     }
 }
 

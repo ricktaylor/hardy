@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use core::ptr::from_ref;
 
 use hardy_cbor::encode::emit;
 use smallvec::SmallVec;
@@ -252,11 +253,7 @@ impl<'a> Encryptor<'a> {
                 }
                 _ => {
                     shared_bcbs
-                        .entry((
-                            template.source,
-                            template.context,
-                            core::ptr::from_ref(template.key),
-                        ))
+                        .entry((template.source, template.context, from_ref(template.key)))
                         .or_default()
                         .push((block_number, template.key));
                 }
