@@ -2,6 +2,7 @@ use alloc::borrow::Cow;
 use core::ops::Range;
 
 use bytes::Bytes;
+use hardy_cbor::decode::parse_exact;
 use thiserror::Error;
 
 use super::*;
@@ -29,6 +30,13 @@ pub enum Error {
 
     #[error("Primary block is protected by a BIB; use remove_integrity(0) first")]
     PrimaryBlockHasBib,
+
+    /// A change to the primary block's bytes would break an operation whose
+    /// scope includes the primary block, as RFC 9173's default scope does:
+    /// one held by security block `{0}`, the lowest such block, which may
+    /// be an encrypted BIB whose scope cannot be read.
+    #[error("Security block {0} has an operation whose scope includes the primary block")]
+    PrimaryInSecurityScope(u64),
 
     #[error(
         "Cannot decrypt BIB {0} that targets the decrypted block; this would violate RFC 9172 §3.8"
@@ -323,6 +331,18 @@ impl Chunk {
 ///
 /// The editor is designed to allow for efficient modification of a bundle by
 /// reusing the unmodified portions of the original bundle.
+///
+/// The primary-block setters ([`with_source`](Self::with_source),
+/// [`with_destination`](Self::with_destination) and the rest) refuse while a
+/// BIB targets the primary block, and while any remaining BIB or BCB
+/// operation's scope includes it, as RFC 9173's default scope does: a
+/// change to the primary's bytes would break that operation. An encrypted
+/// BIB, whose scope cannot be read, counts as including it.
+/// [`remove_integrity(0)`](crate::bpsec::edit::BPSecEditor::remove_integrity),
+/// or removing that BIB with
+/// [`remove_blocks`](crate::bpsec::edit::BPSecEditor::remove_blocks),
+/// releases a primary no other operation scopes. Fragment info is exempt
+/// (see [`with_fragment_info`](Self::with_fragment_info)).
 pub struct Editor<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],
@@ -371,31 +391,103 @@ impl<'a> Editor<'a> {
     }
 
     fn primary_block(&mut self) -> Result<&mut primary_block::PrimaryBlock, Error> {
-        // Check if primary block is still protected by an untouched BIB
-        if let Some(primary) = self.original.blocks.get(&0) {
-            match primary.bib {
-                block::BibCoverage::Some(bib_num)
-                    if matches!(self.blocks.get(&bib_num), Some(BlockTemplate::Keep(_))) =>
-                {
-                    return Err(Error::PrimaryBlockHasBib);
-                }
-                block::BibCoverage::Maybe => {
-                    return Err(bpsec::Error::MaybeHasBib(0).into());
-                }
-                _ => {}
-            }
+        // Refuse while a BIB still targets the primary block, judged by the
+        // primary's current coverage rather than the BIB's template: an edit
+        // that strips another target from the same BIB rewrites that BIB but
+        // leaves the primary under it. Then refuse while any remaining
+        // operation's scope includes the primary.
+        if self.primary_bib().is_some() {
+            return Err(Error::PrimaryBlockHasBib);
         }
+        if let Some(security_block) = self.primary_scoped_operation(&HashSet::new()) {
+            return Err(Error::PrimaryInSecurityScope(security_block));
+        }
+        Ok(self.primary_block_unchecked())
+    }
 
-        if self.primary.is_none() {
-            self.primary = Some(self.original.primary.clone());
+    fn primary_block_unchecked(&mut self) -> &mut primary_block::PrimaryBlock {
+        self.primary
+            .get_or_insert_with(|| self.original.primary.clone())
+    }
+
+    /// A block's current BIB and BCB coverage, or `None` if the bundle no
+    /// longer holds it. An earlier edit's strip records the new coverage in
+    /// the overrides and leaves the block's stamps stale: the BIB or BCB they
+    /// name may be gone, and its number reused by an unrelated block.
+    fn current_coverage(&self, block_number: u64) -> Option<(block::BibCoverage, Option<u64>)> {
+        let (block, _) = self.block(block_number)?;
+        Some((
+            self.bib_overrides
+                .get(&block_number)
+                .cloned()
+                .unwrap_or_else(|| block.bib.clone()),
+            self.bcb_overrides
+                .get(&block_number)
+                .copied()
+                .unwrap_or(block.bcb),
+        ))
+    }
+
+    /// The BIB that currently targets the primary block, if any.
+    pub(crate) fn primary_bib(&self) -> Option<u64> {
+        let coverage = match self.bib_overrides.get(&0) {
+            Some(coverage) => coverage,
+            None => &self.original.blocks.get(&0)?.bib,
+        };
+        match coverage {
+            block::BibCoverage::Some(bib_num) if self.blocks.contains_key(bib_num) => {
+                Some(*bib_num)
+            }
+            _ => None,
         }
-        Ok(self.primary.as_mut().unwrap())
+    }
+
+    /// The lowest security block outside `removed` holding an operation
+    /// whose scope includes the primary block: a BIB or BCB operation on a
+    /// target outside `removed` (other than the primary, which a BIB covers
+    /// as its target), or a security block whose body does not decode, as
+    /// an encrypted BIB's ciphertext does not, and whose operations may. A
+    /// change to the primary block's bytes breaks every such operation.
+    pub(crate) fn primary_scoped_operation(&self, removed: &HashSet<u64>) -> Option<u64> {
+        let live = |target: &u64| *target != 0 && !removed.contains(target);
+        self.blocks
+            .keys()
+            .copied()
+            .filter(|n| !removed.contains(n))
+            .filter(|&n| {
+                let Some((block, payload)) = self.block(n) else {
+                    return false;
+                };
+                match block.block_type {
+                    block::Type::BlockIntegrity => payload
+                        .and_then(|p| parse_exact::<bpsec::bib::OperationSet>(p).ok())
+                        .is_none_or(|opset| {
+                            opset.operations.iter().any(|(target, operation)| {
+                                live(target) && operation.scope_includes_primary()
+                            })
+                        }),
+                    block::Type::BlockSecurity => payload
+                        .and_then(|p| parse_exact::<bpsec::bcb::OperationSet>(p).ok())
+                        .is_none_or(|opset| {
+                            opset.operations.iter().any(|(target, operation)| {
+                                live(target) && operation.scope_includes_primary()
+                            })
+                        }),
+                    _ => false,
+                }
+            })
+            .min()
     }
 
     /// Sets the bundle flags for this [`Editor`], canonicalized so an alias
     /// bit in `unrecognised` counts as the flag it encodes.
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block,
+    /// and [`Error::PrimaryInSecurityScope`] while a remaining operation's
+    /// scope includes it (see [`Editor`]). The editor comes back with the
+    /// error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_bundle_flags(mut self, flags: bundle::Flags) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -409,7 +501,12 @@ impl<'a> Editor<'a> {
 
     /// Sets the [`crc::CrcType`] for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block,
+    /// and [`Error::PrimaryInSecurityScope`] while a remaining operation's
+    /// scope includes it (see [`Editor`]). The editor comes back with the
+    /// error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_bundle_crc_type(mut self, crc_type: crc::CrcType) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -423,7 +520,12 @@ impl<'a> Editor<'a> {
 
     /// Sets the creation timestamp for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block,
+    /// and [`Error::PrimaryInSecurityScope`] while a remaining operation's
+    /// scope includes it (see [`Editor`]). The editor comes back with the
+    /// error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_timestamp(
         mut self,
@@ -440,7 +542,12 @@ impl<'a> Editor<'a> {
 
     /// Sets the source [`eid::Eid`] for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block,
+    /// and [`Error::PrimaryInSecurityScope`] while a remaining operation's
+    /// scope includes it (see [`Editor`]). The editor comes back with the
+    /// error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_source(mut self, source: eid::Eid) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -454,7 +561,12 @@ impl<'a> Editor<'a> {
 
     /// Sets the destination [`eid::Eid`] for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block,
+    /// and [`Error::PrimaryInSecurityScope`] while a remaining operation's
+    /// scope includes it (see [`Editor`]). The editor comes back with the
+    /// error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_destination(mut self, destination: eid::Eid) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -468,7 +580,12 @@ impl<'a> Editor<'a> {
 
     /// Sets the report_to [`eid::Eid`] for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block,
+    /// and [`Error::PrimaryInSecurityScope`] while a remaining operation's
+    /// scope includes it (see [`Editor`]). The editor comes back with the
+    /// error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_report_to(mut self, report_to: eid::Eid) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -482,7 +599,12 @@ impl<'a> Editor<'a> {
 
     /// Sets the lifetime for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// # Errors
+    ///
+    /// [`Error::PrimaryBlockHasBib`] while a BIB targets the primary block,
+    /// and [`Error::PrimaryInSecurityScope`] while a remaining operation's
+    /// scope includes it (see [`Editor`]). The editor comes back with the
+    /// error for reuse.
     #[allow(clippy::result_large_err)]
     pub fn with_lifetime(mut self, lifetime: core::time::Duration) -> Result<Self, (Self, Error)> {
         match self.primary_block() {
@@ -496,19 +618,19 @@ impl<'a> Editor<'a> {
 
     /// Sets the fragment_info for this [`Editor`].
     ///
-    /// On error, returns the editor along with the error so it can be reused for recovery.
+    /// Exempt from the other setters' security refusals, so it does not
+    /// fail: no BIB or BCB is added to a bundle fragment (RFC 9172 §5.2),
+    /// so every operation a bundle carries covers its unfragmented primary,
+    /// and the fragment fields belong to fragmentation itself (RFC 9171
+    /// §5.8). Clearing them at reassembly restores the primary those
+    /// operations were computed over.
     #[allow(clippy::result_large_err)]
     pub fn with_fragment_info(
         mut self,
         fragment_info: Option<bundle::FragmentInfo>,
     ) -> Result<Self, (Self, Error)> {
-        match self.primary_block() {
-            Ok(pb) => {
-                pb.id.fragment_info = fragment_info;
-                Ok(self)
-            }
-            Err(e) => Err((self, e)),
-        }
+        self.primary_block_unchecked().id.fragment_info = fragment_info;
+        Ok(self)
     }
 
     /// Add a new block into the bundle.
@@ -652,21 +774,21 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn update_block(mut self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
-        // Check block type and get security references in one lookup
-        let (bib, bcb) = match self.block(block_number) {
-            Some((block, _)) => {
-                match block.block_type {
-                    block::Type::Primary => {
-                        return Err((self, Error::PrimaryBlock));
-                    }
-                    block::Type::BlockIntegrity | block::Type::BlockSecurity => {
-                        return Err((self, Error::SecurityBlock));
-                    }
-                    _ => {}
-                }
-                (block.bib.clone(), block.bcb)
+        // The block's type, then its current security references
+        let Some(block_type) = self.block(block_number).map(|(block, _)| block.block_type) else {
+            return Err((self, Error::NoSuchBlock(block_number)));
+        };
+        match block_type {
+            block::Type::Primary => {
+                return Err((self, Error::PrimaryBlock));
             }
-            None => return Err((self, Error::NoSuchBlock(block_number))),
+            block::Type::BlockIntegrity | block::Type::BlockSecurity => {
+                return Err((self, Error::SecurityBlock));
+            }
+            _ => {}
+        }
+        let Some((bib, bcb)) = self.current_coverage(block_number) else {
+            return Err((self, Error::NoSuchBlock(block_number)));
         };
 
         // Handle BIB coverage — must remove from target list if present
@@ -675,8 +797,9 @@ impl<'a> Editor<'a> {
                 return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
             }
             block::BibCoverage::Some(bib_num) => {
-                if let Some((bib_block, _)) = self.block(bib_num)
-                    && bib_block.bcb.is_some()
+                if self
+                    .current_coverage(bib_num)
+                    .is_some_and(|(_, bcb)| bcb.is_some())
                 {
                     return Err((self, Error::BibIsEncrypted(block_number)));
                 }
@@ -696,8 +819,9 @@ impl<'a> Editor<'a> {
     /// Record that a BIB covers the given target block.
     ///
     /// Used by `Signer` to set `bib` metadata on target blocks so that
-    /// `rebuild_bundle()` returns a correct `Bundle` without reparsing.
-    #[cfg(feature = "bpsec")]
+    /// `rebuild_bundle()` returns a correct `Bundle` without reparsing, and
+    /// by `BPSecEditor::remove_blocks` once a decrypt shows which targets an
+    /// encrypted BIB covers.
     pub(crate) fn set_bib_target(&mut self, target_block: u64, bib_block: u64) {
         self.bib_overrides
             .insert(target_block, block::BibCoverage::Some(bib_block));
@@ -773,9 +897,14 @@ impl<'a> Editor<'a> {
                 // later cascades (and the final rebuild) see the right
                 // relationships. Without this, e.g. `remove_block_inner`
                 // recursively dropping a BIB whose body we just staged
-                // would miss the protecting BCB and leave it orphaned.
-                tmpl.block.bib = block.bib.clone();
-                tmpl.block.bcb = block.bcb;
+                // would miss the protecting BCB and leave it orphaned. The
+                // data decision above stays on the original's BCB: the
+                // source bytes are ciphertext even after a strip.
+                let (bib, bcb) = self
+                    .current_coverage(block_number)
+                    .unwrap_or_else(|| (block.bib.clone(), block.bcb));
+                tmpl.block.bib = bib;
+                tmpl.block.bcb = bcb;
                 (false, tmpl)
             }
             Some(BlockTemplate::Insert(template)) => (true, template.clone()),
@@ -818,15 +947,17 @@ impl<'a> Editor<'a> {
             ) {
                 return Err((self, Error::SecurityBlock));
             }
-
-            match block.bib {
+        }
+        if let Some((bib, _)) = self.current_coverage(block_number) {
+            match bib {
                 block::BibCoverage::Maybe => {
                     return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
                 }
                 block::BibCoverage::Some(bib) => {
                     // Check if the BIB is encrypted
-                    if let Some((bib_block, _)) = self.block(bib)
-                        && bib_block.bcb.is_some()
+                    if self
+                        .current_coverage(bib)
+                        .is_some_and(|(_, bcb)| bcb.is_some())
                     {
                         return Err((self, Error::BibIsEncrypted(block_number)));
                     }
@@ -842,12 +973,10 @@ impl<'a> Editor<'a> {
 
     #[allow(clippy::result_large_err)]
     pub(crate) fn remove_block_inner(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
-        // Get the block's security references BEFORE removing it
-        let (bib, bcb) = if let Some((block, _)) = self.block(block_number) {
-            (block.bib.clone(), block.bcb)
-        } else {
-            (block::BibCoverage::None, None)
-        };
+        // The block's current security references, read BEFORE removing it.
+        let (bib, bcb) = self
+            .current_coverage(block_number)
+            .unwrap_or((block::BibCoverage::None, None));
 
         // Removing a BIB outright orphans its targets' coverage stamps —
         // `remove_from_bib_targets` only handles the target-removed
@@ -869,7 +998,7 @@ impl<'a> Editor<'a> {
         let mut bib_targets: Vec<u64> = Vec::new();
         if let Some((block, Some(payload))) = self.block(block_number)
             && matches!(block.block_type, block::Type::BlockIntegrity)
-            && let Ok(opset) = hardy_cbor::decode::parse_exact::<bpsec::bib::OperationSet>(payload)
+            && let Ok(opset) = parse_exact::<bpsec::bib::OperationSet>(payload)
         {
             bib_targets.extend(opset.operations.keys().copied());
         }
@@ -885,8 +1014,10 @@ impl<'a> Editor<'a> {
             }
         }
 
-        // Now remove the block from the templates
-        if self.blocks.remove(&block_number).is_some() {
+        // Strip the block from its security blocks' target lists, then
+        // remove it from the templates, so a failed strip returns an editor
+        // that still holds the block.
+        if self.blocks.contains_key(&block_number) {
             // If there is a BIB, remove the block from the list of targets
             // If the BIB is now empty, recursively call this function.
             if let block::BibCoverage::Some(bib) = bib {
@@ -898,6 +1029,7 @@ impl<'a> Editor<'a> {
             if let Some(bcb) = bcb {
                 self = self.remove_from_bcb_targets(block_number, bcb)?;
             }
+            self.blocks.remove(&block_number);
         }
         Ok(self)
     }
@@ -915,20 +1047,19 @@ impl<'a> Editor<'a> {
         bib_block: u64,
     ) -> Result<Self, (Self, Error)> {
         if let Some((_, Some(bib_payload))) = self.block(bib_block) {
-            let mut opset =
-                match hardy_cbor::decode::parse_exact::<bpsec::bib::OperationSet>(bib_payload) {
-                    Ok(opset) => opset,
-                    Err(e) => {
-                        return Err((
-                            self,
-                            error::Error::InvalidField {
-                                field: "BIB Abstract Syntax Block",
-                                source: Box::new(e.into()),
-                            }
-                            .into(),
-                        ));
-                    }
-                };
+            let mut opset = match parse_exact::<bpsec::bib::OperationSet>(bib_payload) {
+                Ok(opset) => opset,
+                Err(e) => {
+                    return Err((
+                        self,
+                        error::Error::InvalidField {
+                            field: "BIB Abstract Syntax Block",
+                            source: Box::new(e.into()),
+                        }
+                        .into(),
+                    ));
+                }
+            };
 
             // Remove the target from the BIB
             if opset.operations.remove(&target_block).is_some() {
@@ -962,20 +1093,19 @@ impl<'a> Editor<'a> {
         bcb_block: u64,
     ) -> Result<Self, (Self, Error)> {
         if let Some((_, Some(bcb_payload))) = self.block(bcb_block) {
-            let mut opset =
-                match hardy_cbor::decode::parse_exact::<bpsec::bcb::OperationSet>(bcb_payload) {
-                    Ok(opset) => opset,
-                    Err(e) => {
-                        return Err((
-                            self,
-                            error::Error::InvalidField {
-                                field: "BCB Abstract Syntax Block",
-                                source: Box::new(e.into()),
-                            }
-                            .into(),
-                        ));
-                    }
-                };
+            let mut opset = match parse_exact::<bpsec::bcb::OperationSet>(bcb_payload) {
+                Ok(opset) => opset,
+                Err(e) => {
+                    return Err((
+                        self,
+                        error::Error::InvalidField {
+                            field: "BCB Abstract Syntax Block",
+                            source: Box::new(e.into()),
+                        }
+                        .into(),
+                    ));
+                }
+            };
 
             // Remove the target from the BCB
             if opset.operations.remove(&target_block).is_some() {

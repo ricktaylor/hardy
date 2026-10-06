@@ -1,12 +1,12 @@
 use core::time::Duration;
 use hardy_bpv7::{
     Bundle,
-    block::{Block, Type},
+    block::{BibCoverage, Block, Type},
     bpsec::{self, bcb, bib, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
     builder::Builder,
     checks,
     creation_timestamp::CreationTimestamp,
-    editor::{Chunk, Editor},
+    editor::{self, Chunk, Editor},
     parse,
 };
 use std::collections::HashMap;
@@ -208,18 +208,22 @@ fn rfc9173_appendix_a_2() {
     block_data(1, &raw.blocks, &data, &bcb_ops, &keys).expect("Failed to decrypt");
 }
 
+// The final bundle of RFC 9173 Appendix A.3: a BCB over the payload, and a
+// BIB over the primary block (0) and the Bundle Age block (2).
+const APPENDIX_A_3: [u8; 239] = hex_literal::hex!(
+    "9f88070000820282010282028202018202820201820018281a000f4240850b0300
+            00585c8200020101820282030082820105820300828182015820cac6ce8e4c5dae57
+            988b757e49a6dd1431dc04763541b2845098265bc817241b81820158203ed614c0d9
+            7f49b3633627779aa18a338d212bf3c92b97759d9739cd50725596850c0401005834
+            8101020182028202018382014c5477656c7665313231323132820201820400818182
+            0150efa4b5ac0108e3816c5606479801bc0485070200004319012c85010100005823
+            3a09c1e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e
+            9aff"
+);
+
 #[test]
 fn rfc9173_appendix_a_3() {
-    let data = hex_literal::hex!(
-        "9f88070000820282010282028202018202820201820018281a000f4240850b0300
-                00585c8200020101820282030082820105820300828182015820cac6ce8e4c5dae57
-                988b757e49a6dd1431dc04763541b2845098265bc817241b81820158203ed614c0d9
-                7f49b3633627779aa18a338d212bf3c92b97759d9739cd50725596850c0401005834
-                8101020182028202018382014c5477656c7665313231323132820201820400818182
-                0150efa4b5ac0108e3816c5606479801bc0485070200004319012c85010100005823
-                3a09c1e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e
-                9aff"
-    );
+    let data = APPENDIX_A_3;
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [
             {
@@ -1569,4 +1573,363 @@ fn aliased_and_canonical_scopes_share_one_bib() {
         validate_with_keys(&signed_bytes, &keys).expect("the signed bundle verifies at parse");
     assert_eq!(bib_ops.len(), 1, "one BIB for the one scope");
     assert_eq!(bib_ops.values().next().unwrap().operations().len(), 2);
+}
+
+// A bare HS256 key with a generated value.
+fn hs256_key() -> key::Key {
+    serde_json::from_value(serde_json::json!({
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(32)
+    }))
+    .unwrap()
+}
+
+// One session, two sources: one signs the primary, which carries a CRC,
+// the other the payload under the default scope, whose IPPT includes the
+// primary. Every CRC goes before any IPPT is computed, so both verify in
+// whichever order the groups are built; the session repeats so that both
+// orders occur with near certainty (64 draws of the group order).
+#[test]
+fn two_groups_signing_a_crc_primary_verify_in_either_order() {
+    let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+        .with_payload(b"two groups".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let raw = raw_of(&bundle_bytes);
+    assert!(
+        !matches!(raw.primary.crc_type, hardy_bpv7::crc::CrcType::None),
+        "precondition: the primary carries a CRC"
+    );
+    let sign_key = hs256_key();
+    let keys = key::KeySet::new(vec![sign_key.clone()]);
+
+    for _ in 0..64 {
+        let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+            .sign_block(
+                0,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                "ipn:2.1".parse().unwrap(),
+                &sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the primary")
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                "ipn:3.1".parse().unwrap(),
+                &sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the payload")
+            .rebuild()
+            .expect("rebuild the signed bundle");
+        let (signed_bytes, parsed, bcb_ops, bib_ops) =
+            validate_with_keys(&signed_bytes, &keys).expect("the signed bundle validates");
+        assert_eq!(count_blocks_of_type(&parsed, Type::BlockIntegrity), 2);
+        for target in [0, 1] {
+            verify_block(
+                target,
+                &parsed.blocks,
+                &signed_bytes,
+                &bcb_ops,
+                &bib_ops,
+                &keys,
+            )
+            .expect("each group's signature verifies");
+        }
+    }
+}
+
+// Signing a primary that carries a CRC removes it (RFC 9173 §3.8.1), which
+// would break an operation already in the bundle whose scope includes the
+// primary: refused. Under a scope without the primary it is signed, and
+// both signatures verify.
+#[test]
+fn signing_a_crc_primary_refused_over_a_primary_scoped_operation() {
+    let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+        .with_payload(b"later primary".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let raw = raw_of(&bundle_bytes);
+    let sign_key = hs256_key();
+    let sign_payload = |scope: ScopeFlags| {
+        let bytes = signer::Signer::new(&raw, &bundle_bytes)
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(scope),
+                "ipn:3.1".parse().unwrap(),
+                &sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the payload")
+            .rebuild()
+            .expect("rebuild the signed bundle");
+        (raw_of(&bytes), bytes)
+    };
+    let sign_primary = |bundle: &Bundle, bytes: &[u8]| {
+        signer::Signer::new(bundle, bytes)
+            .sign_block(
+                0,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                "ipn:2.1".parse().unwrap(),
+                &sign_key,
+            )
+            .map(|signer| signer.rebuild().expect("rebuild the signed bundle"))
+            .map_err(|(_, e)| e)
+    };
+
+    let (signed, signed_bytes) = sign_payload(ScopeFlags::default());
+    let hardy_bpv7::block::BibCoverage::Some(payload_bib) = signed.blocks[&1].bib else {
+        panic!("the payload is signed");
+    };
+    assert!(matches!(
+        sign_primary(&signed, &signed_bytes),
+        Err(signer::Error::Editor(editor::Error::PrimaryInSecurityScope(n))) if n == payload_bib
+    ));
+
+    let (signed, signed_bytes) = sign_payload(ScopeFlags {
+        include_primary_block: false,
+        ..ScopeFlags::default()
+    });
+    let both = sign_primary(&signed, &signed_bytes).expect("the primary is signed");
+    let keys = key::KeySet::new(vec![sign_key.clone()]);
+    let (both, parsed, bcb_ops, bib_ops) =
+        validate_with_keys(&both, &keys).expect("the signed bundle validates");
+    for target in [0, 1] {
+        verify_block(target, &parsed.blocks, &both, &bcb_ops, &bib_ops, &keys)
+            .expect("each signature verifies");
+    }
+}
+
+// A target already queued in a session is refused, rather than its first
+// request silently replaced.
+#[test]
+fn signing_a_target_twice_in_one_session_is_refused() {
+    let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+        .with_payload(b"twice".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let raw = raw_of(&bundle_bytes);
+    let sign_key = hs256_key();
+    let result = signer::Signer::new(&raw, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the payload")
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:3.1".parse().unwrap(),
+            &sign_key,
+        );
+    assert!(matches!(result, Err((_, signer::Error::AlreadySigned(1)))));
+}
+
+// A BIB carries one parameter set, so under key wrap one CEK, wrapped once,
+// keys every target (RFC 9173 §3.8.2): each target of a key-wrapped
+// two-target BIB verifies. The scope leaves the security header out, so the
+// targets can share the BIB.
+#[test]
+fn a_key_wrapped_multi_target_bib_verifies_every_target() {
+    let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+        .add_extension_block(Type::Unrecognised(200))
+        .unwrap()
+        .build(b"ext-data".as_slice().into())
+        .with_payload(b"wrapped".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let raw = raw_of(&bundle_bytes);
+    let ext = *raw
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::Unrecognised(200))
+        .expect("the extension block is present")
+        .0;
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+
+    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(shareable_scope()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the payload")
+        .sign_block(
+            ext,
+            signer::Context::HMAC_SHA2(shareable_scope()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the extension block")
+        .rebuild()
+        .expect("rebuild the signed bundle");
+    let keys = key::KeySet::new(vec![kek]);
+    let (signed_bytes, parsed, bcb_ops, bib_ops) =
+        validate_with_keys(&signed_bytes, &keys).expect("the signed bundle validates");
+    assert_eq!(count_blocks_of_type(&parsed, Type::BlockIntegrity), 1);
+    for target in [1, ext] {
+        verify_block(
+            target,
+            &parsed.blocks,
+            &signed_bytes,
+            &bcb_ops,
+            &bib_ops,
+            &keys,
+        )
+        .expect("each target verifies under the one wrapped key");
+    }
+}
+
+// A scope under which targets can share one BIB: the default without the
+// security header (RFC 9172 erratum 8723).
+fn shareable_scope() -> ScopeFlags {
+    ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    }
+}
+
+// A bundle whose payload and extension block are signed by one source,
+// with `first` and `second` keys under `scope`: (bytes, extension block
+// number).
+fn sign_payload_and_extension(
+    scope: ScopeFlags,
+    first: &key::Key,
+    second: &key::Key,
+) -> (Box<[u8]>, u64) {
+    let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+        .add_extension_block(Type::Unrecognised(200))
+        .unwrap()
+        .build(b"ext-data".as_slice().into())
+        .with_payload(b"two targets".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let raw = raw_of(&bundle_bytes);
+    let ext = *raw
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::Unrecognised(200))
+        .expect("the extension block is present")
+        .0;
+    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(scope.clone()),
+            "ipn:2.1".parse().unwrap(),
+            first,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the payload")
+        .sign_block(
+            ext,
+            signer::Context::HMAC_SHA2(scope),
+            "ipn:2.1".parse().unwrap(),
+            second,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the extension block")
+        .rebuild()
+        .expect("rebuild the signed bundle");
+    (signed_bytes, ext)
+}
+
+// Under a scope that includes the security header, BIB-HMAC-SHA2 cannot
+// share a BIB (RFC 9172 erratum 8723): two targets from one source and key
+// get a BIB each, and each verifies.
+#[test]
+fn a_security_header_scope_signs_each_target_alone() {
+    let key = hs256_key();
+    let (signed_bytes, ext) = sign_payload_and_extension(ScopeFlags::default(), &key, &key);
+    let keys = key::KeySet::new(vec![key]);
+    let (signed_bytes, parsed, bcb_ops, bib_ops) =
+        validate_with_keys(&signed_bytes, &keys).expect("the signed bundle validates");
+    assert_eq!(count_blocks_of_type(&parsed, Type::BlockIntegrity), 2);
+    for target in [1, ext] {
+        verify_block(
+            target,
+            &parsed.blocks,
+            &signed_bytes,
+            &bcb_ops,
+            &bib_ops,
+            &keys,
+        )
+        .expect("each target verifies");
+    }
+}
+
+// Operations under different keys are bound for different security
+// acceptors, so they never share a BIB, even where the context allows it;
+// each verifies under its own key.
+#[test]
+fn targets_under_different_keys_get_separate_bibs() {
+    let (first, second) = (hs256_key(), hs256_key());
+    let (signed_bytes, ext) = sign_payload_and_extension(shareable_scope(), &first, &second);
+    let no_keys = key::KeySet::new(Vec::new());
+    let (signed_bytes, parsed, bcb_ops, bib_ops) =
+        validate_with_keys(&signed_bytes, &no_keys).expect("the signed bundle parses");
+    assert_eq!(count_blocks_of_type(&parsed, Type::BlockIntegrity), 2);
+    for (target, key) in [(1, first), (ext, second)] {
+        let keys = key::KeySet::new(vec![key]);
+        assert!(
+            verify_block(
+                target,
+                &parsed.blocks,
+                &signed_bytes,
+                &bcb_ops,
+                &bib_ops,
+                &keys,
+            )
+            .expect("each target verifies under its own key"),
+            "target {target} carries a BIB"
+        );
+    }
+}
+
+// Encrypting the Bundle Age block of the RFC 9173 A.3 bundle would encrypt
+// the BIB over it with every block that BIB covers (RFC 9172 §3.9), the
+// primary among them, which no BCB can target: refused, naming the BIB.
+#[test]
+fn encrypting_under_a_bib_that_covers_the_primary_is_refused() {
+    let raw = raw_of(&APPENDIX_A_3);
+    let BibCoverage::Some(bib) = raw.blocks[&2].bib else {
+        panic!("the Bundle Age block is signed");
+    };
+    assert!(
+        matches!(raw.blocks[&0].bib, BibCoverage::Some(n) if n == bib),
+        "precondition: one BIB covers the primary and the Bundle Age block"
+    );
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kty": "oct",
+        "alg": "dir",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let result = encryptor::Encryptor::new(&raw, &APPENDIX_A_3).encrypt_block(
+        2,
+        encryptor::Context::AES_GCM(ScopeFlags::default()),
+        "ipn:2.1".parse().unwrap(),
+        &enc_key,
+    );
+    assert!(matches!(
+        result,
+        Err((_, encryptor::Error::BibCoversPrimary(n))) if n == bib
+    ));
 }

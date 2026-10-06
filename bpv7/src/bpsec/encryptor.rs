@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use core::ptr::from_ref;
 
 use hardy_cbor::encode::emit;
 use smallvec::SmallVec;
@@ -23,6 +24,12 @@ pub enum Error {
     /// The target block is already encrypted by another BCB.
     #[error("Block target {0} is already the target of a BCB")]
     AlreadyEncrypted(u64),
+
+    /// The BIB over the target, named here, also signs the primary block.
+    /// Encrypting the target encrypts that BIB and every block it covers
+    /// (RFC 9172 §3.9), and a BCB cannot target the primary block.
+    #[error("BIB {0} over the target also covers the primary block, which a BCB cannot target")]
+    BibCoversPrimary(u64),
 
     /// Encryption of fragmented bundles is not supported (RFC 9172 Section 5).
     #[error("Bundle is a fragment")]
@@ -84,7 +91,22 @@ impl<'a> Encryptor<'a> {
 
     /// Encrypt a block in the bundle.
     ///
-    /// On error, returns the encryptor along with the error so it can be reused for recovery.
+    /// A BIB over the target is encrypted with it, as RFC 9172 §3.9
+    /// requires, together with every other block that BIB covers, each under
+    /// its own BCB: the BIB is never split, since a split would make this
+    /// node the security source of the moved results.
+    ///
+    /// BCB-AES-GCM gives every target its own BCB, for its own IV. Under a
+    /// context that lets targets share a BCB, targets queued with the same
+    /// source, context and key reference (the same `&Key`, not merely an
+    /// equal one) share one.
+    ///
+    /// # Errors
+    ///
+    /// Among the target checks, [`Error::BibCoversPrimary`] when the BIB
+    /// over the target also covers the primary block, which no BCB can
+    /// target. On error, returns the encryptor along with the error so it
+    /// can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn encrypt_block(
         mut self,
@@ -142,6 +164,10 @@ impl<'a> Encryptor<'a> {
                         ));
                     }
                 };
+
+                if opset.operations.contains_key(&0) {
+                    return Err((self, Error::BibCoversPrimary(bib_block)));
+                }
 
                 // Encrypt all the BIB targets
                 for target in opset.operations.keys() {
@@ -208,7 +234,10 @@ impl<'a> Encryptor<'a> {
         // Reorder and accumulate BCB operations if sharing is possible
         type TargetVec<'b> = SmallVec<[(u64, &'b key::Key); 4]>;
         let mut bcbs: SmallVec<[(eid::Eid, Context, TargetVec<'a>); 4]> = SmallVec::new();
-        let mut shared_bcbs = HashMap::<(eid::Eid, Context), TargetVec<'a>>::new();
+        // Shared BCBs group per source, context and key: the key stands for
+        // the security acceptors, which must not differ within a block (RFC
+        // 9172 §3.3).
+        let mut shared_bcbs = HashMap::<(eid::Eid, Context, *const key::Key), TargetVec<'a>>::new();
         for (block_number, template) in self.templates {
             // Check if this context supports sharing multiple targets in one BCB.
             // AES_GCM requires unique IVs per target, so each target gets its own BCB.
@@ -229,7 +258,7 @@ impl<'a> Encryptor<'a> {
                 }
                 _ => {
                     shared_bcbs
-                        .entry((template.source, template.context))
+                        .entry((template.source, template.context, from_ref(template.key)))
                         .or_default()
                         .push((block_number, template.key));
                 }
@@ -240,7 +269,7 @@ impl<'a> Encryptor<'a> {
         bcbs.extend(
             shared_bcbs
                 .into_iter()
-                .map(|((bpsec_source, context), targets)| (bpsec_source, context, targets)),
+                .map(|((bpsec_source, context, _), targets)| (bpsec_source, context, targets)),
         );
 
         let mut editor = Editor::new(self.original, self.source_data);

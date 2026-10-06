@@ -245,6 +245,76 @@ fn as_variant(alg: Option<key::KeyAlgorithm>) -> Option<ShaVariant> {
     }
 }
 
+// Whether operations under `flags` can share one BIB. A BIB carries one
+// parameter set, its wrapped key included, for every target (RFC 9173
+// §3.3.2, §3.8.2), so sharing costs nothing in keying; but a scope that
+// includes the security header binds each result to the BIB's own block
+// number, which an RFC 9172 §3.9 split at a waypoint changes, breaking the
+// moved results (RFC 9172 erratum 8723).
+pub fn can_share(flags: &ScopeFlags) -> bool {
+    !flags.clone().canonicalize().include_security_header
+}
+
+// The keying one BIB's operations share. The BIB carries one parameter
+// set, so under key wrap one CEK, wrapped once into those parameters, keys
+// every target's HMAC (RFC 9173 §3.8.2); a direct key keys them all
+// itself. No `Debug`: it holds key material.
+pub struct Keying<'k> {
+    variant: ShaVariant,
+    key: &'k [u8],
+    cek: Option<zeroize::Zeroizing<Box<[u8]>>>,
+    wrapped: Option<Box<[u8]>>,
+}
+
+impl<'k> Keying<'k> {
+    pub fn new(jwk: &'k key::Key) -> Result<Self, Error> {
+        if let Some(ops) = &jwk.operations
+            && !ops.contains(&key::Operation::Sign)
+        {
+            return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
+        }
+
+        let variant = as_variant(jwk.key_algorithm)
+            .ok_or_else(|| Error::InvalidKey(key::Operation::Sign, jwk.clone()))?;
+        let key_wrap = jwk.key_algorithm.and_then(KeyWrap::from_alg);
+        let key::Type::OctetSequence { key } = &jwk.key_type else {
+            return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
+        };
+
+        let (cek, wrapped) = match key_wrap {
+            Some(key_wrap) => {
+                if let Some(ops) = &jwk.operations
+                    && !ops.contains(&key::Operation::WrapKey)
+                {
+                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+                }
+                let cek = zeroize::Zeroizing::from(match key_wrap {
+                    KeyWrap::Aes128 => rand_bytes::<32>()?,
+                    KeyWrap::Aes192 => rand_bytes::<48>()?,
+                    KeyWrap::Aes256 => rand_bytes::<64>()?,
+                });
+                let wrapped = key_wrap
+                    .wrap_key(key.expose_secret(), &cek)
+                    .map_err(Error::Algorithm)?
+                    .into();
+                (Some(cek), Some(wrapped))
+            }
+            None => (None, None),
+        };
+
+        Ok(Self {
+            variant,
+            key: key.expose_secret(),
+            cek,
+            wrapped,
+        })
+    }
+
+    fn active_key(&self) -> &[u8] {
+        self.cek.as_deref().map_or(self.key, |cek| cek)
+    }
+}
+
 #[derive(Debug)]
 pub struct Operation {
     pub parameters: Arc<Parameters>,
@@ -256,79 +326,45 @@ impl Operation {
         matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
+    // Whether the integrity scope puts the primary block in this
+    // operation's IPPT (RFC 9173 §3.7 step 2).
+    pub fn scope_includes_primary(&self) -> bool {
+        self.parameters
+            .flags
+            .clone()
+            .canonicalize()
+            .include_primary_block
+    }
+
+    // One target's operation under `keying`, the keying its BIB's
+    // operations share.
     pub fn sign(
-        jwk: &key::Key,
+        keying: &Keying,
         scope_flags: ScopeFlags,
         args: bib::OperationArgs,
     ) -> Result<Self, Error> {
         // The emitted parameter and the IPPT/AAD below must agree on what an
         // alias bit in `unrecognised` covers.
         let scope_flags = scope_flags.canonicalize();
-        if let Some(ops) = &jwk.operations
-            && !ops.contains(&key::Operation::Sign)
-        {
-            return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
-        }
-
-        let variant = as_variant(jwk.key_algorithm)
-            .ok_or_else(|| Error::InvalidKey(key::Operation::Sign, jwk.clone()))?;
-        let key_wrap = jwk.key_algorithm.and_then(KeyWrap::from_alg);
-
-        let cek = if let Some(key_wrap) = &key_wrap {
-            if let Some(ops) = &jwk.operations
-                && !ops.contains(&key::Operation::WrapKey)
-            {
-                return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
-            }
-            Some(zeroize::Zeroizing::from(match key_wrap {
-                KeyWrap::Aes128 => rand_bytes::<32>()?,
-                KeyWrap::Aes192 => rand_bytes::<48>()?,
-                KeyWrap::Aes256 => rand_bytes::<64>()?,
-            }))
-        } else {
-            None
-        };
-
-        let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
-            return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
-        };
-
-        let active_cek = cek.as_ref().map_or(
-            kek.expose_secret(),
-            |cek: &zeroize::Zeroizing<Box<[u8]>>| cek.as_ref(),
-        );
-
-        let results = Results(match variant {
+        let active_key = keying.active_key();
+        let results = Results(match keying.variant {
             ShaVariant::HMAC_256_256 => {
-                MacTag::from_mac(build_hmac::<sha2::Sha256>(&scope_flags, active_cek, &args)?)
+                MacTag::from_mac(build_hmac::<sha2::Sha256>(&scope_flags, active_key, &args)?)
             }
             ShaVariant::HMAC_384_384 => {
-                MacTag::from_mac(build_hmac::<sha2::Sha384>(&scope_flags, active_cek, &args)?)
+                MacTag::from_mac(build_hmac::<sha2::Sha384>(&scope_flags, active_key, &args)?)
             }
             ShaVariant::HMAC_512_512 => {
-                MacTag::from_mac(build_hmac::<sha2::Sha512>(&scope_flags, active_cek, &args)?)
+                MacTag::from_mac(build_hmac::<sha2::Sha512>(&scope_flags, active_key, &args)?)
             }
             // Dead in practice: `as_variant` never yields `Unrecognised`.
-            ShaVariant::Unrecognised(_) => {
-                return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
-            }
+            ShaVariant::Unrecognised(_) => return Err(Error::UnsupportedOperation),
         });
-
-        let key = if let (Some(cek), Some(key_wrap)) = (cek, key_wrap) {
-            Some(
-                key_wrap
-                    .wrap_key(kek.expose_secret(), &cek)
-                    .map_err(Error::Algorithm)?
-                    .into(),
-            )
-        } else {
-            None
-        };
 
         Ok(Self {
             parameters: Arc::new(Parameters {
-                variant,
-                key,
+                variant: keying.variant,
+                key: keying.wrapped.clone(),
                 flags: scope_flags,
             }),
             results,

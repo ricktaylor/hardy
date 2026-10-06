@@ -378,14 +378,6 @@ The move is mechanical: relocate the five private helpers too (`make_bundle`, `m
 
 Do this on `refactor/parse` rather than as a standalone cleanup off main. Milestone 2's `Range<u64>` audit already rewrites ~70 sites across `editor.rs` and its test fixtures — the assertions in `assert_rebuild_matches_parse` read `block.extent` / `block.data`, which flip to `Range<u64>` there — so folding the relocation into that pass keeps `editor.rs` churn in one place and avoids conflicts between a main-side move and the refactor-side edits.
 
-## Multi-target BIB shares one key (whole-codebase review 2026-07-08, #2)
-
-`bpsec::signer` groups all `sign_block()` requests with the same `(security source, context)` into one multi-target BIB, but in key-wrap mode each target's operation mints its own random CEK; only the first operation's parameters (the wrapped CEK) are emitted, so every non-first target's HMAC was computed with a key absent from the wire and can never verify (at any RFC 9173 implementation, including Hardy). Direct mode similarly mis-merges per-target keys/variants.
-
-RFC 9173 §3.8.2 is explicit: the HMAC key is derived from the single wrapped-key parameter *of the BIB* (one per block) and compared against the per-target results — i.e. one shared key, N per-target results. So the fix is **not** a per-target split (that is the encryptor's BCB-AES-GCM rule, driven by unique IVs). BIB-HMAC-SHA2 legitimately shares: generate one CEK per `(source, context)` group, wrap it once into the single emitted parameter set, and (direct mode) enforce one key per group. `can_share()` for BIB-HMAC-SHA2 should be `true`.
-
-Latent, not a runtime bug: the BPA never signs, and the `bundle sign` CLI signs a single block per invocation, so no multi-target BIB is produced by shipped paths. Fix on the bpsec-editor work rather than as a standalone patch.
-
 ## bpv7-parse review triage (2026-08-19)
 
 Open items from the `refactor/bpv7-parse` deep review (`references/reviews/bpv7-parse-review.md`, per-finding dispositions inline there) that are fixed nowhere in the refactor train. The behavioural items (E3 coverage-clearing, the `remove_blocks` screen and Maybe pull-back, E4's override-clearing, E10's checked flatten, the E11e removed-set, the dead error variants, and the semantic_eq / checks contract docs) landed on this branch on 2026-08-19; what follows is the remainder. The E3 CRC-restoration sliver was ruled intentional-as-is on 2026-08-25 (an unprocessable BIB never made a checkable integrity statement, so wholesale removal restores no CRC — rationale documented on `BPSecEditor::remove_integrity` and at the `remove_block_inner` coverage-clearing site), and the E8 release note landed in the crate changelog; both items are closed.

@@ -235,6 +235,16 @@ impl Operation {
         matches!(self.parameters.variant, AesVariant::Unrecognised(_))
     }
 
+    // Whether the AAD scope puts the primary block in this operation's
+    // additional authenticated data (RFC 9173 §4.7.2).
+    pub fn scope_includes_primary(&self) -> bool {
+        self.parameters
+            .flags
+            .clone()
+            .canonicalize()
+            .include_primary_block
+    }
+
     pub fn encrypt(
         jwk: &key::Key,
         scope_flags: ScopeFlags,

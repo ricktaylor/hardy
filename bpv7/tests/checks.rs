@@ -328,8 +328,9 @@ mod cascade_reencryption_tests {
         insert_after_primary(&base, &[&unknown])
     }
 
-    // Sign the named targets under a single BIB (HMAC-SHA2, default scope
-    // flags, source ipn:2.1) and return the rebuilt bytes.
+    // Sign the named targets under a single BIB (HMAC-SHA2, source ipn:2.1)
+    // and return the rebuilt bytes. The scope leaves the security header
+    // out, as BIB-HMAC-SHA2 requires for targets to share a BIB.
     fn sign(bundle_bytes: &[u8], targets: &[u64], key: &bpsec::key::Key) -> Box<[u8]> {
         let (bundle_bytes, raw, _, _) =
             raw_parse_tuple(Bytes::copy_from_slice(bundle_bytes)).expect("parse");
@@ -338,7 +339,10 @@ mod cascade_reencryption_tests {
             signer = signer
                 .sign_block(
                     t,
-                    bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
+                    bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags {
+                        include_security_header: false,
+                        ..bpsec::rfc9173::ScopeFlags::default()
+                    }),
                     "ipn:2.1".parse().unwrap(),
                     key,
                 )
