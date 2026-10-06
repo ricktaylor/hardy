@@ -774,21 +774,22 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn update_block(mut self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
-        // The block's current security references, then its type
+        // The block's type, then its current security references
+        let Some(block_type) = self.block(block_number).map(|(block, _)| block.block_type) else {
+            return Err((self, Error::NoSuchBlock(block_number)));
+        };
+        match block_type {
+            block::Type::Primary => {
+                return Err((self, Error::PrimaryBlock));
+            }
+            block::Type::BlockIntegrity | block::Type::BlockSecurity => {
+                return Err((self, Error::SecurityBlock));
+            }
+            _ => {}
+        }
         let Some((bib, bcb)) = self.current_coverage(block_number) else {
             return Err((self, Error::NoSuchBlock(block_number)));
         };
-        if let Some((block, _)) = self.block(block_number) {
-            match block.block_type {
-                block::Type::Primary => {
-                    return Err((self, Error::PrimaryBlock));
-                }
-                block::Type::BlockIntegrity | block::Type::BlockSecurity => {
-                    return Err((self, Error::SecurityBlock));
-                }
-                _ => {}
-            }
-        }
 
         // Handle BIB coverage — must remove from target list if present
         match bib {

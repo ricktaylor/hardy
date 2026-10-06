@@ -1228,6 +1228,27 @@ fn insert_block_rejects_reserved_wire_codes() {
     assert!(matches!(result, Err((_, Error::SecurityBlock))));
 }
 
+// `update_block` refuses the primary block and the security blocks by type,
+// whatever their coverage.
+#[test]
+fn update_block_refuses_the_primary_and_security_blocks() {
+    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false, primary_excluded());
+    let result = Editor::new(&signed, &signed_bytes).update_block(0);
+    assert!(matches!(result, Err((_, Error::PrimaryBlock))));
+    let result = Editor::new(&signed, &signed_bytes).update_block(bib);
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+
+    let (encrypted, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &aes_key());
+    let bcb = *encrypted
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::BlockSecurity)
+        .expect("the bundle carries a BCB")
+        .0;
+    let result = Editor::new(&encrypted, &encrypted_bytes).update_block(bcb);
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+}
+
 #[test]
 fn insert_block_replaces_via_alias_not_duplicates() {
     let (bundle, data) = make_bundle_with_hop_count();
@@ -2623,7 +2644,11 @@ fn remove_block_after_update_reads_the_current_coverage() {
 
 // A second update of a block whose BCB the first update stripped and
 // emptied reads the block's current coverage, not its template's stale
-// stamp, though a pushed block now holds the BCB's number.
+// stamp, though a pushed block now holds the BCB's number. The first update
+// leaves an `Update` template, so `update_block`'s read and
+// `update_block_inner`'s stamps each cover for the other, and the test fails
+// only with both stale; `a_removed_bibs_target_reads_its_current_coverage`
+// pins `update_block`'s read alone.
 #[test]
 fn update_block_after_update_reads_the_current_coverage() {
     let (bundle, data) = make_bundle_with_hop_count();
@@ -2666,4 +2691,57 @@ fn update_block_after_update_reads_the_current_coverage() {
         rebuilt.blocks[&bcb].block_type,
         block::Type::Unrecognised(200)
     );
+}
+
+// A BIB removed outright leaves its target's template untouched, so once a
+// pushed block holds the BIB's number, each door that edits the target must
+// read its current coverage; the stale stamp would strip the target from the
+// pushed block's body.
+#[test]
+fn a_removed_bibs_target_reads_its_current_coverage() {
+    let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false, primary_excluded());
+    let reused = || {
+        let (editor, removed) = Editor::new(&signed, &signed_bytes)
+            .remove_blocks(HashSet::from([bib]), &key::KeySet::new(Vec::new()))
+            .map_err(|(_, e)| e)
+            .expect("remove the BIB");
+        assert_eq!(removed, HashSet::from([bib]));
+        let pushed = ok(editor.push_block(block::Type::Unrecognised(203)))
+            .with_data(b"ext-data".as_slice().into());
+        assert_eq!(
+            pushed.block_number(),
+            bib,
+            "precondition: the pushed block reuses the BIB's number"
+        );
+        pushed.rebuild()
+    };
+    let finish = |editor: Editor| {
+        let rebuilt = editor
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &signed_bytes))
+            .expect("rebuild the edited bundle");
+        let rebuilt = reparse(&rebuilt);
+        assert_eq!(
+            rebuilt.blocks[&bib].block_type,
+            block::Type::Unrecognised(203)
+        );
+        rebuilt
+    };
+
+    let updated = finish(
+        ok(reused().update_block(hop))
+            .with_data(hop_count_body().into_vec().into())
+            .rebuild(),
+    );
+    assert_eq!(updated.blocks[&hop].bib, block::BibCoverage::None);
+
+    let replaced = finish(
+        ok(reused().insert_block(block::Type::HopCount))
+            .with_data(hop_count_body().into_vec().into())
+            .rebuild(),
+    );
+    assert_eq!(replaced.blocks[&hop].bib, block::BibCoverage::None);
+
+    let removed = finish(ok(reused().remove_block(hop)));
+    assert!(!removed.blocks.contains_key(&hop), "the hop count is gone");
 }

@@ -96,6 +96,11 @@ impl<'a> Encryptor<'a> {
     /// its own BCB: the BIB is never split, since a split would make this
     /// node the security source of the moved results.
     ///
+    /// BCB-AES-GCM gives every target its own BCB, for its own IV. Under a
+    /// context that lets targets share a BCB, targets queued with the same
+    /// source, context and key reference (the same `&Key`, not merely an
+    /// equal one) share one.
+    ///
     /// # Errors
     ///
     /// Among the target checks, [`Error::BibCoversPrimary`] when the BIB
