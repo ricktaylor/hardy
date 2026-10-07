@@ -107,7 +107,8 @@ impl cla::Cla for StreamingCla {
     ) -> cla::Result<cla::ForwardBundleResult> {
         if self.flaky.swap(false, Ordering::SeqCst) {
             let _ = self.events_tx.send(Event::Failed);
-            return Err(cla::Error::StreamCancelled);
+            // Any failure but a cancellation parks the bundle.
+            return Err(cla::Error::Internal("the transfer failed".into()));
         }
         let mut segments = Vec::new();
         loop {

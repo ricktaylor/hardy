@@ -177,6 +177,16 @@ impl Dispatcher {
                 self.store.reset_peer_queue(peer).await;
                 OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
+            Err(cla::Error::StreamCancelled) => {
+                // A cancelled transfer is a failed acceptance: the bundle was
+                // not forwarded, and is valid to retry, so it re-enters
+                // dispatch at once, as a deferred `Failed` outcome does, with
+                // no routing or link event; resolve_offer re-claims it and
+                // counts the failure. A CLA that cancels every attempt loops
+                // until the bundle expires.
+                debug!("Transfer to peer {peer} was cancelled, re-dispatching");
+                OfferOutcome::Redispatch(bundle)
+            }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
                 debug!("Failed to forward bundle to peer {peer}: {e}, returning it to Waiting");
@@ -184,13 +194,14 @@ impl Dispatcher {
                 // Bundle-scoped evidence about a single transfer: park only
                 // this bundle, leaving the rest of the peer's queue alone —
                 // resetting the queue is the response to link-scoped
-                // evidence, above. Unlike the deferred `Failed` outcome,
-                // which is paced by a network round trip, a synchronous
-                // failure can be deterministic and instantaneous, so
-                // re-running dispatch inline here could spin; the retry
-                // waits in Waiting for the next routing or link event —
-                // park_bundle re-dispatches at most once, and only if such
-                // an event landed while this transfer was in flight.
+                // evidence, above. Unlike a cancellation, or the deferred
+                // `Failed` outcome, which is paced by a network round trip,
+                // any other synchronous failure can be deterministic and
+                // instantaneous, so re-running dispatch inline here could
+                // spin; the retry waits in Waiting for the next routing or
+                // link event — park_bundle re-dispatches at most once, and
+                // only if such an event landed while this transfer was in
+                // flight.
                 OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
         }
@@ -209,7 +220,7 @@ impl Dispatcher {
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: cla::TransferOutcome,
     ) {
-        let Some(mut bundle) = self.store.get_metadata(bundle_id).await else {
+        let Some(bundle) = self.store.get_metadata(bundle_id).await else {
             debug!("Transfer outcome for unknown bundle {bundle_id}, ignored");
             return;
         };
@@ -231,8 +242,8 @@ impl Dispatcher {
 
         // Claim the bundle: the snapshot checks above race the peer sweep,
         // the expiry reaper, and duplicate outcomes, and losing the claim —
-        // resolve_offer's conditional tombstone for a completion, the
-        // Dispatching swap below for a failure — means one of them resolved
+        // resolve_offer's conditional tombstone for a completion, its
+        // Dispatching re-claim for a failure — means one of them resolved
         // the bundle first. A completion must not hop through Dispatching:
         // that status is recoverable by the dispatch queue's storage poller
         // mid-resolution, driving a duplicate transmission after delivery.
@@ -242,19 +253,6 @@ impl Dispatcher {
                     .await
             }
             cla::TransferOutcome::Failed => {
-                if !self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                    .await
-                {
-                    debug!(
-                        "Transfer outcome for bundle {bundle_id} lost the resolution race, ignored"
-                    );
-                    return;
-                }
-
-                metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-
                 // Bundle-scoped evidence about a single transfer: re-run the
                 // routing decision now, rather than parking in Waiting (whose
                 // semantic is "nowhere to go") or resetting the whole peer
