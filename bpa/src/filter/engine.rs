@@ -23,6 +23,8 @@
 //! which aborts the process — the fail-fast rule, by analogy with a storage
 //! fault.
 
+use core::fmt::Debug;
+
 use hardy_bpv7::{
     block::Type,
     bpsec::{
@@ -86,7 +88,7 @@ fn derive_keys(
 /// Rewriter cannot, and the scheduled removals and the per-hop writes only
 /// remove operations — so these keys serve every view the attempt edits on
 /// to.
-pub(crate) fn output_keys(
+pub fn output_keys(
     bundle: &Bpv7Bundle,
     data: &[u8],
     key_provider: &dyn KeyProvider,
@@ -134,7 +136,7 @@ fn check_verifiers(
 // validated at ingress and come back from storage, so the failure is a BPA
 // bug or storage corruption. Logged, then the panic that aborts the process.
 #[cold]
-fn output_undecodable(hook: &str, e: impl core::fmt::Debug) -> ! {
+fn output_undecodable(hook: &str, e: impl Debug) -> ! {
     error!("The {hook} chain's bytes do not decode: {e:?}");
     panic!("The {hook} chain's bytes do not decode: {e:?}")
 }
@@ -253,17 +255,32 @@ impl FilterChains {
         )
     }
 
+    /// Whether the Egress chain has any registered Rewriters, for the
+    /// egress door's short-circuit: with none and nothing scheduled for
+    /// removal, no stage reads through the attempt's keys, so it derives
+    /// none.
+    pub fn has_egress_rewriters(&self) -> bool {
+        !self.egress.is_empty()
+    }
+
     /// Whether the Deliver chain has any registered Rewriters, for the
     /// delivery door's short-circuit: with none and nothing scheduled for
     /// removal, it builds no editor.
-    pub(crate) fn has_deliver_rewriters(&self) -> bool {
+    pub fn has_deliver_rewriters(&self) -> bool {
         !self.deliver.rewriters.is_empty()
+    }
+
+    /// Whether the Deliver chain has any registered Verifiers, for the
+    /// delivery door's short-circuit: with none, no Rewriters and nothing
+    /// scheduled for removal, it derives no keys.
+    pub fn has_deliver_verifiers(&self) -> bool {
+        !self.deliver.verifiers.is_empty()
     }
 
     /// Runs the Deliver Verifiers over the bundle the Deliver Rewriters
     /// left, materialised: `Some` carries the dropping Verifier's reason,
     /// `None` means every Verifier passed.
-    pub(crate) fn verify_deliver(
+    pub fn verify_deliver(
         &self,
         bundle: &Bundle,
         data: &[u8],

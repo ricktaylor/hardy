@@ -3,7 +3,7 @@
 use hardy_bpv7::{
     Error as Bpv7Error,
     block::Payload,
-    bpsec,
+    bpsec::{self, key::KeySet},
     editor::{Chunk, Editor},
     parse::{self, Parsed},
     status_report::ReasonCode,
@@ -84,47 +84,52 @@ impl Dispatcher {
         // over the record's block index and the loaded bytes, and is rebuilt
         // once, only if either edited; with nothing scheduled and no
         // Rewriters, none is built. The keys are derived once, over the stored
-        // bundle; the key source is `!Send`, so it stays inside this block,
-        // ahead of the service's await.
+        // bundle, and only when a stage reads through them: the removals, the
+        // Rewriters and the Verifiers do. The key source is `!Send`, so it
+        // stays inside this block, ahead of the service's await.
         let mut data = {
-            let keys = filter::output_keys(&bundle.bpv7, &data, &*self.key_provider);
-            let data =
-                if bundle.metadata.to_remove.is_empty() && !self.filters.has_deliver_rewriters() {
-                    data
-                } else {
-                    let editor = Editor::new(&bundle.bpv7, &data);
+            let editing =
+                !bundle.metadata.to_remove.is_empty() || self.filters.has_deliver_rewriters();
+            let keys = (editing || self.filters.has_deliver_verifiers())
+                .then(|| filter::output_keys(&bundle.bpv7, &data, &*self.key_provider));
+            let no_keys = KeySet::EMPTY;
+            let keys = keys.as_deref().unwrap_or(&no_keys);
+            let data = if !editing {
+                data
+            } else {
+                let editor = Editor::new(&bundle.bpv7, &data);
 
-                    // The §E removals the ingress gate deferred apply first, so the
-                    // Deliver chain sees the bundle as it will be delivered, and the
-                    // strip can never delete a Rewriter's insert into a removed
-                    // block's number.
-                    let (mut editor, stripped) = self.strip_removed_blocks(&bundle, editor, &*keys);
+                // The §E removals the ingress gate deferred apply first, so the
+                // Deliver chain sees the bundle as it will be delivered, and the
+                // strip can never delete a Rewriter's insert into a removed
+                // block's number.
+                let (mut editor, stripped) = self.strip_removed_blocks(&bundle, editor, keys);
 
-                    // Deliver chain, first stage: the Rewriters (transport-block
-                    // strip).
-                    let rewritten = self
-                        .filters
-                        .run_deliver(&mut editor, &bundle.metadata, &*keys);
+                // Deliver chain, first stage: the Rewriters (transport-block
+                // strip).
+                let rewritten = self
+                    .filters
+                    .run_deliver(&mut editor, &bundle.metadata, keys);
 
-                    // The bytes were validated at ingress and every edit was checked
-                    // when it was staged, so a failed rebuild is a BPA or bpv7 bug.
-                    let rebuilt = (stripped || rewritten).then(|| {
-                        editor
-                            .rebuild_bundle()
-                            .trace_expect("The delivery rewrite failed to rebuild the bundle")
-                    });
-                    match rebuilt {
-                        Some((rebuilt, chunks)) => {
-                            bundle.bpv7.blocks = rebuilt.blocks;
-                            Chunk::flatten_bytes(chunks, data)
-                        }
-                        None => data,
+                // The bytes were validated at ingress and every edit was checked
+                // when it was staged, so a failed rebuild is a BPA or bpv7 bug.
+                let rebuilt = (stripped || rewritten).then(|| {
+                    editor
+                        .rebuild_bundle()
+                        .trace_expect("The delivery rewrite failed to rebuild the bundle")
+                });
+                match rebuilt {
+                    Some((rebuilt, chunks)) => {
+                        bundle.bpv7.blocks = rebuilt.blocks;
+                        Chunk::flatten_bytes(chunks, data)
                     }
-                };
+                    None => data,
+                }
+            };
 
             // Deliver chain, second stage: the Verifiers, over the bundle as it
             // will be delivered.
-            if let Some(reason) = self.filters.verify_deliver(&bundle, &data, &*keys) {
+            if let Some(reason) = self.filters.verify_deliver(&bundle, &data, keys) {
                 return OfferOutcome::Dropped(bundle, reason);
             }
             data
