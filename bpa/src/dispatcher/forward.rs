@@ -246,9 +246,13 @@ impl Dispatcher {
         }
     }
 
-    // The per-hop rewrite, over the Egress Rewriters' output. Its bytes were
-    // validated at ingress, so any failure other than a PerHopRefusal is a
-    // BPA bug or storage corruption, and fatal.
+    // The per-hop rewrite, over the Egress Rewriters' output. It edits over
+    // the record's block index, which the stages before it keep consistent
+    // with `source_data`, and whose coverage stamps are the ones ingress
+    // derived: keyed for a key holder, so this node edits the blocks it has
+    // proven no encrypted BIB covers. The bytes were validated at ingress,
+    // so any failure other than a PerHopRefusal is a BPA bug or storage
+    // corruption, and fatal.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     fn update_extension_blocks(
         &self,
@@ -262,15 +266,6 @@ impl Dispatcher {
         // the cache mirrors the stored bytes, which stay as received. The cache
         // IS observed again after this rewrite: a park's reaper expiry watch
         // reads `extensions.age`, and wants the original, un-bumped value.
-        //
-        // Editor needs a `&Bundle`, so re-parse structurally.
-        let hardy_bpv7::parse::Parsed {
-            data: source_data,
-            bundle: raw,
-            ..
-        } = hardy_bpv7::parse::parse(source_data)
-            .trace_expect("The per-hop rewrite's bytes do not decode");
-
         let legacy = self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop));
 
         // RFC 9171 §4.2.3-4/-5: an admin-record or anonymous bundle's blocks
@@ -290,14 +285,20 @@ impl Dispatcher {
         // security acceptor and verified it at ingress, as for a hop-by-hop
         // PreviousNode signature, the strip also discharges the RFC 9172
         // §5.1.2 acceptor duty; elsewhere the node in effect acts as the
-        // acceptor of an operation it may not have verified. A Previous Node
-        // or Bundle Age block the editor cannot safely update (BCB-covered,
-        // so possibly under an encrypted BIB) refuses, and the caller parks
-        // the bundle: both writes are MUSTs (RFC 9171 §5.4).
+        // acceptor of an operation it may not have verified. A BCB-covered
+        // block is stripped from its BCB and written in plaintext: this node,
+        // required to update the block, is the acceptor of its confidentiality
+        // operation too (forwarder policy). The editor refuses a block whose
+        // coverage reads `BibCoverage::Maybe` — BCB-covered beside an
+        // encrypted BIB this node could not decrypt at ingress, so the BIB may
+        // cover it — or one an encrypted BIB is known to cover, whose
+        // operation cannot be stripped from the ciphertext. A refused
+        // Previous Node or Bundle Age write parks the bundle: both are MUSTs
+        // (RFC 9171 §5.4).
         let covered = |(_, e)| PerHopRefusal::Covered(e);
 
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
+        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bpv7, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(covered)?
             .with_flags(hardy_bpv7::block::Flags {
@@ -317,7 +318,7 @@ impl Dispatcher {
 
         // Increment Hop Count, where the block can be updated. The increment
         // is a SHOULD (RFC 9171 §4.4.3): a Hop Count block the editor refuses
-        // (BCB-covered beside an encrypted BIB that may cover it) travels
+        // (one an encrypted BIB may or does cover) travels
         // unchanged, with its security operations, rather than holding the
         // bundle back. One this node could not read at ingress has no cached
         // value, and travels unchanged too. Origination is not a hop: a bundle
@@ -554,43 +555,6 @@ mod tests {
         assert!(
             metadata_store.get(&bundle_id).await.unwrap().is_none(),
             "the expired bundle is resolved terminally as LifetimeExpired"
-        );
-    }
-
-    /// The per-hop rewrite's bytes were validated at ingress and come back
-    /// from storage, so failing to decode them is a BPA bug or storage
-    /// corruption: fatal, never a park. Driven as a direct call because a
-    /// panic inside a running BPA aborts the test process.
-    #[tokio::test]
-    #[should_panic(expected = "The per-hop rewrite's bytes do not decode")]
-    async fn undecodable_per_hop_bytes_are_fatal() {
-        let dispatcher = dispatcher(
-            Arc::new(MetadataMemStorage::new(None)),
-            Arc::new(BundleMemStorage::new(None, None)),
-        )
-        .await;
-        let (_, data) = hardy_bpv7::builder::Builder::new(
-            "ipn:0.2.1".parse().unwrap(),
-            "ipn:0.3.2".parse().unwrap(),
-        )
-        .with_payload(b"truncated in storage".to_vec().into())
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .unwrap();
-        let data = Bytes::from(data);
-        let bundle = bundle::Bundle {
-            bpv7: crate::bundle::parse::parse_validate_with_provider(
-                data.clone(),
-                hardy_bpv7::bpsec::no_keys,
-            )
-            .unwrap(),
-            metadata: bundle::BundleMetadata::originated(),
-            status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
-        };
-
-        let _ = dispatcher.update_extension_blocks(
-            &bundle,
-            data.slice(..data.len() - 1),
-            &"ipn:0.3.0".parse().unwrap(),
         );
     }
 }
