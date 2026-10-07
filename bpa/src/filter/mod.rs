@@ -41,7 +41,11 @@
 //! its predecessors staged ([`StagedView`](hardy_bpv7::editor::StagedView)),
 //! never its own: the bundle as the preceding links left it, through a
 //! reader over that snapshot. Links that leave the editor as it was share a
-//! snapshot and its reader; a link that edits starts a fresh one.
+//! snapshot and its reader; a link that edits starts a fresh one. At Egress
+//! the editor works over the stored bundle's resident bytes: the headers
+//! always, and the payload while it is in hand. A payload still streaming
+//! from the store reads as `NotResident`; until a storage backend streams
+//! its load, the whole bundle is resident.
 //!
 //! # Failure and Drop contract
 //!
