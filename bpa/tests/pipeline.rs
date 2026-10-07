@@ -1682,8 +1682,8 @@ async fn cla_segmented_without_final_is_refused() {
 
 // ---------------------------------------------------------------------------
 // Streamed ingress: a CLA delivers a bundle split across many segments, its
-// payload arriving after its header — exercising the `Partial` /
-// `drain_tail` (dumb-spool) path end-to-end.
+// payload arriving after its header — exercising the `Partial` path
+// end-to-end, the payload drained by the `ValidatingReceiver`.
 // ---------------------------------------------------------------------------
 
 // A `Receiver` that yields a fixed sequence of segments then reports the

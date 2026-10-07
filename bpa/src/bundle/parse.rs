@@ -293,7 +293,8 @@ pub fn reject_undecryptable_liveness(
 pub struct HeaderVerify {
     pub bundle: Bpv7Bundle,
     pub extensions: ExtensionFields,
-    /// Unrecognised / unsupported blocks to drop in the post-drain §E rewrite.
+    /// Unrecognised / unsupported blocks scheduled for removal: the output
+    /// doors drop them per attempt (`BundleMetadata::to_remove`).
     pub to_remove: HashSet<u64>,
     /// The §5.6 reception-reporting facts (see [`reception_report_for`]).
     /// Carried on the reception assertion whether the bundle is accepted or

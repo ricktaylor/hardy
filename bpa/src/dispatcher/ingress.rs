@@ -75,8 +75,9 @@ impl Dispatcher {
         }
     }
 
-    // Shared bundle processing: parse, validate, store, report, run the
-    // Ingress chain, and hand off to the dispatch queue.
+    // Shared bundle processing: parse and validate the headers, gate them
+    // (the Ingress chain among the gate's checks), drain and store the
+    // payload, report, and hand off to the dispatch queue.
     //
     // Called from the CLA ingress path (`receive_bundle`), the ADU
     // reassembly path (`reassemble`), and restart orphan recovery. Handles

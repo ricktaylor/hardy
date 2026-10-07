@@ -110,7 +110,7 @@ impl FilterChains {
     /// buffer `data` and its already-decoded BCB OperationSets. At the
     /// streaming gate `data` is the header prefix — the payload is not yet
     /// resident, so a filter reading it gets the reader's `NotResident` —
-    /// and the caller threads in `bcbs` re-derived from that prefix.
+    /// and the caller threads in the `bcbs` the gate's header pass decoded.
     #[allow(clippy::result_large_err)]
     pub(crate) fn run_ingress(
         &self,

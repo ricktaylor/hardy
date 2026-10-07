@@ -62,10 +62,6 @@ impl Dispatcher {
                 status,
             };
             match &bundle.status {
-                // `New` never reaches storage — fresh ingress runs the chain in
-                // memory and writes a single `Dispatching` checkpoint — so it is
-                // not a recoverable state and falls to the no-op arm below.
-                //
                 // Dispatching: claimed by the consumer but processing never
                 // completed; DispatchPending: still queued. Both re-enqueue —
                 // the chain already ran, so re-dispatch rather than re-run it.

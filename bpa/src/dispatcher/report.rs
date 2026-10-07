@@ -183,8 +183,8 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, payload),fields(report_to = %report_to)))]
     // Callers gate on `reportable` before paying to build `payload`.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, payload),fields(report_to = %report_to)))]
     async fn dispatch_status_report(&self, payload: Vec<u8>, report_to: &Eid) {
         // Build the bundle
         let (bundle, data) = hardy_bpv7::builder::Builder::new(
