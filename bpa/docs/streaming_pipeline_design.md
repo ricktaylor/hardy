@@ -447,7 +447,7 @@ A bundle has one stored generation: the bytes as received, held unchanged — en
 
 Restart is simpler for it: `storage_name` always names the one received copy, so recovery has no generation to reconcile and no interrupted rewrite to rerun.
 
-The one exception is the ADU reassembly partial ([`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md), not yet built): a bundle this node is assembling rather than one it received, replaced whole on each fragment merge (`BundleStorage::replace`, atomic) until it completes. The completed bundle is then held unchanged like any other.
+The ADU reassembly partial ([`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md), not yet built), a bundle this node is assembling rather than one it received, keeps the rule: each fragment merge writes the merged partial as a new object and retires the previous one, so nothing is rewritten in place. The completed bundle is then held unchanged like any other.
 
 ### 5.7. Complete Ingress Flow
 

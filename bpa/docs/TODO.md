@@ -98,6 +98,10 @@ Open items from the `refactor/filters` deep review routed to this ledger rather 
 
 **`Cla::peers` map value is an anonymous `(Vec<NodeId>, u32)` tuple across five destructure sites (OF-11).** Private `struct PeerEntry { node_ids, peer_id }`.
 
+## Ingress diagnostics name no peer
+
+Refusals and disposals at the CLA ingress door log at `debug!` without the bundle id, the CLA or the peer, and the ingress spans carry no fields, so an operator cannot tell which peer sends oversized, truncated or integrity-failing bundles. An operational logging pass across the doors: the CLA and peer as fields on the receive span, and `TooLarge`, `Truncated` and `IntegrityFailed` at `warn!` with the bundle id when it is known.
+
 ## `no_std` support is blocked by `metrics`
 
 The bpa library is written for `no_std` with a heap allocator, but it depends unconditionally on the `metrics` crate (`bpa/Cargo.toml`), which requires `std`, so the crate does not build `no_std` today (`bpa/docs/design.md`, Dependencies). Put the metric call sites behind a feature, or route them through a `no_std`-capable facade, so the core builds for the embedded targets the workspace's `no_std` crates (cbor, bpv7, bpa) are meant to reach.
