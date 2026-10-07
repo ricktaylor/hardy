@@ -680,7 +680,7 @@ struct ScheduledBlockObserver {
 }
 
 impl Rewriter for ScheduledBlockObserver {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         if ctx
             .bundle()
             .blocks
@@ -3588,7 +3588,7 @@ struct ExtentCheckRewriter {
 }
 
 impl Rewriter for ExtentCheckRewriter {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let reader = ctx.reader();
         let mut mismatch = self.mismatch.lock().unwrap();
 
