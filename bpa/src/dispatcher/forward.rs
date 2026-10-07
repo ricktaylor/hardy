@@ -1,6 +1,6 @@
 // `EditorError` keeps bpv7's editor error apart from this crate's `Error`,
 // in scope through the parent module.
-use hardy_bpv7::editor::Error as EditorError;
+use hardy_bpv7::editor::{Chunk, Editor, Error as EditorError};
 
 use super::*;
 
@@ -87,46 +87,61 @@ impl Dispatcher {
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // The §E removals the ingress gate deferred apply first, so the
-        // Rewriters see the bundle as it will travel, and the strip can never
-        // delete a Rewriter's insert into a removed block's number.
-        let data = self.strip_removed_blocks(&mut bundle, data);
+        // One editor serves the attempt, over the record's block index and
+        // the loaded bytes: the scheduled removals, the Egress Rewriters and
+        // the per-hop writes all edit through it, and the bundle is rebuilt
+        // once. The keys are derived once, over the stored bundle; the key
+        // source is `!Send`, so it stays inside this block, ahead of the
+        // CLA's await.
+        let mut data = {
+            let keys = filter::output_keys(&bundle.bpv7, &data, &*self.key_provider);
+            let editor = Editor::new(&bundle.bpv7, &data);
 
-        // Egress chain: the registered Rewriters, on the stripped wire form.
-        // Nothing at Egress drops a bundle, so the chain hands back the pair.
-        // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Edits are in-memory only (like Deliver), NOT persisted
-        // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress runs again with fresh context
-        let (mut bundle, data) =
+            // The §E removals the ingress gate deferred apply first, so the
+            // Rewriters see the bundle as it will travel, and the strip can never
+            // delete a Rewriter's insert into a removed block's number.
+            let (mut editor, _) = self.strip_removed_blocks(&bundle, editor, &*keys);
+
+            // Egress chain: the registered Rewriters, on the stripped bundle.
+            // Nothing at Egress drops a bundle.
+            // - Runs after dequeue from ForwardPending, just before CLA send
+            // - Edits are in-memory only (like Deliver), NOT persisted
+            // - If send fails or peer goes down, bundle returns to Waiting and may
+            //   route to a different peer, so Egress runs again with fresh context
             self.filters
-                .run_egress(bundle, data, &next_hop, &*self.key_provider);
+                .run_egress(&mut editor, &bundle.metadata, &next_hop, &*keys);
 
-        // The per-hop writes follow the Rewriters, so they supersede any
-        // Rewriter edit to the blocks they write, and the BPSec blocks (BIB/
-        // BCB, possibly peer-specific) belong after them. The rewrite shifts
-        // block extents, so the rebuilt block map replaces the old one. It is
-        // in-memory only: parks persist status alone, and a re-dispatch
-        // re-enters from the persisted representation (see park_bundle), so
-        // no exit needs to restore the stored map.
-        let mut data = match self.update_extension_blocks(&bundle, data, &next_hop) {
-            Ok((new_bundle, data)) => {
-                bundle.bpv7.blocks = new_bundle.blocks;
-                data
-            }
-            Err(PerHopRefusal::ProtectedPrimary) => {
-                debug!(
-                    "Legacy next hop {next_hop} needs a re-encoded primary, which a BPSec operation covers"
-                );
-                return OfferOutcome::Dropped(
-                    bundle,
-                    Some(ReasonCode::UnexpectedSecurityOperation),
-                );
-            }
-            Err(PerHopRefusal::Covered(e)) => {
-                warn!("Failed to update extension blocks: {e}");
-                return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
-            }
+            // The per-hop writes follow the Rewriters, so they supersede any
+            // Rewriter edit to the blocks they write, and the BPSec blocks (BIB/
+            // BCB, possibly peer-specific) belong after them.
+            let editor = match self.update_extension_blocks(&bundle, editor, &next_hop) {
+                Ok(editor) => editor,
+                Err(PerHopRefusal::ProtectedPrimary) => {
+                    debug!(
+                        "Legacy next hop {next_hop} needs a re-encoded primary, which a BPSec operation covers"
+                    );
+                    return OfferOutcome::Dropped(
+                        bundle,
+                        Some(ReasonCode::UnexpectedSecurityOperation),
+                    );
+                }
+                Err(PerHopRefusal::Covered(e)) => {
+                    warn!("Failed to update extension blocks: {e}");
+                    return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
+                }
+            };
+
+            // The one rebuild. The edits shift block extents, so the rebuilt block
+            // map replaces the old one; its bytes were validated at ingress and
+            // every edit was checked when it was staged, so a failure is a BPA or
+            // bpv7 bug, and fatal. It is in-memory only: parks persist status
+            // alone, and a re-dispatch re-enters from the persisted representation
+            // (see park_bundle), so no exit needs to restore the stored map.
+            let (rebuilt, chunks) = editor
+                .rebuild_bundle()
+                .trace_expect("The egress rewrite failed to rebuild the bundle");
+            bundle.bpv7.blocks = rebuilt.blocks;
+            Chunk::flatten_bytes(chunks, data)
         };
 
         // And pass to CLA: the whole bundle is in hand, so it travels as a
@@ -246,20 +261,19 @@ impl Dispatcher {
         }
     }
 
-    // The per-hop rewrite, over the Egress Rewriters' output. It edits over
-    // the record's block index, which the stages before it keep consistent
-    // with `source_data`, and whose coverage stamps are the ones ingress
-    // derived: keyed for a key holder, so this node edits the blocks it has
-    // proven no encrypted BIB covers. The bytes were validated at ingress,
-    // so any failure other than a PerHopRefusal is a BPA bug or storage
-    // corruption, and fatal.
+    // The per-hop writes, on the attempt's editor after the scheduled removals
+    // and the Egress Rewriters. The editor works over the record's block
+    // index, whose coverage stamps are the ones ingress derived: keyed for a
+    // key holder, so this node edits the blocks it has proven no encrypted
+    // BIB covers. The bytes were validated at ingress, so any failure other
+    // than a PerHopRefusal is a BPA bug or storage corruption, and fatal.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    fn update_extension_blocks(
+    fn update_extension_blocks<'a>(
         &self,
         bundle: &bundle::Bundle,
-        source_data: Bytes,
+        editor: Editor<'a>,
         next_hop: &Eid,
-    ) -> Result<(hardy_bpv7::Bundle, Bytes), PerHopRefusal> {
+    ) -> Result<Editor<'a>, PerHopRefusal> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
         // bumped values back: the rewrite is per-attempt and in-memory only, and
@@ -298,7 +312,7 @@ impl Dispatcher {
         let covered = |(_, e)| PerHopRefusal::Covered(e);
 
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bpv7, &source_data)
+        let mut editor = editor
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(covered)?
             .with_flags(hardy_bpv7::block::Flags {
@@ -422,19 +436,7 @@ impl Dispatcher {
             }
         }
 
-        // rebuild_bundle() returns a Bundle whose block extents index the
-        // rewritten data, keeping the (bundle, data) pair consistent for the
-        // CLA hand-off
-        let (new_bundle, chunks) = editor
-            .rebuild_bundle()
-            .trace_expect("The per-hop rewrite failed to rebuild the bundle");
-
-        // Zero-copy in place if `source_data` uniquely owns; otherwise
-        // allocates a fresh buffer.
-        Ok((
-            new_bundle,
-            hardy_bpv7::editor::Chunk::flatten_bytes(chunks, source_data),
-        ))
+        Ok(editor)
     }
 }
 

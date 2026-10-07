@@ -1,7 +1,12 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
 use futures::join;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::{
+    bpsec::{edit::BPSecEditor, key::KeySource},
+    editor::Editor,
+    eid::Eid,
+    status_report::ReasonCode,
+};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
@@ -443,32 +448,29 @@ impl Dispatcher {
 
     // Applies the §E block removals the ingress gate deferred (RFC 9172
     // §5.1.1 failure-drops and honoured `delete_block_on_failure` unknowns)
-    // to a bundle's wire form for one output attempt, ahead of the door's
-    // filter chain; the stored bundle keeps the blocks. The editor works over
-    // the record's block index, the parse ingress verified, and its coverage
-    // stamps (keyed for a key holder), so nothing is re-parsed. The rebuilt
-    // block map replaces the record's, so the pair stays consistent (the
-    // primary is never replaced). Nothing scheduled costs one branch. bpv7's
-    // cascade retains, rather than fails on, a removal it cannot complete for
-    // want of a key; the bytes were validated at ingress, so any failure here
-    // is a BPA bug or storage corruption, and fatal.
-    fn strip_removed_blocks(&self, bundle: &mut bundle::Bundle, data: Bytes) -> Bytes {
-        use hardy_bpv7::bpsec::edit::BPSecEditor;
-
+    // to the attempt's editor, ahead of the door's filter chain; the stored
+    // bundle keeps the blocks. The editor works over the record's block
+    // index, the parse ingress verified, and its coverage stamps (keyed for a
+    // key holder), so nothing is re-parsed. Nothing scheduled costs one
+    // branch. bpv7's cascade retains, rather than fails on, a removal it
+    // cannot complete for want of a key; the bytes were validated at ingress,
+    // so any failure here is a BPA bug or storage corruption, and fatal.
+    // Returns whether a block was removed.
+    fn strip_removed_blocks<'a>(
+        &self,
+        bundle: &bundle::Bundle,
+        editor: Editor<'a>,
+        keys: &dyn KeySource,
+    ) -> (Editor<'a>, bool) {
         if bundle.metadata.to_remove.is_empty() {
-            return data;
+            return (editor, false);
         }
-        let key_source = self.key_source(&bundle.bpv7, &data);
         let to_remove = bundle.metadata.to_remove.iter().copied().collect();
-        let (editor, _) = hardy_bpv7::editor::Editor::new(&bundle.bpv7, &data)
-            .remove_blocks(to_remove, key_source.as_ref())
+        let (editor, removed) = editor
+            .remove_blocks(to_remove, keys)
             .map_err(|(_, e)| e)
             .trace_expect("The scheduled block removals failed");
-        let (stripped, chunks) = editor
-            .rebuild_bundle()
-            .trace_expect("The scheduled block removals failed to rebuild the bundle");
-        bundle.bpv7.blocks = stripped.blocks;
-        hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data)
+        (editor, !removed.is_empty())
     }
 }
 

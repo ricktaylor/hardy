@@ -461,7 +461,7 @@ impl Dispatcher {
                 .filters
                 .run_originate(bundle, head, bcbs, &*self.key_provider)
             {
-                filter::ChainOutcome::Continue(bundle, _) => bundle,
+                filter::ChainOutcome::Continue(bundle) => bundle,
                 filter::ChainOutcome::Drop(_, reason) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
