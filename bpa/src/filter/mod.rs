@@ -31,11 +31,17 @@
 //! not (not resident, no key, not decryptable). It memoises, decrypting a
 //! covered block at most once for the filters that share it: one reader
 //! serves a whole input pass and the Verifiers that close the Deliver
-//! chain, and each Rewriter gets its own, since an edit replaces the bytes.
-//! [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
+//! chain. [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
 //! CBOR-decodes a block body. A Verifier's and a Classifier's context also
 //! lends the payload's resident prefix, the declared peek among it, through
 //! [`VerifyContext::payload_peek`].
+//!
+//! The Rewriters of an output hook edit one editor, the attempt's, which
+//! the output door rebuilds once. A Rewriter reads a snapshot of the edits
+//! its predecessors staged ([`StagedView`](hardy_bpv7::editor::StagedView)),
+//! never its own: the bundle as the preceding links left it, through a
+//! reader over that snapshot. Links that leave the editor as it was share a
+//! snapshot and its reader; a link that edits starts a fresh one.
 //!
 //! # Failure and Drop contract
 //!
@@ -50,23 +56,18 @@
 //! | Ingress | dropped before anything is stored, with one reception + deletion report per the bundle's request flags | the same, without the deletion assertion even when the flags request one (a requested reception report is still sent) | none — the chain decodes nothing itself: it runs on the gate's header decode, whose failures are the header pass's |
 //! | Deliver | dropped with a flag-gated deletion report | deleted silently | fatal (below) |
 //!
-//! At Egress the chain runs on the per-hop rewrite's output, and that
-//! rewrite decodes the stored bytes first (an undecodable stored bundle
-//! parks `Waiting` there, before the chain runs), so an Egress chain
-//! failure means the BPA's own rebuild produced bytes that do not decode.
-//!
 //! `bpa.filter.filtered` counts every Drop and `bpa.filter.modified` every
-//! applied rewrite, both by hook.
+//! Rewriter that edited, both by hook.
 //!
-//! The output chains have no failure path. Their bytes were validated at
-//! ingress and are read back from storage, so an Egress or Deliver chain
-//! that cannot decode them has met a BPA bug or storage corruption. A
-//! [`Rewriter`] execution failure — an invalid edit, or an edit whose
-//! materialised bytes do not re-parse — means a rewrite that was meant to
-//! work has not. Either leaves every subsequent processing step undefined,
-//! so the engine panics (naming the failing link's pack-prefixed label, for
-//! a Rewriter), and the panic aborts the process — the fail-fast rule,
-//! applied by analogy with a storage fault. The bundle stays stored and
+//! The output chains have no failure path. They work from the record's
+//! block index, the parse ingress verified, and decode only the BCB
+//! operation sets it locates; those bytes were validated at ingress and are
+//! read back from storage, so a failure to decode them is a BPA bug or
+//! storage corruption. Every edit is checked when it is staged, so the
+//! output door's one rebuild fails only on a BPA or bpv7 bug. Either leaves
+//! every subsequent processing step undefined, so the BPA panics, and the
+//! panic aborts the process — the fail-fast rule, applied by analogy with a
+//! storage fault. The bundle stays stored and
 //! restart recovery re-queues it, so a deterministic failure recurs on every
 //! restart: the node crash-loops until the bundle is removed, the accepted
 //! cost of failing fast. The [`ExtensionEditor`] refuses at call time the
@@ -83,7 +84,7 @@ use crate::{Arc, bundle::BundleMetadata};
 
 mod engine;
 
-pub(crate) use self::engine::ChainOutcome;
+pub(crate) use self::engine::{ChainOutcome, output_keys};
 
 pub mod pack;
 pub mod slots;
@@ -275,10 +276,11 @@ impl Debug for ClassifyContext<'_> {
 /// block bodies, the BPA-local record state, the [`Boundary`] it runs at,
 /// and the scoped [`ExtensionEditor`] its edits go through.
 ///
-/// Built by the engine for each Rewriter, over the wire form as the
-/// preceding link left it. The read getters return the lent views
-/// themselves, not borrows of the context, so a Rewriter can hold a block
-/// it read while it edits; see [reading the bundle](self#reading-the-bundle).
+/// Built by the engine for each Rewriter, over a snapshot of the edits the
+/// preceding links staged; its editor is a handle on the attempt's one
+/// editor. The read getters return the lent views themselves, not borrows
+/// of the context, so a Rewriter can hold a block it read while it edits;
+/// see [reading the bundle](self#reading-the-bundle).
 ///
 /// `'e` is the invocation's lending lifetime and `'a` the lifetime of the
 /// bundle data the engine's editor borrows; a Rewriter names neither
@@ -308,19 +310,23 @@ impl<'e, 'a> RewriteContext<'e, 'a> {
         }
     }
 
-    /// The wire bundle as this invocation received it: the primary block
-    /// and the per-block headers.
+    /// The bundle as the preceding links left it: the primary block and the
+    /// block headers, with their current BPSec coverage.
     ///
-    /// This is the parsed [`hardy_bpv7::Bundle`], not the BPA's stored
-    /// [`Bundle`](crate::bundle::Bundle) record. Edits made through
+    /// This is a [`hardy_bpv7::Bundle`], not the BPA's stored
+    /// [`Bundle`](crate::bundle::Bundle) record. A block a preceding link
+    /// inserted or replaced is staged, not yet on the wire, so its `extent`
+    /// and `data` index nothing: read block bodies through the
+    /// [`reader`](Self::reader). Edits made through
     /// [`editor`](Self::editor) do not show here; the next link sees them.
     #[must_use]
     pub fn bundle(&self) -> &'e Bundle {
         self.bundle
     }
 
-    /// The reader over the block bodies as this invocation received them:
-    /// plaintext, or BCB-decrypted with the node's keys.
+    /// The reader over the block bodies as the preceding links left them:
+    /// a staged block's data, or a wire block's plaintext, BCB-decrypted
+    /// with the node's keys.
     #[must_use]
     pub fn reader(&self) -> &'e dyn Reader<'e> {
         self.reader
@@ -420,8 +426,9 @@ pub trait Classifier: Send + Sync {
 /// Its edits are confined to *extension* blocks — never the payload — so it
 /// runs before the payload's BPSec decrypt at Deliver; the reader decrypts
 /// any block it needs to inspect. Each Rewriter sees its predecessors'
-/// edits: the engine materialises every invocation's edits into the wire
-/// form before the next invocation reads it.
+/// edits: they all edit the attempt's one editor, and each reads a snapshot
+/// of the edits staged before it. Nothing is materialised until the output
+/// door rebuilds the bundle, once.
 ///
 /// At Egress the Rewriters run before the BPA's per-hop writes (RFC 9171
 /// §5.4), which supersede their edits to the blocks those writes cover: the
@@ -435,18 +442,18 @@ pub trait Classifier: Send + Sync {
 /// A Rewriter has no verdict: it edits the bundle or leaves it as it is,
 /// and never drops it. An [`ExtensionEditor`] refusal is the Rewriter's
 /// no-match path. A block the Rewriter inserted is a valid target for its
-/// own later `replace` or `remove` in the same invocation. An edit the
-/// editor accepted that then fails to materialise aborts the process (see
-/// the [failure contract](self#failure-and-drop-contract)).
+/// own later `replace` or `remove` in the same invocation. The editor checks
+/// every edit when it is staged, so an accepted edit materialises (see the
+/// [failure contract](self#failure-and-drop-contract)).
 pub trait Rewriter: Send + Sync {
     /// Edit extension blocks through the context's
     /// [`editor`](RewriteContext::editor) — insert/replace/remove only,
     /// never the primary, payload, or BIB/BCB blocks, and never a block
-    /// under existing BPSec coverage. The context's bundle and reader are
-    /// the wire form as this invocation received it, and its
+    /// under existing BPSec coverage. The context's bundle and reader show
+    /// the bundle as the preceding links left it, and its
     /// [`boundary`](RewriteContext::boundary) says where it runs (and, at
-    /// Egress, the resolved next hop). The engine materialises the
-    /// accepted edits when it returns.
+    /// Egress, the resolved next hop). The accepted edits stay staged in the
+    /// attempt's editor, which the output door rebuilds.
     fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>);
 }
 
