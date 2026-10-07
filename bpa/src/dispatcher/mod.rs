@@ -79,7 +79,9 @@ enum OfferOutcome {
     /// Deliberate detach: the CLA owns the transfer (`Accepted`) and
     /// resolves the claim later via `transfer_outcome`.
     Detached(bundle::Bundle),
-    /// Re-enter dispatch for a fresh routing decision.
+    /// Re-enter dispatch for a fresh routing decision: `resolve_offer`
+    /// re-claims the bundle out of its hand-off status and reloads it from
+    /// storage first.
     Redispatch(bundle::Bundle),
 }
 
@@ -290,11 +292,7 @@ impl Dispatcher {
     /// arbitrates through the claim-back CAS, so exactly one side proceeds.
     ///
     /// A re-dispatch discards the in-hand copy and re-enters from the
-    /// persisted representation: parks persist status only, and a failure
-    /// exit may hand in a bundle carrying in-memory rewrites (hop count,
-    /// filter mutations) whose block extents no longer index the stored
-    /// bytes. Reloading here keeps that invariant in one place instead of
-    /// at every caller's exit.
+    /// persisted representation ([`reenter_dispatch`](Self::reenter_dispatch)).
     pub async fn park_bundle(
         &self,
         mut bundle: bundle::Bundle,
@@ -312,17 +310,29 @@ impl Dispatcher {
                 .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
                 .await
         {
-            let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
-                // Someone resolved the bundle after the swap (e.g. the
-                // reaper dropped it as expired); their resolution stands.
-                debug!("Re-dispatch lost the bundle to a concurrent resolution");
-                return;
-            };
             debug!("Routing changed mid-flight, re-dispatching parked bundle");
-            return self.dispatch_bundle(bundle).await;
+            return self.reenter_dispatch(&bundle).await;
         }
 
         self.store.watch_bundle(bundle).await
+    }
+
+    /// Re-enters dispatch for a bundle the caller has just re-claimed into
+    /// `Dispatching`, from its persisted record rather than the copy in
+    /// hand: parks persist status only, and the delivery door's failure
+    /// exit hands in a bundle whose block index is the attempt's rebuild
+    /// (the scheduled removals, the Deliver Rewriters), whose extents no
+    /// longer index the stored bytes. The egress door leaves the record as
+    /// stored. Reloading here keeps that invariant in one place instead of
+    /// at every caller's exit.
+    async fn reenter_dispatch(&self, bundle: &bundle::Bundle) {
+        let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
+            // Someone resolved the bundle after the swap (e.g. the reaper
+            // dropped it as expired); their resolution stands.
+            debug!("Re-dispatch lost the bundle to a concurrent resolution");
+            return;
+        };
+        self.dispatch_bundle(bundle).await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
@@ -382,7 +392,27 @@ impl Dispatcher {
                 // still reaps it promptly.
                 self.store.watch_bundle(bundle).await
             }
-            OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
+            OfferOutcome::Redispatch(mut bundle) => {
+                // The re-claim is a conditional swap from the in-hand status:
+                // a concurrent resolver (the reaper, a peer sweep, a
+                // duplicate outcome) may have got there first, and its
+                // resolution stands.
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!(
+                        "Re-dispatch of {} lost the resolution race, ignored",
+                        bundle.id()
+                    );
+                    return;
+                }
+                if matches!(kind, OfferKind::Forward) {
+                    metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
+                }
+                self.reenter_dispatch(&bundle).await
+            }
         }
     }
 
