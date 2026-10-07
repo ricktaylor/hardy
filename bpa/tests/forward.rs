@@ -19,10 +19,12 @@ use hardy_bpa::{
     services,
     stream::{Receiver, Segment},
 };
-use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
-#[cfg(feature = "rfc9173")]
 use hardy_bpv7::{
     block,
+    eid::{Eid, IpnNodeId, NodeId},
+};
+#[cfg(feature = "rfc9173")]
+use hardy_bpv7::{
     bpsec::{
         DecryptingReader,
         encryptor::{self, Encryptor},
@@ -285,10 +287,11 @@ async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
 // Full-path tests: dispatcher -> forward
 // ---------------------------------------------------------------------------
 
-/// A streaming CLA receives the whole bundle as a single `Final` segment
-/// with an exact `total_len`.
+/// A streaming CLA receives the rebuilt bundle as segments, one per chunk of
+/// the egress rebuild, ending in a `Final`, with an exact `total_len`; the
+/// bundle carries this node's Previous Node and the payload as stored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streaming_cla_receives_single_final_segment() {
+async fn streaming_cla_receives_the_rebuild_as_segments() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false).await;
 
@@ -320,15 +323,44 @@ async fn streaming_cla_receives_single_final_segment() {
     else {
         panic!("Expected the streamed door, got another event");
     };
-    assert_eq!(segments.len(), 1);
-    let Segment::Final(data) = &segments[0] else {
-        panic!("Expected a single Final segment");
-    };
+    let (last, init) = segments.split_last().expect("at least the Final");
+    assert!(
+        !init.is_empty() && init.iter().all(|s| matches!(s, Segment::Next(_))),
+        "the rebuild travels as its chunks, not one flattened buffer"
+    );
+    assert!(matches!(last, Segment::Final(_)));
+    let data: Vec<u8> = segments
+        .iter()
+        .flat_map(|(Segment::Next(data) | Segment::Final(data))| data.iter().copied())
+        .collect();
     assert_eq!(total_len, data.len() as u64);
 
-    let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse forwarded bundle");
+    let parsed = hardy_bpv7::parse::parse(data.into()).expect("Failed to parse forwarded bundle");
     assert_eq!(parsed.bundle.primary.id.source, source_eid);
     assert_eq!(parsed.bundle.primary.destination, dest);
+    let Eid::Ipn { fqnn, .. } = source_eid else {
+        panic!("an ipn application endpoint");
+    };
+    let previous = parsed
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == block::Type::PreviousNode)
+        .expect("the forwarder writes a Previous Node")
+        .extract::<Eid>(&parsed.data)
+        .expect("the previous node decodes")
+        .expect("the previous node is resident");
+    assert_eq!(
+        previous,
+        Eid::Ipn {
+            fqnn,
+            service_number: 0
+        }
+    );
+    assert_eq!(
+        parsed.bundle.blocks[&1].payload(&parsed.data),
+        Some(&b"Hello remote"[..])
+    );
 
     assert!(events_rx.is_empty());
     bpa.shutdown().await;

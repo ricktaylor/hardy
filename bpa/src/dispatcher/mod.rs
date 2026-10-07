@@ -10,7 +10,10 @@ use hardy_bpv7::{
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
-use crate::filter::pack::chains::FilterChains;
+use crate::{
+    filter::pack::chains::FilterChains,
+    stream::{Receiver, Segment},
+};
 
 mod admin;
 mod deliver;
@@ -18,6 +21,7 @@ mod dispatch;
 mod forward;
 mod ingress;
 mod originate;
+mod output;
 mod reassemble;
 mod report;
 mod restart;
@@ -212,14 +216,29 @@ impl Dispatcher {
     /// `LifetimeExpired`).
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn load_data_or_drop(&self, bundle: bundle::Bundle) -> Option<(bundle::Bundle, Bytes)> {
-        let storage_name = bundle
-            .metadata
-            .storage_name
-            .as_ref()
-            .trace_expect("Bundle without storage_name reached load_data_or_drop");
+        let data = self.store.load_data(stored_name(&bundle)).await;
+        self.loaded_or_drop(bundle, data).await
+    }
 
-        match self.store.load_data(storage_name).await {
-            Some(data) => Some((bundle, data)),
+    /// Open bundle data as a segment stream, dropping the bundle as
+    /// [`load_data_or_drop`](Self::load_data_or_drop) does when the data is
+    /// missing.
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    async fn load_stream_or_drop(
+        &self,
+        bundle: bundle::Bundle,
+    ) -> Option<(bundle::Bundle, Box<dyn Receiver<Segment>>)> {
+        let stream = self.store.load_stream(stored_name(&bundle)).await;
+        self.loaded_or_drop(bundle, stream).await
+    }
+
+    async fn loaded_or_drop<T>(
+        &self,
+        bundle: bundle::Bundle,
+        loaded: Option<T>,
+    ) -> Option<(bundle::Bundle, T)> {
+        match loaded {
+            Some(loaded) => Some((bundle, loaded)),
             None => {
                 if !bundle.has_expired() {
                     // Bundle data was deleted while queued - not reaped
@@ -472,6 +491,16 @@ impl Dispatcher {
             .trace_expect("The scheduled block removals failed");
         (editor, !removed.is_empty())
     }
+}
+
+// The storage name of a bundle an output door loads: every record in the
+// pipeline has its data stored.
+fn stored_name(bundle: &bundle::Bundle) -> &str {
+    bundle
+        .metadata
+        .storage_name
+        .as_ref()
+        .trace_expect("Bundle without storage_name reached an output door")
 }
 
 // Fixtures shared by the dispatcher's submodule tests.

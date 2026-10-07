@@ -1,8 +1,11 @@
 // `EditorError` keeps bpv7's editor error apart from this crate's `Error`,
 // in scope through the parent module.
-use hardy_bpv7::editor::{Chunk, Editor, Error as EditorError};
+use hardy_bpv7::editor::{Editor, Error as EditorError};
 
-use super::*;
+use super::{
+    output::{ChunkReceiver, Resident, pull_headers},
+    *,
+};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
@@ -24,10 +27,12 @@ impl Dispatcher {
         };
         let next_hop = next_hop.clone();
 
-        // Get bundle data from store, now we know we need it!
-        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
+        // Open the stored bundle, now we know we need it, and hold it until
+        // its headers are resident: the payload streams on to the CLA.
+        let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
             return;
         };
+        let resident = pull_headers(&bundle.bpv7, stream).await;
 
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).
@@ -66,7 +71,7 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Forward,
-            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, data, seen)
+            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, resident, seen)
                 .await,
         )
         .await
@@ -84,18 +89,18 @@ impl Dispatcher {
         cla_addr: &cla::ClaAddress,
         next_hop: Eid,
         mut bundle: bundle::Bundle,
-        data: Bytes,
+        resident: Resident,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
         // One editor serves the attempt, over the record's block index and
-        // the loaded bytes: the scheduled removals, the Egress Rewriters and
-        // the per-hop writes all edit through it, and the bundle is rebuilt
-        // once. The keys are derived once, over the stored bundle; the key
-        // source is `!Send`, so it stays inside this block, ahead of the
-        // CLA's await.
-        let mut data = {
-            let keys = filter::output_keys(&bundle.bpv7, &data, &*self.key_provider);
-            let editor = Editor::new(&bundle.bpv7, &data);
+        // the resident bytes: the scheduled removals, the Egress Rewriters
+        // and the per-hop writes all edit through it, and the bundle is
+        // rebuilt once. The keys are derived once, over the stored bundle;
+        // the key source is `!Send`, so it stays inside this block, ahead of
+        // the CLA's await.
+        let chunks = {
+            let keys = filter::output_keys(&bundle.bpv7, &resident.bytes, &*self.key_provider);
+            let editor = Editor::new(&bundle.bpv7, &resident.bytes);
 
             // The §E removals the ingress gate deferred apply first, so the
             // Rewriters see the bundle as it will travel, and the strip can never
@@ -141,14 +146,16 @@ impl Dispatcher {
                 .rebuild_bundle()
                 .trace_expect("The egress rewrite failed to rebuild the bundle");
             bundle.bpv7.blocks = rebuilt.blocks;
-            Chunk::flatten_bytes(chunks, data)
+            chunks
         };
 
-        // And pass to CLA: the whole bundle is in hand, so it travels as a
-        // single Final segment.
-        let total_len = data.len() as u64;
+        // And pass to CLA: the rebuild's chunks travel as segments, the kept
+        // payload streaming on from the store, and the rebuilt block map
+        // gives the exact length.
+        let total_len = bundle.bpv7.encoded_len();
+        let mut stream = ChunkReceiver::new(chunks, resident, total_len);
         match cla
-            .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
+            .forward(lane, cla_addr, bundle.id(), total_len, &mut stream)
             .await
         {
             Ok(cla::ForwardBundleResult::Sent) => OfferOutcome::Completed(bundle),

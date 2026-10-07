@@ -24,15 +24,17 @@ This is a living document: the sections below mix shipped behaviour with design 
 - Parse-mode collapse (§9.3) — the three `parse_{preserve,canonicalize,full}_with_provider` pipelines are gone; call sites compose the primitives (`bpa::bundle::parse`).
 - Decoded extension fields — pre-parsed at ingress into `BundleMetadata` (§2.3's open choice is resolved; the filter redesign partitions them as the **wire cache** group). The rich `bpa::Bpv7Bundle` view is replaced by structural `hardy_bpv7::Bundle` + metadata.
 - `RewrittenBundle` and the `Checked` / `Rewritten` / `Parsed` taxonomy removed from `bpv7`.
+- Streamed egress without cryptographic stages (§6.3) — `forward_bundle` opens the stored bundle with `Store::load_stream`, the streaming read seam, and holds it only until the bytes held reach the payload's data (`dispatcher::output::pull_headers`): every header the output stages edit or read is then resident. One editor over those bytes serves the attempt — the scheduled removals, the Egress Rewriters and the per-hop writes — and rebuilds once, and the rebuild's chunks reach `Cla::forward` as segments (`dispatcher::output::ChunkReceiver`): the outer array's head, an edited block's new bytes, a kept block's resident bytes zero-copy, and the stored payload, the rest of the load stream after the resident bytes. `total_len` is the rebuilt block index's `encoded_len()`. Nothing on the egress path parses or flattens the bundle.
 
 **Interim (works, not yet the target shape)**
 
 - The spool's destination is still RAM: `Store::save_stream` accumulates its segment stream (bounded by `max_bundle_size`) and commits via `BundleStorage::save(Bytes)` on the final segment. The seam now lives *inside the store wrapper*, behind the target signature — one `Receiver<Segment>` in, storage name out — so the storage-spool tranche swaps `save_stream`'s body (and the backend trait) for the streamed write (§3) without touching pipeline code: every stage upstream already sees a plain `Receiver<Segment>`, and ingress already deletes a staged save whose post-stream validation fails (the discard half of the contract).
+- The load's source is RAM too: `Store::load_stream` loads the whole buffer through `BundleStorage::load` and yields it as one `Final`, so the resident bytes are the whole stored bundle and an Egress Rewriter reads the payload. The output door already pulls only through the header region, so the storage-spool tranche swaps `load_stream`'s body without touching pipeline code.
 - The drain follows the gate decisions: the door drains its decorated stream through one `Store::save_stream` call only once the chain and the route lookup have settled, and a rejected arrival spools nothing (§5.7's ordering, landed); a Classifier-set storage QoS that the spool must honour is a policy-tranche target. What remains interim is only the spool's RAM destination above.
 
 **Pending**
 
-- Streaming storage (§3 — `BundleStorage` still exposes `save(Bytes)` / `load -> Result<Option<Bytes>>`; swapping `Store::save_stream`'s RAM accumulator for the backend's streamed `store()` is the remaining prerequisite for the payload-never-in-RAM property §2.5), the egress executor (with its cryptographic stages) feeding the streamed `Cla::forward` (§6), the §10 phases.
+- Streaming storage (§3 — `BundleStorage` still exposes `save(Bytes)` / `load -> Result<Option<Bytes>>`; swapping `Store::save_stream`'s RAM accumulator for the backend's streamed `store()`, and `Store::load_stream`'s whole-buffer body for the backend's streamed load, are the remaining prerequisites for the payload-never-in-RAM property §2.5), the egress cryptographic stages (§6.1.1), delivery's streamed output, the §10 phases.
 
 Where a section below still describes the pre-implementation shape, the API names in this block are authoritative.
 
@@ -99,9 +101,9 @@ The 1GB memory ceiling (§1.2) is the most concrete demonstration of the archite
 | 2 | Parse | whole-buffer parse needs complete `&[u8]` | 1GB resident | resolved — streamed parser (§5.2) |
 | 3 | Storage write | `BundleStorage::save(Bytes)` — bundle in RAM through the write | 1GB I/O | remains — §3 / Phase A |
 | 4 | Reject timing | cannot reject until fully received and stored | wasted | resolved — pre-drain gate (§5.4) |
-| 5 | Storage read | `BundleStorage::load()` reads the whole bundle back | 1GB alloc | remains — §3 / Phase B |
-| 6 | Editor flatten | `flatten`/`flatten_inplace()` may need a second buffer | 1-2GB | remains — streamed egress edits only the resident header region (§6.1) / Phase B |
-| 7 | CLA forward | `Cla::forward` receives the loaded bundle as one whole-buffer segment, and buffering CLAs hold it while transmitting | 1GB resident | remains — streamed egress (§6.2) / Phase B |
+| 5 | Storage read | `BundleStorage::load()` reads the whole bundle back | 1GB alloc | remains in the backends — §3 / Phase B; the egress door already pulls only its header region through `Store::load_stream` |
+| 6 | Editor flatten | `flatten`/`flatten_inplace()` may need a second buffer | 1-2GB | resolved at egress — the rebuild's chunks travel as segments (§6.3); delivery still flattens once |
+| 7 | CLA forward | `Cla::forward` receives the loaded bundle as one whole-buffer segment, and buffering CLAs hold it while transmitting | 1GB resident | partly resolved — the bundle arrives as segments with a plan-derived `total_len` (§6.2); buffering CLAs still hold it (`INTERIM BUFFERING`, Phase B) |
 
 #### 2.5.2. With This Design
 
@@ -571,7 +573,7 @@ Each step is a `mac.update()` or AAD accumulation call. The stage provides these
 
 ### 6.2. CLA Egress: Cla::forward and Cla::write
 
-> **Landed state (2026-08).** There is no buffered/streamed pair: `Cla::forward` is the one, streamed-only method (keeping `forward`'s `bundle_id` correlation parameter, which the sketch predates), and the buffering adapter the sketch describes is the public helper `stream::buffer_stream` — it buffers the stream via `concat_stream`, enforces `total_len` exactly (with a `usize` pre-flight for 32-bit targets), and maps truncation to `StreamCancelled`, overrun to `PayloadTooLarge`, and short delivery to `PayloadUnderrun`. CLAs that need a contiguous bundle call it explicitly (marked `INTERIM BUFFERING` at each site). The dispatcher always forwards through the streamed door, passing the loaded bundle as `&mut Bytes` (a whole buffer is itself a one-segment `Receiver`) with `total_len = data.len()`. The egress executor, streamed storage `load`, and the plan-derived `total_len` below remain pending.
+> **Landed state (2026-08).** There is no buffered/streamed pair: `Cla::forward` is the one, streamed-only method (keeping `forward`'s `bundle_id` correlation parameter, which the sketch predates), and the buffering adapter the sketch describes is the public helper `stream::buffer_stream` — it buffers the stream via `concat_stream`, enforces `total_len` exactly (with a `usize` pre-flight for 32-bit targets), and maps truncation to `StreamCancelled`, overrun to `PayloadTooLarge`, and short delivery to `PayloadUnderrun`. CLAs that need a contiguous bundle call it explicitly (marked `INTERIM BUFFERING` at each site). The dispatcher forwards the egress rebuild through the streamed door as segments (`dispatcher::output::ChunkReceiver`: the outer array's head, each chunk of the rebuild — new bytes or a zero-copy slice of the resident bytes — and the stored payload streaming on from `Store::load_stream`), with the plan-derived `total_len` below: the rebuilt block index's `encoded_len()`. The egress cryptographic stages and the backends' streamed `load` remain pending.
 
 Original sketch — a buffered `Cla::forward(Bytes)` for CLAs that expect a complete bundle in memory, beside a streaming variant that takes a `Receiver<Segment>` from which the CLA pulls chunks, mirroring the §5.1.3 sketch:
 
@@ -606,10 +608,10 @@ Internally, the BPA always uses `write()`. The egress executor reads sequentiall
 
 ### 6.3. The Common Forward Path
 
-For the hot forward path (no BPSec added at this node, no egress filter edits), no cryptographic stage runs. The Editor updates the per-hop blocks in the resident header region — it finds them by `block_type` in the `Bundle` index (§9.3 — the Bundle does not carry decoded extension-block fields) and decodes each body from the resident bytes — and the executor emits:
+For the hot forward path (no BPSec added at this node, no egress filter edits), no cryptographic stage runs. The output door pulls the stored bundle until its header region is resident, and the attempt's one editor writes the per-hop blocks over the record's block index, from the extension values cached at ingress (§9.3 — the Bundle does not carry decoded extension-block fields). The rebuild's chunks travel to the CLA as segments:
 
-1. The edited header region: the primary block, the updated previous_node (~30B), hop_count (~15B) and bundle_age (~15B) blocks, and the remaining extension blocks unchanged
-2. The stored payload, passed through unchanged
+1. The edited header region: the primary block, the updated previous_node (~30B), hop_count (~15B) and bundle_age (~15B) blocks as new bytes, and the remaining extension blocks unchanged, as slices of the resident bytes
+2. The stored payload, passed through unchanged: the resident part as a slice, then the rest of the load stream
 
 No crypto. No random access. Sequential read from storage to the CLA. Peak memory: the resident header region plus the read buffer.
 
@@ -810,10 +812,9 @@ Result: the payload-never-in-RAM property (§2.5) on ingress.
 
 ### Phase B: Streaming Egress
 
-1. Replace `BundleStorage::load -> Bytes` with the streaming `load(&str, &dyn Sender<Bytes>)` across backends
+1. Replace `BundleStorage::load -> Bytes` with the streaming `load(&str, &dyn Sender<Bytes>)` across backends, behind `Store::load_stream`: the output door already pulls only its header region and streams the rest (status block)
 2. Retire the `INTERIM BUFFERING` sites: CLAs consume `Cla::forward`'s stream segment-at-a-time rather than calling `stream::buffer_stream` (§6.2)
-3. Egress executor: spawn `load()`, emit the edited header region, stream the payload through any cryptographic stages into `Cla::write()`'s channel (§6.2)
-4. BPSec egress stages (integrity; confidentiality for header targets) as the hard-coded cryptographic stages, keyed through the `KeyProvider` (§6.1.1), reusing `Signer` / `Encryptor` for resident header targets
+3. BPSec egress stages (integrity; confidentiality for header targets) as the hard-coded cryptographic stages, keyed through the `KeyProvider` (§6.1.1), reusing `Signer` / `Encryptor` for resident header targets
 
 ### Phase C: Tee'd Ingress — dropped
 

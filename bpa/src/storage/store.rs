@@ -150,6 +150,22 @@ impl Store {
         Ok((self.save_data(data).await, len))
     }
 
+    /// Open bundle data by storage name as a segment stream; `None` when the
+    /// data is gone.
+    ///
+    /// This is the streaming read seam, the twin of
+    /// [`save_stream`](Self::save_stream): callers pull the stored bundle a
+    /// segment at a time and hold only what they need. The interim body loads
+    /// the whole buffer through [`load_data`](Self::load_data) and yields it
+    /// as one [`Segment::Final`]; the storage tranche replaces the body with
+    /// the backends' streamed load, and no caller changes.
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    pub async fn load_stream(&self, storage_name: &str) -> Option<Box<dyn Receiver<Segment>>> {
+        self.load_data(storage_name)
+            .await
+            .map(|data| Box::new(data) as Box<dyn Receiver<Segment>>)
+    }
+
     /// Load bundle data by storage name (read-through cache).
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
