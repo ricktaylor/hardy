@@ -167,6 +167,18 @@ The keyed pass enforces RFC 9172 §3.8 ("A BCB MUST NOT target a BIB unless it s
 
 - Keep the exemption until the WG rules, then align the check with the ruling. If §3.8 is restated in terms of the whole bundle ("a BCB MUST NOT target a BIB unless every target of the BIB is the target of some BCB"), replace the `can_share()` gate with that check. It is the invariant the keyless parse's `BibCoverage::Maybe` sweep already assumes, but it makes the partial-acceptance state that `remove_encryption` produces today non-conformant (re-review R-3 in the bpv7-reader-editor review ledger below), so the R-3 fix must land first.
 
+## The CRC-32C uses the byte-wise table
+
+`crc.rs` builds its CRC-32C as `Crc::<u32>`, crc 3.x's one-table `Table<1>` (roughly 0.5 GB/s), and it runs over every payload byte at ingress. `Crc<u32, Table<16>>` is a one-line, `no_std`-safe change for a 3–5× speed-up; a feature-gated hardware CRC-32C (SSE4.2, ARMv8) goes further. Benchmark before and after.
+
+## The primary block refuses the indefinite form its siblings accept
+
+The parser accepts a canonical block whose array is indefinite-length (`0x9F`) but rejects an indefinite primary block, and the comment at the primary's parse (`parse.rs`) justifies that by reading RFC 9171 §4.1's "indefinite-length items are not prohibited" as covering the outer bundle array alone. That reading contradicts the parser's own acceptance of indefinite canonical blocks, and §4.3.1's primary-block CRC text counts CBOR "break" characters, which only an indefinite primary carries. Decide whether an indefinite primary is accepted, and make the code and the comment agree.
+
+## The CHANGELOG does not record the streaming parser
+
+`parse::BundleParser`, `ParserProgress` and `PayloadTail` (cebfa8cb) postdate the 0.6.0 release and have no `[Unreleased]` entry. Add one stating the push contract: `NeedMore` while the header region is short; once the payload block's header has parsed, a push is terminal — `Ready` for a bundle complete in the buffer with its payload trailer verified, or `Partial` with a tail continuation that is unfinished or carries a trailer failure, reported by its next `push` or by `finish`.
+
 ## DtnNodeId: validating constructor + private `node_name`
 
 `eid::DtnNodeId { pub node_name: Box<str> }` exposes its inner field publicly with no validating constructor, so it can hold a syntactically-invalid `dtn` authority. The parser is the only path that validates the name (`eid/parse.rs` — regname grammar + percent-decode), but external code builds it straight from the field: `eid-patterns/src/dtn_pattern.rs` (`DtnPatternItem::try_to_eid`), `bpa/fuzz/src/eid.rs`, and test fixtures in `bpa/src/node_ids.rs` and `bpv7/tests/eid.rs`. The parser stores the percent-decoded name, and `Eid`'s `Display` and CBOR encoder re-encode it (`URI_ENCODE_SET`), but `DtnNodeId`'s own `Display` (`eid/mod.rs`) re-emits `dtn://{node_name}/` verbatim, so a name needing percent-encoding, or an invalid one, round-trips to an invalid EID.
