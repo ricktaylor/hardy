@@ -5,6 +5,7 @@ use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
+use crate::filter::pack::chains::FilterChains;
 
 mod admin;
 mod deliver;
@@ -37,9 +38,11 @@ pub struct Config {
     pub poll_channel_depth: NonZeroUsize,
     pub processing_pool_size: NonZeroUsize,
     pub max_bundle_size: Option<NonZeroU64>,
-    /// Require primary-block integrity protection (RFC 9171 §4.3.1).
+    /// Pre-drain gate: require primary-block integrity protection
+    /// (RFC 9171 §4.3.1).
     pub primary_block_integrity: bool,
-    /// Require a Bundle Age block on clockless bundles (RFC 9171 §4.4.2).
+    /// Pre-drain gate: require a Bundle Age block on clockless bundles
+    /// (RFC 9171 §4.4.2).
     pub bundle_age_required: bool,
     /// Peers whose next hop requires legacy 2-element IPN EID encoding in
     /// the per-hop rewrite stage.
@@ -68,9 +71,6 @@ enum OfferOutcome {
     Detached(bundle::Bundle),
     /// Re-enter dispatch for a fresh routing decision.
     Redispatch(bundle::Bundle),
-    /// Another resolver (a sweep, the reaper, a duplicate outcome) claimed
-    /// the bundle first; its resolution stands.
-    Lost,
 }
 
 /// Which hand-off produced an [`OfferOutcome`] — completion reports and
@@ -86,7 +86,7 @@ pub(crate) struct Dispatcher {
     store: Arc<storage::store::Store>,
     rib: Arc<routing::Rib>,
     key_provider: Arc<dyn keys::KeyProvider>,
-    filter_engine: Arc<filter::FilterEngine>,
+    filters: FilterChains,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
 
     // Dispatch queue
@@ -117,7 +117,7 @@ impl Dispatcher {
         store: Arc<storage::store::Store>,
         rib: Arc<routing::Rib>,
         key_provider: Arc<dyn keys::KeyProvider>,
-        filter_engine: Arc<filter::FilterEngine>,
+        filters: FilterChains,
     ) -> (Arc<Self>, impl FnOnce(Arc<cla::registry::ClaRegistry>)) {
         if config.status_reports {
             warn!("Bundle status reports are enabled");
@@ -140,7 +140,7 @@ impl Dispatcher {
             store,
             rib,
             key_provider,
-            filter_engine,
+            filters,
             cla_registry: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
             status_reports: config.status_reports,
@@ -352,7 +352,6 @@ impl Dispatcher {
                 self.store.watch_bundle(bundle).await
             }
             OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
-            OfferOutcome::Lost => {}
         }
     }
 
@@ -439,5 +438,62 @@ impl Dispatcher {
         data: &[u8],
     ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
         self.key_provider.key_source(bundle, data)
+    }
+}
+
+// Fixtures shared by the dispatcher's submodule tests.
+#[cfg(test)]
+pub mod tests {
+    use hardy_bpv7::eid::{IpnNodeId, NodeId};
+
+    use super::*;
+    use crate::{
+        node_ids::NodeIds,
+        storage::{BundleMemStorage, MetadataMemStorage},
+    };
+
+    // A dispatcher over the given stores, with no filters, no legacy peers
+    // and no status reports.
+    pub async fn dispatcher(
+        metadata_store: Arc<MetadataMemStorage>,
+        data_store: Arc<BundleMemStorage>,
+    ) -> Arc<Dispatcher> {
+        let store = Arc::new(storage::store::Store::new(
+            NonZeroUsize::new(16).unwrap(),
+            metadata_store,
+            data_store,
+        ));
+        let node_ids = Arc::new(
+            NodeIds::try_from(
+                [NodeId::Ipn(IpnNodeId {
+                    allocator_id: 0,
+                    node_number: 1,
+                })]
+                .as_slice(),
+            )
+            .unwrap(),
+        );
+        let rib = routing::RibBuilder::new()
+            .build(node_ids.clone(), store.clone())
+            .await
+            .unwrap();
+        let filters = crate::filter::pack::chains::FilterChains::freeze(Vec::new());
+        let (dispatcher, _start) = Dispatcher::new(
+            Config {
+                status_reports: false,
+                poll_channel_depth: NonZeroUsize::new(16).unwrap(),
+                processing_pool_size: NonZeroUsize::new(4).unwrap(),
+                max_bundle_size: None,
+                primary_block_integrity: false,
+                bundle_age_required: false,
+                ipn_legacy_peers: Vec::new(),
+            },
+            node_ids,
+            store,
+            rib,
+            Arc::new(crate::keys::NullKeyProvider),
+            filters,
+        );
+        dispatcher
     }
 }

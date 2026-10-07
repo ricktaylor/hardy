@@ -166,7 +166,7 @@ service.
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `routes-file` | File path | *(none)* | Path to the static routes file. |
-| `watch` | `true`, `false` | `true` | Monitor the file for changes and reload automatically. |
+| `watch` | `native`, `poll`, `none` | `native` | Monitor the file for changes and reload automatically: `native` uses OS file events, `poll` checks periodically (works in Docker), `none` disables reloading. |
 | `priority` | Non-negative integer | `100` | Default priority for routes from this file. Lower values are preferred; `10` takes precedence over `100`. |
 | `protocol-id` | String | `static_routes` | Protocol identifier used when registering routes with the RIB. |
 
@@ -259,20 +259,22 @@ the `drop` rule at priority 2 is checked after registered services
 (priority 1 by default), but matches any service EID that no
 registered service has claimed.
 
-## `rfc9171-validity` — RFC 9171 Validity Filters
+## `rfc9171-validity` — RFC 9171 Validity Checks
 
 These control SHOULD-level requirements from RFC 9171 that can be
-relaxed for interoperability with other implementations.
+relaxed for interoperability with other implementations. They are the
+BPA's own configuration-gated checks, not registered filters.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `primary-block-integrity` | `true`, `false` | `true` | Require the primary block to be protected by CRC or BIB. Set `false` for interop with dtn7-rs and other implementations that omit CRCs. |
 | `bundle-age-required` | `true`, `false` | `true` | Require a Bundle Age block when creation timestamp is zero. Set `false` for peers without a clock that omit Bundle Age. |
 
-## `ipn-legacy-nodes` — IPN Legacy Filter
+## `ipn-legacy-nodes` — IPN Legacy Re-encode
 
-Rewrites 3-element IPN EIDs (RFC 9758) to legacy 2-element format for
-peers that require the older encoding.
+Rewrites 3-element IPN EIDs (RFC 9758) to legacy 2-element format for peers that require the older encoding: a built-in of the BPA's per-hop rewrite, applied to the transmitted wire form only.
+
+A bundle carrying a BPSec operation that covers the primary block, as its target or through its scope, cannot be re-encoded without breaking that operation. RFC 9173's default scope includes the primary block, so this covers an ordinary signed or encrypted bundle unless its sender's scope leaves the primary out; an encrypted BIB counts whatever its scope, since its ciphertext hides it. Such a bundle is deleted at a matching next hop, not re-routed, with a deletion status report giving "Unexpected security operation" if the bundle requests one and status reports are enabled. A drop here means the system as a whole is misconfigured: a sender protecting the primary block and a route through a peer that needs the legacy encoding cannot both hold, so either the sender's security policy should leave the primary out of its scope (which cannot help a bundle whose BIB is encrypted), or the route should avoid the legacy peer. RFC 9172 §7.1 notes that this reason code may identify such a misconfiguration of security policy. Separately, a Previous Node or Bundle Age block that this node must update but cannot, because it is encrypted beside an encrypted BIB that may cover it, holds the bundle in `Waiting` until it expires.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
@@ -289,7 +291,7 @@ ipn-legacy-nodes:
 
 ## Complete Example
 
-A production-ready configuration:
+A production-ready configuration. Its PostgreSQL metadata and S3 bundle backends are not in a default build: build `hardy-bpa-server` with the `postgres-storage` and `s3-storage` features to load it.
 
 ```yaml
 log-level: info
@@ -317,7 +319,7 @@ built-in-services:
 
 static-routes:
   routes-file: "/etc/hardy/routes"
-  watch: true
+  watch: native
   priority: 100
 
 clas:

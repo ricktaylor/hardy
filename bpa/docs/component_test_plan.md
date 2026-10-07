@@ -73,6 +73,46 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 | :--- | :--- | :--- | :--- |
 | **INT-BPA-03** | **Fragment Reassembly** | 1. Manually generate 2 fragments for a "Hello" bundle.<br>2. Place fragments into `file-cla` inbox.<br>3. Run `tools/ping` in receive mode. | 1. BPA accepts fragments.<br>2. BPA reassembles payload.<br>3. `ping` receives single "Hello" bundle. |
 
+### Suite D: Filter Dispositions
+
+*Objective: the filter module's failure and Drop contract holds through a running BPA (`bpa/tests/filter_dispositions.rs`, plus the extent-consistency test in `bpa/tests/pipeline.rs`).*
+
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-04** | **Deliver Drop contract** | 1. Register a Deliver Verifier dropping one destination, with and without a reason.<br>2. Deliver a report-requesting bundle to it via a CLA. | `Drop(Some(r))`: exactly one deletion report carrying `r`; `Drop(None)`: no report originated. Either way the bundle is not delivered, and its record is tombstoned. (Nothing at Egress drops a bundle.) |
+| **INT-BPA-06** | **Egress filter bundle/data consistency** | 1. Register an Egress Rewriter checking block extents against the bytes and inserting a block (`bpa/tests/pipeline.rs`).<br>2. Forward a locally-originated bundle, so the per-hop writes then insert a Previous Node block over the Rewriter's output. | The Rewriter sees the stored (bundle, data) pair consistently, and the transmitted bundle carries the Rewriter's insert, this node's Previous Node and the payload, each decoding from its own extent. |
+| **INT-BPA-13** | **Undecodable stored bytes** | — (no pipeline test). | Fatal at Egress and Deliver: the bytes were validated at ingress, so a decode failure in an output chain or the per-hop writes is a BPA bug or storage corruption. Pinned at function level ([unit plan](unit_test_plan.md) §3.14): a panic inside a running BPA aborts the test process. |
+| **INT-BPA-14** | **Editor refusals on attacker-chosen primaries** | 1. Register a Rewriter inserting a `report_on_failure` block.<br>2. Deliver an admin-record transit bundle (Egress) and a null-source local bundle (Deliver). | The insert is refused with `InvalidFlags` and the bundle passes unedited; the node does not abort. |
+| **INT-BPA-15** | **Per-hop writes supersede an Egress Rewriter** | 1. Register an Egress Rewriter removing the Hop Count and Bundle Age blocks.<br>2. Forward a bundle with no creation clock, carrying both, via a CLA. | The Rewriter's removals are accepted, and the transmitted bundle carries both blocks again as this hop writes them: the Hop Count incremented, the Bundle Age at least its received value. |
+
+### Suite E: Service Delivery Failure
+
+*Objective: a delivery the service fails leaves the bundle in custody (`bpa/tests/pipeline.rs`).*
+
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-05** | **`on_deliver` returns `Err`** | 1. Register an application whose `on_deliver` fails.<br>2. Originate a bundle to it from a second application.<br>3. Unregister the failing application and register a working one on the same service id. | The failed delivery parks the bundle `WaitingForService` rather than reporting it delivered and deleting it; the working receiver gets it re-delivered, payload intact. |
+
+### Suite F: Deferred CLA Transfer Outcomes
+
+*Objective: a transfer the CLA answers `Accepted` stays in the BPA's custody until its outcome arrives, and resolves exactly once (see [Deferred CLA Transfer Outcomes](design.md#deferred-cla-transfer-outcomes); `bpa/tests/pipeline.rs`, `bpa/tests/forward_expiry.rs`).*
+
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-07** | **Outcome `Failed`** | 1. Register a CLA that answers its first offer `Accepted`.<br>2. Ingress a bundle routed to its peer.<br>3. Report the transfer `Failed` through `Sink::transfer_outcome`. | The bundle re-enters dispatch and is re-offered to the CLA; it is never dropped. |
+| **INT-BPA-08** | **Outcome `Completed`** | 1–2. As INT-BPA-07.<br>3. Report the transfer `Completed`, then report it `Failed`.<br>4. Ingress the same bundle again. | No re-offer: the late second outcome is ignored, and the tombstone drops the re-arrival as a duplicate. |
+| **INT-BPA-09** | **Peer removed mid-transfer** | 1–2. As INT-BPA-07.<br>3. Remove the peer, then add it back. | Removal resolves the transfer as outcome-unknown: the bundle returns to `Waiting` and is re-offered once the peer is back. |
+| **INT-BPA-10** | **Outcome from a CLA that does not own the transfer** | 1–2. As INT-BPA-07, with a second CLA holding its own peer.<br>3. Report an outcome for a bundle id the BPA has never seen, then the transfer's outcome from the second CLA, then `Failed` from the owning CLA. | The unknown-id and non-owner outcomes are ignored without error; the owner's outcome is honoured and the bundle is re-offered to the owner alone. |
+| **INT-BPA-11** | **Expiry mid-transfer** | 1. Forward a short-lifetime, deletion-report-requesting bundle to a CLA that answers `Accepted` and holds the transfer past expiry.<br>2. Report the outcome `Completed`, or `Failed`.<br>3. With a reaper cache of two, hold two never-resolved transfers ahead of a reapable bundle. | The reaper defers the bundle while the CLA owns the transfer, and the outcome resolves it exactly once: `Completed` reports the hand-off (`NoAdditionalInformation`), never `LifetimeExpired`; `Failed` re-enters dispatch, whose expiry checkpoint drops it as `LifetimeExpired`. Deferred transfers never starve the reaper: the reapable bundle is still reaped and reported. |
+
+### Suite G: Streamed Doors
+
+*Objective: the streamed service and CLA doors behave as their whole-buffer forms, and a stream that ends early is cancelled or refused (`bpa/tests/pipeline.rs`).*
+
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-12** | **Streamed origination and ingress** | 1. Originate through `ServiceSink::send` in several segments; drop the producer before `Final`; unregister the service while a send is parked; send a bundle whose source is not the service's endpoint.<br>2. Dispatch through `cla::Sink::dispatch` in several segments; unregister the CLA while a stream is parked; drop the producer before `Final`. | Multi-segment origination and ingress match their whole-buffer forms (origination returns the built bundle's id and forwards it; ingress delivers locally). A producer dropped before `Final` cancels an origination (`StreamCancelled`, nothing enters custody) and is refused at ingress (`Acceptance::Refused`, nothing delivered). Unregistration wakes a parked consumer with `StreamCancelled` at once. The spoofed source is rejected. |
+
 ## 5. Performance Benchmarks (REQ-13)
 
 *Objective: Verify throughput requirements (>1000 bundles/sec).*
@@ -108,5 +148,5 @@ The unit testing strategy focuses on isolating complex logic from the async runt
  | ----- | ----- | ----- |
 | **Unit** | `cargo test` | Status Reports, Route Lookup |
 | **Fuzz** | `cargo fuzz` | Pipeline Stability, Deadlocks |
-| **Benchmark** | `cargo bench` | Throughput (REQ-13) |
+| **Benchmark** | `cargo bench` | Throughput (REQ-13), measured; nothing gates on it |
 | **Integration** | `bash` + `tools/ping` | Full Stack Data Flow |

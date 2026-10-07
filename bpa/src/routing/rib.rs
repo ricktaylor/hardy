@@ -8,6 +8,7 @@ use hardy_async::{
     sync::{Mutex, spin},
 };
 use hardy_bpv7::{
+    bundle::Bundle as Bpv7Bundle,
     eid::{Eid, NodeId},
     status_report::ReasonCode,
 };
@@ -167,7 +168,7 @@ impl Rib {
                 peer,
                 next_hop: next_hop.clone(),
             }),
-            LookupResult::ForwardEcmp(peers) => self.select_peer(peers, bundle),
+            LookupResult::ForwardEcmp(peers) => self.select_peer(peers, &bundle.bpv7),
             LookupResult::Reflect => None,
         }
     }
@@ -195,7 +196,11 @@ impl Rib {
         self.snapshot.load().find_peers(to)
     }
 
-    fn select_peer(&self, mut peers: Vec<(u32, &Eid)>, bundle: &Bundle) -> Option<DispatchAction> {
+    fn select_peer(
+        &self,
+        mut peers: Vec<(u32, &Eid)>,
+        bundle: &Bpv7Bundle,
+    ) -> Option<DispatchAction> {
         if peers.is_empty() {
             debug_assert!(false, "Empty Forward result from find_recurse");
             return None;
@@ -204,11 +209,10 @@ impl Rib {
         trace!(peers = ?peers, "Forward to CLA peers");
 
         let idx = if peers.len() > 1 {
-            (self.ecmp_hash_state.hash_one((
-                &bundle.bpv7.primary.id.source,
-                &bundle.bpv7.primary.destination,
-                &bundle.metadata.writable.flow_label,
-            )) % (peers.len() as u64)) as usize
+            (self
+                .ecmp_hash_state
+                .hash_one((&bundle.primary.id.source, &bundle.primary.destination))
+                % (peers.len() as u64)) as usize
         } else {
             0
         };
