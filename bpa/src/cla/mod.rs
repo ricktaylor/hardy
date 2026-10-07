@@ -27,6 +27,10 @@ pub enum Error {
 
     /// The bundle stream ended before its final segment: the producer went
     /// away mid-bundle and the partial bytes are discarded.
+    ///
+    /// Returned from [`Cla::forward`], it reports a transfer cancelled
+    /// before completion: the bundle was not forwarded, and is valid to
+    /// retry, so the BPA re-enters dispatch for it at once.
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
@@ -396,6 +400,13 @@ pub trait Cla: Send + Sync {
     /// An implementation that needs the whole bundle in memory buffers the
     /// stream with [`stream::buffer_stream`],
     /// whose errors convert into this module's [`enum@Error`] via `?`.
+    ///
+    /// An `Err` reports a transfer that did not complete.
+    /// [`Error::StreamCancelled`] re-enters the bundle into dispatch at once,
+    /// so a CLA that cancels every attempt is offered the bundle again until
+    /// it expires. Any other error parks the bundle until the next routing or
+    /// link event: a failure that may be deterministic is never retried
+    /// inline.
     async fn forward(
         &self,
         lane: Option<u32>,

@@ -79,7 +79,9 @@ enum OfferOutcome {
     /// Deliberate detach: the CLA owns the transfer (`Accepted`) and
     /// resolves the claim later via `transfer_outcome`.
     Detached(bundle::Bundle),
-    /// Re-enter dispatch for a fresh routing decision.
+    /// Re-enter dispatch for a fresh routing decision: `resolve_offer`
+    /// re-claims the bundle out of its hand-off status and reloads it from
+    /// storage first.
     Redispatch(bundle::Bundle),
 }
 
@@ -376,7 +378,35 @@ impl Dispatcher {
                 // still reaps it promptly.
                 self.store.watch_bundle(bundle).await
             }
-            OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
+            OfferOutcome::Redispatch(mut bundle) => {
+                // The re-claim is a conditional swap from the in-hand status:
+                // a concurrent resolver (the reaper, a peer sweep, a
+                // duplicate outcome) may have got there first, and its
+                // resolution stands.
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!(
+                        "Re-dispatch of {} lost the resolution race, ignored",
+                        bundle.id()
+                    );
+                    return;
+                }
+                if matches!(kind, OfferKind::Forward) {
+                    metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
+                }
+                // Re-enter from the persisted representation: the in-hand
+                // copy may carry the attempt's in-memory rewrites, whose
+                // block extents no longer index the stored bytes (see
+                // park_bundle).
+                let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
+                    debug!("Re-dispatch lost the bundle to a concurrent resolution");
+                    return;
+                };
+                self.dispatch_bundle(bundle).await
+            }
         }
     }
 

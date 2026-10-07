@@ -42,7 +42,7 @@ graph LR
 
 **Active queues** have continuous consumers with storage-backed hybrid channels (fast in-memory path with storage-backed slow path for backpressure):
 
-- **Dispatch** (`DispatchPending`, claimed to `Dispatching` on dequeue) — MPSC. Multiple producers (status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes, restart); fresh CLA arrivals, reassembled bundles, and local originations execute their gate routing decision directly and never transit it. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
+- **Dispatch** (`DispatchPending`, claimed to `Dispatching` on dequeue) — MPSC. Multiple producers (status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes and cancelled transfers, restart); fresh CLA arrivals, reassembled bundles, and local originations execute their gate routing decision directly and never transit it. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
 - **Egress** (`ForwardPending { peer, queue }`) — MPSC per peer per policy queue. Any dispatch worker can produce. Single poller per queue feeds the CLA
 - **Deliver** (`DeliverPending { service }`) — MPSC per registered service, the local analogue of a peer's egress queue. Any dispatch worker can produce. A single consumer per service claims each bundle to `DeliveryAckPending` and offers it via `on_deliver`
 

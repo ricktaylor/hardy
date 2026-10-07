@@ -4222,8 +4222,8 @@ async fn deferred_outcome_ignores_wrong_cla() {
 
 // ---------------------------------------------------------------------------
 // Blocking CLA — holds the first forward open until released, then fails it
-// synchronously; every subsequent offer is answered Sent. All offers are
-// recorded.
+// synchronously with its `failure`; every subsequent offer is answered Sent.
+// All offers are recorded.
 // ---------------------------------------------------------------------------
 
 struct BlockingCla {
@@ -4231,10 +4231,16 @@ struct BlockingCla {
     offered_tx: flume::Sender<Id>,
     release_rx: flume::Receiver<()>,
     first: AtomicBool,
+    failure: fn() -> cla::Error,
+}
+
+// A synchronous failure that parks the bundle: any error but a cancellation.
+fn transfer_failed() -> cla::Error {
+    cla::Error::Internal("the transfer failed".into())
 }
 
 impl BlockingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
+    fn new(failure: fn() -> cla::Error) -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
         let (offered_tx, offered_rx) = flume::bounded(16);
         let (release_tx, release_rx) = flume::bounded(1);
         (
@@ -4243,6 +4249,7 @@ impl BlockingCla {
                 offered_tx,
                 release_rx,
                 first: AtomicBool::new(true),
+                failure,
             }),
             offered_rx,
             release_tx,
@@ -4274,7 +4281,7 @@ impl cla::Cla for BlockingCla {
         let _ = self.offered_tx.send_async(bundle_id.clone()).await;
         if self.first.swap(false, Ordering::SeqCst) {
             let _ = self.release_rx.recv_async().await;
-            return Err(cla::Error::StreamCancelled);
+            return Err((self.failure)());
         }
         Ok(cla::ForwardBundleResult::Sent)
     }
@@ -4290,7 +4297,7 @@ async fn forward_failure_park_recheck_redispatches() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false).await;
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
+    let (cla, offered_rx, release_tx) = BlockingCla::new(transfer_failed);
     bpa.register_cla(
         "blocking".to_string(),
         cla.clone(),
@@ -4369,6 +4376,18 @@ async fn forward_failure_park_recheck_redispatches() {
 /// conditional and loses against the terminal claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_never_resurrects_resolved_bundle() {
+    assert_failure_never_resurrects(transfer_failed).await;
+}
+
+/// A cancelled transfer must not resurrect a bundle that was resolved while
+/// it was in flight: the cancellation's re-dispatch re-claims the bundle
+/// conditionally, and loses against the terminal claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_transfer_never_resurrects_resolved_bundle() {
+    assert_failure_never_resurrects(|| cla::Error::StreamCancelled).await;
+}
+
+async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
     let metadata_store = Arc::new(MetadataMemStorage::new(None));
     let bpa = Bpa::builder()
         .metadata_storage(metadata_store.clone())
@@ -4377,7 +4396,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .unwrap();
     bpa.start(false).await;
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
+    let (cla, offered_rx, release_tx) = BlockingCla::new(failure);
     bpa.register_cla(
         "blocking".to_string(),
         cla.clone(),
@@ -4429,15 +4448,16 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     // claim would leave it (delete wins every race).
     metadata_store.tombstone(&id).await.unwrap();
 
-    // Release: the failure's park must lose against the tombstone.
-    // shutdown() is the barrier — it joins the egress pollers, so the park
+    // Release: the failure's claim (the park, or the cancellation's
+    // re-claim) must lose against the tombstone. shutdown() is the barrier —
+    // it joins the egress pollers and the dispatch pool, so the resolution
     // has fully run by the time it returns; no quiet window is involved.
     release_tx.send(()).expect("CLA gone");
     bpa.shutdown().await;
 
     assert!(
         metadata_store.get(&id).await.unwrap().is_none(),
-        "a resolved bundle was resurrected by a failed transfer's park"
+        "a resolved bundle was resurrected by a failed transfer"
     );
     let (live_tx, live_rx) = hardy_async::channel::bounded(4);
     metadata_store.poll_waiting(&live_tx).await.unwrap();
@@ -4446,6 +4466,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         live_rx.recv().await.is_err(),
         "a resolved bundle re-entered Waiting"
     );
+    assert!(offered_rx.is_empty(), "a resolved bundle was offered again");
 }
 
 // ---------------------------------------------------------------------------
