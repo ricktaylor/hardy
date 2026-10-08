@@ -220,17 +220,26 @@ mod tests {
     // each target must yield either a bundle of exactly that size or a clean
     // error for the sizes the length-field jumps make unreachable — never a
     // wrong-sized Ok.
+    //
+    // Each `build_payload` call takes its own creation time, and the bundle's
+    // size moves with it by up to `DRIFT` bytes: the creation timestamp's
+    // sequence number is the time's sub-millisecond part, which CBOR encodes
+    // in one to five bytes. The probes stay that far from `base_len`, the
+    // minimum one call measured, so the drift cannot change their outcome.
     fn run_size_sweep() {
+        const DRIFT: usize = 4;
         let mut args = base_command();
 
         let base_len = build_payload(&args, 0).unwrap().0.len();
 
-        // Below the minimum: a clean error.
-        args.size = Some(base_len - 1);
+        // Below every call's minimum: a clean error.
+        args.size = Some(base_len - DRIFT - 1);
         assert!(build_payload(&args, 0).is_err());
 
+        // Above every call's minimum, so only the length-field jumps leave
+        // sizes unreachable.
         let mut unreachable_targets = 0;
-        for target in base_len..base_len + 300 {
+        for target in base_len + DRIFT..base_len + DRIFT + 300 {
             args.size = Some(target);
             match build_payload(&args, 0) {
                 Ok((bundle, payload)) => {
@@ -249,9 +258,11 @@ mod tests {
         }
 
         // The payload byte-string length field widens twice in this window,
-        // each jump skipping exactly one target size.
+        // each jump skipping one target size. Which size it skips moves with
+        // the sequence number's width in the call that built it — one of four
+        // places — so each jump leaves at most four targets unreachable.
         assert!(
-            (1..=4).contains(&unreachable_targets),
+            unreachable_targets <= 2 * 4,
             "unexpected number of unreachable target sizes: {unreachable_targets}"
         );
     }
