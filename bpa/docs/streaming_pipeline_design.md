@@ -670,7 +670,7 @@ For local disk / NOR flash, the second read is essentially free (OS page cache).
 
 This avoids the two-pass problem entirely. The HMAC is computed once, during the single ingress pass, and durably stored.
 
-**Payload BCB (AES-GCM)** has the same ordering constraint but is deferred to Phase 3 (security gateway). AES-GCM requires a streaming wrapper built on the low-level `aes` + `ghash` crates (§7.3).
+**Payload BCB (AES-GCM)** has the same ordering constraint but is deferred to Phase D (security gateway). AES-GCM requires a streaming wrapper built on the low-level `aes` + `ghash` crates (§7.3).
 
 #### 6.1.6. BPSec Low-Level API Surface
 
@@ -688,7 +688,7 @@ Each step is a `mac.update()` or AAD accumulation call. The stage provides these
 **Crypto operations:**
 
 - `bib_hmac_sha2` — HMAC computation. Already incremental (`hmac` crate's `mac.update()`). Push-ready for Transformers.
-- `bcb_aes_gcm` — AES-GCM encryption/decryption. Currently requires contiguous buffer (`aes-gcm` crate). Streaming wrapper deferred to Phase 3.
+- `bcb_aes_gcm` — AES-GCM encryption/decryption. Currently requires contiguous buffer (`aes-gcm` crate). Streaming wrapper deferred to Phase D.
 
 **Key management** — `KeySource` trait, `Key` struct, AES key wrapping. Already clean and filter-agnostic.
 
@@ -800,7 +800,7 @@ The parser returns the concrete `Bundle` (decoded `PrimaryBlock` plus extension-
 |-----------|-------|--------------------|----|
 | CRC-16/32 | `crc` v3 | Yes (`digest.update()`) | **Low** — calling convention change |
 | BIB HMAC-SHA2 | `hmac` v0.13 | Yes (`mac.update()`) | **Low** — initialise with headers, push payload |
-| BCB AES-GCM | `aes-gcm` v0.10 | No (contiguous only) | **High** — need streaming wrapper or crate swap |
+| BCB AES-GCM | `aes-gcm` v0.11 | No (contiguous only) | **High** — need streaming wrapper or crate swap |
 
 AES-GCM is AES-CTR + GHASH, both inherently streamable. A streaming wrapper built on the low-level `aes` + `ghash` crates is feasible but deferred to the security gateway phase. The Transformer model makes this straightforward — the confidentiality stage's Transformer processes payload bytes incrementally as they flow through.
 
@@ -934,7 +934,7 @@ Two entry points, each with a one-sentence purpose. `Parsed` is structural (deco
 
 ## 10. Implementation Phasing
 
-> **Landed state (2026-08).** Phase 1's pull-side foundations and the door seams from Phase 3 item 2 plus the service-door twin are landed — now as the streamed-only `Sink::dispatch` and `ServiceSink::send` after the buffered/streamed pairs collapsed — with the interim whole-buffer accumulation in `bpa::stream::concat_stream` (and the exact-`total_len` `stream::buffer_stream` over it) standing in until Phase 2's storage streaming. The remaining items below are unstarted.
+> **Landed state (2026-08).** The pull-side foundations and the streamed door seams, with the service-door twin, are landed — now as the streamed-only `Sink::dispatch` and `ServiceSink::send` after the buffered/streamed pairs collapsed — with the interim whole-buffer accumulation in `bpa::stream::concat_stream` (and the exact-`total_len` `stream::buffer_stream` over it) standing in until Phase A's storage streaming.
 
 Landed work is recorded in the implementation-status block at the top; the phases below cover what remains, in dependency order. The filter subsystem is deliberately absent: filters receive no byte streams (§5.3), so that work proceeds independently (`refactor_plan.md`).
 

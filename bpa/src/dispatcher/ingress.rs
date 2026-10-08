@@ -207,8 +207,8 @@ impl Dispatcher {
         }
 
         // Early-reject gate (lifetime / hop) before the payload is drained, so a
-        // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
-        // re-checks lifetime post-store in the ingress filter — a cheap, harmless
+        // dead bundle is dropped having spooled nothing. (The dispatch expiry
+        // checkpoint re-checks lifetime after the store — a cheap, harmless
         // overlap.)
         if let Some(reason) = hv.gate_reason(metadata.received_at()) {
             count_received_dropped(&reason);

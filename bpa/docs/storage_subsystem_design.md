@@ -47,12 +47,13 @@ The storage subsystem provides persistent and cached storage for bundles, coordi
 
 ## Store Coordinator
 
-The `Store` struct is the central coordinator for all storage operations. It holds references to both storage backends, manages the LRU cache and reaper cache, and coordinates recovery.
+The `Store` struct is the central coordinator for all storage operations. It holds references to both storage backends — a configured bundle backend is usually wrapped in the `CachedBundleStorage` LRU decorator, which owns the bundle-data cache — manages the reaper cache and the recently-committed id cache behind the input gates' advisory duplicate probe, and coordinates recovery.
 
 **Lock Strategy:**
 
 - `spin::Mutex` for bundle_cache (O(1) operations, no blocking)
 - Standard `Mutex` for reaper_cache (requires O(n) iteration)
+- Standard `Mutex` for the recently-committed id cache (O(1) LRU operations)
 
 ## Storage Traits
 

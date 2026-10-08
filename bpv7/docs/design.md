@@ -30,7 +30,7 @@ The separation ensures that untrusted network input receives full scrutiny while
 
 Bundles are parsed in place with structures holding `Range<usize>` values pointing into the source byte array. A `Block` doesn't contain its payload - it contains the byte range where the payload lives.
 
-This design serves several purposes. First, large payloads aren't copied during parsing. Second, CRC validation can hash the exact byte ranges without reassembly. Third, and importantly, Range values are "recipes" rather than views - they describe where data lives without requiring it to be in memory. This creates future capability for lazy loading where only portions of a bundle are fetched from storage as needed.
+This design serves several purposes. First, large payloads aren't copied during parsing. Second, CRC validation can hash the exact byte ranges without reassembly. Third, and importantly, Range values are "recipes" rather than views - they describe where data lives without requiring it to be in memory. This creates future capability for lazy loading where only portions of a bundle are fetched from storage as needed. Only the payload body may be large: the parser bounds everything before it — every extension block and the payload block's header — to 256 MiB, rejecting a longer declaration from the block lengths alone. This is an implementation limit, not an RFC one: real header chains are kilobytes, the pre-payload region must be resident for verification, and a fixed bound keeps accept/reject decisions identical on every node regardless of pointer width.
 
 When blocks are encrypted by a BCB, the decrypted content must be stored somewhere. The `Payload` enum handles this with two variants: `Borrowed` (a reference into the original buffer) and `Decrypted` (owned data that's automatically zeroed when dropped). This maintains the zero-copy model for unencrypted blocks while properly handling decrypted content.
 
@@ -38,7 +38,7 @@ When blocks are encrypted by a BCB, the decrypted content must be stored somewhe
 
 The library provides two patterns for bundle construction.
 
-**Builder** is a factory for creating new bundles from scratch. It uses a fluent API where callers specify source, destination, lifetime, flags, and payload, then call `build()` to produce a complete bundle and its CBOR encoding.
+**Builder** is a factory for creating new bundles from scratch. It uses a fluent API where callers specify source, destination, lifetime, flags, and payload, then call `build()` to produce a complete bundle and its CBOR encoding. For a payload supplied as a stream, `build_stream()` is the emit-side twin of the streaming parser: it returns the bundle view, the resident wire prefix ending at the payload block's byte-string head, and a `PayloadTrailer` that absorbs the streamed payload into the payload block's CRC and then emits the CRC field and the closing break. Prefix, payload, and trailer concatenate to exactly the `build()` output, so the payload never has to be resident to build the bundle.
 
 **Editor** is for modifying existing bundles. It's optimised for the forwarding case where most of the bundle stays the same. Rather than re-encoding everything, Editor tracks what changed and surgically updates only the affected portions. For a forwarding node adding Previous Node and incrementing Hop Count, this avoids re-encoding the entire payload.
 
