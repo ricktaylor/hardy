@@ -4,7 +4,7 @@ use hardy_bpv7::{
     block::BibCoverage, bpsec::bcb::OperationSet, crc::CrcType, eid::NodeId,
     status_report::ReasonCode,
 };
-use tracing::{debug, error};
+use tracing::debug;
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -466,8 +466,8 @@ impl Dispatcher {
                 .filters
                 .run_ingress(bundle, headers, bcb_ops, &*self.key_provider)
             {
-                Ok(ChainOutcome::Continue(bundle, _)) => bundle,
-                Ok(ChainOutcome::Drop(bundle, reason)) => {
+                ChainOutcome::Continue(bundle, _) => bundle,
+                ChainOutcome::Drop(bundle, reason) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     count_received_dropped(&label);
                     self.report_bundle_reception(
@@ -475,20 +475,6 @@ impl Dispatcher {
                         bundle.metadata.received_at(),
                         report,
                         reason,
-                    )
-                    .await;
-                    return None;
-                }
-                Err((bundle, e)) => {
-                    // The resident prefix failed the chain's own decode pass —
-                    // an internal inconsistency, since it parsed at reception.
-                    error!("Ingress filter chain failed: {e}");
-                    count_received_dropped(&ReasonCode::BlockUnintelligible);
-                    self.report_bundle_reception(
-                        &bundle.bpv7,
-                        bundle.metadata.received_at(),
-                        report,
-                        Some(ReasonCode::BlockUnintelligible),
                     )
                     .await;
                     return None;

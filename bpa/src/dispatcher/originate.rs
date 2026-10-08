@@ -27,7 +27,7 @@ use hardy_bpv7::{
     eid::Eid,
     status_report::ReasonCode,
 };
-use tracing::{debug, error};
+use tracing::debug;
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -493,23 +493,19 @@ impl Dispatcher {
     ) -> Result<(Bundle, Decision), Error> {
         // The Originate chain runs synchronously on the record; a
         // Classifier's metadata deltas survive into the persisted record. A
-        // filter reading a not-yet-resident payload gets the reader's
-        // not-resident `None`.
+        // filter reading a payload that is not all resident gets the reader's
+        // `NotResident`, and its held peek from `payload_peek`.
         let bundle = if self.filters.has_originate() {
             match self
                 .filters
                 .run_originate(bundle, head, bcbs, &*self.key_provider)
             {
-                Ok(ChainOutcome::Continue(bundle, _)) => bundle,
-                Ok(ChainOutcome::Drop(_, reason)) => {
+                ChainOutcome::Continue(bundle, _) => bundle,
+                ChainOutcome::Drop(_, reason) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     count_originated_dropped(&label);
                     debug!("Originate filter chain dropped the bundle: {label:?}");
                     return Err(Error::Dropped(reason));
-                }
-                Err((_, e)) => {
-                    error!("Originate filter chain failed: {e}");
-                    return Err(Error::Internal(e));
                 }
             }
         } else {
