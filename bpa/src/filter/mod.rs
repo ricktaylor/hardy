@@ -41,19 +41,22 @@
 //!
 //! A [`Verdict::Drop`] is policy, never a failure. Only Verifiers and
 //! Classifiers return one, so nothing at Egress drops a bundle. Its
-//! disposition per hook, and the pipeline's recovery when an input chain
-//! *fails* (the engine could not run its decode pass over the bytes —
-//! never a filter's verdict):
+//! disposition per hook, and what a chain *failure* means there (the engine
+//! could not decode the bytes; never a filter's verdict):
 //!
 //! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
 //! |---|---|---|---|
-//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | `services::Error::Internal` to the caller; nothing was stored |
+//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | none — like Ingress, the chain runs on the door's own header decode |
 //! | Ingress | dropped before anything is stored, with one reception + deletion report per the bundle's request flags | the same, without the deletion assertion even when the flags request one (a requested reception report is still sent) | none — the chain decodes nothing itself: it runs on the gate's header decode, whose failures are the header pass's |
 //! | Deliver | dropped with a flag-gated deletion report | deleted silently | fatal (below) |
 //!
-//! `bpa.filter.filtered` counts every Drop, `bpa.filter.modified` every
-//! applied rewrite, and `bpa.filter.error` every input chain failure, all
-//! by hook.
+//! At Egress the chain runs on the per-hop rewrite's output, and that
+//! rewrite decodes the stored bytes first (an undecodable stored bundle
+//! parks `Waiting` there, before the chain runs), so an Egress chain
+//! failure means the BPA's own rebuild produced bytes that do not decode.
+//!
+//! `bpa.filter.filtered` counts every Drop and `bpa.filter.modified` every
+//! applied rewrite, both by hook.
 //!
 //! The output chains have no failure path. Their bytes were validated at
 //! ingress and are read back from storage, so an Egress or Deliver chain
@@ -63,9 +66,12 @@
 //! work has not. Either leaves every subsequent processing step undefined,
 //! so the engine panics (naming the failing link's pack-prefixed label, for
 //! a Rewriter), and the panic aborts the process — the fail-fast rule,
-//! applied by analogy with a storage fault. The [`ExtensionEditor`] refuses
-//! at call time the edits it knows a receiver would reject, so a Rewriter
-//! that treats refusals as its no-match path meets those as refusals.
+//! applied by analogy with a storage fault. The bundle stays stored and
+//! restart recovery re-queues it, so a deterministic failure recurs on every
+//! restart: the node crash-loops until the bundle is removed, the accepted
+//! cost of failing fast. The [`ExtensionEditor`] refuses at call time the
+//! edits it knows a receiver would reject, so a Rewriter that treats refusals
+//! as its no-match path meets those as refusals.
 
 use core::fmt::{self, Debug, Formatter};
 

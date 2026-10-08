@@ -92,11 +92,6 @@ pub fn init() {
         metrics::Unit::Count,
         "Rewriter edits applied, one per editing link (by hook)"
     );
-    metrics::describe_counter!(
-        "bpa.filter.error",
-        metrics::Unit::Count,
-        "Filter execution errors (by hook)"
-    );
 
     // -- F. Administrative Records --
     metrics::describe_counter!(

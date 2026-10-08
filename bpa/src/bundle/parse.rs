@@ -203,7 +203,7 @@ where
         bcbs: bcb_ops,
         bibs: mut bib_ops,
     } = parse::parse(data)?;
-    let key_source = key_provider(&bundle, &data);
+    let key_source = keys_for(&bcb_ops, &bib_ops, key_provider, &bundle, &data);
 
     // §A — no removals scheduled, but `?` still catches an Unsupported
     // `delete_bundle_on_failure` block.
@@ -320,6 +320,26 @@ impl HeaderVerify {
         } else {
             None
         }
+    }
+}
+
+// The key source for one keyed pass. A bundle with no BCB or BIB consults no
+// keys, so it skips the provider round-trip, as the filter engine's passes
+// do.
+fn keys_for<F>(
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
+    key_provider: F,
+    bundle: &Bpv7Bundle,
+    data: &[u8],
+) -> Box<dyn bpsec::key::KeySource>
+where
+    F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+{
+    if bcb_ops.is_empty() && bib_ops.is_empty() {
+        Box::new(bpsec::key::KeySet::EMPTY)
+    } else {
+        key_provider(bundle, data)
     }
 }
 
@@ -499,7 +519,7 @@ where
         bibs: mut bib_ops,
         ..
     } = parsed;
-    let key_source = key_provider(&bundle, &headers);
+    let key_source = keys_for(&bcb_ops, &bib_ops, key_provider, &bundle, &headers);
     match verify_headers(&headers, &*key_source, bundle, &bcb_ops, &mut bib_ops) {
         // The header-region BCB OperationSets ride back to the caller for
         // the Ingress gate chain, handed back from this one decode rather
@@ -1240,6 +1260,25 @@ mod tests {
             tx.send(segment).await.expect("channel open");
         }
         rx
+    }
+
+    // A bundle with no BCB or BIB never consults the key provider: the
+    // header pass needs no keys for it.
+    #[tokio::test]
+    async fn header_pass_skips_keys_without_bpsec() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let provider = |_: &Bpv7Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Box::new(bpsec::key::KeySet::EMPTY)
+        };
+        let (_, data) = small_bundle();
+        let mut rx = stream_of(vec![Segment::Final(data)]).await;
+        let Ok(_) = parse_headers(&mut rx, 1 << 20, 0, provider).await else {
+            panic!("a plain bundle passes the header pass");
+        };
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
     // A bundle complete on a non-final segment commits once `Final` follows,

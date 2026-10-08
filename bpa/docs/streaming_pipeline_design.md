@@ -495,7 +495,7 @@ Ingest door (process_received_bundle)
   |
   |-- Pre-drain gate
   |     built-in checks (lifetime/hop/expiry, config-gated RFC 9171 validity)
-  |     Ingress chain on the resident header prefix — Verifiers ∥, then
+  |     Ingress chain on the resident prefix — Verifiers ∥, then
   |       Classifiers (MetadataDelta: slots, route_table, route_key)
   |     route lookup — the routing decision of record
   |

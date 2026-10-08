@@ -8,15 +8,16 @@
 //! edits are materialised before the next link reads them — so each editing
 //! link adds one bundle's size to the attempt's peak memory, on every attempt.
 //!
-//! Every runner returns the bundle to the caller — with every verdict, and
-//! on an input chain's error path — so a claimed bundle's status is always
-//! resolved by the site that claimed it: no re-fetch, no restore path. The
-//! output chains have no error path. Their bytes were validated at ingress,
-//! so an output chain that cannot decode them has met a BPA bug or storage
-//! corruption; and a Rewriter execution failure means a rewrite that was
-//! meant to work has not. Either way processing beyond it is undefined, and
-//! the engine panics, which aborts the process — the fail-fast rule, by
-//! analogy with a storage fault.
+//! Every runner returns the bundle to the caller with its outcome, so a
+//! claimed bundle's status is always resolved by the site that claimed it:
+//! no re-fetch, no restore path. No chain has an error path. The input
+//! runners decode nothing themselves, running on the door's own header
+//! decode. The output chains' bytes were validated at ingress, so an output
+//! chain that cannot decode them has met a BPA bug or storage corruption;
+//! and a Rewriter execution failure means a rewrite that was meant to work
+//! has not. Either way processing beyond it is undefined, and the engine
+//! panics, which aborts the process — the fail-fast rule, by analogy with a
+//! storage fault.
 
 use core::{fmt::Debug, mem::take};
 
@@ -38,7 +39,7 @@ use super::{
     pack::chains::{FilterChains, InputChain, RewriterEntry, VerifierEntry},
 };
 use crate::{
-    Bytes, Error, HashMap,
+    Bytes, HashMap,
     bundle::{Bundle, parse::peekable_payload},
     keys::KeyProvider,
 };
@@ -49,10 +50,8 @@ const ORIGINATE: &str = "originate";
 const EGRESS: &str = "egress";
 const DELIVER: &str = "deliver";
 
-/// A hook chain's verdict over a bundle. An input chain's errors travel
-/// separately — as `(Bundle, error)`, keeping the bundle with its claimant.
-/// The large `Err` variant is deliberate: boxing the bundle to shrink it
-/// would tax every call site (cf. `cla::peers::forward`).
+/// A hook chain's verdict over a bundle, which travels back to its
+/// claimant with it.
 pub enum ChainOutcome {
     /// The bundle passed the chain; the pair remains consistent (a Rewriter
     /// pass returns the rewritten bytes and re-indexed block map).
@@ -61,7 +60,22 @@ pub enum ChainOutcome {
     Drop(Bundle, Option<ReasonCode>),
 }
 
-type RunResult = Result<ChainOutcome, (Bundle, Error)>;
+// The key source for one decoded pass. A BPSec-free bundle never consults
+// keys — decrypted reads exist only for blocks under a BCB, and a Rewriter
+// cannot add one — so it skips the provider round-trip. One helper for every
+// pass, so the input and output paths cannot diverge.
+fn derive_keys(
+    bcbs: &HashMap<u64, bcb::OperationSet>,
+    bundle: &Bundle,
+    buf: &[u8],
+    key_provider: &dyn KeyProvider,
+) -> Box<dyn KeySource> {
+    if bcbs.is_empty() {
+        Box::new(KeySet::EMPTY)
+    } else {
+        key_provider.key_source(&bundle.bpv7, buf)
+    }
+}
 
 // The payload's resident prefix, for the contexts' `payload_peek`: none for a
 // payload with no peekable prefix (`peekable_payload`). Compared in u64 first:
@@ -137,9 +151,9 @@ impl FilterChains {
         data: Bytes,
         bcbs: &HashMap<u64, bcb::OperationSet>,
         key_provider: &dyn KeyProvider,
-    ) -> RunResult {
+    ) -> ChainOutcome {
         if self.ingress.verifiers.is_empty() && self.ingress.classifiers.is_empty() {
-            return Ok(ChainOutcome::Continue(bundle, data));
+            return ChainOutcome::Continue(bundle, data);
         }
         self.run_input_decoded(&self.ingress, INGRESS, bundle, data, bcbs, key_provider)
     }
@@ -153,18 +167,18 @@ impl FilterChains {
 
     /// Runs the Originate chain (Verifiers, then Classifiers) on the
     /// resident buffer `data` and its already-decoded BCB OperationSets —
-    /// the header prefix at the originate door's admission stage, exactly
-    /// as [`run_ingress`](Self::run_ingress) at the CLA gate.
-    #[allow(clippy::result_large_err)]
+    /// the resident prefix at the originate door's admission stage, with
+    /// the declared peek held, exactly as [`run_ingress`](Self::run_ingress)
+    /// at the CLA gate.
     pub(crate) fn run_originate(
         &self,
         bundle: Bundle,
         data: Bytes,
         bcbs: &HashMap<u64, bcb::OperationSet>,
         key_provider: &dyn KeyProvider,
-    ) -> RunResult {
+    ) -> ChainOutcome {
         if self.originate.verifiers.is_empty() && self.originate.classifiers.is_empty() {
-            return Ok(ChainOutcome::Continue(bundle, data));
+            return ChainOutcome::Continue(bundle, data);
         }
         self.run_input_decoded(&self.originate, ORIGINATE, bundle, data, bcbs, key_provider)
     }
@@ -256,14 +270,8 @@ impl FilterChains {
         buf: Bytes,
         bcbs: &HashMap<u64, bcb::OperationSet>,
         key_provider: &dyn KeyProvider,
-    ) -> RunResult {
-        // A BPSec-free bundle never consults keys (decrypted reads exist
-        // only for blocks under a BCB), so skip the provider round-trip.
-        let keys: Box<dyn KeySource> = if bcbs.is_empty() {
-            Box::new(KeySet::EMPTY)
-        } else {
-            key_provider.key_source(&bundle.bpv7, &buf)
-        };
+    ) -> ChainOutcome {
+        let keys = derive_keys(bcbs, &bundle, &buf, key_provider);
 
         // The reader lends the *wire* view only, so one reader — and its
         // decrypt memo — serves the whole pass: the delta applications
@@ -276,7 +284,7 @@ impl FilterChains {
             hook,
             &VerifyContext::new(&bundle.bpv7, &reader, &bundle.metadata, peek),
         ) {
-            return Ok(ChainOutcome::Drop(bundle, reason));
+            return ChainOutcome::Drop(bundle, reason);
         }
 
         for entry in chain.classifiers.iter() {
@@ -288,12 +296,12 @@ impl FilterChains {
                 Verdict::Drop(reason) => {
                     debug!("Classifier '{}' dropped bundle: {reason:?}", entry.label);
                     metrics::counter!("bpa.filter.filtered", "hook" => hook).increment(1);
-                    return Ok(ChainOutcome::Drop(bundle, reason));
+                    return ChainOutcome::Drop(bundle, reason);
                 }
             }
         }
 
-        Ok(ChainOutcome::Continue(bundle, buf))
+        ChainOutcome::Continue(bundle, buf)
     }
 }
 
@@ -313,7 +321,7 @@ fn rewrite(
         mut bcbs,
         ..
     } = parse(data).unwrap_or_else(|e| output_undecodable(hook, e));
-    let mut keys = key_provider.key_source(&bundle.bpv7, &buf);
+    let mut keys = derive_keys(&bcbs, &bundle, &buf, key_provider);
 
     for entry in rewriters {
         // The context, its reader and its editor are rebuilt per link
@@ -354,7 +362,7 @@ fn rewrite(
             });
             (buf, bcbs) = (new_buf, new_bcbs);
             bundle.bpv7.blocks = new_bundle.blocks;
-            keys = key_provider.key_source(&bundle.bpv7, &buf);
+            keys = derive_keys(&bcbs, &bundle, &buf, key_provider);
             metrics::counter!("bpa.filter.modified", "hook" => hook).increment(1);
         }
     }
@@ -457,7 +465,7 @@ mod tests {
         let chains = freeze(pack);
 
         let (bundle, data, bcbs) = test_bundle();
-        let Ok(ChainOutcome::Continue(bundle, _)) =
+        let ChainOutcome::Continue(bundle, _) =
             chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
         else {
             panic!("expecter must have seen the writer's delta");
@@ -487,7 +495,7 @@ mod tests {
         let chains = freeze(pack);
 
         let (bundle, data, bcbs) = test_bundle();
-        let Ok(ChainOutcome::Continue(bundle, _)) =
+        let ChainOutcome::Continue(bundle, _) =
             chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
         else {
             panic!("the Verifier must run before the Classifier writes the slot");
@@ -510,7 +518,7 @@ mod tests {
         let chains = freeze(pack);
 
         let (bundle, data, bcbs) = test_bundle();
-        let Ok(ChainOutcome::Drop(_, reason)) =
+        let ChainOutcome::Drop(_, reason) =
             chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
         else {
             panic!("verifier must drop the bundle");
@@ -538,7 +546,7 @@ mod tests {
         let chains = freeze(pack);
 
         let (bundle, data, bcbs) = test_bundle();
-        let Ok(ChainOutcome::Drop(_, reason)) =
+        let ChainOutcome::Drop(_, reason) =
             chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
         else {
             panic!("the boxed Verifier must run");
@@ -553,7 +561,7 @@ mod tests {
         let chains = freeze(pack);
 
         let (bundle, data, bcbs) = test_bundle();
-        let Ok(ChainOutcome::Continue(bundle, data)) =
+        let ChainOutcome::Continue(bundle, data) =
             chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
         else {
             panic!("the shared Verifier passes at Ingress");
@@ -737,15 +745,102 @@ mod tests {
         }
     }
 
-    #[test]
-    fn output_chain_derives_keys_once_without_edits() {
+    // Two non-editing Rewriters and a Verifier at Deliver.
+    fn passing_deliver_chain() -> FilterChains {
         let mut pack = FilterPack::new("test");
         pack.deliver_rewriter("noop-a", NoopRewriter);
         pack.deliver_rewriter("noop-b", NoopRewriter);
         pack.deliver_verifier("pass", PassVerifier);
-        let chains = freeze(pack);
+        freeze(pack)
+    }
 
-        let (bundle, data, _) = test_bundle();
+    #[test]
+    fn bpsec_free_output_skips_key_derivation() {
+        let chains = passing_deliver_chain();
+        let (bundle, data, bcbs) = test_bundle();
+        assert!(bcbs.is_empty(), "the fixture bundle carries no BCB");
+        let provider = CountingProvider(AtomicUsize::new(0));
+        let ChainOutcome::Continue(..) = chains.run_deliver(bundle, data, &provider) else {
+            panic!("a chain of passing links must continue");
+        };
+        assert_eq!(
+            provider.0.load(Ordering::Relaxed),
+            0,
+            "a BPSec-free bundle never consults the key provider"
+        );
+    }
+
+    // A bundle carrying a BCB (over its Hop Count block, under a generated
+    // key), so a pass over it derives keys.
+    #[cfg(feature = "rfc9173")]
+    fn bcb_test_bundle() -> (Bundle, Bytes) {
+        use core::num::NonZeroU8;
+
+        use hardy_bpv7::{
+            bpsec::{
+                encryptor::{Context, Encryptor},
+                key::{EncAlgorithm, Key, Operation, Type},
+            },
+            hop_info::HopInfo,
+        };
+        use rand::{TryRng, rngs::SysRng};
+
+        // Immaterial key value: nothing decrypts, the bundle only has to
+        // carry a BCB; generated per the no-literal-keys rule.
+        let mut k = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut k).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(k),
+            key_algorithm: None,
+            enc_algorithm: Some(EncAlgorithm::A256GCM),
+            operations: Some([Operation::Encrypt].into_iter().collect()),
+            id: Some("ipn:1.1".into()),
+            key_use: None,
+        };
+        let (built, data) = Builder::new("ipn:1.1".parse().unwrap(), "ipn:99.1".parse().unwrap())
+            .with_hop_count(&HopInfo {
+                limit: NonZeroU8::new(64).unwrap(),
+                count: 1,
+            })
+            .with_payload(Cow::Borrowed(b"engine-test"))
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let hop_count = *built
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == block::Type::HopCount)
+            .unwrap()
+            .0;
+        let encrypted = Encryptor::new(&built, &data)
+            .encrypt_block(
+                hop_count,
+                Context::AES_GCM(Default::default()),
+                "ipn:1.1".parse().unwrap(),
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .rebuild()
+            .unwrap();
+        let Parsed {
+            bundle, data, bcbs, ..
+        } = parse(Bytes::from(encrypted)).unwrap();
+        assert!(!bcbs.is_empty(), "the bundle carries a BCB");
+        (
+            Bundle {
+                bpv7: bundle,
+                metadata: BundleMetadata::originated(),
+                status: BundleStatus::New,
+            },
+            data,
+        )
+    }
+
+    #[cfg(feature = "rfc9173")]
+    #[test]
+    fn output_chain_derives_keys_once_per_pass() {
+        let chains = passing_deliver_chain();
+        let (bundle, data) = bcb_test_bundle();
         let provider = CountingProvider(AtomicUsize::new(0));
         let ChainOutcome::Continue(..) = chains.run_deliver(bundle, data, &provider) else {
             panic!("a chain of passing links must continue");
@@ -758,8 +853,10 @@ mod tests {
     }
 
     // Records the block count of every bundle it derives a key source for.
+    #[cfg(feature = "rfc9173")]
     struct BlockCountProvider(Mutex<Vec<usize>>);
 
+    #[cfg(feature = "rfc9173")]
     impl KeyProvider for BlockCountProvider {
         fn key_source(&self, bundle: &Bpv7Bundle, _data: &[u8]) -> Box<dyn KeySource> {
             self.0.lock().push(bundle.blocks.len());
@@ -769,7 +866,9 @@ mod tests {
 
     // The provider receives the block map, so the re-derivation after an
     // edit must see the rebuilt one: keys derived against the stale map
-    // would serve the rest of the chain.
+    // would serve the rest of the chain. The bundle carries a BCB, so the
+    // pass derives keys at all.
+    #[cfg(feature = "rfc9173")]
     #[test]
     fn keys_rederive_against_the_rewritten_block_map() {
         let mut pack = FilterPack::new("test");
@@ -777,7 +876,7 @@ mod tests {
         pack.deliver_verifier("pass", PassVerifier);
         let chains = freeze(pack);
 
-        let (bundle, data, _) = test_bundle();
+        let (bundle, data) = bcb_test_bundle();
         let before = bundle.bpv7.blocks.len();
         let provider = BlockCountProvider(Mutex::new(Vec::new()));
         let ChainOutcome::Continue(..) = chains.run_deliver(bundle, data, &provider) else {
@@ -828,8 +927,7 @@ mod tests {
         let (bundle, data, bcbs) = test_bundle();
         assert!(bcbs.is_empty(), "the fixture bundle carries no BCB");
         let provider = CountingProvider(AtomicUsize::new(0));
-        let Ok(ChainOutcome::Continue(..)) = chains.run_ingress(bundle, data, &bcbs, &provider)
-        else {
+        let ChainOutcome::Continue(..) = chains.run_ingress(bundle, data, &bcbs, &provider) else {
             panic!("a passing Verifier must continue");
         };
         assert_eq!(
