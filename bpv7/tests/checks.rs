@@ -1000,7 +1000,7 @@ mod cascade_reencryption_tests {
 }
 
 // Deferred block-1 (payload) BIB verification — the streaming ingress gate path.
-// On a headers-only buffer (oversized payload not yet drained), `verify` can't
+// On a headers-only buffer (payload not yet drained), `verify` can't
 // check a BIB that targets the payload, so it drains that op-set out of
 // `bib_ops` and hands it over owned in `deferred_bibs`; the gate re-checks the
 // handed-over map with `begin_payload_verification`, feeding each verifier the
@@ -1052,9 +1052,9 @@ mod deferred_payload_bib_tests {
         (full, bpsec::key::KeySet::new(vec![key]))
     }
 
-    // Drive the streaming parser until the payload body overflows the buffer,
-    // returning the parsed headers — block 1's extent over-claims, its body
-    // isn't resident in `parsed.data`.
+    // Drive the streaming parser in 64-byte pushes until it hands back the
+    // payload's tail, returning the parsed headers — block 1's extent
+    // over-claims, its body isn't resident in `parsed.data`.
     fn parse_headers_only(full: &[u8]) -> Parsed {
         let mut parser = BundleParser::new(256);
         for c in full.chunks(64) {
@@ -1063,7 +1063,9 @@ mod deferred_payload_bib_tests {
                 ParserProgress::Partial { consumed, .. } => {
                     return parser.finish(consumed).unwrap();
                 }
-                ParserProgress::Ready(_) => panic!("oversized payload must Partial, not Ready"),
+                ParserProgress::Ready(_) => {
+                    panic!("a bundle pushed in pieces must reach Partial, not Ready")
+                }
             }
         }
         panic!("parser never reached Partial");

@@ -96,8 +96,8 @@ impl Dispatcher {
         mut metadata: bundle::BundleMetadata,
     ) -> Received {
         // Pre-drain header pass: parse the header chain off the stream and run
-        // keyed header verification — both in `bundle::parse`, before an oversized
-        // payload is spooled. `Err` carries an optional recoverable bundle to
+        // keyed header verification — both in `bundle::parse`, before a payload
+        // still arriving is spooled. `Err` carries an optional recoverable bundle to
         // report before dropping (reporting stays here — we own the machinery);
         // a structural / truncation drop carries no recoverable bundle.
         let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
@@ -259,7 +259,7 @@ impl Dispatcher {
             (metadata, headers)
         };
 
-        // Drain the payload tail (oversized case) through the
+        // Drain the payload tail (a bundle still arriving) through the
         // ValidatingReceiver: it feeds the payload CRC / block+outer breaks and
         // each deferred BIB digest as the bytes stream past, accumulating the whole
         // bundle bounded by `max_size` (the amplification guard — the declared

@@ -334,11 +334,12 @@ pub enum ParserProgress {
 impl BundleParser {
     pub fn new(chunk_size: usize) -> Self;
 
-    /// Phase 1: push each incoming chunk. Returns `NeedMore(n)` to
-    /// request more bytes, `Ready(bytes)` once the bundle's structure
-    /// has been fully walked (`bytes` = the full concatenation, ready
-    /// to relay into the spool in one piece), or `Partial` for an
-    /// oversized payload (drain via `PayloadTail`).
+    /// Phase 1: push each incoming chunk. Returns `NeedMore(n)` while
+    /// the header region is short, `Ready(bytes)` once the bundle is
+    /// complete and its payload trailer verified (`bytes` = the full
+    /// concatenation, ready to relay into the spool in one piece), or
+    /// `Partial` once the payload block's header has parsed and the
+    /// rest, with its verdict, is the tail's (drain via `PayloadTail`).
     pub fn push(&mut self, data: Bytes) -> Result<ParserProgress, Error>;
 
     /// Phase 2: run the BPSec cross-block structural validation against

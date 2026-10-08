@@ -225,13 +225,12 @@ fn truncated_bundle() {
     }
 }
 
-// A large payload (> chunk_size) that is truncated must not parse as
-// complete. The streaming-fallback branch in parse_blocks returns Ok
-// even when the buffer is short; parse() must detect and reject it.
+// A truncated payload must not parse as complete. On a short buffer
+// parse_blocks leaves the payload block to an unfinished tail and returns Ok;
+// parse() must detect and reject it.
 #[test]
 fn truncated_large_payload() {
-    // 50 000-byte payload triggers the streaming fallback whenever the
-    // buffer is truncated (the shortfall greatly exceeds chunk_size).
+    // The payload's tail is unfinished whenever the buffer is truncated.
     let (_, full_data) =
         builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
             .with_payload(vec![0xAB_u8; 50_000].as_slice().into())

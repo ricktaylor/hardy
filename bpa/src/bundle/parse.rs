@@ -339,7 +339,7 @@ pub enum HeaderFailure {
 }
 
 /// Drive the structural parser off the segment stream up to the parsed header
-/// chain (*without* draining an oversized payload), then run the keyed header
+/// chain (*without* draining a payload still to arrive), then run the keyed header
 /// verification against the resident bytes — the streaming gate's whole
 /// pre-drain stage in one call. The header verification begins incremental
 /// verification of the payload-block BIBs ([`HeaderVerify::deferred_verifiers`])
@@ -371,7 +371,7 @@ where
 {
     let mut parser = parse::BundleParser::default();
     // Drive the parser up to the header chain. `headers` is the resident bytes
-    // (the whole bundle, or the `consumed` prefix for an oversized payload);
+    // (the whole bundle, or the `consumed` prefix of one still arriving);
     // `tail` (if any) drains the rest back in `dispatcher::ingress`.
     let mut total: usize = 0;
     let (parsed, headers, tail) = loop {
@@ -454,8 +454,8 @@ where
 }
 
 /// Header verification (§A classify → §B/§C8/§C7 verify → §D extract) against the
-/// resident `headers` buffer — the `consumed` prefix for an oversized streamed
-/// payload, or the whole bundle otherwise. Takes the structural bundle by value
+/// resident `headers` buffer — the `consumed` prefix of a bundle still
+/// arriving, or the whole bundle otherwise. Takes the structural bundle by value
 /// and returns it inside the assembled [`HeaderVerify`] (BIB coverage stamps
 /// applied, and one begun incremental verifier per block-1 (payload) op-set
 /// the keyed verify deferred, for the dispatcher's payload drain to feed as

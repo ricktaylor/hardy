@@ -28,7 +28,8 @@ use crate::{
     stream::{Receiver, RecvError},
 };
 
-/// Why a [`ValidatingReceiver`] rejected the drained bytes.
+/// Why a [`ValidatingReceiver`] rejected the payload's bytes, whether they
+/// were resident at the header pass or drained.
 #[derive(Debug, Error)]
 pub enum ValidationFailure {
     /// The stream ended before the bundle's outer break: the producer went
@@ -36,7 +37,7 @@ pub enum ValidationFailure {
     /// refused (the CLA withholds its acknowledgement).
     #[error("the stream ended before the bundle's outer break")]
     Truncated,
-    /// The drained bytes were structurally invalid — payload CRC mismatch,
+    /// The payload's bytes were structurally invalid — payload CRC mismatch,
     /// a malformed trailer, or bytes past the outer break. The bundle is
     /// complete but unacceptable: accepted and dropped, never refused.
     #[error("invalid payload bytes: {0}")]
@@ -228,7 +229,9 @@ mod tests {
             match parser.push(Bytes::copy_from_slice(chunk)).unwrap() {
                 ParserProgress::NeedMore(_) => {}
                 ParserProgress::Partial { consumed, tail } => return (consumed, tail),
-                ParserProgress::Ready(_) => panic!("oversized payload must Partial"),
+                ParserProgress::Ready(_) => {
+                    panic!("a bundle pushed in CLA-sized chunks must reach Partial")
+                }
             }
         }
         panic!("parser never reached Partial");
@@ -382,7 +385,7 @@ mod tests {
             .await
             .map_err(|_| ())
             .expect("header pass verifies (payload deferred)");
-        let tail = tail.expect("oversized payload takes the Partial route");
+        let tail = tail.expect("a payload segmented past its header takes the Partial route");
         assert!(
             !hv.deferred_verifiers.is_empty(),
             "the payload BIB is deferred"

@@ -1580,9 +1580,9 @@ async fn cla_streamed_ingress_truncation_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// Streamed oversized-payload ingress: a CLA delivers a bundle whose payload
-// exceeds the parser chunk size, split across many segments — exercising the
-// `Partial` / `drain_tail` (dumb-spool) path end-to-end.
+// Streamed ingress: a CLA delivers a bundle split across many segments, its
+// payload arriving after its header — exercising the `Partial` /
+// `drain_tail` (dumb-spool) path end-to-end.
 // ---------------------------------------------------------------------------
 
 // A `Receiver` that yields a fixed sequence of segments then reports the
@@ -1630,10 +1630,10 @@ impl Receiver<cla::Segment> for SegmentReceiver {
     }
 }
 
-// An inbound bundle with a payload far larger than the 4096-byte parser chunk
-// size, delivered in 1000-byte segments, is reassembled and delivered intact.
+// An inbound bundle with a 20 KB payload, delivered in 1000-byte segments, is
+// reassembled and delivered intact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streamed_oversized_payload_local_delivery() {
+async fn segmented_payload_local_delivery() {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
@@ -1661,10 +1661,6 @@ async fn streamed_oversized_payload_local_delivery() {
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let payload = vec![0xA5_u8; 20_000];
     let inbound = build_bundle(&remote_source, &local_dest, &payload);
-    assert!(
-        inbound.len() > 4096,
-        "payload must exceed the parser chunk size"
-    );
 
     // Deliver the bundle as a stream of 1000-byte segments (forces Partial).
     let mut stream = SegmentReceiver::new(&inbound, 1000);
@@ -1695,7 +1691,7 @@ async fn streamed_oversized_payload_local_delivery() {
 }
 
 // A bundle whose creation time + lifetime is already in the past — expired on
-// arrival. Oversized payload so it streams as `Partial`.
+// arrival. Sent in segments, its payload streams as `Partial`.
 fn build_expired_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
     let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
     let timestamp = CreationTimestamp::from_parts(Some(DtnTime::saturating_from(past)), 1);
@@ -1708,7 +1704,7 @@ fn build_expired_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Byte
 }
 
 // A bundle carrying a Hop Count block whose count already exceeds its limit.
-// Oversized payload so it streams as `Partial`.
+// Sent in segments, its payload streams as `Partial`.
 fn build_hop_exhausted_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
     let hop = HopInfo {
         limit: NonZeroU8::new(1).unwrap(),
@@ -1727,7 +1723,7 @@ fn build_hop_exhausted_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -
 // CLA never has to spool a gigantic invalid payload. Asserted by counting the
 // segments left un-pulled in the `SegmentReceiver`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streamed_oversized_gate_drops_before_draining_payload() {
+async fn segmented_gate_drops_before_draining_payload() {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
@@ -1758,7 +1754,6 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
 
     // Expired — gated on lifetime; the payload tail must stay un-pulled.
     let expired = build_expired_bundle(&remote_source, &local_dest, &payload);
-    assert!(expired.len() > 4096, "payload must exceed the parser chunk");
     let mut stream = SegmentReceiver::new(&expired, 1000);
     assert_eq!(
         sink().dispatch(None, None, &mut stream).await.unwrap(),
@@ -1993,9 +1988,9 @@ async fn drain_failure_reports_reception_then_deletion() {
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
 
-    // An oversized-payload bundle fed in CLA-sized chunks: the payload
-    // outruns the parser's accumulation, so the bundle takes the `Partial`
-    // route and the payload streams through the validating drain. One
+    // A bundle fed in CLA-sized chunks: its payload block is incomplete when
+    // its header parses, so the bundle takes the `Partial` route and the
+    // payload streams through the validating drain. One
     // corrupt byte deep in the payload body fails the payload CRC there —
     // after the header pass admitted the bundle.
     let (_, data) = Builder::new(remote_source.clone(), dest)
