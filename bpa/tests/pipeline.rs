@@ -2874,26 +2874,32 @@ async fn short_final_setup() -> (
 }
 
 // Dispatches `short` in `chunk`-byte segments ending in a `Final` (a single
-// `Final` for `None`), and asserts the transfer is accepted, the bundle never
-// delivered, and exactly one status report leaves: reception and deletion
-// asserted, the deletion citing `BlockUnintelligible`.
+// `Final` for `None`), and asserts it is rejected with one report.
 async fn assert_short_final_is_reported(short: Bytes, chunk: Option<usize>) {
+    let mut stream = SegmentReceiver::new(&short, chunk.unwrap_or(short.len()));
+    assert_rejected_with_one_report(&mut stream).await;
+}
+
+// Dispatches `stream`, a complete transfer of an invalid bundle, and asserts
+// the transfer is accepted, the bundle never delivered, and exactly one
+// status report leaves: reception and deletion asserted, the deletion citing
+// `BlockUnintelligible`.
+async fn assert_rejected_with_one_report(stream: &mut SegmentReceiver) {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
 
     let (bpa, _app, app_rx, cla, forwarded_rx) = short_final_setup().await;
-    let mut stream = SegmentReceiver::new(&short, chunk.unwrap_or(short.len()));
 
-    // The timeout only bounds a regression: a short `Final` handed to the
-    // payload drain would await its exhausted stream.
+    // The timeout only bounds a regression: a `Final` handed to the payload
+    // drain after the header pass took it would await an exhausted stream.
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        cla.sink.get().unwrap().dispatch(None, None, &mut stream),
+        cla.sink.get().unwrap().dispatch(None, None, stream),
     )
     .await
-    .expect("a short Final must not hang the ingress task");
+    .expect("a complete transfer must not hang the ingress task");
     assert!(
         matches!(result, Ok(cla::Acceptance::Accepted)),
-        "a short bundle in a complete transfer is accepted and dropped: {result:?}"
+        "an invalid bundle in a complete transfer is accepted and dropped: {result:?}"
     );
 
     // Event-driven wait; the timeout only bounds a regression.
@@ -2927,7 +2933,32 @@ async fn assert_short_final_is_reported(short: Bytes, chunk: Option<usize>) {
         forwarded_rx.is_empty(),
         "exactly one report leaves the node"
     );
-    assert!(app_rx.is_empty(), "the short bundle must not be delivered");
+    assert!(
+        app_rx.is_empty(),
+        "the invalid bundle must not be delivered"
+    );
+}
+
+// A payload CRC mismatch is reported however the bundle arrives: whole in one
+// `Final`, or whole in a `Next` that an empty `Final` closes. The payload tail
+// checks the trailer in the buffer as it would in a later segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_payload_crc_mismatch_is_reported_however_it_arrives() {
+    let mut bad = reporting_bundle(1000).to_vec();
+    // The last byte of the CRC-32 value: the trailer is `44 c0 c1 c2 c3 FF`.
+    let last_crc_byte = bad.len() - 2;
+    bad[last_crc_byte] ^= 0xFF;
+    let bad = Bytes::from(bad);
+
+    assert_short_final_is_reported(bad.clone(), None).await;
+
+    let mut stream = SegmentReceiver {
+        segments: Mutex::new(VecDeque::from([
+            cla::Segment::Next(bad),
+            cla::Segment::Final(Bytes::new()),
+        ])),
+    };
+    assert_rejected_with_one_report(&mut stream).await;
 }
 
 // R-04: the ingress size cap refuses an over-cap bundle at both

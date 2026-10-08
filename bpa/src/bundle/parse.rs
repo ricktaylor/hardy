@@ -453,16 +453,17 @@ where
                     return Err(HeaderFailure::Invalid(None));
                 }
             },
-            // A `Partial` from the stream's last segment is a short bundle in
-            // a complete transfer: its payload block cannot complete. It is
-            // never handed to the payload drain, whose stream is exhausted;
-            // its headers parsed, so the drop is reported as the drain reports
-            // a payload a `Final` cut short.
+            // A `Partial` from the stream's last segment is a complete
+            // transfer whose payload block the tail did not accept: the
+            // stream ended inside it, or a trailer check failed on the bytes
+            // that came. It is never handed to the payload drain, whose stream
+            // is exhausted; its headers parsed, so the drop is reported as the
+            // drain reports the same failure.
             Ok(parse::ParserProgress::Partial { consumed, tail }) if last => {
-                debug!("Short bundle: the stream ended inside its payload block");
                 let error = tail
                     .finish()
-                    .expect_err("a `Partial` tail has bytes still to come");
+                    .expect_err("a `Partial` tail is unfinished or failed");
+                debug!("Payload block rejected at the stream's Final: {error}");
                 let Ok(parsed) = parser
                     .finish(consumed)
                     .inspect_err(|e| debug!("Bundle BPSec structural validation failed: {e}"))

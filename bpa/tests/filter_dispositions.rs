@@ -10,9 +10,12 @@
 //! choice, so an abort there would hand any peer a node-kill.
 
 use core::num::{NonZeroU8, NonZeroU64};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use hardy_bpa::{
@@ -27,7 +30,7 @@ use hardy_bpa::{
         BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
         Result as StorageResult,
     },
-    stream::{Receiver, Segment, Sender, buffer_stream},
+    stream::{Receiver, RecvError, Segment, Sender, buffer_stream},
 };
 // Aliased: the editor's error, beside the bpv7 `Error` imported here.
 use hardy_bpv7::{
@@ -41,6 +44,7 @@ use hardy_bpv7::{
     extension_editor::Error as EditorError,
     hop_info::HopInfo,
     parse::parse,
+    reader::Availability,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
 use hardy_cbor::encode::emit;
@@ -567,6 +571,91 @@ async fn per_hop_writes_supersede_an_egress_rewriter() {
         .expect("the bundle age decodes")
         .expect("the bundle age is resident");
     assert!(age >= 1000, "this hop's age, at least the received {age}");
+
+    bpa.shutdown().await;
+}
+
+// What an Ingress Verifier finds of the payload: available or not.
+struct PayloadWitness {
+    available_tx: flume::Sender<bool>,
+}
+
+impl Verifier for PayloadWitness {
+    fn verify(&self, ctx: &VerifyContext<'_>) -> Verdict {
+        let available = matches!(ctx.reader().block(1), Some((_, Availability::Available(_))));
+        let _ = self.available_tx.send(available);
+        Verdict::Continue(())
+    }
+}
+
+// A fixed sequence of segments, ending in a `Final`.
+struct Segments(VecDeque<Segment>);
+
+#[async_trait]
+impl Receiver<Segment> for Segments {
+    async fn recv(&mut self) -> Result<Segment, RecvError> {
+        self.0.pop_front().ok_or(RecvError)
+    }
+}
+
+/// The Ingress chain reads the payload whenever its body is resident at the
+/// header pass, its CRC checked or not: a bundle that arrived whole shows it,
+/// as does one whose CRC is still to come, while one whose body is cut short
+/// reads as not resident.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ingress_reads_the_payload_whenever_resident() {
+    let (available_tx, available_rx) = flume::unbounded();
+    let mut pack = FilterPack::new("test");
+    pack.ingress_verifier("witness", PayloadWitness { available_tx });
+    let (bpa, cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+    let build = || {
+        let (_, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
+            .with_payload(b"payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        Bytes::from(data)
+    };
+
+    let mut whole = build();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&node(2)), None, &mut whole)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    assert!(
+        next(&available_rx).await,
+        "a bundle that arrived whole shows its payload"
+    );
+
+    // The bundle ends in the CRC-32 trailer and outer break
+    // (`44 c0 c1 c2 c3 FF`) after the 7-byte body: a `Next` cut 6 bytes from
+    // the end holds the whole body, one cut 9 bytes from the end only part.
+    for (short_by, resident) in [(6, true), (9, false)] {
+        let split = build();
+        let cut = split.len() - short_by;
+        let mut segments = Segments(VecDeque::from([
+            Segment::Next(split.slice(..cut)),
+            Segment::Final(split.slice(cut..)),
+        ]));
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(Some(&node(2)), None, &mut segments)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
+        assert_eq!(
+            next(&available_rx).await,
+            resident,
+            "the payload is visible exactly when its body is resident (cut {short_by} from the end)"
+        );
+    }
 
     bpa.shutdown().await;
 }

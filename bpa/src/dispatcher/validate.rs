@@ -603,6 +603,46 @@ mod tests {
         (hv.deferred_verifiers, headers, tail, initial_body)
     }
 
+    // A signed bundle whose first segment ends where the payload's body does:
+    // the body is resident at the header pass, so the payload BIB verifies
+    // there and none is deferred, and no verifier reads the resident bytes
+    // past the payload's start, trailer included. The signer strips its
+    // target's CRC, so the trailer is the outer break alone. The drain then
+    // settles Ok.
+    #[tokio::test]
+    async fn a_body_resident_at_the_header_pass_defers_no_bib() {
+        let key = sign_key();
+        let full = oversized_bundle(Some(&key));
+        let payload = bpv7_parse::parse(full.clone()).unwrap().bundle.blocks[&1].payload_range();
+        let body_end = payload.end as usize;
+        assert_eq!(body_end, full.len() - 1, "the trailer is the outer break");
+
+        let (tx, mut rx) = hardy_async::channel::bounded(2);
+        tx.send(Segment::Next(full.slice(..body_end)))
+            .await
+            .expect("channel open");
+        tx.send(Segment::Final(full.slice(body_end..)))
+            .await
+            .expect("channel open");
+        let keys = move |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
+            Box::new(KeySet::new(vec![key]))
+        };
+        let (hv, headers, tail, _) = parse::parse_headers(&mut rx, 1 << 20, keys)
+            .await
+            .map_err(|_| ())
+            .expect("the header pass verifies the resident payload");
+        let tail = tail.expect("the outer break is still to come");
+        assert!(
+            hv.deferred_verifiers.is_empty(),
+            "a payload resident at the header pass is verified there"
+        );
+
+        let initial_body = headers.slice(payload.start as usize..);
+        let mut tr = ValidatingReceiver::new(&mut rx, tail, hv.deferred_verifiers, &initial_body);
+        drain(&mut tr).await.expect("the outer break drains");
+        tr.finish().expect("the bundle settles Ok");
+    }
+
     // A deferred payload BIB verifies over the streamed body: the resident
     // prefix plus the streamed remainder feed the digest, and `finish`
     // settles Ok.

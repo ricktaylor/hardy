@@ -216,10 +216,12 @@ impl Dispatcher {
         // record, while the real metadata moves through so a Classifier's
         // deltas survive. A chain drop here is
         // pre-store — nothing was spooled — and is reported like the sibling
-        // gates above. A filter reading the
-        // not-yet-resident payload gets the reader's `NotResident`. The
-        // clone and this whole block dissolve in the streaming leg, where the
-        // chain reads the live prefix directly.
+        // gates above. A filter may read a resident payload before its CRC is
+        // checked: the drain checks it before the bundle commits or its route
+        // executes, so a damaged payload costs only the chain's work. A filter
+        // reading a payload that is not resident gets the reader's
+        // `NotResident`. The clone and this whole block dissolve in the
+        // streaming leg, where the chain reads the live prefix directly.
         let (mut metadata, headers) = if self.filters.has_ingress() {
             let record = bundle::Bundle {
                 bpv7: bundle.clone(),
