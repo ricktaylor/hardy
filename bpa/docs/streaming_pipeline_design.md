@@ -417,7 +417,7 @@ Filter design — kinds, hooks, registration, metadata, restart re-admission —
 
 The byte contract keeps filters off the streaming path entirely:
 
-- An invocation receives `(&Bundle, data: &[u8])` — the resident header prefix plus, when a registered Classifier declared a payload peek, the first min(P, payload length) payload bytes (the peek seat is pending — §5.4). Block bodies are read through `bpv7`'s existing accessors (`Block::payload` / `Block::extract`), which return `None` for bytes not resident in `data`.
+- An invocation receives its kind's context: the wire bundle, a reader over the resident prefix — the headers and whatever of the payload has arrived, at least the first min(P, payload length) payload bytes the gate holds for a declared peek (§5.4) — and `payload_peek` for those bytes. A block body not resident reads as the reader's `NotResident`.
 - No filter receives a byte stream, holds a stream open, or blocks the drain: the hook runs on the accumulation buffer at the gate, and the payload spools past untouched.
 - Classifiers return a `MetadataDelta` that the engine applies — annotation slots, plus the named fields that arrive with their tranches (the `route_table` / `route_key` routing inputs; the traffic `class`, which drives the dispatch enqueue once the policy tranche lands). Filters never mutate stored bytes — the egress Rewriter edits extension blocks per transmission attempt, in memory, so §6.4's read-only forward path holds by construction.
 - The originate-raw path (`local_dispatch_raw()`, bundles from services via gRPC) runs the same strict parser → gate pipeline as ingress — non-canonical service-provided bytes are rejected at parse (§5.2.2), never canonicalised.
@@ -434,7 +434,7 @@ This is the mechanism behind the **link-layer-reach** motivator (§1.3): the BPA
 
 If the gate **accepts**: open a spool via `BundleStorage::store()`, push the accumulated header bytes as the first chunk, then forward subsequent CLA chunks through any configured transforms into the spool channel.
 
-With a registered payload peek (`filter_subsystem_design.md`: P > 0), the hook is designed to run once min(P, payload length) payload bytes have accumulated — a bounded extension of the same gate; the peek bytes sit on the invocation side of the spool boundary and are never cached or persisted. The peek seat is not yet wired: `build()` records P, but the Ingress chain runs on the resident header prefix alone.
+With a registered payload peek (`filter_subsystem_design.md`: P > 0), the hook runs once min(P, payload length) payload bytes have accumulated — a bounded extension of the same gate: the header pass pulls segments until they arrive, feeding each through the payload's tail. The peek bytes sit on the invocation side of the spool boundary and are never cached or persisted; an Ingress chain with no peek declared holds none.
 
 ### 5.5. Inline Payload Transforms and Durability
 

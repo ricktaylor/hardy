@@ -1,7 +1,7 @@
 //! The validating pull-through for the ingress payload drain.
 //!
 //! [`parse_headers`](crate::bundle::parse::parse_headers) hands back the
-//! resident header prefix, a synchronous [`PayloadTail`] continuation, and —
+//! resident prefix, a synchronous [`PayloadTail`] continuation, and —
 //! begun in its keyed pass via
 //! [`begin_payload_verification`](hardy_bpv7::checks::begin_payload_verification)
 //! — one incremental [`bib::Verifier`] per deferred payload BIB. A
@@ -94,10 +94,13 @@ pub struct ValidatingReceiver<'a> {
 impl<'a> ValidatingReceiver<'a> {
     /// Wraps `inner`, marrying the `tail` continuation and the deferred-BIB
     /// `verifiers` to the stream. `initial_body` is the payload's
-    /// block-type-specific data prefix already resident in the header pass's
-    /// `consumed` buffer: the `PayloadTail` was pre-fed it at construction,
-    /// but the verifiers were not, so it is absorbed here before the stream
-    /// supplies the rest.
+    /// block-type-specific data prefix the header pass holds — what arrived
+    /// with the headers, and any peek it held. The `PayloadTail` was fed it
+    /// there, partly by the parser and partly by the hold, but the verifiers
+    /// were not, so it is absorbed here before the stream supplies the
+    /// rest. A `tail` that already failed on those resident bytes reports its
+    /// failure at the first segment the drain pulls, whatever that segment
+    /// holds.
     pub fn new(
         inner: &'a mut dyn Receiver<Segment>,
         tail: PayloadTail,
@@ -581,13 +584,14 @@ mod tests {
     async fn signed_setup(
         full: &Bytes,
         key: &Key,
+        peek: usize,
     ) -> (Vec<(u64, bib::Verifier)>, Bytes, PayloadTail, Bytes) {
         let key = key.clone();
         let keys = move |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
             Box::new(KeySet::new(vec![key]))
         };
         let mut rx = segment_stream(full).await;
-        let (hv, headers, tail, _) = parse::parse_headers(&mut rx, 1 << 20, keys)
+        let (hv, headers, tail, _) = parse::parse_headers(&mut rx, 1 << 20, peek, keys)
             .await
             .map_err(|_| ())
             .expect("header pass verifies (payload deferred)");
@@ -627,7 +631,7 @@ mod tests {
         let keys = move |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
             Box::new(KeySet::new(vec![key]))
         };
-        let (hv, headers, tail, _) = parse::parse_headers(&mut rx, 1 << 20, keys)
+        let (hv, headers, tail, _) = parse::parse_headers(&mut rx, 1 << 20, 0, keys)
             .await
             .map_err(|_| ())
             .expect("the header pass verifies the resident payload");
@@ -650,7 +654,7 @@ mod tests {
     async fn deferred_bib_verifies_over_stream() {
         let key = sign_key();
         let full = oversized_bundle(Some(&key));
-        let (verifiers, headers, tail, initial_body) = signed_setup(&full, &key).await;
+        let (verifiers, headers, tail, initial_body) = signed_setup(&full, &key, 0).await;
         assert_eq!(verifiers.len(), 1);
 
         let rest = full.slice(headers.len()..);
@@ -667,7 +671,7 @@ mod tests {
     async fn deferred_bib_tamper_fails() {
         let key = sign_key();
         let full = oversized_bundle(Some(&key));
-        let (verifiers, headers, tail, initial_body) = signed_setup(&full, &key).await;
+        let (verifiers, headers, tail, initial_body) = signed_setup(&full, &key, 0).await;
         let signed_by = verifiers[0].0;
 
         let mut rest = full.slice(headers.len()..).to_vec();
@@ -678,6 +682,55 @@ mod tests {
         assert!(
             matches!(tr.finish(), Err(ValidationFailure::IntegrityFailed { bib }) if bib == signed_by),
             "the tampered payload fails the BIB that signed it"
+        );
+    }
+
+    // A held peek is body the deferred BIB has not yet covered: the header
+    // pass feeds it to the verifiers once, with the rest of the body to
+    // follow through the drain, and `finish` settles Ok.
+    #[tokio::test]
+    async fn deferred_bib_verifies_over_a_held_peek() {
+        let key = sign_key();
+        let full = oversized_bundle(Some(&key));
+        let (verifiers, headers, tail, initial_body) = signed_setup(&full, &key, 2500).await;
+        assert!(
+            initial_body.len() >= 2500,
+            "the peek holds 2500 body bytes, got {}",
+            initial_body.len()
+        );
+
+        let rest = full.slice(headers.len()..);
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = ValidatingReceiver::new(&mut inner, tail, verifiers, &initial_body);
+        drain(&mut tr).await.expect("valid signed tail drains");
+        tr.finish().expect("the deferred payload BIB verifies");
+    }
+
+    // A tampered byte inside the held peek fails the deferred BIB: the peek's
+    // bytes are part of what it verifies.
+    #[tokio::test]
+    async fn a_tamper_inside_the_peek_fails_the_deferred_bib() {
+        let key = sign_key();
+        let mut tampered = oversized_bundle(Some(&key)).to_vec();
+        let payload_start = bpv7_parse::parse(Bytes::from(tampered.clone()))
+            .unwrap()
+            .bundle
+            .blocks[&1]
+            .payload_range()
+            .start as usize;
+        tampered[payload_start + 1500] ^= 0xFF;
+        let tampered = Bytes::from(tampered);
+        let (verifiers, headers, tail, initial_body) = signed_setup(&tampered, &key, 2500).await;
+        assert!(initial_body.len() > 1500, "the tamper lies inside the peek");
+        let signed_by = verifiers[0].0;
+
+        let rest = tampered.slice(headers.len()..);
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = ValidatingReceiver::new(&mut inner, tail, verifiers, &initial_body);
+        drain(&mut tr).await.expect("a CRC-free payload drains");
+        assert!(
+            matches!(tr.finish(), Err(ValidationFailure::IntegrityFailed { bib }) if bib == signed_by),
+            "the tampered peek fails the BIB that signed it"
         );
     }
 

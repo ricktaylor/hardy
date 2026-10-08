@@ -245,7 +245,8 @@ impl BpaBuilder {
     /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
         // Freeze the filter packs first: the per-hook chains splice in call
-        // order, and P = the max declared payload peek.
+        // order, and each input hook's P = the max peek its registrations
+        // declare.
         let filter_chains = FilterChains::freeze(self.filter_packs);
 
         let metadata_storage = self

@@ -101,10 +101,12 @@ impl Dispatcher {
         // still arriving is spooled. `Err` carries an optional recoverable bundle to
         // report before dropping (reporting stays here — we own the machinery);
         // a structural failure, or a stream that ended inside the headers,
-        // carries none.
+        // carries none. The pass holds the Ingress chain's payload peek: none
+        // for an empty chain.
         let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
             stream,
             self.max_bundle_size_mem(),
+            self.filters.ingress.peek,
             self.key_provider(),
         )
         .await
@@ -210,7 +212,7 @@ impl Dispatcher {
         } = hv;
         metadata.extensions = extensions;
 
-        // Ingress chain at the pre-drain gate, on the resident header prefix.
+        // Ingress chain at the pre-drain gate, on the resident prefix.
         // It runs synchronously on a throwaway record: the wire bundle is
         // cloned so the original stays available for the drain and the stored
         // record, while the real metadata moves through so a Classifier's

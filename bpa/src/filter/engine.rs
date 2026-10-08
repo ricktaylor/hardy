@@ -37,7 +37,11 @@ use super::{
     Boundary, ClassifyContext, RewriteContext, Verdict, VerifyContext,
     pack::chains::{FilterChains, InputChain, RewriterEntry, VerifierEntry},
 };
-use crate::{Bytes, Error, HashMap, bundle::Bundle, keys::KeyProvider};
+use crate::{
+    Bytes, Error, HashMap,
+    bundle::{Bundle, parse::peekable_payload},
+    keys::KeyProvider,
+};
 
 // One spelling per hook, shared by the metric labels and diagnostics.
 const INGRESS: &str = "ingress";
@@ -58,6 +62,21 @@ pub enum ChainOutcome {
 }
 
 type RunResult = Result<ChainOutcome, (Bundle, Error)>;
+
+// The payload's resident prefix, for the contexts' `payload_peek`: none for a
+// payload with no peekable prefix (`peekable_payload`). Compared in u64 first:
+// the payload's range is wire-derived.
+fn resident_payload_prefix<'a>(bundle: &Bundle, buf: &'a [u8]) -> Option<&'a [u8]> {
+    let block = peekable_payload(&bundle.bpv7)?;
+    let body = block.payload_range();
+    let resident = buf.len() as u64;
+    if body.start > resident {
+        return None;
+    }
+    let start = usize::try_from(body.start).ok()?;
+    let end = usize::try_from(body.end.min(resident)).ok()?;
+    buf.get(start..end)
+}
 
 /// The engine's one spelling of the Verifier pass, returning the first
 /// Drop verdict's reason (`None` = every Verifier passed).
@@ -107,10 +126,10 @@ struct Rewritten {
 
 impl FilterChains {
     /// Runs the Ingress chain (Verifiers, then Classifiers) on the resident
-    /// buffer `data` and its already-decoded BCB OperationSets. At the
-    /// streaming gate `data` is the header prefix — the payload is not yet
-    /// resident, so a filter reading it gets the reader's `NotResident` —
-    /// and the caller threads in the `bcbs` the gate's header pass decoded.
+    /// buffer `data`, with the BCB OperationSets the gate's header pass
+    /// decoded. `data` is the resident prefix: the headers and whatever of the
+    /// payload has arrived, at least the peek the gate holds. A filter reading
+    /// a payload not all resident gets the reader's `NotResident`.
     #[allow(clippy::result_large_err)]
     pub(crate) fn run_ingress(
         &self,
@@ -197,7 +216,12 @@ impl FilterChains {
         if let Some(reason) = check_verifiers(
             &chain.verifiers,
             DELIVER,
-            &VerifyContext::new(&bundle.bpv7, &reader, &bundle.metadata),
+            &VerifyContext::new(
+                &bundle.bpv7,
+                &reader,
+                &bundle.metadata,
+                resident_payload_prefix(&bundle, &buf),
+            ),
         ) {
             return ChainOutcome::Drop(bundle, reason);
         }
@@ -232,8 +256,8 @@ impl FilterChains {
 
     // The Verifier-then-Classifier pass over a resident buffer whose BCB
     // OperationSets are already decoded — both input doors thread in the set
-    // from their one header decode (`buf` is the header prefix, and payload
-    // reads return the reader's `NotResident`).
+    // from their one header decode (`buf` is the resident prefix, and a
+    // payload not all resident reads as the reader's `NotResident`).
     #[allow(clippy::result_large_err)]
     fn run_input_decoded(
         &self,
@@ -256,11 +280,12 @@ impl FilterChains {
         // decrypt memo — serves the whole pass: the delta applications
         // below touch `bundle.metadata`, a disjoint borrow.
         let reader = DecryptingReader::new(&bundle.bpv7.blocks, &buf, bcbs, &*keys);
+        let peek = resident_payload_prefix(&bundle, &buf);
 
         if let Some(reason) = check_verifiers(
             &chain.verifiers,
             hook,
-            &VerifyContext::new(&bundle.bpv7, &reader, &bundle.metadata),
+            &VerifyContext::new(&bundle.bpv7, &reader, &bundle.metadata, peek),
         ) {
             return Ok(ChainOutcome::Drop(bundle, reason));
         }
@@ -268,7 +293,7 @@ impl FilterChains {
         for entry in chain.classifiers.iter() {
             // Each delta is applied before the next link runs: a Classifier
             // sees the metadata its predecessors wrote.
-            let ctx = ClassifyContext::new(&bundle.bpv7, &reader, &bundle.metadata);
+            let ctx = ClassifyContext::new(&bundle.bpv7, &reader, &bundle.metadata, peek);
             match entry.classifier.classify(&ctx) {
                 Verdict::Continue(delta) => bundle.metadata.apply(delta),
                 Verdict::Drop(reason) => {
