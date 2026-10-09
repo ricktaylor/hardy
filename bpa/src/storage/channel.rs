@@ -60,8 +60,9 @@
 use core::result::Result;
 
 use futures::{FutureExt, pin_mut, select_biased};
-use hardy_async::{Notify, closeable::TrySendError};
+use hardy_async::{Notify, closeable::TrySendError, time::sleep};
 use portable_atomic::{AtomicUsize, Ordering};
+use time::Duration;
 use trace_err::*;
 use tracing::debug;
 
@@ -300,6 +301,10 @@ impl Sender {
     }
 }
 
+/// How often the poller re-checks a buffer still above the re-open threshold
+/// once storage has drained: the consumer's progress raises no notification.
+const REOPEN_TICK: Duration = Duration::milliseconds(50);
+
 /// Whether the poller should re-open the fast path, given the number of
 /// bundles currently buffered in memory and the channel capacity.
 ///
@@ -396,19 +401,32 @@ impl Store {
                 }
             }
 
-            // Re-open the fast path if the buffer has drained to half
-            // capacity or less and no new work arrived.
-            if should_reopen(shared.tx.len(), cap)
-                && shared
-                    .compare_exchange_state(
-                        ChannelState::Draining,
-                        ChannelState::Open,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_err()
-            {
-                continue; // Congested — loop again without waiting
+            // Re-open the fast path once the buffer has drained to half
+            // capacity or less. The consumer's progress raises no
+            // notification, so while the buffer sits above the threshold
+            // the check must repeat on a short tick; parking on `notify`
+            // alone would leave the fast path closed until the next send.
+            let reopened = loop {
+                if should_reopen(shared.tx.len(), cap) {
+                    break shared
+                        .compare_exchange_state(
+                            ChannelState::Draining,
+                            ChannelState::Open,
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok();
+                }
+                select_biased! {
+                    _ = shared.notify.notified().fuse() => break false,
+                    _ = cancel.cancelled().fuse() => return,
+                    _ = sleep(REOPEN_TICK).fuse() => {}
+                }
+            };
+            if !reopened {
+                // Congested, or new work arrived while the buffer drained:
+                // loop again without waiting.
+                continue;
             }
 
             // Wait for new work, or bail if the store is shutting down.
