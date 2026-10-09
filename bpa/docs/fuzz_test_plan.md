@@ -50,6 +50,8 @@ The harness operates by simulating a "Mock Reactor" around the BPA:
 
    * **`Msg::Service(service::Msg)`**: Injects application-layer messages via the Service API. This tests the Northbound interface (Application Registration, ADU Send/Receive).
 
+   * **`Msg::ClaSegments`**: *(Not yet implemented)* Injects the same bytes twice, once whole and once as a segment stream split at input-derived sizes, into a BPA whose Ingress chain declares a payload peek derived from the input (0 included), and requires the two `Acceptance`s to agree. Whole-buffer dispatch never runs the header pass's peek hold or the streamed payload drain; this does.
+
    * **`Msg::TickTimer(u64)`**: *(Not yet implemented)* Advances the mock clock by a delta (triggering expiry/resend checks).
 
    * **`Msg::UpdateRoute(Vec<Updates>)`**: *(Not yet implemented)* Injects a configuration or routing update event (e.g., adding/removing routes) to test dynamic reconfiguration.

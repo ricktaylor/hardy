@@ -385,62 +385,6 @@ impl BundleStorage for LocalDiskStorage {
             .into())
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    async fn replace(&self, storage_name: &str, data: Bytes) -> storage::Result<()> {
-        let final_path = self.store_root.join(PathBuf::from_str(storage_name)?);
-        let tmp_path = final_path.with_extension("tmp");
-
-        if self.fsync {
-            let final_path = final_path.clone();
-            let tmp_path = tmp_path.clone();
-            tokio::task::spawn_blocking(move || {
-                let mut options = std::fs::OpenOptions::new();
-                options.write(true).create(true).truncate(true);
-
-                #[cfg(unix)]
-                options.custom_flags(libc::O_SYNC);
-
-                #[cfg(windows)]
-                options.custom_flags(winapi::um::winbase::FILE_FLAG_WRITE_THROUGH);
-
-                let mut file = options.open(&tmp_path)?;
-                file.write_all(&data).inspect_err(|e| {
-                    error!("Failed to write bundle data: {e}");
-                    _ = std::fs::remove_file(&tmp_path);
-                })?;
-                file.sync_data().inspect_err(|e| {
-                    error!("Failed to sync bundle file data: {e}");
-                    _ = std::fs::remove_file(&tmp_path);
-                })?;
-                std::fs::rename(&tmp_path, &final_path).inspect_err(|e| {
-                    error!("Failed to rename temporary bundle data file: {e}");
-                    _ = std::fs::remove_file(&tmp_path);
-                })?;
-                if let Some(parent_dir) = final_path.parent()
-                    && let Err(e) = std::fs::File::open(parent_dir).and_then(|f| f.sync_all())
-                {
-                    warn!("Failed to sync parent directory: {e}");
-                }
-                storage::Result::Ok(())
-            })
-            .await
-            .trace_expect("Failed to spawn replace thread")?;
-            Ok(())
-        } else {
-            tokio::fs::write(&tmp_path, &data).await.inspect_err(|e| {
-                error!("Failed to write bundle data: {e}");
-                _ = std::fs::remove_file(&tmp_path);
-            })?;
-            tokio::fs::rename(&tmp_path, &final_path)
-                .await
-                .inspect_err(|e| {
-                    error!("Failed to rename temporary bundle data file: {e}");
-                    _ = std::fs::remove_file(&tmp_path);
-                })?;
-            Ok(())
-        }
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?))

@@ -8,7 +8,7 @@ PostgreSQL-based storage implementing **`MetadataStorage` only**.
 
 - **Correct concurrency.** Leverage PostgreSQL's MVCC instead of application-level write serialization. Multiple BPA instances can share the same database safely.
 
-- **Metadata-only footprint.** No `BYTEA` payload columns. The `metadata` table is compact and cache-friendly; all poll queries are single-table scans over typed columns and partial indexes.
+- **Metadata-only footprint.** No bundle payload data: the one `BYTEA` column holds the serialised metadata record. The `metadata` table is compact and cache-friendly; all poll queries are single-table scans over typed columns and partial indexes.
 
 - **Production-grade.** Built for multi-node DTN deployments where high availability, backups, and point-in-time recovery are managed at the database tier.
 
@@ -21,9 +21,9 @@ graph LR
     BPA --> MetadataStorage --> sqlx::PgPool --> PostgreSQL
 ```
 
-`MetadataStorage` is implemented by a single `Storage` struct backed by a `sqlx::PgPool`. The pool manages connections transparently; there is no application-level write lock.
+`MetadataStorage` is implemented by a single `PostgresStorage` struct backed by a `sqlx::PgPool`. The pool manages connections transparently; there is no application-level write lock.
 
-The implementation lives in a single `metadata.rs` module, which owns both the `bundles` (identity anchor) and `metadata` (lifecycle state) tables.
+The implementation lives in the `storage.rs` module, which owns both the `bundles` (identity anchor) and `metadata` (lifecycle state) tables; `status.rs` maps `BundleStatus` to the typed status columns and `builder.rs` configures the pool.
 
 ## Key Design Decisions
 
@@ -41,7 +41,7 @@ The implementation lives in a single `metadata.rs` module, which owns both the `
 SQLite's single-writer constraint forced an explicit `tokio::sync::Mutex` to queue writes. PostgreSQL uses Multi-Version Concurrency Control: concurrent writers work on isolated snapshots, conflicts are resolved by the engine, and read-write contention is eliminated.
 
 Consequences:
-- No `write_lock` field in `Storage`.
+- No `write_lock` field in `PostgresStorage`.
 - `INSERT ... ON CONFLICT DO NOTHING` for idempotent inserts (replaces SQLite's `INSERT OR IGNORE`).
 - `UPDATE ... WHERE id = $1` is safe under concurrent workloads.
 - `poll_waiting` uses a `REPEATABLE READ` transaction for snapshot consistency (see below).
@@ -70,29 +70,30 @@ SQLite encodes status as a numeric code with up to three opaque parameters. Post
 CREATE TYPE bundle_status AS ENUM (
     'new',
     'waiting',
+    'dispatching',
     'forward_pending',
     'adu_fragment',
-    'dispatching',
     'waiting_for_service'
 );
+
+-- Added by migrations 0002 and 0004
+ALTER TYPE bundle_status ADD VALUE 'forward_ack_pending';
+ALTER TYPE bundle_status ADD VALUE 'dispatch_pending';
+ALTER TYPE bundle_status ADD VALUE 'deliver_pending';
+ALTER TYPE bundle_status ADD VALUE 'delivery_ack_pending';
 ```
 
-Each status variant has its own nullable columns (`peer_id`, `queue_id`, `adu_source`, `adu_ts_ms`, `adu_ts_seq`, `service_eid`). This removes the magic-number mapping, makes queries self-documenting, and enables partial indexes per status variant.
+Each status variant has its own nullable columns (`peer_id`, `queue_id`, `adu_source`, `adu_ts_ms`, `adu_ts_seq`, `service_eid`, `next_hop`). This removes the magic-number mapping, makes queries self-documenting, and enables partial indexes per status variant.
 
-### Bundle Blob as JSONB
+### Bundle Blob as Serialised JSON in `BYTEA`
 
-The `metadata.bundle` column stores the full `hardy_bpa::bundle::Bundle` struct — not just the RFC fields, but also `BundleMetadata` (status, received_at, ingress peer, flow label, `storage_name`). This is the form the BPA works with internally; storing it whole avoids re-parsing CBOR and re-deriving BPA state on every read.
+The `metadata.bundle` column stores the BPA's `StoredBundle` record — not just the RFC fields of the wire bundle, but also its `BundleMetadata` (arrival provenance such as received_at and the ingress CLA and peer, the decoded extension fields, the classification group, and `storage_name`). This is the form the BPA works with internally; storing it whole avoids re-parsing CBOR and re-deriving BPA state on every read.
 
-It is stored as `JSONB` rather than `BYTEA` or plain `TEXT` because:
-
-- Stores data more compactly than text JSON.
-- Supports GIN indexes on JSON paths if future queries need them.
-- Allows `pg_dump` to produce human-readable output.
-- Enables `psql` inspection without external tools.
+It is stored as `serde_json` bytes in a `BYTEA` column rather than as `JSONB`, because PostgreSQL's JSON parser rejects `\u0000` and lone surrogates. The database never parses the blob.
 
 It is **not** a normalized relational representation of the RFC bundle structure. Every poll query in this design filters on `status`, `expiry`, and `received_at` — fields from `BundleMetadata`, not from the RFC block structure. The database never needs to look inside the RFC fields.
 
-The JSONB blob is the authoritative source for the stored halves of the record (`StoredBundle`: the wire bundle and its metadata) on `get()` and all poll calls; the processing status lives only in the typed columns, which every deserialize re-imposes through `StoredBundle::into_bundle`. The remaining typed columns (`expiry`, `peer_id`, etc.) are projections of `BundleMetadata` fields, duplicated only so the database can index and filter without parsing JSONB on every row.
+The blob is the authoritative source for the stored halves of the record (`StoredBundle`: the wire bundle and its metadata) on `get()` and all poll calls; the processing status lives only in the typed columns, which every deserialize re-imposes through `StoredBundle::into_bundle`. The remaining typed columns (`expiry`, `peer_id`, etc.) are projections of `BundleMetadata` fields, duplicated only so the database can index and filter without deserialising the blob on every row.
 
 ### Snapshot Polling via `REPEATABLE READ`
 
@@ -114,20 +115,29 @@ The `(received_at, id)` pair is a stable, collision-free cursor because `id` is 
 Every polling query filters on `status`. Standard indexes on status have poor selectivity when most rows are `waiting` or `dispatching`. Partial indexes on `metadata` target specific variants:
 
 ```sql
-CREATE INDEX ON metadata (expiry ASC)
+CREATE INDEX ON metadata (expiry ASC, id ASC)
     WHERE status != 'new';
 
 CREATE INDEX ON metadata (received_at ASC, id ASC)
     WHERE status = 'waiting';
 
-CREATE INDEX ON metadata (peer_id, received_at ASC)
+CREATE INDEX ON metadata (received_at ASC, id ASC)
+    WHERE status = 'dispatch_pending';
+
+CREATE INDEX ON metadata (peer_id, received_at ASC, id ASC)
     WHERE status = 'forward_pending';
 
-CREATE INDEX ON metadata (adu_source, adu_ts_ms, adu_ts_seq)
+CREATE INDEX ON metadata (peer_id)
+    WHERE status = 'forward_ack_pending';
+
+CREATE INDEX ON metadata (adu_source, adu_ts_ms, adu_ts_seq, received_at ASC, id ASC)
     WHERE status = 'adu_fragment';
 
-CREATE INDEX ON metadata (service_eid, received_at ASC)
+CREATE INDEX ON metadata (service_eid, received_at ASC, id ASC)
     WHERE status = 'waiting_for_service';
+
+CREATE INDEX ON metadata (service_eid, received_at, id)
+    WHERE status = 'deliver_pending';
 ```
 
 Each partial index is smaller than a full-table index and is used exclusively by its matching query plan.
@@ -140,11 +150,17 @@ Each partial index is smaller than a full-table index and is used exclusively by
 CREATE TYPE bundle_status AS ENUM (
     'new',
     'waiting',
+    'dispatching',
     'forward_pending',
     'adu_fragment',
-    'dispatching',
     'waiting_for_service'
 );
+
+-- Added by migrations 0002 and 0004
+ALTER TYPE bundle_status ADD VALUE 'forward_ack_pending';
+ALTER TYPE bundle_status ADD VALUE 'dispatch_pending';
+ALTER TYPE bundle_status ADD VALUE 'deliver_pending';
+ALTER TYPE bundle_status ADD VALUE 'delivery_ack_pending';
 ```
 
 ### `bundles` Table
@@ -156,7 +172,7 @@ CREATE TABLE bundles (
     id          BIGSERIAL   PRIMARY KEY,
 
     -- BPv7 bundle identity. UNIQUE enforces deduplication and tombstone.
-    bundle_id   BYTEA       NOT NULL UNIQUE,  -- JSON-encoded BPv7 bundle::Id
+    bundle_id   TEXT        NOT NULL UNIQUE,  -- CBOR+base64url via bundle::Id::to_key()
 
     -- Ingress time, set at insert(). Never NULL.
     received_at TIMESTAMPTZ NOT NULL
@@ -165,7 +181,7 @@ CREATE TABLE bundles (
 
 ### `metadata` Table
 
-Owns all lifecycle state. Absent for tombstoned bundles. Contains no `BYTEA` columns so all metadata scans are compact. `received_at` is denormalized from `bundles` so that poll queries with keyset pagination remain single-table without a join.
+Owns all lifecycle state. Absent for tombstoned bundles. Holds no bundle payload data — its one `BYTEA` column is the serialised metadata record. `received_at` is denormalized from `bundles` so that poll queries with keyset pagination remain single-table without a join.
 
 ```sql
 CREATE TABLE metadata (
@@ -186,33 +202,46 @@ CREATE TABLE metadata (
     adu_ts_ms   BIGINT,             -- AduFragment.timestamp (milliseconds)
     adu_ts_seq  BIGINT,             -- AduFragment.sequence_number
     service_eid TEXT,               -- WaitingForService.service (EID string)
+    next_hop    TEXT,               -- ForwardPending.next_hop (resolved adjacency EID)
 
-    -- Full bundle metadata blob.
-    -- Stores the complete hardy_bpa::bundle::Bundle struct as JSONB.
-    -- Typed columns above are projections of fields within this blob.
-    bundle      JSONB NOT NULL
-);
+    -- The StoredBundle record (wire bundle + BundleMetadata) as serde_json bytes.
+    -- Typed columns above are projections for indexing; this is the authoritative source.
+    -- BYTEA avoids PostgreSQL's JSON parser, which rejects \u0000 and lone surrogates.
+    bundle      BYTEA NOT NULL
+) WITH (fillfactor = 80);
 
 -- Partial indexes for polling queries (see Key Design Decisions)
 CREATE INDEX idx_metadata_expiry
-    ON metadata (expiry ASC)
+    ON metadata (expiry ASC, id ASC)
     WHERE status != 'new';
 
 CREATE INDEX idx_metadata_waiting
     ON metadata (received_at ASC, id ASC)
     WHERE status = 'waiting';
 
+CREATE INDEX idx_metadata_dispatch_pending
+    ON metadata (received_at ASC, id ASC)
+    WHERE status = 'dispatch_pending';
+
 CREATE INDEX idx_metadata_forward_pending
-    ON metadata (peer_id, received_at ASC)
+    ON metadata (peer_id, received_at ASC, id ASC)
     WHERE status = 'forward_pending';
 
+CREATE INDEX idx_metadata_forward_ack_pending
+    ON metadata (peer_id)
+    WHERE status = 'forward_ack_pending';
+
 CREATE INDEX idx_metadata_adu_fragment
-    ON metadata (adu_source, adu_ts_ms, adu_ts_seq)
+    ON metadata (adu_source, adu_ts_ms, adu_ts_seq, received_at ASC, id ASC)
     WHERE status = 'adu_fragment';
 
 CREATE INDEX idx_metadata_service_waiting
-    ON metadata (service_eid, received_at ASC)
+    ON metadata (service_eid, received_at ASC, id ASC)
     WHERE status = 'waiting_for_service';
+
+CREATE INDEX idx_metadata_deliver_pending
+    ON metadata (service_eid, received_at, id)
+    WHERE status = 'deliver_pending';
 ```
 
 ### `unconfirmed` Table
@@ -263,9 +292,9 @@ WHERE b.bundle_id = $bundle_id
 
 Returns `None` for unknown or tombstoned identities.
 
-### `replace(bundle)`
+### `swap_status(bundle_id, expected, status)`
 
-Updates the `metadata` row in place. Typed projection columns are updated alongside the JSONB blob to keep indexes current:
+A compare-and-swap on the typed status columns: the row moves to `status` only if its status columns still equal `expected`, and the result reports whether the swap happened. The blob is not rewritten — the processing status lives only in the typed columns:
 
 ```sql
 UPDATE metadata
@@ -276,8 +305,11 @@ SET status      = $status,
     adu_ts_ms   = $adu_ts_ms,
     adu_ts_seq  = $adu_ts_seq,
     service_eid = $service_eid,
-    bundle      = $bundle
+    next_hop    = $next_hop
 WHERE id = (SELECT id FROM bundles WHERE bundle_id = $bundle_id)
+  AND status = $expected_status
+  AND peer_id     IS NOT DISTINCT FROM $expected_peer_id
+  -- ... likewise for the remaining parameter columns
 ```
 
 ### `tombstone(bundle_id)`
@@ -383,7 +415,7 @@ If a checksum mismatches on startup, the storage refuses to open. The `upgrade` 
 graph LR
     poll["MetadataStorage::poll_waiting()"] --> sel["SELECT metadata"] --> snap1["MVCC snapshot"] --> ret["Returns"]
     ins["MetadataStorage::insert()"] --> insB["INSERT bundles\nINSERT metadata"] --> snap2["MVCC snapshot"] --> com1["Commit (CTE, atomic)"]
-    rep["MetadataStorage::replace()"] --> upd["UPDATE metadata"] --> snap3["MVCC snapshot"] --> com2["Commit"]
+    rep["MetadataStorage::swap_status()"] --> upd["UPDATE metadata (conditional)"] --> snap3["MVCC snapshot"] --> com2["Commit"]
     tomb["MetadataStorage::tombstone()"] --> del["DELETE metadata"] --> snap4["MVCC snapshot"] --> com3["Commit"]
 ```
 
@@ -397,7 +429,7 @@ All operations run under `READ COMMITTED` isolation except:
 | Scenario | Outcome |
 |----------|---------|
 | Two concurrent `insert()` calls for the same `bundle_id` | `ON CONFLICT DO NOTHING` ensures exactly one row lands in `bundles`; the loser's `metadata` insert sees no `ins_bundle` row and returns `false`. |
-| `poll_waiting()` concurrent with `replace()` | `poll_waiting` holds a `REPEATABLE READ` snapshot; status changes committed after the snapshot started are invisible for that poll cycle. |
+| `poll_waiting()` concurrent with `swap_status()` | `poll_waiting` holds a `REPEATABLE READ` snapshot; status changes committed after the snapshot started are invisible for that poll cycle. |
 | `tombstone()` concurrent with `get()` | `get()` may return `None` if `tombstone()` commits first; this is the correct observable state. |
 | `tombstone()` followed by `insert()` for same `bundle_id` | `ON CONFLICT DO NOTHING` in `insert()` finds the existing `bundles` row and returns `false`. Resurrection is prevented. |
 
@@ -405,7 +437,7 @@ All operations run under `READ COMMITTED` isolation except:
 
 ### With `hardy-bpa`
 
-Implements `MetadataStorage`. The BPA receives this as its metadata backend. The `storage_name` (a pointer into whichever bundle storage backend is in use) is stored inside the `metadata.bundle` JSONB blob as part of `BundleMetadata`.
+Implements `MetadataStorage`. The BPA receives this as its metadata backend. The `storage_name` (a pointer into whichever bundle storage backend is in use) is stored inside the `metadata.bundle` blob as part of `BundleMetadata`.
 
 ### With `hardy-bpa-server`
 
@@ -417,21 +449,11 @@ The server instantiates the storage via `PostgresStorage::builder()` and injects
 |-------------------|-----------------------------------------------------|
 | `hardy-bpa`       | `MetadataStorage` trait definition                  |
 | `sqlx`            | Async PostgreSQL driver, connection pooling, migrations |
-| `serde_json`      | Bundle struct serialization for the JSONB blob      |
+| `serde_json`      | `StoredBundle` serialization for the `metadata.bundle` blob |
 | `thiserror`       | Typed error definitions                             |
 | `tokio`           | Async runtime                                       |
 | `trace_err`       | Error context tracing                               |
 
 ## Testing
 
-Key test scenarios:
-
-- **PG-01 Basic CRUD**: insert, get, replace, tombstone round-trip.
-- **PG-02 Idempotent insert**: two concurrent inserts for the same `bundle_id` both return without error; exactly one row exists.
-- **PG-03 Recovery**: insert a bundle, call `start_recovery()`, skip `confirm_exists` for it, call `remove_unconfirmed`; verify the orphan is streamed and tombstoned.
-- **PG-04 poll_waiting snapshot**: insert bundle, start poll, update bundle status mid-poll; verify snapshot excludes the update.
-- **PG-05 Keyset pagination**: store 200 `waiting` bundles; verify `poll_waiting` delivers all 200 in `received_at` order across multiple pages.
-- **PG-06 Concurrent writers**: 10 tasks each inserting distinct bundles concurrently; verify all 10 are present with no deadlocks or constraint violations.
-- **PG-07 Migration checksum**: tamper with a migration row in `_sqlx_migrations`; verify storage refuses to open.
-- **PG-08 Tombstone semantics**: tombstone a bundle, then attempt re-insert; verify the second insert returns `false`.
-- **PG-09 Tombstone deletes metadata**: tombstone a fully inserted bundle; verify the `metadata` row is deleted and the `bundles` row is retained.
+- [Test Plan](test_plan.md) — backend scope: no PostgreSQL-specific suite is planned; the `MetadataStorage` contract (insert, `swap_status`, tombstones, recovery, polling) is covered by the shared storage harness ([`tests/storage`](../../tests/storage/docs/test_plan.md), META-01..16), run against PostgreSQL.

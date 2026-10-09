@@ -4,7 +4,7 @@
 //! covering the component test plan (PLAN-BPA-01) Suites A and B.
 
 use core::{
-    num::{NonZeroU8, NonZeroU64},
+    num::{NonZeroU8, NonZeroU32, NonZeroU64},
     time::Duration,
 };
 use hardy_bpa::{
@@ -12,6 +12,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     cla,
     filter::{RewriteContext, Rewriter, pack::FilterPack},
+    keys::KeyProvider,
     node_ids::NodeIds,
     services,
     storage::{MetadataMemStorage, MetadataStorage},
@@ -31,12 +32,20 @@ use hardy_bpv7::{
     hop_info::HopInfo,
     parse::{Parsed, parse},
     reader::Availability,
-    status_report::ReasonCode,
+    status_report::{AdministrativeRecord, ReasonCode},
+};
+// Aliased: the key type, beside the block `Type` imported above.
+#[cfg(feature = "rfc9173")]
+use hardy_bpv7::bpsec::{
+    encryptor::{Context as EncryptContext, Encryptor},
+    key::{EncAlgorithm, Key, KeySet, KeySource, Operation, Type as KeyType},
 };
 use hardy_cbor::{
     decode::skip_value,
     encode::{Raw, emit, emit_array},
 };
+#[cfg(feature = "rfc9173")]
+use rand::{TryRng, rngs::SysRng};
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -417,6 +426,455 @@ async fn app_to_cla_routing() {
     bpa.shutdown().await;
 }
 
+// A block the ingress gate schedules for §E removal (here an unrecognised
+// extension block flagged `delete_block_on_failure`) is kept in the stored
+// bundle — no editing on input — and stripped per attempt ahead of the
+// Egress chain, so the transmitted wire form no longer carries it while the
+// payload survives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_removal_applied_at_egress() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, &[remote])
+        .await
+        .unwrap();
+
+    // Craft a bundle to the remote node carrying an unrecognised block (type
+    // 999, block 2) flagged delete_block_on_failure, inserted between the
+    // primary and the payload.
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+    let base = build_bundle(&source, &dest, b"payload");
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x10u64); // flags: delete_block_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(base[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(base.len() + unknown.len());
+    modified.extend_from_slice(&base[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&base[insert..]);
+    let inbound = Bytes::from(modified);
+
+    // The crafted bundle really carries the unrecognised block as it arrives.
+    let Parsed { bundle: pre, .. } = parse(inbound.clone()).expect("crafted bundle parses");
+    assert!(
+        pre.blocks
+            .values()
+            .any(|b| b.block_type == Type::Unrecognised(999)),
+        "the unknown block is present as ingressed"
+    );
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "an unknown deletable block is accepted, not refused"
+    );
+
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the forwarded bundle")
+    .expect("channel closed");
+
+    let Parsed { bundle: fwd, .. } = parse(forwarded).expect("forwarded bundle parses");
+    assert!(
+        fwd.blocks
+            .values()
+            .all(|b| b.block_type != Type::Unrecognised(999)),
+        "the deferred removal is applied at the egress door"
+    );
+    assert!(fwd.blocks.contains_key(&1), "the payload survives");
+
+    bpa.shutdown().await;
+}
+
+// A low-level (raw-bundle) service that captures each delivered bundle's
+// wire bytes.
+struct CapturingService {
+    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    delivered_tx: flume::Sender<Bytes>,
+}
+
+impl CapturingService {
+    fn new() -> (Arc<Self>, flume::Receiver<Bytes>) {
+        let (delivered_tx, rx) = flume::unbounded();
+        (
+            Arc::new(Self {
+                sink: hardy_async::sync::spin::Once::new(),
+                delivered_tx,
+            }),
+            rx,
+        )
+    }
+}
+
+#[async_trait]
+impl services::Service for CapturingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
+        self.sink.call_once(|| sink);
+    }
+    async fn on_unregister(&self) {}
+    async fn on_deliver(
+        &self,
+        _bundle_id: &Id,
+        _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        let data = buffer_stream(stream, total_len).await?;
+        let _ = self.delivered_tx.send(data);
+        Ok(())
+    }
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &Id,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+    }
+}
+
+// The deliver-side twin of `deferred_removal_applied_at_egress`: a bundle
+// addressed to a local raw-bundle service, carrying an unrecognised
+// `delete_block_on_failure` block, is delivered with that block stripped —
+// the stored bundle stays as received.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_removal_applied_at_delivery() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (svc, delivered_rx) = CapturingService::new();
+    let endpoint = bpa.register_service(Service::Ipn(7), svc).await.unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    // A bundle to the local service, carrying an unrecognised block (type
+    // 999, block 2) flagged delete_block_on_failure.
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let base = build_bundle(&source, &endpoint, b"payload");
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64);
+        a.emit(&2u64);
+        a.emit(&0x10u64); // delete_block_on_failure
+        a.emit(&0u64);
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(base.len() + unknown.len());
+    modified.extend_from_slice(&base[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&base[insert..]);
+    let inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let delivered = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        delivered_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the delivered bundle")
+    .expect("channel closed");
+
+    let Parsed { bundle: del, .. } = parse(delivered).expect("delivered bundle parses");
+    assert!(
+        del.blocks
+            .values()
+            .all(|b| b.block_type != Type::Unrecognised(999)),
+        "the deferred removal is applied at the deliver door"
+    );
+    assert!(del.blocks.contains_key(&1), "the payload survives");
+
+    bpa.shutdown().await;
+}
+
+// Splices an unrecognised block (type 999, block 2) flagged
+// `delete_block_on_failure` between `base`'s primary and its first
+// canonical block: the ingress gate schedules it for removal.
+fn with_deletable_unknown(base: &Bytes) -> Bytes {
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x10u64); // flags: delete_block_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(base[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(base.len() + unknown.len());
+    modified.extend_from_slice(&base[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&base[insert..]);
+    Bytes::from(modified)
+}
+
+/// Records whether it was handed a block scheduled for removal (type 999),
+/// then inserts a block of its own, which the editor numbers from the lowest
+/// free block number — the removed block's, when the removal came first.
+struct ScheduledBlockObserver {
+    saw_scheduled: Arc<AtomicBool>,
+}
+
+impl Rewriter for ScheduledBlockObserver {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
+        if ctx
+            .bundle()
+            .blocks
+            .values()
+            .any(|b| b.block_type == Type::Unrecognised(999))
+        {
+            self.saw_scheduled.store(true, Ordering::SeqCst);
+        }
+        // A refusal is a no-match, never a panic (a panicking filter aborts
+        // the node); `assert_insert_survives` catches a refused insert.
+        let _ = ctx.editor().insert(
+            INSERTED,
+            BlockFlags::default(),
+            CrcType::None,
+            emit(&42u64).0.into(),
+        );
+    }
+}
+
+// The bundle carries the Rewriter's insert and not the scheduled block.
+fn assert_insert_survives(data: Bytes) {
+    let out = parse(data).expect("the bundle parses");
+    assert!(
+        out.bundle
+            .blocks
+            .values()
+            .all(|b| b.block_type != Type::Unrecognised(999)),
+        "the scheduled removal is applied"
+    );
+    let inserted = out
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == INSERTED)
+        .expect("the Rewriter's insert survives the removal");
+    assert_eq!(inserted.payload(&out.data), Some(emit(&42u64).0.as_slice()));
+}
+
+/// The scheduled removals apply ahead of the Egress chain: a Rewriter never
+/// sees a block scheduled for removal, and the block it inserts travels,
+/// where a removal applied after it could delete an insert that took the
+/// removed block's number.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_removal_precedes_the_egress_rewriters() {
+    let saw_scheduled = Arc::new(AtomicBool::new(false));
+    let mut pack = FilterPack::new("test");
+    pack.egress_rewriter(
+        "observer",
+        ScheduledBlockObserver {
+            saw_scheduled: saw_scheduled.clone(),
+        },
+    );
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .add_filters(pack)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+
+    let inbound = with_deletable_unknown(&build_bundle(
+        &"ipn:0.9.1".parse().unwrap(),
+        &"ipn:0.2.99".parse().unwrap(),
+        b"payload",
+    ));
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the forwarded bundle")
+    .expect("channel closed");
+
+    assert!(
+        !saw_scheduled.load(Ordering::SeqCst),
+        "the Rewriter never sees the scheduled block"
+    );
+    assert_insert_survives(forwarded);
+
+    bpa.shutdown().await;
+}
+
+/// The Deliver twin: the scheduled removals apply ahead of the Deliver
+/// chain, so a Deliver Rewriter never sees a block scheduled for removal,
+/// and the raw-bundle service receives its insert.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_removal_precedes_the_deliver_chain() {
+    let saw_scheduled = Arc::new(AtomicBool::new(false));
+    let mut pack = FilterPack::new("test");
+    pack.deliver_rewriter(
+        "observer",
+        ScheduledBlockObserver {
+            saw_scheduled: saw_scheduled.clone(),
+        },
+    );
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .add_filters(pack)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (svc, delivered_rx) = CapturingService::new();
+    let endpoint = bpa.register_service(Service::Ipn(7), svc).await.unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let inbound = with_deletable_unknown(&build_bundle(
+        &"ipn:0.9.1".parse().unwrap(),
+        &endpoint,
+        b"payload",
+    ));
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let delivered = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        delivered_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the delivered bundle")
+    .expect("channel closed");
+
+    assert!(
+        !saw_scheduled.load(Ordering::SeqCst),
+        "the Rewriter never sees the scheduled block"
+    );
+    assert_insert_survives(delivered);
+
+    bpa.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // INT-BPA-02: Echo Round-Trip
 // ---------------------------------------------------------------------------
@@ -704,6 +1162,128 @@ async fn service_streamed_send_rejects_spoofed_source() {
     bpa.shutdown().await;
 }
 
+// Sends `data` through the raw service door and returns the bundle the
+// CLA forwards: origination admitted it.
+async fn originate_raw_and_forward(
+    svc: &EchoService,
+    forwarded_rx: &flume::Receiver<Bytes>,
+    data: Bytes,
+) -> Parsed {
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    tx.send(Segment::Final(data)).await.unwrap();
+    drop(tx);
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut rx)
+        .await
+        .expect("origination admits the bundle");
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the forwarded bundle")
+    .expect("channel closed");
+    parse(forwarded).expect("the forwarded bundle parses")
+}
+
+/// Origination is not a hop: a bundle this node originates leaves with the
+/// Hop Count it was built with, and the next node makes the first increment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originated_bundle_leaves_with_its_built_hop_count() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let (_, data) = Builder::new(source_eid, "ipn:0.2.1".parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 0,
+        })
+        .with_payload(b"originated".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    let out = originate_raw_and_forward(&svc, &forwarded_rx, Bytes::from(data)).await;
+    let hop_info = out
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::HopCount)
+        .expect("the Hop Count block travels")
+        .extract::<HopInfo>(&out.data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 0, "the originating node does not increment");
+
+    bpa.shutdown().await;
+}
+
+/// Origination admits a Hop Count block this node cannot decrypt, as
+/// ingress does (its increment is a SHOULD), and the bundle leaves with the
+/// block unchanged.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some([Operation::Encrypt].into_iter().collect()),
+        id: None,
+        key_use: None,
+    };
+    let (built, data) = Builder::new(source_eid.clone(), "ipn:0.2.1".parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 0,
+        })
+        .with_payload(b"undecryptable hop count".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let hop_count = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::HopCount)
+        .expect("the builder emitted the Hop Count block")
+        .0;
+    let encrypted = parse(Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                hop_count,
+                EncryptContext::AES_GCM(Default::default()),
+                source_eid,
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the Hop Count block")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+
+    let out = originate_raw_and_forward(&svc, &forwarded_rx, encrypted.data.clone()).await;
+    let before = &encrypted.bundle.blocks[&hop_count];
+    let after = out
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::HopCount)
+        .expect("the Hop Count block travels");
+    assert!(after.bcb.is_some(), "the block stays encrypted");
+    assert_eq!(
+        after.payload(&out.data),
+        before.payload(&encrypted.data),
+        "the encrypted block travels unchanged"
+    );
+
+    bpa.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // INT-BPA-03: Local Delivery
 // ---------------------------------------------------------------------------
@@ -770,6 +1350,191 @@ async fn local_delivery() {
     );
 
     bpa.shutdown().await;
+}
+
+// A key provider lending the same keys for every bundle.
+#[cfg(feature = "rfc9173")]
+struct FixedKeys(Vec<Key>);
+
+#[cfg(feature = "rfc9173")]
+impl KeyProvider for FixedKeys {
+    fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+        Box::new(KeySet::new(self.0.clone()))
+    }
+}
+
+// Delivers `inbound` — from ipn:0.2.1, requesting deletion reports — to an
+// Application at ipn:0.1.42 on a node using `keys`, and returns the
+// deletion report's reason once the completed shutdown proves nothing was
+// delivered. The report travels to its report-to, ipn:0.2.1, over the CLA.
+async fn undeliverable_payload_reason(
+    mut inbound: Bytes,
+    keys: Option<Arc<dyn KeyProvider>>,
+) -> ReasonCode {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let mut builder = Bpa::builder().node_ids(node_ids).status_reports(true);
+    if let Some(keys) = keys {
+        builder = builder.key_provider(keys);
+    }
+    let bpa = builder.build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            from_ref(&remote_node),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let reason = loop {
+        // Event-driven wait; the timeout only bounds a regression.
+        let bundle = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for the deletion report")
+        .expect("Channel closed");
+        let parsed = parse(bundle).expect("the report parses");
+        assert!(
+            parsed.bundle.primary.flags.is_admin_record,
+            "only status reports leave the node"
+        );
+        let AdministrativeRecord::BundleStatusReport(report) = parsed.bundle.blocks[&1]
+            .extract::<AdministrativeRecord>(&parsed.data)
+            .expect("the payload is an administrative record")
+            .expect("the report payload is resident");
+        if report.deleted.is_some() {
+            break report.reason;
+        }
+    };
+
+    // The completed shutdown is the barrier proving nothing was delivered.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "nothing is delivered");
+    reason
+}
+
+/// RFC 9172 §5.1.1 at the payload's security acceptor: an Application's
+/// payload whose ciphertext fails to decrypt discards the bundle, reported
+/// as `FailedSecurityOperation`.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delivery_drops_a_payload_that_fails_to_decrypt() {
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (built, data) = Builder::new(remote_source.clone(), "ipn:0.1.42".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Borrowed(b"tampered in transit"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let encrypted = parse(Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                1,
+                EncryptContext::AES_GCM(Default::default()),
+                remote_source,
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+    // Flip the last ciphertext byte: the GCM check fails.
+    let last = usize::try_from(encrypted.bundle.blocks[&1].payload_range().end).unwrap() - 1;
+    let mut tampered = encrypted.data.to_vec();
+    tampered[last] ^= 0x01;
+
+    assert_eq!(
+        undeliverable_payload_reason(Bytes::from(tampered), Some(Arc::new(FixedKeys(vec![key]))))
+            .await,
+        ReasonCode::FailedSecurityOperation
+    );
+}
+
+/// The payload's security acceptor cannot process a BCB in a security
+/// context it does not recognise: the bundle is discarded, reported as
+/// `UnknownSecurityOperation` (RFC 9172 §7.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delivery_drops_a_payload_in_an_unknown_security_context() {
+    // RFC 9173 has the encryptor strip a target's CRC, and a BCB target
+    // still carrying one fails before its context is consulted.
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(Type::Payload)
+        .unwrap()
+        .with_flags(BlockFlags {
+            delete_bundle_on_failure: true,
+            ..Default::default()
+        })
+        .with_crc_type(CrcType::None)
+        .build(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    assert_eq!(
+        undeliverable_payload_reason(splice_unrecognised_bcb(&data), None).await,
+        ReasonCode::UnknownSecurityOperation
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,10 +1895,111 @@ async fn cla_streamed_ingress_truncation_is_refused() {
     bpa.shutdown().await;
 }
 
+// A CLA-door node with an application on ipn:0.1.42, for the abandoned
+// transfer tests: the BPA, the application's delivery receiver, and the CLA.
+async fn abandoned_transfer_setup() -> (
+    Bpa,
+    Arc<TestApp>,
+    flume::Receiver<(Eid, Bytes)>,
+    Arc<PipelineCla>,
+) {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    (bpa, app, app_rx, cla)
+}
+
+// Sends `segments` (no `Final` among them), drops the producer, and returns
+// the sink's verdict.
+async fn dispatch_abandoned(cla: &PipelineCla, segments: Vec<Segment>) -> cla::Acceptance {
+    let (tx, mut rx) = hardy_async::channel::bounded(segments.len());
+    for segment in segments {
+        hardy_async::channel::Sender::send(&tx, segment)
+            .await
+            .unwrap();
+    }
+    drop(tx); // no Final
+
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(None, None, &mut rx)
+        .await
+        .unwrap()
+}
+
+/// A whole bundle sent in `Segment::Next` whose producer then dies before
+/// `Final` is an abandoned transfer: the sink refuses it (so a CLA withholds
+/// its transfer ack) and nothing is delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_complete_at_head_without_final_is_refused() {
+    let (bpa, _app, app_rx, cla) = abandoned_transfer_setup().await;
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let inbound = build_bundle(&remote_source, &local_dest, b"abandoned");
+
+    assert_eq!(
+        dispatch_abandoned(&cla, vec![Segment::Next(inbound)]).await,
+        cla::Acceptance::Refused
+    );
+
+    // The completed shutdown is the barrier proving nothing was delivered.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+}
+
+/// The same for a bundle segmented past its outer break: the
+/// producer dies after the last byte but before `Final`, and the sink refuses
+/// the transfer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_segmented_without_final_is_refused() {
+    let (bpa, _app, app_rx, cla) = abandoned_transfer_setup().await;
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let inbound = build_bundle(&remote_source, &local_dest, &vec![0xA5_u8; 20_000]);
+
+    // Every byte arrives, in 1000-byte `Next` segments (forces Partial).
+    let segments = inbound
+        .chunks(1000)
+        .map(|chunk| Segment::Next(Bytes::copy_from_slice(chunk)))
+        .collect();
+    assert_eq!(
+        dispatch_abandoned(&cla, segments).await,
+        cla::Acceptance::Refused
+    );
+
+    // The completed shutdown is the barrier proving nothing was delivered.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+}
+
 // ---------------------------------------------------------------------------
-// Streamed oversized-payload ingress: a CLA delivers a bundle whose payload
-// exceeds the parser chunk size, split across many segments — exercising the
-// `Partial` / `drain_tail` (dumb-spool) path end-to-end.
+// Streamed ingress: a CLA delivers a bundle split across many segments, its
+// payload arriving after its header — exercising the `Partial` path
+// end-to-end, the payload drained by the `ValidatingReceiver`.
 // ---------------------------------------------------------------------------
 
 // A `Receiver` that yields a fixed sequence of segments then reports the
@@ -1181,10 +2047,42 @@ impl Receiver<cla::Segment> for SegmentReceiver {
     }
 }
 
-// An inbound bundle with a payload far larger than the 4096-byte parser chunk
-// size, delivered in 1000-byte segments, is reassembled and delivered intact.
+// A segment source that yields a fixed prefix of a bundle's segments and
+// then parks forever — a transfer whose producer never completes. A
+// consumer that returns while this source is parked provably did not wait
+// for the payload.
+struct ParkedReceiver {
+    segments: VecDeque<cla::Segment>,
+}
+
+impl ParkedReceiver {
+    // The first `count` `chunk`-byte segments of `data`, all `Next` — the
+    // stream never completes.
+    fn new(data: &[u8], chunk: usize, count: usize) -> Self {
+        Self {
+            segments: data
+                .chunks(chunk)
+                .take(count)
+                .map(|c| cla::Segment::Next(Bytes::copy_from_slice(c)))
+                .collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl Receiver<cla::Segment> for ParkedReceiver {
+    async fn recv(&mut self) -> Result<cla::Segment, hardy_bpa::stream::RecvError> {
+        match self.segments.pop_front() {
+            Some(seg) => Ok(seg),
+            None => futures::future::pending().await,
+        }
+    }
+}
+
+// An inbound bundle with a 20 KB payload, delivered in 1000-byte segments, is
+// reassembled and delivered intact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streamed_oversized_payload_local_delivery() {
+async fn segmented_payload_local_delivery() {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
@@ -1212,10 +2110,6 @@ async fn streamed_oversized_payload_local_delivery() {
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let payload = vec![0xA5_u8; 20_000];
     let inbound = build_bundle(&remote_source, &local_dest, &payload);
-    assert!(
-        inbound.len() > 4096,
-        "payload must exceed the parser chunk size"
-    );
 
     // Deliver the bundle as a stream of 1000-byte segments (forces Partial).
     let mut stream = SegmentReceiver::new(&inbound, 1000);
@@ -1245,8 +2139,85 @@ async fn streamed_oversized_payload_local_delivery() {
     bpa.shutdown().await;
 }
 
+// A replayed arrival is settled at the ingress gate: the first copy was
+// committed (and, once delivered, tombstoned), so the replay's duplicate
+// probe fires while its payload source is still parked — the transfer is
+// acked and dropped without spooling a byte. A consumer that returns while
+// the source is parked provably did not wait for the payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_arrival_never_awaits_the_payload() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let payload = vec![0xA5_u8; 20_000];
+    let inbound = build_bundle(&remote_source, &local_dest, &payload);
+
+    // First copy: delivered whole, so the record commits and its id enters
+    // the gates' recently-committed cache (delivery tombstones the record,
+    // but the probe answers from the cached id, not the record's state).
+    let mut stream = SegmentReceiver::new(&inbound, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        .await
+        .expect("Timeout waiting for first delivery")
+        .expect("Channel closed");
+
+    // Replay: headers resident, payload parked forever. The gate's duplicate
+    // probe must settle the transfer — acked, dropped — without the payload.
+    // The timeout only bounds a regression: a door that waits for the
+    // payload parks forever.
+    let mut replay = ParkedReceiver::new(&inbound, 1000, 3);
+    let acceptance = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        cla.sink.get().unwrap().dispatch(None, None, &mut replay),
+    )
+    .await
+    .expect("Timeout: the duplicate arrival awaited its parked payload")
+    .unwrap();
+    assert_eq!(
+        acceptance,
+        cla::Acceptance::Accepted,
+        "a committed duplicate is acked so the peer stops resending"
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "the duplicate must not deliver");
+}
+
 // A bundle whose creation time + lifetime is already in the past — expired on
-// arrival. Oversized payload so it streams as `Partial`.
+// arrival. Sent in segments, its payload streams as `Partial`.
 fn build_expired_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
     let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
     let timestamp = CreationTimestamp::from_parts(Some(DtnTime::saturating_from(past)), 1);
@@ -1259,7 +2230,7 @@ fn build_expired_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Byte
 }
 
 // A bundle carrying a Hop Count block whose count already exceeds its limit.
-// Oversized payload so it streams as `Partial`.
+// Sent in segments, its payload streams as `Partial`.
 fn build_hop_exhausted_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
     let hop = HopInfo {
         limit: NonZeroU8::new(1).unwrap(),
@@ -1278,7 +2249,7 @@ fn build_hop_exhausted_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -
 // CLA never has to spool a gigantic invalid payload. Asserted by counting the
 // segments left un-pulled in the `SegmentReceiver`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streamed_oversized_gate_drops_before_draining_payload() {
+async fn segmented_gate_drops_before_draining_payload() {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
@@ -1309,7 +2280,6 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
 
     // Expired — gated on lifetime; the payload tail must stay un-pulled.
     let expired = build_expired_bundle(&remote_source, &local_dest, &payload);
-    assert!(expired.len() > 4096, "payload must exceed the parser chunk");
     let mut stream = SegmentReceiver::new(&expired, 1000);
     assert_eq!(
         sink().dispatch(None, None, &mut stream).await.unwrap(),
@@ -1363,10 +2333,11 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
 }
 
 // The gate's reporting split: a hop-exhausted arrival with the report flags
-// set emits the §5.6/§5.10 reception + deletion report pair — the deletion
-// citing `HopLimitExceeded` — while an already-expired arrival with the same
-// flags emits nothing at all (anti-amplification: it is treated as if it
-// never arrived). Swapping the two gate branches fails both halves.
+// set emits the combined §5.6/§5.10 status report — one §6.1.1 record
+// asserting both reception and deletion, citing `HopLimitExceeded` — while
+// an already-expired arrival with the same flags emits nothing at all
+// (anti-amplification: it is treated as if it never arrived). Swapping the
+// two gate branches fails both halves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_reports_hop_exhaustion_but_not_expiry() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -1436,47 +2407,35 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
         cla::Acceptance::Accepted
     );
 
-    // Exactly the report pair comes out of the CLA — the bundle itself must
-    // not be forwarded. Both are admin records to the source.
-    let mut reception = None;
-    let mut deletion = None;
-    for _ in 0..2 {
-        // Event-driven wait; the timeout only bounds a regression.
-        let forwarded = tokio::time::timeout(
-            tokio::time::Duration::from_secs(5),
-            forwarded_rx.recv_async(),
-        )
-        .await
-        .expect("Timeout waiting for a status report")
-        .expect("Channel closed");
-        let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
-        assert!(
-            parsed.bundle.primary.flags.is_admin_record,
-            "only status reports may leave the node for a gated bundle"
-        );
-        assert_eq!(parsed.bundle.primary.destination, remote_source);
-        let body = parsed
-            .bundle
-            .blocks
-            .get(&1)
-            .expect("report has a payload block")
-            .payload(&parsed.data)
-            .expect("report payload in bundle");
-        let AdministrativeRecord::BundleStatusReport(status) =
-            hardy_cbor::decode::parse(body).expect("report payload is an admin record");
-        assert_eq!(status.bundle_id.source, remote_source);
-        if status.received.is_some() {
-            reception = Some(status);
-        } else if status.deleted.is_some() {
-            deletion = Some(status);
-        } else {
-            panic!("status report asserts neither reception nor deletion");
-        }
-    }
-    let reception = reception.expect("reception report emitted");
-    assert_eq!(reception.reason, ReasonCode::NoAdditionalInformation);
-    let deletion = deletion.expect("deletion report emitted");
-    assert_eq!(deletion.reason, ReasonCode::HopLimitExceeded);
+    // The single combined status report comes out of the CLA — reception and
+    // deletion asserted in one record; the bundle itself must not be
+    // forwarded. Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for a status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        parsed.bundle.primary.flags.is_admin_record,
+        "only status reports may leave the node for a gated bundle"
+    );
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, remote_source);
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::HopLimitExceeded);
 
     // An already-expired arrival with the same report flags: total silence.
     let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
@@ -1506,29 +2465,32 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     );
 }
 
-// R-01: a single `Segment::Final` carrying a bundle whose declared payload is
-// truncated — the parser takes the streaming fallback (`Partial`) though the
-// stream has already ended — must be an internal drop, not handed to the
-// payload drain (which would await an exhausted stream: a hang, or a spurious
-// `StreamCancelled` driving unbounded peer retransmit of a permanently-invalid
-// bundle).
+// A complete-but-invalid streamed payload — a CRC mismatch the drain's
+// `ValidatingReceiver` detects after the header pass admitted the bundle — is
+// accepted, terminated, and reported exactly like a gate drop: the §5.6/§5.10
+// reception + deletion pair, the deletion citing `BlockUnintelligible`. The
+// transfer is accepted, never refused: the content cannot become valid by
+// resending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
-    let node_ids = NodeIds::try_from(
-        [NodeId::Ipn(IpnNodeId {
-            allocator_id: 0,
-            node_number: 1,
-        })]
-        .as_slice(),
-    )
-    .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+async fn drain_failure_reports_reception_then_deletion() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
         .await
         .unwrap();
-    let (cla, _fwd) = PipelineCla::new();
+    bpa.start(false).await;
+
+    // A CLA with a peer for the remote node — the route for the reports
+    // (report-to defaults to the source).
+    let (cla, forwarded_rx) = PipelineCla::new();
     bpa.register_cla(
         "test".to_string(),
         cla.clone(),
@@ -1537,34 +2499,891 @@ async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
     )
     .await
     .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
-    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
-    // A 20 KB-payload bundle truncated to 8 KB: the payload byte-string header
-    // still claims 20 KB (shortfall exceeds the 4096 parser chunk, forcing
-    // `Partial`), but the body is short and the stream ends in this one `Final`.
-    let full = build_bundle(&remote_source, &local_dest, &vec![0xA5_u8; 20_000]);
-    let truncated = Bytes::copy_from_slice(&full[..8_000]);
-    let mut stream = SegmentReceiver::new(&truncated, truncated.len()); // one Final
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
 
-    // The timeout only bounds a regression: before the fix this parked forever
-    // on the exhausted stream (or returned StreamCancelled).
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        cla.sink.get().unwrap().dispatch(None, None, &mut stream),
+    // A bundle fed in CLA-sized chunks: its payload block is incomplete when
+    // its header parses, so the bundle takes the `Partial` route and the
+    // payload streams through the validating drain. One
+    // corrupt byte deep in the payload body fails the payload CRC there —
+    // after the header pass admitted the bundle.
+    let (_, data) = Builder::new(remote_source.clone(), dest)
+        .with_flags(Flags {
+            receipt_report_requested: true,
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Owned(vec![0xA5_u8; 50_000]))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let mut data = data.into_vec();
+    let corrupt_at = data.len() - 100; // inside the payload body, before its CRC field
+    data[corrupt_at] ^= 0xFF;
+
+    let mut stream = SegmentReceiver::new(&data, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "a complete-but-corrupt transfer is accepted and terminated, never refused"
+    );
+
+    // The single combined status report comes out of the CLA — reception and
+    // deletion asserted in one record; the bundle itself must not be
+    // forwarded. Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
     )
     .await
-    .expect("a truncated Final must not hang the ingress task");
+    .expect("Timeout waiting for a status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
     assert!(
-        result.is_ok(),
-        "a truncated complete transfer is an internal drop, not StreamCancelled: {result:?}"
+        parsed.bundle.primary.flags.is_admin_record,
+        "only status reports may leave the node for a drain-dropped bundle"
     );
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, remote_source);
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnintelligible);
 
+    // The completed shutdown is the barrier proving nothing else left the
+    // node — one report bundle, and never the rejected bundle itself.
     bpa.shutdown().await;
     assert!(
-        app_rx.is_empty(),
-        "the truncated bundle must not be delivered"
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
     );
+}
+
+// A keyed header-pass failure with a recoverable bundle id — here an
+// unrecognised extension block flagged `delete_bundle_on_failure`, fatal at
+// the §A classify — is reported exactly like a gate or drain drop: one
+// status report asserting both reception and deletion, citing
+// `BlockUnsupported` (§5.6 Step 4's delete-bundle case). The transfer is
+// accepted: the content cannot become valid by resending.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn header_failure_reports_reception_then_deletion() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // A CLA with a peer for the remote node — the route for the reports
+    // (report-to defaults to the source).
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+
+    // A report-requesting bundle carrying an unrecognised block (type 999,
+    // block 2) flagged delete_bundle_on_failure, spliced between the primary
+    // and the payload.
+    let (_, data) = Builder::new(remote_source.clone(), dest)
+        .with_flags(Flags {
+            receipt_report_requested: true,
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x04u64); // flags: delete_bundle_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(data[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&data[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(data.len() + unknown.len());
+    modified.extend_from_slice(&data[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&data[insert..]);
+    let mut inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "a complete-but-unsupported bundle is accepted and terminated, never refused"
+    );
+
+    // The single combined status report comes out of the CLA — reception and
+    // deletion asserted in one record; the bundle itself must not be
+    // forwarded. Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for a status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        parsed.bundle.primary.flags.is_admin_record,
+        "only status reports may leave the node for a rejected bundle"
+    );
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, remote_source);
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+
+    // The completed shutdown is the barrier proving nothing else left the
+    // node — one report bundle, and never the rejected bundle itself.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
+    );
+}
+
+// §5.6 Step 4 reports, then deletes: an unrecognised block flagged both
+// `report_on_failure` and `delete_bundle_on_failure`, on a bundle requesting
+// no status reports at bundle level, still raises its reception report
+// citing `BlockUnsupported`. The report carries no deletion assertion (none
+// was requested); the deletion the second flag orders shows as the bundle
+// never leaving the node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn step4_block_flag_report_survives_delete_bundle() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+
+    // No bundle-level report flags; unrecognised block (type 999, block 2)
+    // flagged report_on_failure and delete_bundle_on_failure, spliced after
+    // the primary.
+    let base = build_bundle(&remote_source, &dest, b"payload");
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x06u64); // flags: report_on_failure | delete_bundle_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(base[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(base.len() + unknown.len());
+    modified.extend_from_slice(&base[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&base[insert..]);
+    let mut inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "a complete-but-unsupported bundle is accepted and terminated, never refused"
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the block-flag reception report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        parsed.bundle.primary.flags.is_admin_record,
+        "only the status report may leave the node"
+    );
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, remote_source);
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_none(), "no deletion report was requested");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+
+    // The completed shutdown is the barrier proving nothing else left.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
+    );
+}
+
+// A rejected bundle that requested only reception reporting (no deletion
+// reports) still carries the §5.6 Step-4 facts on its reception-only status
+// report: an unrecognised `report_on_failure` block sets the reception
+// reason to `BlockUnsupported`, and a hop-exhausted gate drop must not
+// squash it to `NoAdditionalInformation` — with no deletion asserted, the
+// record's one reason slot belongs to the reception assertion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reception_only_reject_carries_step4_reason() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+
+    // Hop-exhausted, reception-report-only bundle carrying an unrecognised
+    // block (type 999, block 3 — the builder's Hop Count block takes 2)
+    // flagged report_on_failure.
+    let (_, data) = Builder::new(remote_source.clone(), dest)
+        .with_flags(Flags {
+            receipt_report_requested: true,
+            ..Default::default()
+        })
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(1).unwrap(),
+            count: 2,
+        })
+        .with_payload(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&3u64); // block number
+        a.emit(&0x02u64); // flags: report_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(data[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&data[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(data.len() + unknown.len());
+    modified.extend_from_slice(&data[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&data[insert..]);
+    let mut inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // One reception-only report: received asserted with the Step-4 reason,
+    // no deletion asserted (deletion reports were not requested).
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for a status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(parsed.bundle.primary.flags.is_admin_record);
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(
+        status.deleted.is_none(),
+        "no deletion asserted without the request flag"
+    );
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+
+    // The completed shutdown is the barrier proving nothing else left the
+    // node — one report bundle, and never the rejected bundle itself.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
+    );
+}
+
+// §5.6 Step 4's block-flag-alone trigger: a bundle requesting NO status
+// reports at bundle level, carrying an unrecognised block flagged
+// `report_on_failure`, still generates a reception report citing
+// `BlockUnsupported` — the block's own flag is the request. The bundle
+// itself is forwarded intact, unrecognised block and all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn step4_block_flag_alone_forces_reception_report() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+
+    // No bundle-level report flags at all; unrecognised block (type 999,
+    // block 2) flagged report_on_failure, spliced after the primary.
+    let base = build_bundle(&remote_source, &dest, b"payload");
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x02u64); // flags: report_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(base[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(base.len() + unknown.len());
+    modified.extend_from_slice(&base[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&base[insert..]);
+    let mut inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // Two bundles leave the node in either order: the forced reception
+    // report (to the source) and the forwarded original.
+    let mut report = None;
+    let mut original = None;
+    for _ in 0..2 {
+        // Event-driven wait; the timeout only bounds a regression.
+        let forwarded = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for a forwarded bundle")
+        .expect("Channel closed");
+        let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+        if parsed.bundle.primary.flags.is_admin_record {
+            report = Some(parsed);
+        } else {
+            original = Some(parsed);
+        }
+    }
+
+    // The original forwards intact — a report flag never removes the block.
+    let original = original.expect("original bundle forwarded");
+    assert!(
+        original
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == Type::Unrecognised(999)),
+        "the unrecognised block rides on unchanged"
+    );
+
+    // The report asserts reception only, citing the Step-4 reason.
+    let report = report.expect("block-demanded reception report emitted");
+    assert_eq!(report.bundle.primary.destination, remote_source);
+    let body = report
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&report.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_none(), "nothing was deleted");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+
+    bpa.shutdown().await;
+}
+
+// The null-endpoint carve-out for the forced report: the same
+// block-demanded bundle whose report-to is `dtn:none` produces no report —
+// there is nowhere to send it. (A bundle with no bundle-level report flags
+// may lawfully carry a null report-to; only the §4.2.3 flag combinations
+// are parse-rejected.) The bundle still forwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn step4_forced_report_suppressed_for_null_report_to() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+
+    let (_, data) = Builder::new(remote_source.clone(), dest.clone())
+        .with_report_to("dtn:none".parse().unwrap())
+        .with_payload(Cow::Borrowed(b"payload"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x02u64); // flags: report_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(data[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&data[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(data.len() + unknown.len());
+    modified.extend_from_slice(&data[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&data[insert..]);
+    let mut inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // Only the original leaves the node.
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the forwarded bundle")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        !parsed.bundle.primary.flags.is_admin_record,
+        "no report may be addressed to the null endpoint"
+    );
+    assert_eq!(parsed.bundle.primary.destination, dest);
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "exactly one bundle leaves the node"
+    );
+}
+
+// A transfer that delivers its `Final` with the bundle short is complete: the
+// bundle is invalid, so it is accepted and dropped, never refused (a custodial
+// peer would resend the same bytes until they expire), and its headers parsed,
+// so the drop is reported. A single `Final` carrying a bundle whose payload is
+// cut short is never handed to the payload drain, whose stream is exhausted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_short_bundle_in_one_final_is_reported() {
+    assert_short_final_is_reported(short_bundle(), None).await;
+}
+
+// The same short bundle in 1000-byte segments: the header pass reaches
+// `Partial` on a `Next`, so the short payload ends in the payload drain's
+// `Final`, which reports it the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_short_bundle_in_segments_is_reported() {
+    assert_short_final_is_reported(short_bundle(), Some(1000)).await;
+}
+
+// A bundle short by less than one parser chunk, in a single `Final`, is
+// reported too: the parser does not wait for bytes that will never come.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_final_short_within_one_parser_chunk_is_reported() {
+    let full = reporting_bundle(10_000);
+    assert_short_final_is_reported(full.slice(..full.len() - 100), None).await;
+}
+
+// The same short bytes without their `Final` are an abandoned transfer, not a
+// reception: refused, so the peer may resend, and never reported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abandoned_short_transfer_is_refused_and_unreported() {
+    let (bpa, _app, app_rx, cla, forwarded_rx) = short_final_setup().await;
+    let segments = short_bundle()
+        .chunks(1000)
+        .map(|chunk| Segment::Next(Bytes::copy_from_slice(chunk)))
+        .collect();
+    assert_eq!(
+        dispatch_abandoned(&cla, segments).await,
+        cla::Acceptance::Refused
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+    assert!(
+        forwarded_rx.is_empty(),
+        "an abandoned transfer is never reported"
+    );
+}
+
+// A bundle from the remote source to the local application, requesting
+// reception and deletion reports.
+fn reporting_bundle(payload_len: usize) -> Bytes {
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_flags(Flags {
+            receipt_report_requested: true,
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Owned(vec![0xA5_u8; payload_len]))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    Bytes::from(data)
+}
+
+// A 20 KB-payload reporting bundle cut to 8 KB: the payload's byte-string
+// header still claims 20 KB, but the body is short.
+fn short_bundle() -> Bytes {
+    reporting_bundle(20_000).slice(..8_000)
+}
+
+// A node that observes how a short transfer ends: status reports on, the
+// local application registered, and a peer for the remote source's node —
+// the route for the reports (report-to defaults to the source).
+async fn short_final_setup() -> (
+    Bpa,
+    Arc<TestApp>,
+    flume::Receiver<(Eid, Bytes)>,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+) {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            from_ref(&remote_node),
+        )
+        .await
+        .unwrap();
+    (bpa, app, app_rx, cla, forwarded_rx)
+}
+
+// Dispatches `short` in `chunk`-byte segments ending in a `Final` (a single
+// `Final` for `None`), and asserts it is rejected with one report.
+async fn assert_short_final_is_reported(short: Bytes, chunk: Option<usize>) {
+    let mut stream = SegmentReceiver::new(&short, chunk.unwrap_or(short.len()));
+    assert_rejected_with_one_report(&mut stream).await;
+}
+
+// Dispatches `stream`, a complete transfer of an invalid bundle, and asserts
+// the transfer is accepted, the bundle never delivered, and exactly one
+// status report leaves: reception and deletion asserted, the deletion citing
+// `BlockUnintelligible`.
+async fn assert_rejected_with_one_report(stream: &mut SegmentReceiver) {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let (bpa, _app, app_rx, cla, forwarded_rx) = short_final_setup().await;
+
+    // The timeout only bounds a regression: a `Final` handed to the payload
+    // drain after the header pass took it would await an exhausted stream.
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        cla.sink.get().unwrap().dispatch(None, None, stream),
+    )
+    .await
+    .expect("a complete transfer must not hang the ingress task");
+    assert!(
+        matches!(result, Ok(cla::Acceptance::Accepted)),
+        "an invalid bundle in a complete transfer is accepted and dropped: {result:?}"
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(Duration::from_secs(5), forwarded_rx.recv_async())
+        .await
+        .expect("Timeout waiting for the status report")
+        .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        parsed.bundle.primary.flags.is_admin_record,
+        "only the status report may leave the node"
+    );
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, "ipn:0.2.1".parse::<Eid>().unwrap());
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnintelligible);
+
+    // The completed shutdown is the barrier proving nothing else left the
+    // node, and that the bundle was never delivered.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
+    );
+    assert!(
+        app_rx.is_empty(),
+        "the invalid bundle must not be delivered"
+    );
+}
+
+// A payload CRC mismatch is reported however the bundle arrives: whole in one
+// `Final`, or whole in a `Next` that an empty `Final` closes. The payload tail
+// checks the trailer in the buffer as it would in a later segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_payload_crc_mismatch_is_reported_however_it_arrives() {
+    let mut bad = reporting_bundle(1000).to_vec();
+    // The last byte of the CRC-32 value: the trailer is `44 c0 c1 c2 c3 FF`.
+    let last_crc_byte = bad.len() - 2;
+    bad[last_crc_byte] ^= 0xFF;
+    let bad = Bytes::from(bad);
+
+    assert_short_final_is_reported(bad.clone(), None).await;
+
+    let mut stream = SegmentReceiver {
+        segments: Mutex::new(VecDeque::from([
+            cla::Segment::Next(bad),
+            cla::Segment::Final(Bytes::new()),
+        ])),
+    };
+    assert_rejected_with_one_report(&mut stream).await;
 }
 
 // R-04: the ingress size cap refuses an over-cap bundle at both
@@ -1618,8 +3437,10 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         bpa.shutdown().await;
     }
 
-    // Drain phase: a cap that admits the header (so parse yields `Partial`) but
-    // not the payload tail trips `drain_payload`.
+    // Declared phase: a cap that admits the header chain (parse yields
+    // `Partial`) but not the declared payload refuses at the gate, before a
+    // single payload byte is drained — proved by a source that parks
+    // forever after the header chunks. The timeout only bounds a regression.
     {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
@@ -1637,16 +3458,17 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         )
         .await
         .unwrap();
-        let mut stream = SegmentReceiver::new(&inbound, 1000);
+        let mut stream = ParkedReceiver::new(&inbound, 1000, 3);
         assert_eq!(
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(None, None, &mut stream)
-                .await
-                .unwrap(),
+            tokio::time::timeout(
+                tokio::time::Duration::from_secs(5),
+                cla.sink.get().unwrap().dispatch(None, None, &mut stream)
+            )
+            .await
+            .expect("Timeout: the declared over-cap refusal must not wait for the payload")
+            .unwrap(),
             cla::Acceptance::Refused,
-            "drain-phase over-cap must be refused"
+            "declared over-cap must be refused pre-drain"
         );
         bpa.shutdown().await;
     }
@@ -1883,7 +3705,7 @@ struct ExtentCheckRewriter {
 }
 
 impl Rewriter for ExtentCheckRewriter {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let reader = ctx.reader();
         let mut mismatch = self.mismatch.lock().unwrap();
 
@@ -2016,6 +3838,89 @@ async fn egress_filter_sees_consistent_extents() {
         out.bundle.blocks[&1].payload(&out.data),
         Some(b"Hello remote".as_slice())
     );
+
+    bpa.shutdown().await;
+}
+
+/// Keys traffic for the unrouted ipn:0.3 node onto ipn:0.2.1 — the
+/// SR-shaped per-bundle override, honouring the skip-self discipline by
+/// keying only a foreign destination.
+struct KeyingClassifier;
+
+impl hardy_bpa::filter::Classifier for KeyingClassifier {
+    fn classify(
+        &self,
+        ctx: &hardy_bpa::filter::ClassifyContext<'_>,
+    ) -> hardy_bpa::filter::Verdict<hardy_bpa::filter::slots::MetadataDelta> {
+        let mut delta = hardy_bpa::filter::slots::MetadataDelta::default();
+        if let Eid::Ipn { fqnn, .. } = &ctx.bundle().primary.destination
+            && fqnn.node_number == 3
+        {
+            delta.route_key = Some("ipn:0.2.1".parse().unwrap());
+        }
+        hardy_bpa::filter::Verdict::Continue(delta)
+    }
+}
+
+/// A Classifier-written route_key persists in the record's metadata and
+/// drives the RIB lookup: a bundle whose destination has no route forwards
+/// via the route for its key. Without the key threading the bundle parks
+/// Waiting forever, so the forward event is the proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn classifier_route_key_drives_the_lookup() {
+    let mut pack = hardy_bpa::filter::pack::FilterPack::new("test");
+    pack.originate_classifier("keyer", KeyingClassifier);
+    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
+    bpa.start(false).await;
+
+    // A peer exists for ipn:0.2 only; ipn:0.3 has no route.
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[remote_node],
+        )
+        .await
+        .unwrap();
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.3.99".parse().unwrap(),
+            Bytes::from_static(b"Keyed onward"),
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the keyed bundle to forward")
+    .expect("Channel closed");
 
     bpa.shutdown().await;
 }
@@ -2503,8 +4408,8 @@ async fn deferred_outcome_ignores_wrong_cla() {
 
 // ---------------------------------------------------------------------------
 // Blocking CLA — holds the first forward open until released, then fails it
-// synchronously; every subsequent offer is answered Sent. All offers are
-// recorded.
+// synchronously with its `failure`; every subsequent offer is answered Sent.
+// All offers are recorded.
 // ---------------------------------------------------------------------------
 
 struct BlockingCla {
@@ -2512,10 +4417,16 @@ struct BlockingCla {
     offered_tx: flume::Sender<Id>,
     release_rx: flume::Receiver<()>,
     first: AtomicBool,
+    failure: fn() -> cla::Error,
+}
+
+// A synchronous failure that parks the bundle: any error but a cancellation.
+fn transfer_failed() -> cla::Error {
+    cla::Error::Internal("the transfer failed".into())
 }
 
 impl BlockingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
+    fn new(failure: fn() -> cla::Error) -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
         let (offered_tx, offered_rx) = flume::bounded(16);
         let (release_tx, release_rx) = flume::bounded(1);
         (
@@ -2524,6 +4435,7 @@ impl BlockingCla {
                 offered_tx,
                 release_rx,
                 first: AtomicBool::new(true),
+                failure,
             }),
             offered_rx,
             release_tx,
@@ -2555,7 +4467,7 @@ impl cla::Cla for BlockingCla {
         let _ = self.offered_tx.send_async(bundle_id.clone()).await;
         if self.first.swap(false, Ordering::SeqCst) {
             let _ = self.release_rx.recv_async().await;
-            return Err(cla::Error::StreamCancelled);
+            return Err((self.failure)());
         }
         Ok(cla::ForwardBundleResult::Sent)
     }
@@ -2571,7 +4483,7 @@ async fn forward_failure_park_recheck_redispatches() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false).await;
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
+    let (cla, offered_rx, release_tx) = BlockingCla::new(transfer_failed);
     bpa.register_cla(
         "blocking".to_string(),
         cla.clone(),
@@ -2650,6 +4562,18 @@ async fn forward_failure_park_recheck_redispatches() {
 /// conditional and loses against the terminal claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_never_resurrects_resolved_bundle() {
+    assert_failure_never_resurrects(transfer_failed).await;
+}
+
+/// A cancelled transfer must not resurrect a bundle that was resolved while
+/// it was in flight: the cancellation's re-dispatch re-claims the bundle
+/// conditionally, and loses against the terminal claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_transfer_never_resurrects_resolved_bundle() {
+    assert_failure_never_resurrects(|| cla::Error::StreamCancelled).await;
+}
+
+async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
     let metadata_store = Arc::new(MetadataMemStorage::new(None));
     let bpa = Bpa::builder()
         .metadata_storage(metadata_store.clone())
@@ -2658,7 +4582,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .unwrap();
     bpa.start(false).await;
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
+    let (cla, offered_rx, release_tx) = BlockingCla::new(failure);
     bpa.register_cla(
         "blocking".to_string(),
         cla.clone(),
@@ -2710,15 +4634,16 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     // claim would leave it (delete wins every race).
     metadata_store.tombstone(&id).await.unwrap();
 
-    // Release: the failure's park must lose against the tombstone.
-    // shutdown() is the barrier — it joins the egress pollers, so the park
+    // Release: the failure's claim (the park, or the cancellation's
+    // re-claim) must lose against the tombstone. shutdown() is the barrier —
+    // it joins the egress pollers and the dispatch pool, so the resolution
     // has fully run by the time it returns; no quiet window is involved.
     release_tx.send(()).expect("CLA gone");
     bpa.shutdown().await;
 
     assert!(
         metadata_store.get(&id).await.unwrap().is_none(),
-        "a resolved bundle was resurrected by a failed transfer's park"
+        "a resolved bundle was resurrected by a failed transfer"
     );
     let (live_tx, live_rx) = hardy_async::channel::bounded(4);
     metadata_store.poll_waiting(&live_tx).await.unwrap();
@@ -2727,6 +4652,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         live_rx.recv().await.is_err(),
         "a resolved bundle re-entered Waiting"
     );
+    assert!(offered_rx.is_empty(), "a resolved bundle was offered again");
 }
 
 // ---------------------------------------------------------------------------
@@ -2879,6 +4805,654 @@ async fn relaxed_gate_admits_clockless_bundle_without_age() {
     bpa.shutdown().await;
 }
 
+// A peer removed while its construction is still in flight leaves nothing
+// behind (whole-codebase review #14): add_peer claims the address, builds
+// the peer complete, publishes, then re-checks its claim before installing
+// RIB entries — a concurrent remove wins the claim, and the half-added peer
+// is withdrawn (add_peer reports false). The policy's controller
+// construction is the interception point: it parks until released, and a
+// fresh add on the same address afterwards succeeds cleanly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_removed_mid_construction_is_withdrawn() {
+    use hardy_bpa::policy;
+
+    struct ParkedPolicy {
+        entered_tx: flume::Sender<()>,
+        release_rx: flume::Receiver<()>,
+    }
+
+    struct DefaultController {
+        queue: Arc<dyn policy::EgressQueue>,
+    }
+
+    #[async_trait]
+    impl policy::FlowController for DefaultController {
+        fn queue_for(&self) -> u32 {
+            0
+        }
+
+        async fn forward(&self, _queue: u32, bundle: hardy_bpa::bundle::Bundle) {
+            self.queue.forward(bundle).await
+        }
+    }
+
+    #[async_trait]
+    impl policy::FlowControllerFactory for ParkedPolicy {
+        fn queue_count(&self) -> NonZeroU32 {
+            NonZeroU32::MIN
+        }
+
+        async fn new_controller(
+            &self,
+            queues: policy::EgressQueueSet,
+        ) -> Arc<dyn policy::FlowController> {
+            let _ = self.entered_tx.send(());
+            // Parked until the test drops the release sender; the peer is
+            // mid-construction for exactly this window.
+            let _ = self.release_rx.recv_async().await;
+            Arc::new(DefaultController {
+                queue: queues.next_free,
+            })
+        }
+    }
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (entered_tx, entered_rx) = flume::unbounded();
+    let (release_tx, release_rx) = flume::bounded::<()>(1);
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        Some(Arc::new(ParkedPolicy {
+            entered_tx,
+            release_rx,
+        })),
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+
+    // The add parks in controller construction...
+    let add = {
+        let cla = cla.clone();
+        let peer_addr = peer_addr.clone();
+        let remote_node = remote_node.clone();
+        tokio::spawn(async move {
+            cla.sink
+                .get()
+                .unwrap()
+                .add_peer(peer_addr, from_ref(&remote_node))
+                .await
+        })
+    };
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), entered_rx.recv_async())
+        .await
+        .expect("Timeout waiting for controller construction to start")
+        .expect("Policy gone");
+
+    // ...and the removal wins the claim while it is parked.
+    assert!(
+        cla.sink
+            .get()
+            .unwrap()
+            .remove_peer(&peer_addr)
+            .await
+            .expect("remove_peer failed"),
+        "the claimed address is removable mid-construction"
+    );
+
+    drop(release_tx);
+    let added = add
+        .await
+        .expect("add task panicked")
+        .expect("add_peer failed");
+    assert!(!added, "a removed claim must not complete as an added peer");
+
+    // The address is free and a fresh add succeeds (the release sender is
+    // dropped, so its construction completes immediately).
+    assert!(
+        cla.sink
+            .get()
+            .unwrap()
+            .add_peer(peer_addr, from_ref(&remote_node))
+            .await
+            .expect("add_peer failed"),
+        "a fresh add on the freed address succeeds"
+    );
+
+    bpa.shutdown().await;
+}
+
+// Routing is decided at the ingress gate: a destination resolving to an
+// explicit Drop route rejects the bundle before its payload is drained —
+// the stream is left unconsumed and nothing spools. Drop-with-reason
+// reports like any gated drop (the combined reception + deletion record);
+// Drop-without-reason is silent, exactly as dispatch's delete path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn early_route_drop_never_awaits_the_payload() {
+    use hardy_bpa::routing::{RouteAction, StaticRoutingAgent};
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // A peer for the report route (report-to defaults to the source), plus
+    // Drop routes: reasoned for one destination, silent for another.
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+    bpa.register_routing_agent(
+        "drop-routes".to_string(),
+        Arc::new(StaticRoutingAgent::new(&[
+            (
+                "ipn:0.9.99".parse().unwrap(),
+                RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
+                1,
+            ),
+            ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
+        ])),
+    )
+    .await
+    .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let oversized = |dest: &str| {
+        let (_, data) = Builder::new(remote_source.clone(), dest.parse().unwrap())
+            .with_flags(Flags {
+                receipt_report_requested: true,
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+        data
+    };
+
+    // Reasoned Drop: accepted with one combined report, while the payload
+    // source is parked forever — the verdict returning at all proves the
+    // decision never awaited the drain, and a rejected arrival spools
+    // nothing. The timeout only bounds a regression.
+    let data = oversized("ipn:0.9.99");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    assert_eq!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(Some(&remote_node), None, &mut stream)
+        )
+        .await
+        .expect("Timeout: the route drop must not wait for the payload")
+        .unwrap(),
+        cla::Acceptance::Accepted,
+        "a route-dropped bundle is accepted and terminated, never refused"
+    );
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(parsed.bundle.primary.flags.is_admin_record);
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::NoKnownRouteToDestinationFromHere);
+
+    // Silent Drop: accepted while the source is parked, no report at all.
+    let data = oversized("ipn:0.9.98");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    assert_eq!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(Some(&remote_node), None, &mut stream)
+        )
+        .await
+        .expect("Timeout: the silent route drop must not wait for the payload")
+        .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "a reasonless Drop route emits nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The originate door: the validation split, route-at-door, and the caller's
+// error surface
+// ---------------------------------------------------------------------------
+
+/// Routing is decided at the originate door: a destination resolving to an
+/// explicit Drop route rejects the send before its payload is drained — the
+/// stream is left unconsumed and nothing spools. Unlike the CLA gate there
+/// is never a status report, report flags notwithstanding: the error return
+/// is the originator's notification, and even a reasonless (silent) Drop
+/// route surfaces as `Dropped(None)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originate_route_drop_never_awaits_the_payload() {
+    use hardy_bpa::routing::{RouteAction, StaticRoutingAgent};
+    use hardy_bpv7::status_report::ReasonCode;
+
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    bpa.register_routing_agent(
+        "drop-routes".to_string(),
+        Arc::new(StaticRoutingAgent::new(&[
+            (
+                "ipn:0.9.99".parse().unwrap(),
+                RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
+                1,
+            ),
+            ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
+        ])),
+    )
+    .await
+    .unwrap();
+
+    let oversized = |dest: &str| {
+        let (_, data) = Builder::new(source_eid.clone(), dest.parse().unwrap())
+            .with_flags(Flags {
+                receipt_report_requested: true,
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+        data
+    };
+
+    // Reasoned Drop: the error returns while the payload source is parked
+    // forever — returning at all proves the decision never awaited the
+    // drain, and the cancelled spool persists nothing. The timeout only
+    // bounds a regression.
+    let data = oversized("ipn:0.9.99");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the route drop must not wait for the payload");
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::Dropped(Some(
+            ReasonCode::NoKnownRouteToDestinationFromHere
+        )))
+    ));
+
+    // Silent Drop: the originator still gets an error where the CLA gate
+    // drops silently.
+    let data = oversized("ipn:0.9.98");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the silent route drop must not wait for the payload");
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::Dropped(None))
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "an originate rejection must not emit status reports"
+    );
+}
+
+/// The raw door carries the validation the ADU door doesn't: hop-exhausted
+/// service bytes trip the lifetime/hop admission check, and the
+/// config-gated RFC 9171 validity checks (strict by default) now apply to
+/// raw sends at the same seat — each surfacing as `Dropped(reason)` to the
+/// caller, with nothing admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_applies_the_admission_gates() {
+    use hardy_bpv7::{hop_info::HopInfo, status_report::ReasonCode};
+
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // Hop-exhausted (count past limit): the lifetime/hop admission pair.
+    let (_, data) = Builder::new(source_eid.clone(), dest.clone())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(1).unwrap(),
+            count: 2,
+        })
+        .with_payload(Cow::Borrowed(b"exhausted".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::Dropped(Some(
+            ReasonCode::HopLimitExceeded
+        )))
+    ));
+
+    // Unprotected primary block: RFC 9171 §4.3.1, newly applied to raw
+    // sends.
+    let (_, data) = Builder::new(source_eid.clone(), dest.clone())
+        .with_crc_type(hardy_bpv7::crc::CrcType::None)
+        .with_payload(Cow::Borrowed(b"no integrity".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::Dropped(Some(
+            ReasonCode::BlockUnintelligible
+        )))
+    ));
+
+    // Clockless without a Bundle Age block: RFC 9171 §4.4.2.
+    let (_, data) = Builder::new(source_eid.clone(), dest)
+        .with_payload(Cow::Borrowed(b"no clock".as_slice()))
+        .build(CreationTimestamp::default())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::Dropped(Some(
+            ReasonCode::LifetimeExpired
+        )))
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing was admitted");
+}
+
+/// A service-built fragment is rejected at the raw door: fragmentation is
+/// a forwarding-time action (RFC 9171 §5.8), so a source never emits
+/// fragments — the send surfaces `FragmentedBundle` and nothing is
+/// admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_rejects_a_fragment() {
+    use hardy_bpv7::bundle::FragmentInfo;
+
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // A valid bundle, rewritten as a self-declared fragment: the editor
+    // sets the fragment flag from the fragment_info and re-emits canonical
+    // bytes, so only the fragment fact can trip the door.
+    let (_, data) = Builder::new(source_eid, dest)
+        .with_payload(Cow::Borrowed(b"a piece of an adu".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let Parsed {
+        bundle: raw, data, ..
+    } = parse(Bytes::from(data)).expect("parse the built bundle");
+    let editor = Editor::new(&raw, &data)
+        .with_fragment_info(Some(FragmentInfo {
+            offset: 0,
+            total_adu_length: 1024,
+        }))
+        .map_err(|(_, e)| e)
+        .expect("set fragment info");
+    let chunks = editor.rebuild().expect("rebuild the fragment");
+    let mut fragment = Chunk::flatten_bytes(chunks, data);
+
+    let result = svc.sink.get().unwrap().send(&mut fragment).await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::FragmentedBundle)
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the fragment must not be admitted");
+}
+
+/// A duplicate raw send surfaces `DuplicateBundle` to the caller — service
+/// bundles carry service-authored ids, so the door cannot retry for them —
+/// and the first copy is unaffected: forwarded exactly once, the
+/// duplicate's staged data discarded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_duplicate_surfaces_to_the_caller() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let data = build_bundle(&source_eid, &dest, b"send once");
+
+    let mut first = data.clone();
+    let id = svc
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut first)
+        .await
+        .expect("first send admits");
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+    assert_eq!(
+        parse(forwarded).expect("parse forwarded").bundle.primary.id,
+        id
+    );
+
+    let mut second = data;
+    let result = svc.sink.get().unwrap().send(&mut second).await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::DuplicateBundle)
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
+}
+
+// The originate twin of the gate-side duplicate probe: once the first send
+// commits, a replay through the raw door is refused with `DuplicateBundle`
+// while its payload source is still parked — the caller's stream is never
+// drained for a bundle the node already holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_duplicate_never_awaits_the_payload() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    // Oversized payload so the replay genuinely streams (headers < payload).
+    let payload = vec![0x5A_u8; 20_000];
+    let data = build_bundle(&source_eid, &dest, &payload);
+
+    let mut first = data.clone();
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut first)
+        .await
+        .expect("first send admits");
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+
+    // Replay with the payload parked: the duplicate must surface from the
+    // gate probe, not from an insert that waited on the whole payload. The
+    // timeout only bounds a regression: a door that waits for the payload
+    // parks forever.
+    let mut replay = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut replay),
+    )
+    .await
+    .expect("Timeout: the duplicate origination awaited its parked payload");
+    assert!(
+        matches!(result, Err(hardy_bpa::services::Error::DuplicateBundle)),
+        "the parked replay must surface DuplicateBundle without the payload"
+    );
+
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
+}
+
+/// The declared-size bound applies at the shared admission stage, to both
+/// doors, before a byte spools: a raw send whose headers declare more than
+/// `max_bundle_size` is refused while its payload source is still parked,
+/// and an ADU payload over the bound is refused at the same seat — the ADU
+/// door's first size bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_originate_refuses_before_the_payload() {
+    use core::num::NonZeroU64;
+
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .max_bundle_size(NonZeroU64::new(2048).unwrap())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let svc = EchoService::new();
+    bpa.register_service(Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    // Raw: the headers declare a ~50 KB wire size; the source parks after
+    // its first segments, so the refusal returning at all proves the door
+    // never drained the payload. The timeout only bounds a regression.
+    let (_, data) = Builder::new("ipn:0.1.7".parse().unwrap(), "ipn:0.2.1".parse().unwrap())
+        .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the size refusal must not wait for the payload");
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::PayloadTooLarge { .. })
+    ));
+
+    // ADU: the same bound through the application door.
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.2.1".parse().unwrap(),
+            Bytes::from(vec![0u8; 50_000]),
+            core::time::Duration::from_secs(60),
+            None,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::PayloadTooLarge { .. })
+    ));
+
+    // ADU: the same bound through the application door.
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.2.1".parse().unwrap(),
+            Bytes::from(vec![0u8; 50_000]),
+            core::time::Duration::from_secs(60),
+            None,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::PayloadTooLarge { .. })
+    ));
+
+    bpa.shutdown().await;
+}
+
 /// A builder-configured CLA goes live at `start`, not at `build`: activation
 /// waits for storage recovery, so the quiescent-store contract covers the
 /// configuration path exactly as it covers dynamic registrations.
@@ -2933,4 +5507,369 @@ async fn configured_endpoints_activate_at_start() {
     );
 
     bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// The streamed ADU door: ApplicationSink::send_streamed
+// ---------------------------------------------------------------------------
+
+/// A payload streamed through `send_streamed` originates a bundle
+/// wire-equivalent to the whole-buffer `send` of the same payload: same
+/// source, destination, flags, and payload bytes (the ids differ only by
+/// creation timestamp), and the streamed form parses canonically — the CRC
+/// computed as the payload flowed is the CRC a resident build writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_matches_whole_buffer_send() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let payload = vec![0xB7_u8; 9000];
+
+    // Streamed: several Next segments and a Final.
+    let (tx, mut rx) = hardy_async::channel::bounded(8);
+    for chunk in payload.chunks(2000) {
+        tx.send(Segment::Next(Bytes::copy_from_slice(chunk)))
+            .await
+            .unwrap();
+    }
+    tx.send(Segment::Final(Bytes::new())).await.unwrap();
+    drop(tx);
+    let streamed_id = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(
+            dest.clone(),
+            payload.len() as u64,
+            &mut rx,
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .expect("streamed send failed");
+
+    // Whole-buffer twin.
+    let buffered_id = app
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            dest.clone(),
+            Bytes::from(payload.clone()),
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .expect("whole-buffer send failed");
+
+    // Event-driven waits; the timeouts only bound a regression.
+    let mut parsed = Vec::new();
+    for _ in 0..2 {
+        let forwarded = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for forwarded bundle")
+        .expect("Channel closed");
+        parsed.push(parse(forwarded).expect("forwarded bundle parses"));
+    }
+    parsed.sort_by_key(|p| p.bundle.primary.id != streamed_id);
+    let (streamed, buffered) = (&parsed[0], &parsed[1]);
+
+    assert_eq!(streamed.bundle.primary.id, streamed_id);
+    assert_eq!(buffered.bundle.primary.id, buffered_id);
+    assert_eq!(streamed.bundle.primary.destination, dest);
+    assert_eq!(streamed.bundle.primary.flags, buffered.bundle.primary.flags);
+    assert_eq!(
+        streamed.bundle.blocks.len(),
+        buffered.bundle.blocks.len(),
+        "same block structure"
+    );
+    assert_eq!(
+        streamed.bundle.blocks[&1]
+            .payload(&streamed.data)
+            .expect("streamed payload resident"),
+        payload.as_slice()
+    );
+
+    bpa.shutdown().await;
+}
+
+/// A producer that goes away before its final segment cancels the streamed
+/// ADU send: `StreamCancelled`, nothing originated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_producer_drop_cancels() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Next(Bytes::from(vec![0u8; 1000])))
+        .await
+        .unwrap();
+    drop(tx); // no Final — the producer aborts
+
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(
+            "ipn:0.2.1".parse().unwrap(),
+            5000,
+            &mut rx,
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::StreamCancelled)
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "a cancelled streamed send must not originate a bundle"
+    );
+}
+
+/// The declared-length contract is enforced with nothing persisted: an
+/// over-delivering producer is rejected `PayloadTooLarge`, an
+/// under-delivering one `PayloadUnderrun`, each carrying the declared
+/// total.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_enforces_the_declared_length() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // Overrun: 2000 bytes against a declaration of 1000.
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Final(Bytes::from(vec![0u8; 2000])))
+        .await
+        .unwrap();
+    drop(tx);
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(
+            dest.clone(),
+            1000,
+            &mut rx,
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::PayloadTooLarge { max: 1000, .. })
+    ));
+
+    // Underrun: 1000 bytes against a declaration of 2000.
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Final(Bytes::from(vec![0u8; 1000])))
+        .await
+        .unwrap();
+    drop(tx);
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(
+            dest,
+            2000,
+            &mut rx,
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::PayloadUnderrun {
+            size: 1000,
+            expected: 2000
+        })
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing was originated");
+}
+
+/// The trait's provided `send_streamed` buffers and delegates to `send`
+/// with the same error surface, so third-party sinks (the gRPC bridge
+/// included) get the streamed API without implementing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_default_buffers_and_delegates() {
+    struct RecordingSink(flume::Sender<Bytes>);
+
+    #[async_trait]
+    impl services::ApplicationSink for RecordingSink {
+        async fn unregister(&self) {}
+
+        async fn send(
+            &self,
+            _destination: Eid,
+            data: Bytes,
+            _lifetime: core::time::Duration,
+            _options: Option<services::SendOptions>,
+        ) -> services::Result<hardy_bpv7::bundle::Id> {
+            self.0.send(data).unwrap();
+            Ok(hardy_bpv7::bundle::Id::default())
+        }
+    }
+
+    let (tx, sent_rx) = flume::bounded(1);
+    let sink = RecordingSink(tx);
+
+    // A clean stream is buffered whole and handed to `send`.
+    let payload = vec![0x11_u8; 3000];
+    let (seg_tx, mut rx) = hardy_async::channel::bounded(4);
+    for chunk in payload.chunks(1024) {
+        seg_tx
+            .send(Segment::Next(Bytes::copy_from_slice(chunk)))
+            .await
+            .unwrap();
+    }
+    seg_tx.send(Segment::Final(Bytes::new())).await.unwrap();
+    drop(seg_tx);
+    services::ApplicationSink::send_streamed(
+        &sink,
+        "ipn:0.2.1".parse().unwrap(),
+        payload.len() as u64,
+        &mut rx,
+        core::time::Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("default send_streamed delegates");
+    assert_eq!(sent_rx.recv().unwrap().as_ref(), payload.as_slice());
+
+    // The declared-length contract holds before `send` is ever called.
+    let (seg_tx, mut rx) = hardy_async::channel::bounded(2);
+    seg_tx
+        .send(Segment::Final(Bytes::from(vec![0u8; 100])))
+        .await
+        .unwrap();
+    drop(seg_tx);
+    let result = services::ApplicationSink::send_streamed(
+        &sink,
+        "ipn:0.2.1".parse().unwrap(),
+        500,
+        &mut rx,
+        core::time::Duration::from_secs(60),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::PayloadUnderrun {
+            size: 100,
+            expected: 500
+        })
+    ));
+    assert!(sent_rx.is_empty(), "a violating stream never reaches send");
 }

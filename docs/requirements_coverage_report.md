@@ -247,7 +247,7 @@ Implementing crate: `bpa` — [coverage report](../bpa/docs/test_coverage_report
 | LLR | Description | Status |
 | :--- | :--- | :--- |
 | **6.1.3** | API for CLAs to indicate forwarding success | Done |
-| **6.1.4** | API for EID-to-CLA address resolution (e.g. DNS lookup) | Done |
+| **6.1.4** | API for EID-to-CLA address resolution (e.g. DNS lookup) | Not started |
 
 ### Routing (6.1)
 

@@ -211,14 +211,6 @@ impl Sender {
         self.send_to(bundle, status).await
     }
 
-    /// The channel's target status — its queue identity. A queue whose
-    /// assignment record carries per-bundle payload (`ForwardPending`'s
-    /// `next_hop`) holds a placeholder there; [`send_to`](Self::send_to)
-    /// supplies each bundle's real record.
-    pub fn queue_status(&self) -> &BundleStatus {
-        &self.shared.status
-    }
-
     /// Offer a bundle with its full per-bundle assignment record; `status`
     /// must name this channel's queue
     /// ([`same_queue`](BundleStatus::same_queue)). See
