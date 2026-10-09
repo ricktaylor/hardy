@@ -1,7 +1,5 @@
 # bpv7 TODO
 
-> Status (2026-07-08): The keyed §3.8 deferral and the push-parser migration below describe the push parser (`BundleParser` / `bundle/raw_parse.rs`), which is in progress on the `refactor/parse` branch and not yet merged. On main, `bundle/parse.rs` is still the whole-bundle parser and `raw_parse.rs` does not exist, so these sections are planned/in-flight work, not the state of main. Streaming AES-GCM is unstarted on every branch.
-
 ## Streaming AES-GCM for BPSec BCB
 
 ### Background
@@ -9,8 +7,8 @@
 The current `bcb_aes_gcm.rs` uses `aes-gcm` v0.11 which — even with
 its new `AeadInOut` in-place API — requires the entire
 plaintext/ciphertext as a contiguous buffer. This blocks
-streaming payload encryption/decryption in the Transformer pipeline
-(see `bpa/docs/streaming_pipeline_design.md` §6.1.5, §7.6).
+streaming payload encryption/decryption in the cryptographic stages
+(see `bpa/docs/streaming_pipeline_design.md` §6.1.2, §7.3).
 
 AES-GCM is internally AES-CTR + GHASH — both inherently streamable.
 The low-level crates are already in Hardy's dependency tree as
@@ -18,7 +16,7 @@ transitive dependencies of `aes-gcm`:
 
 - `ctr` v0.10.1 — `StreamCipher::apply_keystream(&mut chunk)`
 - `ghash` v0.6.0 — `UniversalHash::update_padded(&data)` + `finalize()`
-- `aes` v0.9.1 — `BlockEncrypt` for computing H and encrypting J0
+- `aes` v0.9.3 — `BlockCipherEncrypt` for computing H and encrypting J0
 
 ### Design
 
@@ -27,7 +25,7 @@ encryption and decryption using the `ctr` and `ghash` crates
 directly, replacing the `aes-gcm` crate's all-at-once API.
 
 ```rust
-pub struct StreamingAesGcm<C: BlockEncrypt + BlockSizeUser> {
+pub struct StreamingAesGcm<C: BlockCipherEncrypt + BlockSizeUser> {
     ctr: Ctr32BE<C>,           // inc32 — GCM increments lower 32 bits only
     ghash: GHash,
     j0_encrypted: Block<C>,    // AES_K(J0) for final tag XOR
@@ -106,6 +104,8 @@ The critical ordering for streaming decryption: feed ciphertext
 to GHASH *before* decrypting with CTR. GCM authenticates
 ciphertext, not plaintext.
 
+GHASH pads only at the end of the AAD and at the end of the ciphertext, but `update_padded` pads on every call, so feeding it arbitrary chunk sizes produces a wrong tag. The wrapper buffers a partial 16-byte block across `aad_update` / `*_update` calls and flushes it, padded, at the switch from AAD to ciphertext and at finalize.
+
 ### Implementation Plan
 
 1. Add `ctr` and `ghash` as direct dependencies (currently
@@ -115,17 +115,14 @@ ciphertext, not plaintext.
 2. Implement `StreamingAesGcm` in a new module
    `bpv7/src/bpsec/rfc9173/streaming_aes_gcm.rs`.
 
-3. Add unit tests using the RFC 9173 test vectors (already in
-   `bpv7/src/bpsec/rfc9173/test.rs`). Verify that streaming
-   encryption produces identical output to the existing
-   `aes-gcm` crate for the same inputs.
+3. Add tests using the RFC 9173 Appendix A.2 and A.4 BCB vectors (pinned in `bpv7/tests/rfc9173.rs`, `rfc9173_appendix_a_2` and `rfc9173_appendix_a_4`). Verify that streaming encryption produces identical output to the existing `aes-gcm` crate for the same inputs.
 
-4. Wire into the confidentiality filter's Transformer:
+4. Wire into the confidentiality stage (streaming pipeline design §6.1.1; not yet built):
    - `aad_update()` with scope-flag-constructed AAD (same as
      current `build_data()`)
    - `encrypt_update()` / `decrypt_update()` called per chunk
-     as bytes flow through the Transformer
-   - `encrypt_finalize()` / `decrypt_finalize()` on `None`
+     as the payload streams through the stage
+   - `encrypt_finalize()` / `decrypt_finalize()` at the end of the payload
 
 5. Retain the existing `aes-gcm` dependency behind a feature
    flag for header-block BCB (small blocks, all-at-once is
@@ -137,263 +134,117 @@ ciphertext, not plaintext.
 ### Zeroization
 
 The streaming wrapper must zeroize sensitive state on drop:
-- CTR key material (via `ctr`'s internal zeroization if available,
-  or manual `Zeroize` impl)
+- CTR key material (`ctr` 0.10's `zeroize` feature makes `CtrCore` `ZeroizeOnDrop` when the block cipher is)
 - GHASH key (H)
 - AES_K(J0) block
 
 Use `zeroize::Zeroize` derive or manual impl on `StreamingAesGcm`.
-Decrypted output is the caller's responsibility (the Transformer
-manages `Zeroizing<>` for decrypted payload buffers).
+Decrypted output is the caller's responsibility (the confidentiality
+stage manages `Zeroizing<>` for decrypted payload buffers).
 
 ### Dependencies
 
-Current (transitive via `aes-gcm` 0.10.3):
-- `aes` 0.8.4
-- `ctr` 0.9.2
-- `ghash` 0.5.1
-- `cipher` 0.4.4
+Current (transitive via `aes-gcm` 0.11.1):
+- `aes` 0.9.3
+- `ctr` 0.10.1
+- `ghash` 0.6.0
+- `cipher` 0.5.2
 
 To add as direct:
-- `ctr = "0.9"` with features `["zeroize"]`
-- `ghash = "0.5"` with features `["zeroize"]`
+- `ctr = "0.10"` with features `["zeroize"]`
+- `ghash = "0.6"` with features `["zeroize"]`
 
 No new crate downloads — these are already resolved in the
 lock file.
 
 ### Phase
 
-This is **Phase 3** work in the streaming pipeline design
-(security gateway). Header-block BCB targets are small and
-continue to use the existing all-at-once API until Phase 3.
+This is **Phase D** work in the streaming pipeline design (§10, security gateway), after Phase B's streamed egress. Header-block BCB targets are small and continue to use the existing all-at-once API until then.
 
-## Keyed BPSec filter: RFC 9172 §3.8 BCB-shares-target-with-BIB
+## RFC 9172 §3.8: the `can_share()` exemption is an interpretation
 
-### Background
+The keyed pass enforces RFC 9172 §3.8 ("A BCB MUST NOT target a BIB unless it shares a security target with that BIB") in `checks::decrypt_and_validate_covered_bibs`, after decrypting a BCB-encrypted BIB, and only when that BIB's BCB `can_share()`. BCB-AES-GCM cannot share, because the IV and any wrapped key are block-level security context parameters, so a multi-target BCB would reuse a key and IV, which RFC 9173 §4.3.1 forbids; the Encryptor therefore gives every target, a BIB included, its own BCB. Every encrypted BIB Hardy builds therefore sits under a BCB that shares no target with it, and the exemption is what stops the check rejecting Hardy's own bundles. RFC 9172 states no such exemption: read literally, §3.8 forbids §3.9's own "new BCB that targets the existing BIB" option, which is the only RFC 9173 layout without key and IV reuse, so an implementation that enforces §3.8 literally rejects every bundle in which Hardy has encrypted a signed block. A stricter per-BCB reading, under which a BCB that encrypts a BIB encrypts every target of that BIB, forbids the option too; only a whole-bundle reading permits it. The conflict is being raised with the IETF DTN WG. The CCSDS BPSec draft profile restates §3.8 as a mandatory conformance item, so the exemption is also a deviation from that profile; the PICS records it as item 16, note 1.
 
-RFC 9172 §3.8 requires that "a BCB MUST NOT target a BIB unless it
-shares a security target with that BIB" — except when the BCB's
-security context does not support sharing (e.g., BCB-AES-GCM, where
-IV uniqueness rules out sharing). The legacy whole-bundle parser
-enforces this at `bpv7/src/bundle/parse.rs:552-568` after decoding
-the BIB OperationSet, gated on `bcb.can_share()`.
+- Keep the exemption until the WG rules, then align the check with the ruling. If §3.8 is restated in terms of the whole bundle ("a BCB MUST NOT target a BIB unless every target of the BIB is the target of some BCB"), replace the `can_share()` gate with that check. It is the invariant the keyless parse's `BibCoverage::Maybe` sweep already assumes, but it makes the partial-acceptance state that `remove_encryption` produces today non-conformant (re-review R-3 in the bpv7-reader-editor review ledger below), so the R-3 fix must land first.
 
-### Why the keyless push-parser does not enforce this
+## The CRC-32C uses the byte-wise table
 
-The check needs to compare the BIB's target list against the BCB's
-target list. The BCB target list is always available (BCB
-OperationSets are plaintext). The BIB target list is only available
-if the BIB itself is decryptable. The §3.8 check fires *only* when
-the BIB is BCB-encrypted — which is precisely the case where the
-keyless parser cannot decode the BIB OperationSet. Catch-22.
+`crc.rs` builds its CRC-32C as `Crc::<u32>`, crc 3.x's one-table `Table<1>` (roughly 0.5 GB/s), and it runs over every payload byte at ingress. `Crc<u32, Table<16>>` is a one-line, `no_std`-safe change for a 3–5× speed-up; a feature-gated hardware CRC-32C (SSE4.2, ARMv8) goes further. Benchmark before and after.
 
-The keyless parser therefore marks every block as
-`BibCoverage::Maybe` when any BIB is BCB-encrypted (see
-`raw_parse::validate_bpsec_structure`'s Maybe-sweep) and defers the
-§3.8 check to the post-decrypt keyed filter.
+## The primary block refuses the indefinite form its siblings accept
 
-### What the keyed filter needs to do
+The parser accepts a canonical block whose array is indefinite-length (`0x9F`) but rejects an indefinite primary block, and the comment at the primary's parse (`parse.rs`) justifies that by reading RFC 9171 §4.1's "indefinite-length items are not prohibited" as covering the outer bundle array alone. That reading contradicts the parser's own acceptance of indefinite canonical blocks, and §4.3.1's primary-block CRC text counts CBOR "break" characters, which only an indefinite primary carries. Decide whether an indefinite primary is accepted, and make the code and the comment agree.
 
-After decrypting a BCB-encrypted BIB OperationSet, the filter
-should call `check_bib(&ops, bib_block_number, bundle)` (the same
-free function the parser uses for plaintext BIBs — single source of
-truth for the per-OperationSet rules) and additionally:
+## The CHANGELOG does not record the streaming parser
 
-```rust
-// RFC 9172 §3.8
-if let Some(bcb_block_number) = bundle.blocks[&bib_block_number].bcb
-    && let Some(bcb_ops) = decrypted_bcbs.get(&bcb_block_number)
-    && bcb_ops.can_share()
-    && !ops.operations.keys().any(|t| bcb_ops.operations.contains_key(t))
-{
-    return Err(bpsec::Error::InvalidBCBTarget.into());
-}
-```
-
-The filter holds the BCB OperationSets in scope (it parsed them to
-do the decryption) so the comparison is local.
-
-Consider promoting this into `check_bib` itself by adding a
-`bcbs: &HashMap<u64, bpsec::bcb::OperationSet>` parameter once the
-keyed filter's BCB store stabilises — would keep the free function
-as the single source of truth for *all* per-OperationSet BIB rules,
-keyless and keyed.
-
-## Push parser migration plan
-
-### Where we are (on `refactor/parse`, 2026-05-19)
-
-`bundle/raw_parse.rs` (`BundleParser`) performs all keyless
-structural validation that the legacy `bundle/parse.rs` does:
-canonical CBOR enforcement, primary/extension block flag combos,
-duplicate-block rules, outer-array termination, and BIB/BCB
-structural rules (target existence/type, must-replicate, delete
-flag, intra-bundle uniqueness, §9172 §3.9 BIB-must-be-encrypted).
-It produces a `raw_parse::Bundle` carrying primary fields plus a
-block index with `extent`, `data`, `bib` (None/Some/Maybe), `bcb`.
-
-The legacy whole-bundle parser is still wired into every consumer
-(BPA filters, dispatcher, BPSec, fuzz harnesses, tests). Nothing
-uses the push parser in production yet.
-
-### Milestone 1 — Wrap legacy parser around push parser
-
-**Goal:** `bundle/parse.rs` collapses to a thin adapter that
-(a) drives `BundleParser::push` (or accepts a whole-bundle blob),
-(b) runs the *key-dependent* checks against the resulting
-`raw_parse::Bundle`, and (c) assembles today's public `bundle::Bundle`
-shape so consumers see no API change.
-
-**Parser interface change:** `BundleParser::finish()` returns a
-`ParseResult` rather than a bare `Bundle`:
-
-```rust
-pub struct ParseResult {
-    pub bundle: Bundle,                            // persistent BPA-pipeline index
-    pub bibs: HashMap<u64, bib::OperationSet>,    // parser byproduct
-    pub bcbs: HashMap<u64, bcb::OperationSet>,    // parser byproduct
-}
-```
-
-`Bundle` is the persistent representation passed through the BPA
-pipeline (it's an index over the wire bytes plus stamped `.bib`/`.bcb`
-coverage on each block). OperationSets are not part of that — they
-are parser byproducts that the wrapper consumes for the keyed pass
-and then drops. The persistent record of BPSec coverage lives on
-`Block::bib` / `Block::bcb`.
-
-**Efficiency win for security ingress filters.** Today the security
-filter re-parses every BIB and BCB OperationSet from raw bytes,
-duplicating CBOR-decode work the parser already did for keyless
-validation. With `ParseResult` flowing through, the filter receives
-the OperationSets pre-decoded:
-
-- plaintext BIBs → jump straight to `op.verify(…)` per target
-- BCBs → jump straight to decrypting each target
-- BCB-encrypted BIBs (`Maybe`) → filter still decodes one
-  OperationSet per BIB after decryption, but only those
-
-At gateways with heavy BPSec, this drops per-bundle CBOR work
-roughly in half.
-
-**Parser additions that don't need keys (do inline at decode time):**
-
-- **`is_unsupported() && delete_bundle_on_failure` → hard reject.**
-  When a BIB or BCB OperationSet decodes successfully but its
-  security context is one we don't implement, and the block flags
-  the bundle for deletion on failure, return `Error::Unsupported(n)`
-  from the parser. No reason to ship that bundle into the keyed
-  pass.
-
-**With-keys work that lives in the wrapper:**
-
-1. **Decode BCB-encrypted BIBs.** For each block left with
-   `BibCoverage::Maybe`, the wrapper decrypts the BIB body via the
-   key provider, then runs `check_bib(&ops, n, &bundle)` on the
-   plaintext OperationSet.
-
-2. **RFC 9172 §3.8 BCB-shares-target-with-BIB.** Already TODO'd
-   above — fires on decrypted BIBs whose BCB context supports
-   sharing.
-
-3. **BIB cryptographic verification.** `op.verify(key_source, …)`
-   per BIB target. `NoKey` is skip-not-fail.
-
-4. **BCB decryption.** Per filter policy: decrypt the BCB's targets
-   and re-canonicalise the resulting plaintext blocks.
-
-5. **Remaining `is_unsupported()` consequences.** For
-   `report_on_failure` → emit status report; for
-   `delete_block_on_failure` (BIB only — BCB already errors on this
-   flag in `check_bcb`) → queue block removal + bundle rewrite. The
-   wrapper iterates `result.bibs.values()` / `result.bcbs.values()`
-   and inspects the corresponding `result.bundle.blocks[n].flags`.
-
-6. **Canonical-rewrite tracking.** Blocks whose OperationSets
-   weren't shortest-form get re-emitted; the wrapper records this
-   so it can rebuild the bundle bytes when something downstream
-   needs the canonical form.
-
-7. **Public `bundle::Bundle` assembly.** Flatten the nested
-   `raw_parse::Bundle` into today's shape (scattered primary
-   fields, blocks HashMap). Per the Milestone 2 decision, ranges
-   are `Range<u64>` — either flip `bundle::Block` first (Milestone 2
-   before Milestone 1) or do the `u64`/`usize` conversion at the
-   boundary as a temporary measure. Deletes `bundle/primary_block.rs`'s
-   Result-wrapped intermediate either way.
-
-### Milestone 2 — Block struct consolidation
-
-`raw_parse::Block` and `bundle::Block` are duplicates apart from
-`Range<u64>` vs `Range<usize>`. **Decision: commit to `Range<u64>`
-workspace-wide for all bundle-byte offsets.** Rationale: 32-bit
-target compat (Cortex-M, RISC-V32, etc.), uniform offset arithmetic
-between the push parser and downstream consumers, no boundary
-conversions.
-
-**Audit scope:** ~70 sites across editor.rs, parse.rs,
-`payload_range()` / `payload()` helpers, builder.rs, and test
-fixtures. Mostly mechanical (`as u64` / `as usize` at slice
-boundaries) — tests catch arithmetic regressions.
-
-After the migration: one `block::Block`, no shim, no boundary
-conversions. `raw_parse::Block` deleted.
-
-### Milestone 3 (deferred) — Bundle reshape (Option 2)
-
-End state: `bundle::Bundle` is a pure wire-format representation
-(`{ primary: PrimaryBlock, blocks: HashMap<u64, Block> }`).
-Per-hop processing state — bundle age, ingress timestamps, dispatch
-attempts, BIB/BCB coverage — moves to a BPA-side `BundleMetadata`
-keyed by bundle id. Massive blast radius across BPA (dispatcher,
-filters, status reports, storage, proto). Out of scope for the
-push-parser migration; capture as its own design doc when the time
-comes. `raw_parse::Bundle` is already the right shape, so the
-eventual migration is mechanical at the boundary.
-
-### Currently deferred items
-
-- §9172 §3.8 BCB-shares-target-with-BIB → Milestone 1.
+`parse::BundleParser`, `ParserProgress` and `PayloadTail` (cebfa8cb) postdate the 0.6.0 release and have no `[Unreleased]` entry. Add one stating the push contract: `NeedMore` while the header region is short; once the payload block's header has parsed, a push is terminal — `Ready` for a bundle complete in the buffer with its payload trailer verified, or `Partial` with a tail continuation that is unfinished or carries a trailer failure, reported by its next `push` or by `finish`.
 
 ## DtnNodeId: validating constructor + private `node_name`
 
-`eid::DtnNodeId { pub node_name: Box<str> }` exposes its inner field publicly with no validating constructor, so it can hold a syntactically-invalid `dtn` authority. The parser is the only path that validates the name (`eid/parse.rs` — regname grammar + percent-decode), but external code builds it straight from the field: `bpa/src/node_ids.rs` (`NodeId::Dtn(DtnNodeId { node_name })`) and `bpa/fuzz/src/eid.rs`. `Display` (`eid/mod.rs`) re-emits `dtn://{node_name}/` verbatim with no percent-encoding, so an invalid or non-canonical `node_name` round-trips to an invalid EID.
+`eid::DtnNodeId { pub node_name: Box<str> }` exposes its inner field publicly with no validating constructor, so it can hold a syntactically-invalid `dtn` authority. The parser is the only path that validates the name (`eid/parse.rs` — regname grammar + percent-decode), but external code builds it straight from the field: `eid-patterns/src/dtn_pattern.rs` (`DtnPatternItem::try_to_eid`), `bpa/fuzz/src/eid.rs`, and test fixtures in `bpa/src/node_ids.rs` and `bpv7/tests/eid.rs`. The parser stores the percent-decoded name, and `Eid`'s `Display` and CBOR encoder re-encode it (`URI_ENCODE_SET`), but `DtnNodeId`'s own `Display` (`eid/mod.rs`) re-emits `dtn://{node_name}/` verbatim, so a name needing percent-encoding, or an invalid one, round-trips to an invalid EID.
 
 This is the "inappropriate `pub` inner" smell, but unlike `BundleAge`/`Lifetime` (privatised during the 2026-06-05 newtype review, since `From<u64>` already gave a construction path) `DtnNodeId` has no safe constructor to fall back on, so this is a cross-crate change plus a design decision — do we want `DtnNodeId` to *guarantee* a valid name?
 
 - Add a validating `TryFrom<&str>` / `new` that runs the regname grammar (share the `parse_regname` logic in `eid/parse.rs`).
 - Make `node_name` private with a read accessor.
-- Route the `bpa::node_ids` and fuzz-harness construction sites through the new constructor.
-- Decide whether `node_name` stores the percent-decoded or the wire form, and make `Display` re-encode to match — fixes the current asymmetric round-trip.
+- Route the `eid-patterns` and fuzz-harness construction sites (and the test fixtures) through the new constructor.
+- Keep `node_name` in the percent-decoded form the parser and `Eid` encoders already assume, and make `DtnNodeId`'s `Display` re-encode with `URI_ENCODE_SET` to match — fixes the asymmetric round-trip.
 
 Spotted 2026-06-05 during the bpv7 newtype `pub`-field review. The other single-value wrappers were checked and are fine: `IpnNodeId` (plain coordinate pair), `StatusAssertion`, and the rfc9173 `Results` wrappers (transparent value holders, no `From` redundancy, no construction invariant).
 
-## Move editor unit tests to the integration-test crate
+## A key source cannot select by algorithm
 
-The 23 tests in `bpv7/src/editor.rs`'s inline `#[cfg(test)] mod tests` exercise only the public API, so they belong in `bpv7/tests/editor.rs` alongside `remove_block_rejects_security_block` (moved there 2026-07-09 with the R-3 `remove_block` security-block guard).
+`KeySource::key(source, operations)` takes no algorithm, so a source returns the first key whose `key_ops` match: `KeySet` (`bpsec/key.rs`) and bpa-server's `PatternKeySource` both do. A second key for the same operation (a rotation, or another HMAC variant) can never be selected, and the variant check then reports the mismatch as `IntegrityCheckFailed` (`rfc9173/bib_hmac_sha2.rs`), indistinguishable from tampering, rather than `NoKey`. With bpa-server's example key file, a BIB using RFC 9173's default HMAC 384/384 gets the HS256 key and fails. Fix direction: pass the security context's algorithm (or its parameters) into `key()` so the source can filter on `alg`, and report a mismatch as `NoKey`.
 
-Verified all items they touch are `pub`: every `Editor` method used (`new`, `with_source`/`with_destination`/`with_report_to`/`with_lifetime`/`with_bundle_crc_type`, `push_block`, `insert_block`, `with_data`, `remove_block`, `rebuild`, `rebuild_bundle`), `Chunk::flatten` / `Chunk::flatten_inplace`, `bundle::RewrittenBundle::parse_with_keys`, and every `block::Block` field the assertions read (`bib`, `bcb`, `extent`, `data`, plus `block_type`/`flags`/`crc_type`). Nothing needs a visibility widening.
+## Key-material zeroization gaps (ingress-spool key review, 2026-09-03)
 
-The move is mechanical: relocate the five private helpers too (`make_bundle`, `make_bundle_with_hop_count`, `ok`, `reparse`, `assert_rebuild_matches_parse`), convert `super::*` / `crate::` paths to `hardy_bpv7::`, and drop the `#[cfg(test)]` gate (integration tests get `serde`/`std` from the `[dev-dependencies]` self-dep).
+Gaps found while auditing what key material the streaming ingress carries across `await` points (answer: none — the raw CEK copy is confined to `begin_verify`'s sync scope and wiped, and only key-*derived*, fixed-size MAC state rides the drain). Both are in material that *stays behind*:
 
-Do this on `refactor/parse` rather than as a standalone cleanup off main. Milestone 2's `Range<u64>` audit already rewrites ~70 sites across `editor.rs` and its test fixtures — the assertions in `assert_rebuild_matches_parse` read `block.extent` / `block.data`, which flip to `Range<u64>` there — so folding the relocation into that pass keeps `editor.rs` churn in one place and avoids conflicts between a main-side move and the refactor-side edits.
+**`hmac`'s `zeroize` feature is off.** `bpv7/Cargo.toml` enables `aes-gcm`'s `zeroize` feature but not `hmac`'s (`zeroize = ["digest/zeroize"]` in hmac 0.13), so the ipad/opad key-derived digest state inside every `Hmac` — including the state a streaming `bib::Verifier` carries across the ingress drain — is not wiped on drop. One-line feature addition; verify the transitive `digest`/`block-buffer` impls actually cover `HmacCore` before claiming the property.
+
+**The server's key-file loader leaves decode scratch unwiped.** `bpa-server/src/bpsec.rs` loads the `KeySet` with `serde_json::from_reader`, which stages string content, including each base64url key, in an internal scratch buffer that is never wiped; `bpv7`'s own key decode uses wiped temporaries (`bpsec/key.rs`). Read the file into a `Zeroizing` buffer and deserialize from the slice, so the key text lives only in memory that is wiped.
 
 ## bpv7-parse review triage (2026-08-19)
 
-Open items from the `refactor/bpv7-parse` deep review (`references/reviews/bpv7-parse-review.md`, per-finding dispositions inline there) that are fixed nowhere in the refactor train. The behavioural items (E3 coverage-clearing, the `remove_blocks` screen and Maybe pull-back, E4's override-clearing, E10's checked flatten, the E11e removed-set, the dead error variants, and the semantic_eq / checks contract docs) landed on this branch on 2026-08-19; what follows is the remainder. The E3 CRC-restoration sliver was ruled intentional-as-is on 2026-08-25 (an unprocessable BIB never made a checkable integrity statement, so wholesale removal restores no CRC — rationale documented on `BPSecEditor::remove_integrity` and at the `remove_block_inner` coverage-clearing site), and the E8 release note landed in the crate changelog; both items are closed.
+The one item left open from the `refactor/bpv7-parse` deep review:
 
-**Idiomatics (E11 a/d).** `BibCoverage` derives `Clone` but not `Copy` (forcing `.clone()` noise); staged BIB plaintext is copied out of `Zeroizing` into a plain `Vec` in `bpsec::edit` step 3 (contrast `remove_encryption`'s `mem::take`).
+**Idiomatics (E11 a/d).** `BibCoverage` derives `Clone` but not `Copy`, forcing `.clone()` noise in `editor.rs`; staged BIB plaintext is copied out of `Zeroizing` into a plain `Vec` (`plaintext.as_ref().to_vec()`) in `remove_blocks` step 3 and in `remove_encryption`'s covered-BIB staging (`bpsec/edit.rs`), whereas `remove_encryption` moves its target payload out with `mem::take`.
 
 ## bpv7-reader-editor review ledger (2026-09-28)
 
 **No `cargo doc` gate (review 2.9).** No workflow runs `cargo doc` (`docs.yml` builds only the mkdocs site), so nothing catches a broken intra-doc link. `RUSTDOCFLAGS="-D warnings" cargo doc -p hardy-bpv7 --no-deps --all-features` passes; other workspace crates still carry broken links. Fix those, then add a workspace `cargo doc --no-deps --all-features` step with `RUSTDOCFLAGS="-D warnings"` to the CI checks job.
 
-**`remove_encryption` leaves an encrypted BIB over a decrypted target (re-review R-3).** With BCB-AES-GCM the Encryptor emits one BCB per target, so a signed-then-encrypted block X carries one BCB over X and another over the BIB that covers X. `bpsec::edit::remove_encryption(X)` decrypts under X's BCB only: the same-BCB BIB handling it documents is unreachable with a context that cannot share a BCB. The result is conformant and verifiable by a key-holder, but X is no longer BCB-covered, so a keyless parse reads its coverage as `None` rather than `Maybe`, and an editor (a relay's per-hop rewrite, or a Stage 2 Rewriter through `ExtensionEditor`) modifies it; the key-holder's check of the hidden result then fails closed. Fix direction: when the decrypted target's BIB sits under a different BCB, `remove_encryption` also decrypts and strips that BCB if it holds the key, restoring a plaintext BIB (which a relay's per-hop rewrite then strips by policy), and refuses otherwise; the `bundle remove-encryption` CLI inherits the change. Partial acceptors in other implementations can produce the same state, so the parser-side residual remains, as the `BibCoverage::Maybe` doc and the CHANGELOG record.
+**`remove_encryption` leaves an encrypted BIB over a decrypted target (re-review R-3).** With BCB-AES-GCM the Encryptor emits one BCB per target, so a signed-then-encrypted block X carries one BCB over X and another over the BIB that covers X. `bpsec::edit::remove_encryption(X)` decrypts under X's BCB only: the same-BCB BIB handling it documents is unreachable with a context that cannot share a BCB. The result is conformant and verifiable by a key-holder, but X is no longer BCB-covered, so a keyless parse reads its coverage as `None` rather than `Maybe`, and an editor (a relay's per-hop rewrite, or a Stage 2 Rewriter through `ExtensionEditor`) modifies it; the key-holder's check of the hidden result then fails closed. For a per-hop block this state is invalid under the block lifecycle model (the node that decrypted the block was its acceptor and should have ended the BIB's operation too), so a relay's per-hop rewrite of it is legitimate; the residual concerns other blocks. Fix direction: when the decrypted target's BIB sits under a different BCB, `remove_encryption` also decrypts and strips that BCB if it holds the key, restoring a plaintext BIB (which a relay's per-hop rewrite then strips by policy), and refuses otherwise; the `bundle remove-encryption` CLI inherits the change. That holds only while every other target of the BIB is plaintext too. Where some stay encrypted, a plaintext BIB over them would violate RFC 9172 §3.9 and expose their plaintext to a MAC oracle, so instead remove X's result from the BIB and re-encrypt the rest under a BCB this node sources (the step RFC 9172 omits; the Security Source follows the re-encryption ruling in the per-hop audit ledger below). Partial acceptors in other implementations can produce the same state, so the parser-side residual remains, as the `BibCoverage::Maybe` doc and the CHANGELOG record.
+
+## Fix the BIB-HMAC-SHA2 IPPT for a primary-block target (RFC 9173 A.3, 2026-09-28)
+
+`bpsec/rfc9173/bib_hmac_sha2.rs`'s `absorb_resident_target` emits a CBOR byte-string head before every target, including a primary-block target, so the IPPT for OP(bib-integrity, primary block) wraps the canonical primary block in a byte string. The normative text requires it bare: RFC 9173 §3.7 step 5 makes the target's contribution "the canonical form of the primary block", RFC 9172 §4 defines that form "as specified in [RFC9171]" and forbids "any other encapsulating CBOR encoding", and RFC 9171 §4.3.1 represents the primary block as a CBOR array. The note to §3.7 ("avoids adding the bundle's primary block twice") confirms that steps 2 and 5 contribute the same bytes, and the scope-flag path in `ippt_prefix` already appends the primary block bare. The wrapping exists only to reproduce the published RFC 9173 Appendix A.3 vector, which is itself in error, as RFC 9173 erratum 9192 records.
+
+- In `absorb_resident_target`, emit the canonical primary block without the byte-string head when the target is the primary block. `sign` and the resident `verify` share the function, so this is the single change point for the normative form (the transition fallback below adds a wrapped retry to the resident `verify` only); `begin_verify` never sees a primary-block target (its only caller, `checks::begin_payload_verification`, verifies the payload).
+- Move `rfc9173_appendix_a_3` in `bpv7/tests/rfc9173.rs` to erratum 9192's corrected vector, which keeps it a pinned external vector (cite the erratum in the test): the primary-block MAC becomes `8e059b8e71f7218264185a666bf3e453076f2b883f4dce9b3cdb6464ed0dcf0f`, and the ASB, BIB and bundle encodings change only in those 32 bytes. Keep the published A.3 bundle as a test that verifies only through the transition fallback below, and fails with the fallback disabled.
+- Interop stance, ruled 2026-09-29: signing emits only the normative form; verification tries the normative form first and falls back to the A.3 form behind an option that is on by default during a transition, logs each fallback, and is removed once erratum 9192 is verified and peers have fixed. Implementations that copied A.3 would otherwise reject Hardy's primary-block BIBs and have theirs rejected, and A.3 is the only published primary-block vector, so most probably did. Both forms need the HMAC key, so the fallback adds code but no forgery path. The stance matters early for CCSDS: its BPSec draft profile (734.5-R-2, Annex B) requires the RFC 9173 contexts for interoperability testing, and its BPv7 specification (734.20-O-1, §2.5.2) intends to recommend integrity over the primary block.
+- Record the change in the CHANGELOG: it is wire-visible for every BIB over the primary block.
+
+## BPSec per-hop paper audit ledger (2026-09-29)
+
+Items found checking Hardy's BPSec behaviour against RFC 9172 and RFC 9173 while drafting a working-group discussion paper on per-hop blocks (in draft). The paper's block lifecycle model, used below, holds that a node that must change or remove a block is the acceptor of every security operation on it, and the security source of any protection on the block that replaces it; a BIB split or a re-encryption is such a change.
+
+**Re-encrypting a BIB under a received multi-target BCB-AES-GCM block emits a wrong IV.** Hardy never builds a multi-target BCB-AES-GCM block, but it parses one: RFC 9173 Appendix A.4 encrypts the payload and a BIB under one BCB with one IV. When a `remove_blocks` cascade shrinks a BIB under such a BCB, `bpsec::edit::reencrypt_covered_bib` re-encrypts the BIB with a fresh `Operation` (a fresh IV, and a fresh CEK in key-wrap mode), puts it back into the same BCB's `OperationSet`, and re-emits the BCB. `bcb::OperationSet::to_cbor` writes only the first operation's context parameters, so one of the two targets is emitted with parameters that do not decrypt it. Reusing the original IV instead would be worse, since two plaintexts under one GCM nonce leak their XOR. When the covering BCB cannot share (`!can_share()`) and has other targets, move the re-encrypted BIB into a new single-target BCB and remove it from the original BCB's targets, leaving the other targets' shared parameters untouched. Ruled 2026-10-01: the new BCB names this node as its Security Source and is encrypted under a key this node sources, as RFC 9172 §3.6 defines the field (the BPA that inserted the block) and as the lifecycle model requires. Downstream acceptors then find this node's key through the field, which key distribution must provide. A BIB split under RFC 9172 §3.9 is the same case: it re-sources the moved results, which is why the encryptor widens rather than splits. Add a test built from the A.4 vector.
+
+**PICS notes 1 and 2 misdescribe the implementation.** Note 1 says the §3.8 shared-target check is "not enforced on parse" for BCB-AES-GCM, but the keyless parse cannot run it for any context (an encrypted BIB's targets are ciphertext); the keyed pass, `checks::decrypt_and_validate_covered_bibs`, runs it only when the BCB `can_share()`. Note 2 says the implementation "widens the BCB"; it adds a single-target BCB for each other target of the BIB and one for the BIB, so the first rule of §3.9 is met only by reading those BCBs as a set, the same whole-bundle reading the §3.8 entry above depends on. Its reason for not splitting, that a split "would require the integrity keys", holds whatever the integrity scope under the lifecycle model: a split makes the splitting node the new BIB's Security Source, which must accept the moved results and sign them afresh. The security header (RFC 9173 §3.7 step 4) only adds that results moved unchanged would also fail to verify. Reword both notes, keeping the item numbering, which follows the later CCSDS draft rather than 734.5-R-2.
+
+**`bundle sign`'s help misdescribes the signer.** The `long_about` in `bpv7/tools/src/cmd/sign.rs` says that when a BIB from the same security source already exists, "the target is added to that BIB's security target list". The `Signer` never extends an existing BIB: every group gets a new BIB, and an already-signed target is refused with `AlreadySigned`. It also says the scope flags control the "Additional Authenticated Data", which is BCB vocabulary; for BIB-HMAC-SHA2 they control the IPPT. Fix both sentences.
+
+**The `Maybe` sweep marks per-hop blocks, and outlives the BIB that caused it.** Two behaviours keep a per-hop block from being edited where the per-hop rules allow it. First, the keyless parse (`parse.rs`) sets `BibCoverage::Maybe` on every BCB-covered non-security block whenever the bundle carries an encrypted BIB, with no regard to block type. An integrity operation on a per-hop block inside an encrypted BIB is invalid, so an editor may treat a per-hop block's coverage as `None` (bpa TODO, signed-then-encrypted park entry, fix direction (a)). Exempt the RFC 9171 per-hop types from the sweep, or let the editor disregard the mark for them, and keep the exception that entry records for the bundle in which every BCB-covered non-security block is per-hop. Second, when `Editor` removes a whole encrypted BIB (a `remove_blocks` failure-drop), `remove_block_inner` cannot read its targets and leaves their `Maybe` marks in place ("another encrypted BIB may cover them"), and `Editor::block` reads `Keep` blocks from the original parse, so a later `insert_block` in the same session still refuses, even when the removed BIB was the bundle's only encrypted BIB. Recompute the marks after such a removal: with no encrypted BIB left, `Maybe` collapses to `None`.
+
+**A BIB the node holds no key for leaves no fact behind.** `checks::verify` skips a BIB under a BCB it cannot decrypt (`decrypt_and_validate_covered_bibs`, `NoKey`) and a BIB operation it cannot verify (`verify_all_bibs`, `NoKey`) without recording either in `VerifyFacts`, which carries `NoKey` only for the per-hop blocks it decrypts itself (`nokey_ext`). Where the node is the acceptor of such an operation, as it is of every operation on a per-hop block it must replace, that is a failed acceptance under the per-hop rules (RFC 9172 §5.1.2: the target is then processed according to security policy), and ingress policy cannot see it: today the forwarder strips a plaintext BIB operation it could not verify without knowing that it failed. Record `NoKey` outcomes per operation (target and BIB) in `VerifyFacts`, so that ingress can apply its policy to the failed acceptances and report them.
 
 ## ExtensionEditor accept-set invariant (external #712 review, 2026-09-30)
 
-`ExtensionEditor` refuses at call time every edit that would make a malformed bundle: what the structural parser rejects — the forbidden `report_on_failure` flag (`PrimaryBlock::forbids_report_on_failure`) and unrecognised CRC types — and Previous Node / Bundle Age / Hop Count data that does not decode as its type (`UndecodableBody`), which the parser never inspects but a receiving BPA decodes with the same decoders. Receiver policy over a well-formed bundle is the caller's decision and outside the invariant: RFC 9171 §4.4.2's Bundle Age requirement on a bundle without a clock (removing that block is allowed; the BPA's egress path is to insert Bundle Age on an unclocked bundle, from the age decoded at ingress), hop limits, and how a receiver treats an unsupported block's processing flags. One residual of the invariant itself: a truncated `source_data` is not detected at insert or `finish()`; `Altered` fires only when an extent is read. The refusal list is kept in step by hand, so a future parser or decode rule can widen the gap again, and a caller that treats a failed `finish()` or an unreadable result as fatal aborts on it. Pin the invariant with a fuzz target beside `random_bundles`: for every parseable bundle and every `ExtensionEditor` operation sequence, `finish()` succeeding implies the flattened result parses and its Previous Node, Bundle Age, and Hop Count blocks decode as their types (`Block::extract`), skipping block 0, whose flags are nominal.
+`ExtensionEditor` refuses at call time every edit that would make a malformed bundle: what the structural parser rejects — the forbidden `report_on_failure` flag (`PrimaryBlock::forbids_report_on_failure`) and unrecognised CRC types — and Previous Node / Bundle Age / Hop Count data that does not decode as its type (`UndecodableBody`), which the parser never inspects but a receiving BPA decodes with the same decoders. Receiver policy over a well-formed bundle is the caller's decision and outside the invariant: RFC 9171 §4.4.2's Bundle Age requirement on a bundle without a clock (removing that block is allowed; the BPA's egress path is to insert Bundle Age on an unclocked bundle, from the age decoded at ingress), hop limits, and how a receiver treats an unsupported block's processing flags. One residual of the invariant itself: a truncated `source_data` is not detected at insert or at the owner's rebuild; `Altered` fires only when an extent is read. The refusal list is kept in step by hand, so a future parser or decode rule can widen the gap again, and a caller that treats a failed rebuild or an unreadable result as fatal aborts on it. Pin the invariant with a fuzz target beside `random_bundles`: for every parseable bundle and every `ExtensionEditor` operation sequence, the owner's rebuild succeeding implies the flattened result parses and its Previous Node, Bundle Age, and Hop Count blocks decode as their types (`Block::extract`), skipping block 0, whose flags are nominal. One known member the editor does not refuse: the 256 MiB pre-payload bound (`Error::ExtensionBlocksTooLarge`) — reachable only through inserts totalling that much, on a node whose `max_bundle_size` exceeds 256 MiB.
 
 **Write doors take the parsed-only `CrcType::Unrecognised`.** `Builder::with_crc_type`, both `BlockBuilder::with_crc_type`s (builder and editor), `Editor::with_bundle_crc_type`, and `BundleTemplate.crc_type` take the wire `CrcType`, whose `Unrecognised(code)` only a parse produces meaningfully; the write fails late, at `crc::append_crc_value`, as `builder::Error::InternalError`. `ExtensionEditor::insert`'s call-time refusal is the stopgap. Fix direction: a write-side `crc::Kind` (`None`, `Crc16`, `Crc32`) taken by the write doors, with `From<Kind> for CrcType` and `TryFrom<CrcType> for Kind`, while `CrcType` stays the read type; the tools' `ArgCrcType` (`bpv7/tools/src/flags.rs`) already spells that set.
 
 **`Builder::build` does not apply the primary-level half of RFC 9171 §4.2.3-4/-5.** The parser rejects a null-source bundle without `do_not_fragment`, or with the fragment flag or any status-report flag, and an administrative record with any status-report flag (inline in `parse.rs`). `Builder::build` neither normalises nor refuses these, so `Builder::new("dtn:none", ..)` with default flags builds a bundle the parser rejects; no production code builds null-source bundles. Fix direction: a second `PrimaryBlock` predicate for the primary-level rule, consumed by the parser and by `Builder::build`, which normalises like the fragment flag (setting `do_not_fragment`, clearing the report bits) or refuses with a typed `builder::Error`.
+
+**`ExtensionEditor` takes well-known block data as raw bytes.** It decodes Previous Node, Bundle Age, and Hop Count data only to refuse what does not decode, then discards the value. Typed data instead — an enum of `PreviousNode(Eid)`, `BundleAge(BundleAge)`, `HopCount(HopInfo)` and opaque bytes, or typed methods in the style of `Builder::with_hop_count` — would make undecodable well-known data unrepresentable, removing that refusal and its decode. It is cheapest to adopt before the BPA's Rewriter surface, which hands Rewriters this editor, ships in a release.

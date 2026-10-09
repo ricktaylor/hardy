@@ -28,7 +28,7 @@ The package provides two main components:
 │  ├── proxy.rs       - Split reader/writer RpcProxy          │
 │  ├── server/        - BPA-side gRPC service implementations │
 │  │   ├── cla.rs     - Implements hardy_bpa::cla::{Cla,Sink} │
-│  │   ├── routing.rs - Implements routes::RoutingAgent       │
+│  │   ├── routing.rs - Implements routing::RoutingAgent      │
 │  │   ├── service.rs - Implements services::Service          │
 │  │   └── application.rs - Implements services::Application  │
 │  └── client/        - Remote-side proxy implementations     │
@@ -81,16 +81,16 @@ sequenceDiagram
 
     Client->>Server: DispatchBundle (msg_id=1)
     Note right of Client: Client-initiated (concurrent)
-    Client->>Server: AddPeer (msg_id=2)
+    Client->>Server: AddPeer (msg_id=3)
     Server->>Client: DispatchResponse (msg_id=1)
-    Server->>Client: AddPeerResponse (msg_id=2)
+    Server->>Client: AddPeerResponse (msg_id=3)
 
-    Server->>Client: ForwardBundleRequest (msg_id=3)
+    Server->>Client: ForwardBundleRequest (msg_id=2)
     Note left of Server: Server-initiated
-    Client->>Server: ForwardBundleResponse (msg_id=3)
+    Client->>Server: ForwardBundleResponse (msg_id=2)
 ```
 
-The first message must always be a registration request with `msg_id=0`. After registration succeeds, either side can initiate messages. The sender assigns a unique `msg_id`; the receiver echoes it in the response, allowing the sender to match responses to requests even when multiple operations are in flight.
+The first message must always be a registration request with `msg_id=0`. After registration succeeds, either side can initiate messages. The sender assigns a unique `msg_id` from its own parity — the client odd, the server even, as HTTP/2 does for stream ids — and the receiver echoes it in the response, allowing the sender to match responses to requests even when multiple operations are in flight: an inbound id found in a side's own pending map is unambiguously a response, never a colliding request from the peer.
 
 **Unregister vs OnUnregister:**
 
@@ -135,17 +135,17 @@ The `RpcProxy` struct manages the bidirectional stream using independent reader 
                  └─────────────────────┘
 ```
 
-**Writer task**: Dedicated task owning the outbound stream direction. Anyone sends by cloning `write_tx`. Exits on parent cancellation or when all senders drop.
+**Writer task**: Dedicated task owning the outbound stream direction. Anyone sends by cloning `write_tx`. Exits on proxy cancellation or when all senders drop.
 
-**Reader task**: Owns the inbound stream. Responses are matched to pending callers via msg_id oneshots. Requests spawn handler tasks on the caller's `TaskPool`.
+**Reader task**: Owns the inbound stream. Responses are matched to pending callers via msg_id oneshots. Requests spawn handler tasks on the proxy's own `TaskPool`; each handler acquires its concurrency permit inside its task, never on the read path, so a handler waiting on a response cannot stall the reader that delivers it.
 
 **msg_id correlation**: `call()` allocates a msg_id, registers a oneshot in a shared pending map (`Arc<Mutex<Option<HashMap>>>`), sends via `write_tx`, and awaits the oneshot. The reader completes the oneshot when it sees the matching response.
 
-**Hierarchical cancellation**: `run()` takes a `&TaskPool` and creates a child cancel token. Server shutdown (parent cancel) cascades to all proxies. `close()` cancels only the proxy's child token without affecting siblings.
+**Per-proxy task pool**: `run()` creates a `TaskPool` owned by the proxy, hosting its reader, writer, and request handlers. `cancel()` cancels that pool without waiting (safe from inside a handler), `shutdown()` cancels and awaits it, and dropping the proxy cancels it; none of these affects sibling proxies.
 
-**Graceful handler drain**: When the reader exits (stream closed by remote), it closes the pending map (`Option` → `None`) and drops its `write_tx` clone, but does NOT cancel the child token. In-flight handler tasks finish their work and send responses through their own `write_tx` clones. The writer stays alive until all handlers complete, then exits naturally when `write_rx` closes. Future `call()` attempts see the closed pending map and return immediately.
+**Connection loss winds the proxy down**: When the reader exits (stream closed by remote), it cancels the proxy's pool, so "reader exited" implies "cancelled" and a re-entrant `shutdown()` from `on_close`/`on_unregister` returns instead of awaiting its own task. It then closes the pending map (`Option` → `None`), failing every in-flight `call()` with `cancelled` so handlers parked on a response unblock, and invokes the handler's `on_close`. Future `call()` attempts see the closed pending map and return immediately.
 
-**Spin Mutex**: The pending map and msg_id counter use `hardy_async::sync::spin::Mutex` — all operations are O(1) HashMap insert/remove/lookup with no blocking or I/O.
+**Spin Mutex**: The pending map uses `hardy_async::sync::spin::Mutex` — all operations are O(1) HashMap insert/remove/lookup with no blocking or I/O — and the msg_id counter is an `AtomicU32`.
 
 ### Spawned Handshake Pattern
 
@@ -181,36 +181,15 @@ The service protocol exposes both the Application API (payload-only) and Service
 
 ### Trust Model
 
-The gRPC layer is the **security boundary** for the BPA. Two deployment modes exist:
+The gRPC layer is where the BPA's trust boundary sits. Two deployment modes exist:
 
 **In-process components** (CLAs, services, filters compiled into the BPA) are fully trusted. They share the same process—if compromised, the entire BPA is compromised. No authorization checks are performed on in-process calls.
 
-**Remote components** (connecting via gRPC) are authenticated and authorized at the gRPC layer:
-
-```mermaid
-graph BT
-    remote["Remote CLA / Service / App"] -- "gRPC + mTLS" --> grpc
-
-    subgraph bpa_server["bpa-server process"]
-        subgraph grpc["gRPC handlers — TRUST BOUNDARY"]
-            mtls["mTLS authentication (certificate = identity)"]
-            ns["Namespace validation at registration"]
-            policy["Policy enforcement (rate limits, quotas)"]
-        end
-        grpc -- "direct Rust calls" --> core["bpa (core) — trusts all callers"]
-    end
-```
+**Remote components** (connecting via gRPC) are not yet authenticated: the gRPC front end has no transport security and no client authentication, so any client that can reach its address can register CLAs, services, applications, or routing agents, limited only by the services the configuration enables. It binds to the loopback address (`[::1]:50051`) by default; deploy it there, or on a network whose clients are trusted. Client authentication, and the registration checks it enables, are designed in [BPA gRPC Client Authentication](../../bpa/docs/bpa-grpc-auth-design.md).
 
 **Resource ownership** is enforced structurally by the Sink pattern (see [BPA design](../../bpa/docs/design.md#authorization-and-ownership)). Each gRPC connection receives a Sink bound to its own resources—a client cannot affect another client's registrations because it has no reference to them.
 
-**Security layers** (when mTLS is enabled):
-
-1. **Authentication**: Client certificate required; CN/SAN establishes identity
-2. **Registration validation**: Namespace checks on requested EIDs
-3. **Ownership enforcement**: Structural via Sink pattern (no token needed)
-4. **Policy enforcement**: Rate limits and quotas per connection
-
-The `bpa/` crate remains security-agnostic—all authorization logic lives in `bpa-server/src/grpc/`.
+The `bpa/` crate remains security-agnostic: authentication and authorization belong to the gRPC front end.
 
 ### Error Handling via google.rpc.Status
 
@@ -228,7 +207,7 @@ The `.proto` files define the wire format for each interface:
 
 ## Proxy Module
 
-The `proxy` module provides Rust implementations of BPA traits that communicate over gRPC:
+The `client` module provides Rust implementations of BPA traits that communicate over gRPC:
 
 - `register_cla()` - Connect a CLA implementation to a remote BPA
 - `register_routing_agent()` - Connect a RoutingAgent to a remote BPA
@@ -251,7 +230,7 @@ The BPA library defines the traits (`Cla`, `Sink`, `Application`, `Service`, `Ro
 
 ### With hardy-bpa-server
 
-The server implements the gRPC service handlers, translating between protobuf messages and BPA trait calls. It manages stream lifecycle, connection authentication, and error propagation. Session tasks and proxy tasks are spawned on a shared `TaskPool` for hierarchical cancellation during shutdown.
+hardy-proto's `server` module implements the gRPC service handlers, translating between protobuf messages and BPA trait calls and managing stream lifecycle and error propagation; the server builds a `GrpcServer` from its `grpc` configuration section and runs it on its own task pool. Session tasks run on the `GrpcServer`'s task pool and are shut down with it; each proxy owns its own pool.
 
 ### With External Clients
 
@@ -282,4 +261,4 @@ The following unit tests would improve confidence in the proxy mechanism:
 - **BPA-initiated unregister** — `OnUnregister` request/response with msg_id correlation
 - **Concurrent handler messages** — handler sends through proxy while another message is being processed
 - **Slow handler doesn't block reader** — reader continues correlating responses while a handler is blocked
-- **Clean shutdown** — `close()` and parent cancellation complete without hanging; in-flight handlers drain
+- **Clean shutdown** — `cancel()`, `shutdown()`, and drop complete without hanging

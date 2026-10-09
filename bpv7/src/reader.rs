@@ -10,7 +10,9 @@
 //!
 //! - [`PlainReader`] — the raw wire body of a parsed, wholly in-memory
 //!   bundle; no decryption, no staged rewrites.
-//! - The editor's internal reader — staged (unmaterialised) rewrites.
+//! - [`StagedView`](crate::editor::StagedView) — an editor's staged
+//!   (unmaterialised) edits, snapshotted; the editor's internal reader serves
+//!   the same view to the BPSec machinery.
 //!
 //! For BCB-covered payloads decrypted on demand, see
 //! [`bpsec::DecryptingReader`](crate::bpsec::DecryptingReader), which

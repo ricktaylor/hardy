@@ -2,9 +2,10 @@ use bytes::Bytes;
 use hardy_bpv7::parse::{self, BundleParser, ParserProgress};
 
 /// Drive the multi-push streaming pipeline over `full`: header chunks through
-/// [`BundleParser::push`], then — when an oversized payload takes the
-/// `Partial` route — the rest through [`parse::PayloadTail::push`], finishing
-/// both state machines. Mirrors the ingress drain loop in `hardy-bpa`.
+/// [`BundleParser::push`], then — when the bundle is not complete by the push
+/// that parses the payload block's header, the `Partial` route — the rest
+/// through [`parse::PayloadTail::push`], finishing both state machines.
+/// Mirrors the ingress drain loop in `hardy-bpa`.
 #[allow(clippy::result_large_err)]
 fn drive_streamed(
     full: &[u8],
@@ -35,10 +36,9 @@ fn drive_streamed(
                     complete = tail.push(c)?;
                 }
                 tail.finish()?;
-                // The production drain loop breaks solely on push's boolean
-                // and never calls finish: a tail that reaches Done internally
-                // without reporting complete would stall every streamed
-                // bundle, so the two signals must agree.
+                // push's completion flag and finish's verdict must agree, so
+                // a consumer may settle on either: a tail that reached Done
+                // without push reporting complete would read as unfinished.
                 assert!(
                     complete,
                     "tail finished Done but push never reported complete"
@@ -54,10 +54,11 @@ fn drive_streamed(
 }
 
 /// Differential fuzz of the streaming parser against one-shot [`parse::parse`]:
-/// the first two input bytes choose the parser chunk size (small, so any
-/// payload beyond a few hundred bytes takes the `Partial`/`PayloadTail` route)
-/// and the push granularity; the rest is the bundle. The two pipelines must
-/// agree on accept/reject, and on the parsed shape when both accept.
+/// the first two input bytes choose the parser chunk size (buffer growth only)
+/// and the push granularity, which decides the route: a payload block not
+/// complete in the push that parses its header takes the
+/// `Partial`/`PayloadTail` route; the rest is the bundle. The two pipelines must agree on
+/// accept/reject, and on the parsed shape when both accept.
 pub fn test_streaming(data: &[u8]) {
     let [seed0, seed1, bundle_bytes @ ..] = data else {
         return;
@@ -107,8 +108,8 @@ mod test {
     use super::*;
 
     // The oracle on a well-formed bundle, through both streaming routes: a
-    // small parser chunk against a large payload (Partial/PayloadTail), and
-    // truncated input (both pipelines reject).
+    // large payload pushed in small pieces, so it arrives after its header
+    // (Partial/PayloadTail), and truncated input (both pipelines reject).
     #[test]
     fn oracle_agrees_on_builder_bundle() {
         let bundle = hardy_bpv7::builder::Builder::new(
@@ -120,7 +121,8 @@ mod test {
         .unwrap()
         .1;
 
-        // seed0=0 → parser chunk 16 (Partial route); seed1=63 → 64-byte pushes.
+        // seed0=0 → parser chunk 16; seed1=63 → 64-byte pushes, so the payload
+        // arrives after its header (the Partial route).
         let mut input = vec![0u8, 63u8];
         input.extend_from_slice(&bundle);
         test_streaming(&input);

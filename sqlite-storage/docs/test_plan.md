@@ -27,7 +27,7 @@ Trait-level contract testing (CRUD, polling, ordering, state transitions, recove
 
 This backend is registered in the storage harness with `storage_meta_tests!(sqlite, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. The following suites run against SQLite:
 
-- Suite A: Basic CRUD Operations (META-01..04, META-15, META-17)
+- Suite A: Basic CRUD Operations (META-01..04, META-15)
 - Suite B: Polling & Ordering (META-06..10, META-14)
 - Suite C: State Transitions & Bulk Ops (META-05, META-11..13, META-16)
 
@@ -44,7 +44,7 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-03** | **Migration errors** | `migrate.rs` | 1. Create storage.<br>2. Manually alter `schema_versions` table.<br>3. Reopen. | Error returned (missing/extra/altered migration detected). |
 | **SQL-04** | **Concurrency (SQLITE_BUSY)** | `storage.rs` | 1. Spawn N concurrent async writers.<br>2. All insert different bundles. | No `SQLITE_BUSY` errors; all inserts succeed. |
 | **SQL-05** | **Corrupt data handling** | `storage.rs` | 1. Insert bundle via trait.<br>2. Manually corrupt row bytes in DB.<br>3. Call `get()`. | Graceful error or tombstone, not panic. |
-| **SQL-06** | **Waiting queue invalidation** | `storage.rs` | 1. Insert bundle (Status=`Waiting`).<br>2. Update status to `Delivered` via `replace()`.<br>3. Call `poll_waiting()`. | Bundle not returned (cache correctly invalidated). |
+| **SQL-06** | **Waiting queue invalidation** | `storage.rs` | 1. Insert bundle (Status=`Waiting`).<br>2. Claim it to `Dispatching` via `swap_status()`.<br>3. Call `poll_waiting()`. | Bundle not returned (cache correctly invalidated). |
 
 ## 5. Execution
 

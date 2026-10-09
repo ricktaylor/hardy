@@ -1,97 +1,70 @@
-use hardy_bpv7::{block::BibCoverage, crc::CrcType, parse::PayloadTail, status_report::ReasonCode};
+use alloc::sync::Arc;
 
-use super::*;
-use crate::{bundle::parse, cla::Segment, stream::Receiver};
+use hardy_bpv7::{
+    block::BibCoverage, bpsec::bcb, crc::CrcType, eid::NodeId, status_report::ReasonCode,
+};
+use tracing::debug;
 
-// Why the payload drain failed. `Cancelled` and `TooLarge` refuse the
-// transfer (the CLA must not acknowledge it); `Rejected` is an internal
-// drop of an invalid-but-complete stream — accepted, then disposed of.
-enum DrainFailure {
-    Cancelled,
-    TooLarge { size: usize, max: usize },
-    Rejected,
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+use super::{
+    ADDRESSABLE_CAP, Dispatcher,
+    validate::{ValidatingReceiver, ValidationFailure},
+};
+use crate::{
+    Bytes, HashMap,
+    bundle::{self, parse},
+    cla::{self, Segment},
+    filter, otel_metrics, routing,
+    stream::Receiver,
+};
+
+/// Count a drop of a received bundle, labelled by reason. Every drop site in
+/// the received pipeline increments this counter exactly once (see the drop
+/// accounting note on `receive_bundle`); a new drop site calls this rather
+/// than respelling the counter name and label vocabulary.
+fn count_received_dropped(reason: &ReasonCode) {
+    metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(reason))
+        .increment(1);
+}
+
+// The verdict of the gate decisions (Ingress chain + route lookup) for one
+// arrival. `Disposed` rejections have already been counted and reported.
+//
+// One transient instance per arrival, immediately destructured: boxing the
+// record to appease the variant-size lint would add a per-bundle allocation
+// for no held storage.
+#[expect(clippy::large_enum_variant)]
+enum GateVerdict {
+    Disposed,
+    Proceed {
+        bundle: bundle::Bundle,
+        // The routing decision of record and the table snapshot that rides
+        // with it.
+        action: Option<routing::DispatchAction>,
+        seen: routing::RibSnapshot,
+    },
 }
 
 // The outcome of the shared receive pipeline, for the three in-feeds.
 //
-// `Bundle` and `Disposed` are both *acceptance* (the bundle proceeds to
-// ingress, or was dropped internally with reports); `Refused` is the one
-// non-acceptance outcome — the transfer could not be taken at all
-// (truncation, the size cap) and its custodian keeps responsibility.
-//
-// The large `Bundle` variant is deliberate (cf. `ChainOutcome`): the bundle
-// moves through by value on the hot path, and boxing it to shrink the enum
-// would tax every received bundle with an allocation.
-#[allow(clippy::large_enum_variant)]
+// `Dispatched` and `Disposed` are both *acceptance* (the bundle ran the
+// Ingress chain and its routing decision was executed, or it was dropped
+// internally with reports); `Refused` is the one non-acceptance outcome — the
+// transfer could not be taken at all (truncation, the size cap) and its
+// custodian keeps responsibility.
 pub(super) enum Received {
-    /// A valid bundle, stored and ready for `ingress_bundle`.
-    Bundle(bundle::Bundle, Bytes),
+    /// Admitted: the bundle ran the Ingress chain, was written once to the
+    /// metadata store, and had the gate's routing decision executed.
+    Dispatched,
     /// Accepted and disposed of internally (invalid, gate-rejected,
-    /// duplicate) — reports emitted where possible; nothing to ingress.
+    /// chain-dropped, duplicate) — reports emitted where possible; nothing
+    /// dispatched.
     Disposed,
     /// Acceptance refused: truncated stream or over the size cap. The
     /// refusal site logs the specifics.
     Refused,
-}
-
-/// Dumb-spool an oversized payload's tail in memory after the gate has accepted
-/// the bundle: feed each remaining segment through [`PayloadTail`] (carrying the
-/// payload CRC, the block/outer-break checks, and trailing-data rejection) while
-/// accumulating the bytes — bounded by `max_size`, continuing the count the
-/// header pass started — then return the assembled bundle. The `BytesMut`
-/// accumulator is the single seam streaming storage will later replace.
-async fn drain_payload(
-    stream: &mut dyn Receiver<Segment>,
-    consumed: Bytes,
-    mut tail: PayloadTail,
-    max_size: usize,
-) -> core::result::Result<Bytes, DrainFailure> {
-    // Reuse the consumed prefix's allocation when we hold the only reference —
-    // the common multi-segment case, where the parser already dropped its
-    // clone — instead of deep-copying it; fall back to a copy only if a CLA
-    // still holds the `Bytes`. We deliberately do *not* `reserve`
-    // `tail.remaining()`: that count is wire-declared, so pre-allocating it
-    // would let a peer force a `max_size` allocation from a tiny transfer
-    // (the same amplification the parser's `reserve` clamp guards against).
-    // Growth tracks the bytes that actually arrive, bounded by `max_size`.
-    let mut whole = consumed
-        .try_into_mut()
-        .unwrap_or_else(|b| crate::BytesMut::from(b.as_ref()));
-    loop {
-        let (bytes, last) = match stream.recv().await {
-            Ok(Segment::Next(b)) => (b, false),
-            Ok(Segment::Final(b)) => (b, true),
-            Err(_) => {
-                debug!("Truncated payload (stream cancelled mid-tail)");
-                return Err(DrainFailure::Cancelled);
-            }
-        };
-
-        let size = whole.len().saturating_add(bytes.len());
-        if size > max_size {
-            return Err(DrainFailure::TooLarge {
-                size,
-                max: max_size,
-            });
-        }
-
-        let complete = match tail.push(&bytes) {
-            Ok(complete) => complete,
-            Err(e) => {
-                debug!("Streamed payload rejected: {e}");
-                return Err(DrainFailure::Rejected);
-            }
-        };
-        whole.extend_from_slice(&bytes);
-        if complete {
-            break;
-        }
-        if last {
-            debug!("Truncated payload");
-            return Err(DrainFailure::Rejected);
-        }
-    }
-    Ok(whole.freeze())
 }
 
 impl Dispatcher {
@@ -110,8 +83,10 @@ impl Dispatcher {
     //
     // # Bundle State
     //
-    // - Initial status: `New`
-    // - Next: `process_received_bundle()` → `ingress_bundle()` → Ingress filter → `Dispatching`
+    // - `process_received_bundle()` runs the Ingress filter and the gate
+    //   route lookup, writes the record once at `Dispatching`, and executes
+    //   the routing decision directly — fresh arrivals do not transit the
+    //   dispatch queue (`DispatchPending` belongs to the re-dispatch paths).
     //
     // See [Bundle State Machine Design](../../docs/bundle_state_machine_design.md)
     // for the complete state transition diagram.
@@ -119,7 +94,7 @@ impl Dispatcher {
     pub async fn receive_bundle(
         &self,
         ingress_cla: Arc<str>,
-        ingress_peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        ingress_peer_node: Option<&NodeId>,
         ingress_peer_addr: Option<&cla::ClaAddress>,
         stream: &mut dyn Receiver<Segment>,
     ) -> cla::Acceptance {
@@ -139,26 +114,29 @@ impl Dispatcher {
         // `bpa.bundle.received.dropped` with a `reason` label. Nothing was
         // stored on the CLA path before a drop, so there's no data to clean up.
         match self.process_received_bundle(stream, metadata).await {
-            Received::Bundle(bundle, data) => {
-                self.ingress_bundle(bundle, data).await;
-                cla::Acceptance::Accepted
-            }
-            Received::Disposed => cla::Acceptance::Accepted,
+            Received::Dispatched | Received::Disposed => cla::Acceptance::Accepted,
             Received::Refused => cla::Acceptance::Refused,
         }
     }
 
-    // Shared bundle processing: parse, validate, store, and report.
+    // Shared bundle processing: parse and validate the headers, gate them
+    // (the Ingress chain and the route lookup among the gate's checks), drain
+    // and store the payload, report, and execute the routing decision.
     //
     // Called from the CLA ingress path (`receive_bundle`), the ADU
     // reassembly path (`reassemble`), and restart orphan recovery. Handles
     // all bundle validation internally — invalid bundles are logged,
     // counted, and dropped with status reports where possible (`Disposed`);
-    // only truncation and the size cap refuse (`Refused`).
+    // only truncation and the size cap refuse (`Refused`). An admitted
+    // bundle runs the Ingress chain, is written once to the metadata store
+    // (the P1 checkpoint), and has its gate routing decision executed
+    // (`Dispatched`).
     //
-    // If `metadata.storage_name` is already set (reassembly/restart case),
-    // the existing stored data is used. Otherwise (CLA case), the data is
-    // saved after parsing.
+    // Every caller hands the bundle as a segment stream — a caller holding
+    // whole bytes passes them directly (`Bytes` is a `Receiver<Segment>`) —
+    // and the spool saves an admitted bundle fresh: `metadata.storage_name`
+    // must be unset, and a caller replaying pre-stored bytes (reassembly,
+    // restart orphans) owns its own copy's cleanup after this returns.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub(super) async fn process_received_bundle(
         &self,
@@ -166,13 +144,16 @@ impl Dispatcher {
         mut metadata: bundle::BundleMetadata,
     ) -> Received {
         // Pre-drain header pass: parse the header chain off the stream and run
-        // keyed header verification — both in `bundle::parse`, before an oversized
-        // payload is spooled. `Err` carries an optional reception report to emit
-        // before dropping (reporting stays here — we own the machinery); a
-        // structural / truncation drop carries no recoverable bundle.
-        let (mut hv, headers, tail) = match parse::parse_headers(
+        // keyed header verification — both in `bundle::parse`, before a payload
+        // still arriving is spooled. `Err` carries an optional recoverable bundle to
+        // report before dropping (reporting stays here — we own the machinery);
+        // a structural failure, or a stream that ended inside the headers,
+        // carries none. The pass holds the Ingress chain's payload peek: none
+        // for an empty chain.
+        let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
             stream,
-            self.max_bundle_size_mem(),
+            self.max_bundle_size.unwrap_or(ADDRESSABLE_CAP).get(),
+            self.filters.ingress.peek,
             self.key_provider(),
         )
         .await
@@ -183,19 +164,34 @@ impl Dispatcher {
                 return Received::Refused;
             }
             Err(parse::HeaderFailure::TooLarge { size, max }) => {
-                debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}; refused");
+                // Covers both bounds `parse_headers` enforces: the
+                // accumulated header bytes and the declared whole-bundle
+                // size — an over-cap bundle, resident or still on the
+                // wire, refuses before a single payload byte drains.
+                debug!("Bundle exceeds max_bundle_size: {size} > {max}; refused");
                 return Received::Refused;
             }
-            Err(parse::HeaderFailure::Invalid(report)) => {
+            Err(parse::HeaderFailure::Invalid { report, .. }) => {
                 let reason = match report {
-                    Some((bundle, reason)) => {
-                        let bundle = bundle::Bundle::new(bundle, metadata);
-                        self.report_bundle_reception(&bundle, reason).await;
+                    Some((bundle, reception, reason)) => {
+                        // Complete but invalid, with a recoverable id: the
+                        // drop is reported like the sibling gate and drain
+                        // drops (RFC 9171 §5.6/§5.10). A structural failure,
+                        // or a stream that ended inside the headers (`None`),
+                        // has no id to report: the §4.1 discard, outside the
+                        // reception state machine.
+                        self.report_bundle_reception(
+                            &bundle,
+                            metadata.received_at(),
+                            reception,
+                            Some(reason),
+                        )
+                        .await;
                         reason
                     }
                     None => ReasonCode::BlockUnintelligible,
                 };
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                count_received_dropped(&reason);
                 return Received::Disposed;
             }
         };
@@ -211,11 +207,11 @@ impl Dispatcher {
         }
 
         // Early-reject gate (lifetime / hop) before the payload is drained, so a
-        // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
-        // re-checks lifetime post-store in the ingress filter — a cheap, harmless
+        // dead bundle is dropped having spooled nothing. (The dispatch expiry
+        // checkpoint re-checks lifetime after the store — a cheap, harmless
         // overlap.)
         if let Some(reason) = hv.gate_reason(metadata.received_at()) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+            count_received_dropped(&reason);
             if let ReasonCode::LifetimeExpired = reason {
                 // A bundle that arrives already expired is treated as if it
                 // never arrived, not amplified into report traffic — §5.10
@@ -227,101 +223,181 @@ impl Dispatcher {
                 debug!("Bundle arrived already expired; dropped");
                 return Received::Disposed;
             }
-            metadata.extensions = hv.extensions;
-            let bundle = bundle::Bundle::new(hv.bundle, metadata);
-            self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
-                .await;
-            self.report_bundle_deletion(&bundle, reason).await;
+            self.report_bundle_reception(
+                &hv.bundle,
+                metadata.received_at(),
+                hv.report,
+                Some(reason),
+            )
+            .await;
             return Received::Disposed;
         }
 
         // Config-gated RFC 9171 validity checks, at the same pre-drain seat
         // as the lifetime/hop gate: policy rejections that go beyond
         // structural validity (deployments may relax them), reported like
-        // any other gated drop — reception per §5.6, then deletion.
+        // any other gated drop (§5.6/§5.10).
         if let Some(reason) = self.rfc9171_gate_reason(&hv) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-            metadata.extensions = hv.extensions;
-            let bundle = bundle::Bundle::new(hv.bundle, metadata);
-            self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
-                .await;
-            self.report_bundle_deletion(&bundle, reason).await;
+            count_received_dropped(&reason);
+            self.report_bundle_reception(
+                &hv.bundle,
+                metadata.received_at(),
+                hv.report,
+                Some(reason),
+            )
+            .await;
             return Received::Disposed;
         }
 
-        // Gate passed — drain the payload (oversized case), then finalize.
-        let whole = match tail {
-            None => headers,
-            Some(tail) => {
-                match drain_payload(stream, headers, tail, self.max_bundle_size_mem()).await {
-                    Ok(whole) => whole,
-                    Err(DrainFailure::Cancelled) => return Received::Refused,
-                    Err(DrainFailure::TooLarge { size, max }) => {
-                        debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}; refused");
-                        return Received::Refused;
-                    }
-                    Err(DrainFailure::Rejected) => {
-                        metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                        return Received::Disposed;
-                    }
-                }
-            }
+        // Destructure the verified headers once, here at the gate: move the
+        // decoded extension fields into metadata (a Classifier may read them),
+        // and keep the begun payload-BIB verifiers, the scheduled §E removals,
+        // and the reception reason for the drain and store below. Nothing
+        // downstream needs `hv` whole.
+        let parse::HeaderVerify {
+            bundle,
+            extensions,
+            to_remove,
+            report,
+            deferred_verifiers,
+        } = hv;
+        metadata.extensions = extensions;
+
+        // The record under construction: built once here at the gate, it is
+        // the one object that travels through the chain, the route lookup,
+        // the drain, and the store below, mutated in place. It is born at
+        // `Dispatching` — the status it is persisted at — because nothing
+        // observes the record before the single insert below: only the
+        // finished, classified record ever reaches storage.
+        let bundle = bundle::Bundle {
+            bpv7: bundle,
+            metadata,
+            status: bundle::BundleStatus::Dispatching,
         };
 
-        // Post-drain finalize: verify the deferred block-1 BIB targets and apply
-        // §E rewrites. The decoded extension fields were captured at header time
-        // and the §E rewrite only removes blocks, so move `hv.extensions` into the
-        // metadata now (`take` leaves `hv` intact for finalize, which ignores it).
-        metadata.extensions = core::mem::take(&mut hv.extensions);
-        let (bundle, chunks, report_reason) = match parse::finalize_with_provider(
-            &whole,
-            hv,
-            self.key_provider(),
-        ) {
-            Ok(x) => x,
-            Err((bundle, error)) => {
-                debug!("Invalid bundle received: {error}");
-                let reason = parse::status_report_reason_for(&error);
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-                let bundle = bundle::Bundle::new(bundle, metadata);
-                self.report_bundle_reception(&bundle, reason).await;
+        // Every arrival spools through the store's streaming seam — the
+        // resident head may include payload bytes, or the whole bundle, so
+        // there is one store path, not a resident/streamed fork. The door
+        // owns the validation: a `ValidatingReceiver` decorates the arrival
+        // and `Store::save_stream` is the validation-blind drain. For a
+        // complete-at-head arrival the decorator yields the head as the
+        // stream's `Final` and settles from it alone: the header pass already
+        // took the arrival's `Final`, so the inner stream is not pulled again.
+        debug_assert!(bundle.metadata.storage_name.is_none());
+
+        // The gate decisions settle before the payload drains: the Ingress
+        // chain's verdict shapes the save itself — a Classifier may set the
+        // storage QoS the spool must honour — so the drain strictly follows
+        // the chain and the route lookup. A rejected arrival returns here
+        // having spooled nothing; the producer learns the verdict from the
+        // door's return, never from the stream.
+        let GateVerdict::Proceed {
+            mut bundle,
+            action,
+            seen,
+        } = self
+            .decide_at_gate(bundle, headers.clone(), &bcb_ops, report)
+            .await
+        else {
+            return Received::Disposed;
+        };
+
+        // The deferred-BIB verifiers were begun by the header pass, in the
+        // same keyed scope as the header verify; the decorator absorbs the
+        // resident payload prefix at construction, the streamed remainder
+        // as it arrives — feeding the payload CRC, the block+outer framing,
+        // and each deferred BIB digest as the bytes stream past.
+        let payload_start = bundle.bpv7.blocks.get(&1).map_or(headers.len(), |b| {
+            usize::try_from(b.payload_range().start)
+                .expect("parse bounds pre-payload offsets to usize")
+        });
+        let mut tail_rx =
+            ValidatingReceiver::new(stream, tail, deferred_verifiers, headers, payload_start);
+
+        // Drain the admitted arrival into the store, bounded by
+        // `max_bundle_size` as the defensive backstop (the declared size was
+        // already enforced at parse; a producer exceeding its declaration
+        // trips the framing checks first). The cap is clamped to the
+        // addressable bound at construction, so it always fits a `usize`.
+        let max_size = self.max_bundle_size_mem();
+        let outcome = self.store.save_stream(&mut tail_rx, max_size).await;
+
+        // Settle the decorator's verdict against the save. A save the
+        // verdict then rejects was staged before the verdict settled — the
+        // discard half of the streaming contract, owed by this door now
+        // that the drain is validation-blind.
+        let outcome = match outcome {
+            Ok((storage_name, len)) => match tail_rx.finish() {
+                Ok(()) => Ok((storage_name, len)),
+                Err(failure) => {
+                    self.store.delete_data(&storage_name).await;
+                    Err(failure)
+                }
+            },
+            // Any drain failure — an ended stream or the defensive bound —
+            // settles through the decorator's verdict; nothing was
+            // persisted.
+            Err(_) => Err(tail_rx
+                .finish()
+                .err()
+                .unwrap_or(ValidationFailure::Truncated)),
+        };
+
+        // Settle the store from the spool's outcome. The bundle is stored
+        // exactly as received — no editing on input.
+        let data_len = match outcome {
+            Ok((storage_name, len)) => {
+                bundle.metadata.storage_name = Some(storage_name);
+                len
+            }
+            Err(failure) => {
+                let Some(reason) = failure.reason_code() else {
+                    // Truncated: the transfer never completed, so it is
+                    // refused — the peer retains custody and may resend.
+                    // A refusal is never reported.
+                    debug!("Truncated payload; refused");
+                    return Received::Refused;
+                };
+                // Complete but unacceptable: the transfer was accepted,
+                // so this node owns the bundle and terminates it —
+                // reported like the sibling gate drops (RFC 9171
+                // §5.6/§5.10). Nothing remains staged: the settle above
+                // discarded any save the verdict rejected.
+                debug!("Streamed payload rejected: {failure}");
+                count_received_dropped(&reason);
+                self.report_bundle_reception(
+                    &bundle.bpv7,
+                    bundle.metadata.received_at(),
+                    report,
+                    Some(reason),
+                )
+                .await;
                 return Received::Disposed;
             }
         };
 
-        // Persist (flatten any rewrite chunks first).
-        let data = match chunks {
-            None => whole,
-            Some(chunks) => hardy_bpv7::editor::Chunk::flatten_bytes(chunks, whole),
-        };
-        // `Some` here = the caller pre-stored the data (reassembly / restart) and
-        // owns its cleanup; on any non-`Bundle` outcome the caller deletes it.
-        // We only delete storage *we* create (the CLA `save_data` path below),
-        // and only on the post-store duplicate path.
-        let mut caller_stored = false;
-        if let Some(storage_name) = &metadata.storage_name {
-            self.store.replace_data(storage_name, data.clone()).await;
-            caller_stored = true;
-        } else {
-            metadata.storage_name = Some(self.store.save_data(data.clone()).await);
-        }
-        let bundle = bundle::Bundle::new(bundle, metadata);
+        // The §E removals travel with the bundle to the output doors, sorted
+        // for a deterministic persisted order; they ride the metadata and are
+        // applied per-attempt (egress rewrite, deliver strip).
+        let mut to_remove: Vec<u64> = to_remove.into_iter().collect();
+        to_remove.sort_unstable();
+        bundle.metadata.to_remove = to_remove;
 
         // Only a completely assembled bundle counts as received.
         metrics::counter!("bpa.bundle.received").increment(1);
-        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
+        metrics::counter!("bpa.bundle.received.bytes").increment(data_len as u64);
 
         // Reception happened, so report it (when requested) before the duplicate
-        // check: RFC 9171 §5.6 reports on reception, and dedup belongs to the
-        // later dispatch step — so a replayed/duplicate bundle is still reported
-        // as received.
-        self.report_bundle_reception(&bundle, report_reason).await;
+        // check: RFC 9171 §5.6 reports on reception, so a replayed/duplicate
+        // bundle is still reported as received. (The Ingress chain already ran
+        // at the pre-drain gate; a chain drop reported itself there.)
+        self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
+            .await;
 
-        // `insert_metadata` is the authoritative atomic dup check — the one place
-        // a duplicate is caught, so a duplicate *valid* bundle is dropped here and
-        // never double-dispatched. We don't pre-check existence earlier: that would
-        // add a metadata read to every received bundle to catch a comparatively
-        // rare replay.
+        // `insert_metadata` is the authoritative atomic dup check: the gate's
+        // advisory exists() probe only sees committed records, so duplicate
+        // copies racing in concurrently both spool and settle here — the
+        // loser is dropped and never dispatched.
         //
         // A duplicate *invalid* bundle (rejected before reaching here) isn't
         // deduplicated — a replay re-parses and may re-report. Accepted, not fixed:
@@ -334,21 +410,129 @@ impl Dispatcher {
         if !self.store.insert_metadata(&bundle).await {
             // Bundle with matching id already exists in the metadata store.
             metrics::counter!("bpa.bundle.received.duplicate").increment(1);
-            // Delete the data only if we saved it here (CLA path); a caller
-            // that pre-stored deletes its own on the `Disposed` return.
-            if !caller_stored && let Some(storage_name) = &bundle.metadata.storage_name {
+            // The spool saved this copy's data; the duplicate loses it.
+            if let Some(storage_name) = &bundle.metadata.storage_name {
                 self.store.delete_data(storage_name).await;
             }
             return Received::Disposed;
         }
 
-        Received::Bundle(bundle, data)
+        // Account the admitted bundle in the status gauge.
+        metrics::gauge!("bpa.bundle.status", "state" => otel_metrics::status_label(&bundle.status))
+            .increment(1.0);
+
+        // Execute the gate's routing decision directly — fresh arrivals do
+        // not transit the dispatch queue (`DispatchPending` belongs to the
+        // re-dispatch paths: parks, polls, sweeps, restart, transfer
+        // outcomes). A crash between the insert above and this execution
+        // recovers through restart's `Dispatching` arm, which re-dispatches
+        // with a fresh lookup.
+        self.execute_dispatch_action(bundle, action, seen, self.cla_registry())
+            .await;
+        Received::Dispatched
+    }
+
+    // The gate decisions for an admitted header chain: the Ingress filter
+    // chain, then the route lookup — the decision of record. These settle
+    // before the payload drains — a Classifier's verdict (storage QoS)
+    // shapes the save that follows, and a `Disposed` verdict returns with
+    // nothing spooled or persisted. All rejection counting and reporting
+    // happens here.
+    async fn decide_at_gate(
+        &self,
+        bundle: bundle::Bundle,
+        headers: Bytes,
+        bcb_ops: &HashMap<u64, bcb::OperationSet>,
+        report: parse::ReceptionReport,
+    ) -> GateVerdict {
+        // Early duplicate probe, first — before any filter or route work: a
+        // replay is DoS-shaped traffic, so a recently-committed id settles
+        // it for the price of a cache lookup, without touching storage.
+        // Advisory only: copies racing in concurrently, ids past the
+        // cache's horizon, and a cold cache after restart all settle at
+        // insert_metadata's atomic refusal. Reception is still reported
+        // (RFC 9171 §5.6 reports on reception; dedup is a dispatch
+        // concern), exactly as the post-spool duplicate path reports it.
+        if self.store.seen_recently(bundle.id()) {
+            debug!("Duplicate bundle detected at the ingress gate");
+            metrics::counter!("bpa.bundle.received.duplicate").increment(1);
+            self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
+                .await;
+            return GateVerdict::Disposed;
+        }
+
+        // Ingress chain at the pre-drain gate, on the resident prefix: the
+        // headers and whatever of the payload has arrived, at least the held
+        // peek. It runs synchronously on the record and returns it in every
+        // outcome, so a Classifier's metadata deltas survive. A filter
+        // reading a payload that is not all resident gets the reader's
+        // `NotResident`.
+        let bundle = if self.filters.has_ingress() {
+            match self
+                .filters
+                .run_ingress(bundle, headers, bcb_ops, &*self.key_provider)
+            {
+                filter::ChainOutcome::Continue(bundle) => bundle,
+                filter::ChainOutcome::Drop(bundle, reason) => {
+                    let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+                    count_received_dropped(&label);
+                    self.report_bundle_reception(
+                        &bundle.bpv7,
+                        bundle.metadata.received_at(),
+                        report,
+                        reason,
+                    )
+                    .await;
+                    return GateVerdict::Disposed;
+                }
+            }
+        } else {
+            bundle
+        };
+
+        // Route at the gate — the decision of record for this arrival. The
+        // snapshot rides with the decision: if it proves stale after the
+        // drain, the failure arms park and re-check it (park_bundle), which
+        // re-enters dispatch for a fresh lookup. An explicit Drop route
+        // rejects the bundle here — doomed traffic is never persisted, and
+        // the caller's cancel stops its drain mid-stream. Placement after
+        // the chain is deliberate: a filter Drop keeps precedence, and the
+        // Classifier-supplied routing inputs must precede the lookup.
+        let seen = self.rib.table_snapshot();
+        let action = self.rib.find(&bundle);
+        if let Some(routing::DispatchAction::Drop(reason)) = action {
+            let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+            count_received_dropped(&label);
+            // Drop-with-reason reports like the sibling gate drops;
+            // Drop-without-reason is silent, exactly as dispatch's
+            // delete_bundle path.
+            if reason.is_some() {
+                debug!("Route lookup drops the bundle at the ingress gate: {label:?}");
+                self.report_bundle_reception(
+                    &bundle.bpv7,
+                    bundle.metadata.received_at(),
+                    report,
+                    reason,
+                )
+                .await;
+            } else {
+                debug!("Route lookup silently drops the bundle at the ingress gate");
+            }
+            return GateVerdict::Disposed;
+        }
+
+        GateVerdict::Proceed {
+            bundle,
+            action,
+            seen,
+        }
     }
 
     // The config-gated RFC 9171 validity checks: policy requirements beyond
     // structural validity, checked pre-drain — everything they read is
-    // header material the keyed verify pass has already established.
-    fn rfc9171_gate_reason(&self, hv: &parse::HeaderVerify) -> Option<ReasonCode> {
+    // header material the keyed verify pass has already established. Both
+    // input doors apply them (the originate raw door at its own gate).
+    pub(super) fn rfc9171_gate_reason(&self, hv: &parse::HeaderVerify) -> Option<ReasonCode> {
         // RFC 9171 §4.3.1: "A CRC SHALL be present in the primary block
         // unless the bundle includes a BPSec Block Integrity Block whose
         // target is the primary block". `Maybe` coverage (undecryptable
@@ -373,50 +557,5 @@ impl Dispatcher {
         }
 
         None
-    }
-
-    // Run the Ingress chain, checkpoint to `Dispatching`, and route the bundle.
-    //
-    // # Processing Steps
-    //
-    // 1. Run the Ingress chain (Verifiers, then Classifiers)
-    // 2. **Checkpoint**: Transition status to `Dispatching` — persisting any
-    //    classification the chain applied (crash-safe ordering)
-    // 3. Call `process_bundle()` for routing decision
-    //
-    // # Crash Safety
-    //
-    // The checkpoint to `Dispatching` is always persisted after the Ingress
-    // chain completes. On restart, bundles in `New` status re-run from this
-    // function, while bundles in `Dispatching` skip directly to routing.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
-
-        match self.filters.run_ingress(bundle, data, &*self.key_provider) {
-            Ok(filter::ChainOutcome::Continue(mut bundle, _)) => {
-                // Always checkpoint to Dispatching (crash safety)
-                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
-                bundle.status = bundle::BundleStatus::Dispatching;
-                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
-                self.store.update_metadata(&bundle).await;
-
-                // Hand off to dispatch queue for fan-out via processing pool
-                self.dispatch_bundle(bundle).await
-            }
-            Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
-                self.drop_bundle(bundle, reason).await
-            }
-            Ok(filter::ChainOutcome::Drop(bundle, None)) => self.delete_bundle(bundle).await,
-            Err((bundle, e)) => {
-                // The stored bytes failed the chain's own decode pass — an
-                // internal inconsistency, since they parsed at reception.
-                // Resolve the bundle as unintelligible rather than strand it
-                // in `New`.
-                error!("Ingress filter chain failed: {e}");
-                self.drop_bundle(bundle, ReasonCode::BlockUnintelligible)
-                    .await
-            }
-        }
     }
 }

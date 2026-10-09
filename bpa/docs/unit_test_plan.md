@@ -68,12 +68,12 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 ### 3.3 Egress Policy Logic (QoS)
 
-*Objective: Verify the `FlowControllerFactory` trait implementations and configuration parsing (REQ-6, LLR 6.1.9).*
+*Objective: Verify the `FlowControllerFactory`/`FlowController` contract and the null policy (REQ-6, LLR 6.1.9).*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Flow Classification** | Map Flow Label to Queue Index. | `src/policy/mod.rs` | Policy: `Map { 100 -> Queue 1 }`<br>Input: `FlowLabel(100)` | Result: `Some(1)` |
-| **Queue Bounds** | Handle invalid queue indices. | `src/policy/mod.rs` | Policy: `queue_count() = 2`<br>Input: `FlowLabel(999)` (maps to 5) | Result: `None` (Drop or Default) |
+| **Null Policy** | The null policy declares one queue and releases every bundle to the `next_free` lane directive without rate limiting. | `src/policy/null_policy.rs` | Null policy; CLA with `lane_count = Some(2)` | `queue_count() = 1`; every bundle forwarded with lane `None` |
+| **Queue Assignment** | The controller assigns each bundle a queue with `queue_for()`, which takes no per-bundle input; the total queue model means queue 0 always exists. | `src/policy/mod.rs` | Controller: `queue_count() = 2`, `queue_for() -> 1` | Bundle queued on queue 1 |
 
 ### 3.4 Service Registry Logic
 
@@ -118,7 +118,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | ----- | ----- | ----- | ----- | ----- |
 | **Fast Path Saturation** | Fill memory channel to trigger Draining state. | `src/storage/channel.rs` | `Channel(Cap=10)`<br>Input: Send 11 bundles rapidly. | 1. 10 in Channel.<br>2. 11th triggers `Draining`.<br>3. Poller wakes. |
 | **Congestion Signal** | Send while Draining to trigger Congested state. | `src/storage/channel.rs` | State: `Draining`<br>Input: `Send(Bundle)` | State becomes `Congested`. Poller loops again. |
-| **Hysteresis Recovery** | Verify fast path re-opens only after drain. | `src/storage/channel.rs` | State: `Draining`, Channel: `Empty`<br>Action: Poller finishes. | State becomes `Open` (only when `< Cap/2`). |
+| **Hysteresis Recovery** | Verify fast path re-opens only after drain. | `src/storage/channel.rs` | State: `Draining`, Channel: `Empty`<br>Action: Poller finishes. | State becomes `Open` (only when `<= Cap/2`; inclusive, so a capacity-1 channel can re-open). |
 | **Lazy Expiry** | Verify expired bundles are dropped during poll. | `src/storage/channel.rs` | Storage: Expired Bundle<br>Action: `poll_once` | Bundle not sent to channel; dropped. |
 | **Close Safety** | Verify sends fail when closing. | `src/storage/channel.rs` | Action: `close()`<br>Input: `Send(Bundle)` | Result: `Err(SendError)`. |
 | **Drop-to-Storage Integrity** | Verify bundle dropped from memory is retrieved from persistent storage. | `src/storage/channel.rs` | 1. Fill Channel.<br>2. `Send(Bundle X)` (triggers Draining).<br>3. Drain Channel. | Result: `Bundle X` arrives via Poller. |
@@ -137,8 +137,8 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Duplicate Registration** | Register CLA with existing name. | `src/cla/registry.rs` | 1. Reg "tcp" (Ok)<br>2. Reg "tcp" | Result: `Error(AlreadyExists)` |
 | **Peer Lifecycle** | Verify RIB updates on peer add/remove. | `src/cla/registry.rs` | 1. `add_peer(NodeA)`<br>2. `remove_peer(NodeA)` | 1. RIB contains NodeA.<br>2. RIB does not contain NodeA. |
 | **Cascading Cleanup** | Verify unregistering CLA removes peers. | `src/cla/registry.rs` | 1. Reg CLA -> Add Peer A.<br>2. Unregister CLA. | Result: Peer A removed from RIB. |
-| **Queue Selection** | Verify Policy maps to correct CLA queue. | `src/cla/peers.rs` | Policy: `Classify -> 1`<br>CLA: 2 Queues | Result: Bundle sent via Queue 1. |
-| **Queue Fallback** | Verify fallback to default queue on invalid index. | `src/cla/peers.rs` | Policy: `Classify -> 99`<br>CLA: 2 Queues | Result: Bundle sent via Queue 0 (Default). |
+| **Queue Selection** | Verify the controller's assignment selects the peer queue. | `src/cla/peers.rs` | Controller: `queue_for() -> 1`<br>Policy: 2 queues | Result: Bundle sent via queue 1. |
+| **Queue Fallback** | Verify an out-of-range index is clamped to queue 0. | `src/cla/peers.rs` | Controller: `queue_for() -> 99`<br>Policy: 2 queues | Result: Bundle sent via queue 0 (the clamp); warning logged. |
 
 ### 3.9 Reaper Logic (TTL Scheduling)
 
@@ -179,6 +179,8 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | ----- | ----- | ----- | ----- | ----- |
 | **Fragment Security** | Reject fragmentation if BPSec blocks present. | `bpv7/src/bpsec/signer.rs` | Bundle with BIB/BCB + Request Fragment | `Error(CannotFragmentSecureBundle)` |
 | **Target Cleanup** | Remove security info when target block is dropped. | `src/dispatcher/dispatch.rs` | Bundle with BIB targeting Payload + Drop Payload | Bundle with BIB removed. |
+| **Unreadable Hop Count** | A Hop Count block this node has no key for passes the header pass unread: its increment is a SHOULD (RFC 9171 §4.4.3), so it is not liveness-critical. | `src/bundle/parse.rs` | Bundle with a BCB-encrypted Hop Count, no keys | Accepted; no cached hop count; the block is kept. |
+| **Corrupt Hop Count** | A Hop Count block whose ciphertext fails authentication is scheduled for removal with its BCB (RFC 9172 §5.1.1). | `src/bundle/parse.rs` | Bundle with a tampered BCB-encrypted Hop Count | Accepted; the block scheduled for removal; reception report `FailureDropped`. |
 
 **Note (Rev 3):** Fragment Security (LLR 2.1.3) is a sender constraint enforced by `bpv7/src/bpsec/signer.rs:75` — not a BPA-level validation. Target Cleanup (LLR 2.1.2) is verified by the bpv7 unit tests (`test_bib_removal_and_readd`, `test_bcb_without_bib_removal`). Both scenarios are covered by the bpv7 test suite ([`UTP-BPSEC-01`](../../bpv7/docs/unit_test_plan_bpsec.md)); no separate BPA tests are required.
 
@@ -204,8 +206,8 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Verifier Drop Reason** | A Verifier's `Drop(Some(reason))` becomes the chain's drop reason. | `src/filter/engine.rs` | Done |
 | **Boxed and Shared Filters** | A boxed `Verifier` registers and runs; one instance behind an `Arc` serves two hooks. | `src/filter/engine.rs` | Done |
 | **Rewriter Edit Consistency** | A Rewriter's insert reaches the Deliver Verifier with consistent extents and the returned pair re-parses; the Egress chain returns a rewritten pair whose block map indexes its bytes. | `src/filter/engine.rs` | Done |
-| **Undecodable Output Bytes** | An Egress or Deliver chain, or the per-hop writes after the Egress chain, whose bytes fail to decode panics: they were validated at ingress, so the failure is a BPA bug or storage corruption. | `src/filter/engine.rs`, `src/dispatcher/forward.rs` | Done |
-| **Key Derivation** | Output chains derive keys once without edits, and after an inserting Rewriter re-derive against the rebuilt block map; a BPSec-free input chain never consults the key provider. | `src/filter/engine.rs` | Done |
+| **Undecodable Output Bytes** | An Egress or Deliver chain, the per-hop writes after the Egress chain, or a delivered payload's extraction, whose bytes fail to decode panics: they were validated at ingress, so the failure is a BPA bug or storage corruption. | `src/filter/engine.rs`, `src/dispatcher/forward.rs`, `src/dispatcher/mod.rs` | Done |
+| **Key Derivation** | A BPSec-free bundle never consults the key provider, at input or output; a BCB-bearing bundle's output chain of non-editing links derives keys once per pass, and after an inserting Rewriter re-derives against the rebuilt block map. | `src/filter/engine.rs` | Done |
 | **Scope Refusals** | Primary/payload targets, BIB/BCB types, and absent blocks are refused through the engine, and the bundle passes unedited. | `src/filter/engine.rs` | Done |
 | **Editor Refusals** | The `ExtensionEditor`'s call-time refusals — BPSec-covered targets, the forbidden `report_on_failure` flag (RFC 9171 §4.2.3-4/-5), unrecognised CRC types, undecodable well-known bodies, reserved aliases — are bpv7's; the forbidden flag is also pinned end to end. | `bpv7/tests/editor.rs`, `tests/filter_dispositions.rs` | Done |
 | **Non-Resident Block** | A block beyond the resident bytes reads as `Availability::NotResident` through the `DecryptingReader`. | `bpv7/tests/reader.rs` | Done |

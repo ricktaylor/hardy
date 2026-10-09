@@ -9,20 +9,20 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-The `MetadataStorage` trait contract is verified by the shared storage harness (17 tests, all pass when a PostgreSQL instance is available). Recovery requirements are satisfied by the harness tests exercising `MetadataStorage::start_recovery()` (META-12), `confirm_exists()` (META-05), and `remove_unconfirmed()` (META-13), with the BPA's `storage/recover.rs` orchestrating these trait methods during restart.
+The `MetadataStorage` trait contract is verified by the shared storage harness (16 tests, all pass when a PostgreSQL instance is available). Recovery is only partly verified: the harness exercises `MetadataStorage::start_recovery()` (META-12) and `confirm_exists()` (META-05), but META-13 calls `remove_unconfirmed()` with no row marked unconfirmed, so its removal path is untested. The BPA's `storage/recover.rs` orchestrates these trait methods during restart.
 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
-| 8.1 | Metadata storage | **Pass** | META-01..17 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
-| 8.2 | Recovery after restart | **Pass** | META-05 (confirm_exists) + META-12 (start_recovery) + META-13 (remove_unconfirmed) |
+| 8.1 | Metadata storage | **Pass** | META-01..16 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
+| 8.2 | Recovery after restart | **Partial** | META-05 (confirm_exists) + META-12 (start_recovery); META-13 marks nothing unconfirmed, so `remove_unconfirmed`'s removal path is untested |
 
 ## 2. Test Inventory
 
 ### Generic harness tests (via `tests/storage/`)
 
-17 integration tests run against PostgreSQL: 16 via `storage_meta_tests_async!(postgres, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. See [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §3.5 for registration details and §4 for test scenarios.
+16 integration tests run against PostgreSQL: 15 via `storage_meta_tests_async!(postgres, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. See [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §3.5 for registration details and §4 for test scenarios.
 
-Each test creates an isolated database with a random name (`hardy_test_{uuid}`) and drops it on completion. All 17 pass. No failures or skips.
+Each test creates an isolated database with a random name (`hardy_test_{uuid}`) and drops it on completion. All 16 pass. No failures or skips.
 
 ### Backend-specific tests
 

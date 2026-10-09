@@ -87,11 +87,13 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 
 ### Suite E: Service Delivery Failure
 
-*Objective: a delivery the service fails leaves the bundle in custody (`bpa/tests/pipeline.rs`).*
+*Objective: a delivery the service fails leaves the bundle in custody, and a payload this node cannot decrypt as its security acceptor discards the bundle (`bpa/tests/pipeline.rs`).*
 
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **INT-BPA-05** | **`on_deliver` returns `Err`** | 1. Register an application whose `on_deliver` fails.<br>2. Originate a bundle to it from a second application.<br>3. Unregister the failing application and register a working one on the same service id. | The failed delivery parks the bundle `WaitingForService` rather than reporting it delivered and deleting it; the working receiver gets it re-delivered, payload intact. |
+| **INT-BPA-16** | **Payload fails to decrypt** | 1. Register a key provider holding the payload's key.<br>2. Deliver, via a CLA, a deletion-report-requesting bundle whose encrypted payload was tampered with, addressed to a local application. | The bundle is dropped with one deletion report carrying `FailedSecurityOperation` (RFC 9172 §5.1.1); nothing is delivered. |
+| **INT-BPA-17** | **Payload in an unknown security context** | 1. Deliver, via a CLA, a deletion-report-requesting bundle whose payload a BCB covers in a security context this node does not recognise, addressed to a local application. | The bundle is dropped with one deletion report carrying `UnknownSecurityOperation` (RFC 9172 §7.1); nothing is delivered. |
 
 ### Suite F: Deferred CLA Transfer Outcomes
 
@@ -111,7 +113,7 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
-| **INT-BPA-12** | **Streamed origination and ingress** | 1. Originate through `ServiceSink::send` in several segments; drop the producer before `Final`; unregister the service while a send is parked; send a bundle whose source is not the service's endpoint.<br>2. Dispatch through `cla::Sink::dispatch` in several segments; unregister the CLA while a stream is parked; drop the producer before `Final`. | Multi-segment origination and ingress match their whole-buffer forms (origination returns the built bundle's id and forwards it; ingress delivers locally). A producer dropped before `Final` cancels an origination (`StreamCancelled`, nothing enters custody) and is refused at ingress (`Acceptance::Refused`, nothing delivered). Unregistration wakes a parked consumer with `StreamCancelled` at once. The spoofed source is rejected. |
+| **INT-BPA-12** | **Streamed origination and ingress** | 1. Originate through `ServiceSink::send` in several segments; drop the producer before `Final`; unregister the service while a send is parked; send a bundle whose source is not the service's endpoint; send a bundle carrying a Hop Count block, and one whose Hop Count this node cannot decrypt.<br>2. Dispatch through `cla::Sink::dispatch` in several segments; unregister the CLA while a stream is parked; drop the producer before `Final`, including after a whole bundle in `Next` and after every byte of an oversized one. | Multi-segment origination and ingress match their whole-buffer forms (origination returns the built bundle's id and forwards it; ingress delivers locally). A producer dropped before `Final` cancels an origination (`StreamCancelled`, nothing enters custody) and is refused at ingress (`Acceptance::Refused`, nothing delivered), even once every byte of the bundle has arrived. Unregistration wakes a parked consumer with `StreamCancelled` at once. The spoofed source is rejected. An originated bundle leaves with the Hop Count it was built with (origination is not a hop), and an undecryptable Hop Count is accepted and forwarded unchanged. |
 
 ## 5. Performance Benchmarks (REQ-13)
 

@@ -1,44 +1,116 @@
-use alloc::borrow::Cow;
+//! The originate doors: bundles entering the pipeline from local
+//! applications and services.
+//!
+//! Two doors with one admission stage. The ADU door
+//! ([`originate`](Dispatcher::originate)) builds the bundle
+//! itself, so it performs no validation — the `Builder` emits valid bundles
+//! by construction. The raw door
+//! ([`originate_raw`](Dispatcher::originate_raw))
+//! is a security boundary: service-provided bytes run the same strict
+//! parser and keyed header verification as CLA ingress. Both merge at
+//! [`originate_admit`](Dispatcher::originate_admit) — the gate decisions
+//! (Originate chain, then the route lookup as the decision of record)
+//! settled ahead of the spool, one metadata write, and direct execution of
+//! the routing decision. Every rejection is a [`services::Error`] to the
+//! originator; this path never raises status reports.
+
 use core::time::Duration;
 
-// `Bpv7Bundle` disambiguates the structural wire bundle from the BPA
-// record `bundle::Bundle` used throughout this module.
+use hardy_async::async_trait;
 use hardy_bpv7::{
-    builder::Builder,
-    bundle::{Bundle as Bpv7Bundle, Flags, Id},
+    builder::{Builder, PayloadTrailer, StreamBuild},
+    bundle::{Flags, Id},
     creation_timestamp::CreationTimestamp,
+    eid::Eid,
     status_report::ReasonCode,
 };
+use tracing::debug;
 
-use super::*;
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+use super::{
+    ADDRESSABLE_CAP, Dispatcher,
+    validate::{ValidatingReceiver, ValidationFailure},
+};
 use crate::{
-    bundle::parse,
-    stream::{ConcatError, Receiver, Segment, concat_stream},
+    Bytes, HashMap,
+    bundle::{self, parse},
+    cla::Segment,
+    filter, otel_metrics, routing, services,
+    stream::{ConcatError, Receiver, RecvError},
 };
 
 impl Dispatcher {
+    /// Originate a bundle around a resident application payload (the ADU
+    /// door).
+    ///
+    /// Pure sugar over [`originate_streamed`](Self::originate_streamed): a
+    /// resident payload is a one-segment stream (`Bytes` is a
+    /// `Receiver<Segment>`), and its length is the declaration.
     #[cfg_attr(feature = "instrument", instrument(skip(self, payload)))]
-    pub async fn local_dispatch(
-        self: &Arc<Self>,
+    pub async fn originate(
+        &self,
         source: Eid,
         destination: Eid,
-        payload: Bytes,
+        mut payload: Bytes,
         lifetime: Duration,
         flags: Option<services::SendOptions>,
     ) -> Result<Id, services::Error> {
-        // Build bundle and run the Originate chain before storing. The bundle
-        // id is unique within this process by construction —
-        // `CreationTimestamp::now` issues process-monotonic `(time,
-        // sequence)` pairs — so the builder never collides with an id this
-        // process issued and there is nothing to retry. `DuplicateBundle`
-        // surfaces a duplicate already in the store (in practice a
-        // pre-restart bundle after a backward clock step, made vanishingly
-        // unlikely by the nanosecond-seeded sequence floor) — and only
-        // that: a metadata-storage failure aborts inside `Store::store`.
-        let mut builder = Builder::new(source, destination.clone()).with_lifetime(lifetime);
+        let total_len = payload.len() as u64;
+        self.originate_streamed(
+            source,
+            destination,
+            total_len,
+            &mut payload,
+            lifetime,
+            flags,
+        )
+        .await
+    }
 
-        // Set flags
-        if let Some(flags) = &flags {
+    /// Originate a bundle around an application payload supplied as a
+    /// segment stream (the streamed ADU door).
+    ///
+    /// The stream must deliver exactly `total_len` payload bytes — the
+    /// declaration frames the wire form before the first pull — and an
+    /// over- or under-delivering producer is rejected
+    /// ([`PayloadTooLarge`](services::Error::PayloadTooLarge) /
+    /// [`PayloadUnderrun`](services::Error::PayloadUnderrun)) with nothing
+    /// persisted. The bundle id is unique by construction —
+    /// `CreationTimestamp::now` issues process-monotonic `(time, sequence)`
+    /// pairs — so
+    /// [`DuplicateBundle`](services::Error::DuplicateBundle) can only mean
+    /// a collision with a pre-restart bundle (a wall clock that stepped
+    /// backwards across a restart); the caller may resend.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
+    pub async fn originate_streamed(
+        &self,
+        source: Eid,
+        destination: Eid,
+        total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
+        lifetime: Duration,
+        flags: Option<services::SendOptions>,
+    ) -> Result<Id, services::Error> {
+        let built = self
+            .originate_builder(source, destination, lifetime, &flags)
+            .build_stream(total_len, CreationTimestamp::now())
+            .map_err(|e| services::Error::Internal(e.into()))?;
+        self.admit_built(built, stream, total_len).await
+    }
+
+    // The ADU doors' shared Builder setup: flags and the report-to
+    // endpoint, from the caller's `SendOptions`.
+    fn originate_builder(
+        &self,
+        source: Eid,
+        destination: Eid,
+        lifetime: Duration,
+        flags: &Option<services::SendOptions>,
+    ) -> Builder<'static> {
+        let mut builder = Builder::new(source, destination.clone()).with_lifetime(lifetime);
+        if let Some(flags) = flags {
             builder = builder.with_flags(Flags {
                 do_not_fragment: flags.do_not_fragment,
                 app_ack_requested: flags.request_ack,
@@ -58,134 +130,760 @@ impl Dispatcher {
                 builder = builder.with_report_to(self.node_ids.get_admin_endpoint(&destination));
             }
         }
-
-        let (bundle, data) = builder
-            .with_payload(Cow::Borrowed(&payload))
-            .build(CreationTimestamp::now())
-            .map_err(|e| services::Error::Internal(e.into()))?;
-
-        let data = Bytes::from(data);
-        let extensions = parse::extract_from_built(&bundle, &data)
-            .map_err(|e| services::Error::Internal(e.into()))?;
-
-        self.originate_bundle(bundle, extensions, data).await
+        builder
     }
 
-    /// Dispatch a bundle from a segment stream (for low-level Service trait)
-    ///
-    /// Accumulates the stream (bounded by `max_bundle_size`, like CLA
-    /// ingress), then parses and validates the assembled bundle exactly as
-    /// [`local_dispatch_raw`](Self::local_dispatch_raw) does. A producer that
-    /// goes away before the final segment cancels the send: nothing has been
-    /// stored, and the caller gets
-    /// [`StreamCancelled`](services::Error::StreamCancelled).
-    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
-    pub async fn local_dispatch_raw_streamed(
-        self: &Arc<Self>,
-        expected_source: &Eid,
+    // The ADU doors' shared admission: wrap the streamed build and the
+    // payload source in a `BuiltReceiver` — the CRC applied at the point of
+    // origination as the payload flows — and run the shared stage, mapping
+    // a declared-length violation to the caller's error surface.
+    async fn admit_built(
+        &self,
+        built: StreamBuild,
         stream: &mut dyn Receiver<Segment>,
+        declared: u64,
     ) -> Result<Id, services::Error> {
-        let data = concat_stream(stream, self.max_bundle_size_mem())
-            .await
-            .map_err(|e| match e {
-                ConcatError::Cancelled => services::Error::StreamCancelled,
-                ConcatError::TooLarge { size, max } => services::Error::PayloadTooLarge {
-                    size: size as u64,
-                    max: max as u64,
-                },
-            })?;
-        self.local_dispatch_raw(expected_source, data).await
-    }
+        let StreamBuild {
+            bundle: built_view,
+            prefix,
+            trailer,
+        } = built;
 
-    /// Dispatch a bundle from raw bytes (for low-level Service trait)
-    /// Parses and validates the bundle (security boundary)
-    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    pub async fn local_dispatch_raw(
-        self: &Arc<Self>,
-        expected_source: &Eid,
-        data: Bytes,
-    ) -> Result<Id, services::Error> {
-        // Parse + validate the bundle (security boundary — can't trust
-        // service-provided bytes). Non-canonical input is rejected, not rewritten;
-        // the bytes are stored and forwarded as received. As the origin we must be
-        // able to process HopCount / unclocked BundleAge, so an undecryptable one
-        // is fatal.
-        let validated = parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
-        crate::bundle::parse::reject_undecryptable_liveness(
-            &validated.nokey_ext,
-            validated.bundle.primary.id.timestamp.is_clocked(),
-        )?;
-
-        // Verify source matches the registered service endpoint
-        // (registration already validated that the EID belongs to our node)
-        if &validated.bundle.primary.id.source != expected_source {
-            return Err(services::Error::InvalidDestination(
-                validated.bundle.primary.id.source.clone(),
-            ));
-        }
-
-        self.originate_bundle(validated.bundle, validated.extensions, data)
-            .await
-    }
-
-    async fn originate_bundle(
-        self: &Arc<Self>,
-        bundle: Bpv7Bundle,
-        extensions: bundle::ExtensionFields,
-        data: Bytes,
-    ) -> Result<Id, services::Error> {
-        // Wrap in bundle::Bundle with Dispatching status so that restart
-        // recovery skips the Ingress chain (originated bundles only run the
-        // Originate chain, never the Ingress chain).
-        let bundle = bundle::Bundle {
-            bpv7: bundle,
-            metadata: bundle::BundleMetadata::originated().with_extensions(extensions),
+        let prefix = Bytes::from(prefix);
+        let extracted = parse::extract_from_built(&built_view, &prefix)
+            .map_err(|e| services::Error::Internal(e.into()))?;
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.extensions = extracted;
+        let record = bundle::Bundle {
+            bpv7: built_view,
+            metadata,
             status: bundle::BundleStatus::Dispatching,
         };
 
-        // Inline lifetime/hop admission check for the raw-bytes path: the
-        // Builder cannot produce an expired or hop-exhausted bundle, but
-        // parse-validated service bytes can — the origination-side twin of
-        // ingress's pre-drain gate. Nothing is stored yet, so a rejection
-        // is purely an error to the caller.
-        if bundle.has_expired() {
-            return Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)));
-        }
-        if let Some(hop_info) = &bundle.metadata.extensions.hop_count
-            && hop_info.count > u64::from(hop_info.limit.get())
-        {
-            return Err(services::Error::Dropped(Some(ReasonCode::HopLimitExceeded)));
-        }
+        // The Originate chain's payload peek, held before the gate as the raw
+        // door's header pass holds it: the app's first payload bytes join the
+        // prefix the gate reads. A bundle the shared stage refuses by size
+        // pulls nothing, and an Originate chain with no peek declared holds nothing.
+        let admissible =
+            record.bpv7.encoded_len() <= self.max_bundle_size.unwrap_or(ADDRESSABLE_CAP).get();
+        let peek = if admissible {
+            self.filters.originate.peek
+        } else {
+            0
+        };
+        let mut built_rx = BuiltReceiver::new(prefix, stream, trailer, declared);
+        let head = match built_rx.hold(peek).await {
+            Ok(head) => head,
+            Err(Some(violation)) => return Err(violation.into_error(declared)),
+            Err(None) => return Err(services::Error::StreamCancelled),
+        };
+        self.originate_admit(record, head, built_rx, &HashMap::new(), |rx| {
+            rx.into_violation()
+                .map_or(Ok(()), |violation| Err(violation.into_error(declared)))
+        })
+        .await
+    }
 
-        // Run the Originate chain (pure in-memory, pre-store); a Drop
-        // returns its reason to the originating service.
-        let (mut bundle, data) = match self
-            .filters
-            .run_originate(bundle, data, &*self.key_provider)
+    /// Originate a service-built bundle from a segment stream (the raw
+    /// door, for the low-level `Service` trait).
+    ///
+    /// This is a security boundary — services are not trusted — so the raw
+    /// door carries all the validation the ADU door doesn't: the stream
+    /// runs the same strict parser and keyed header verification as CLA
+    /// ingress (non-canonical input is rejected, never rewritten; the
+    /// bytes are stored and forwarded as received), the source must match
+    /// the registered endpoint, a fragment is rejected outright
+    /// ([`FragmentedBundle`](services::Error::FragmentedBundle) —
+    /// fragmentation is a forwarding-time action, never a source-time
+    /// one), and the lifetime/hop admission and config-gated RFC 9171
+    /// validity checks apply at the same pre-drain
+    /// seat. A producer that goes away before the final segment cancels
+    /// the send: nothing is stored, and the caller gets
+    /// [`StreamCancelled`](services::Error::StreamCancelled).
+    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
+    pub async fn originate_raw(
+        &self,
+        expected_source: &Eid,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> Result<Id, services::Error> {
+        // The pass holds the Originate chain's payload peek: none for an
+        // empty chain.
+        let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
+            stream,
+            self.max_bundle_size.unwrap_or(ADDRESSABLE_CAP).get(),
+            self.filters.originate.peek,
+            self.key_provider(),
+        )
+        .await
         {
-            Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
-            Ok(filter::ChainOutcome::Drop(_, reason)) => {
-                return Err(services::Error::Dropped(reason));
+            Ok(parts) => parts,
+            Err(parse::HeaderFailure::Cancelled) => {
+                return Err(services::Error::StreamCancelled);
             }
-            Err((_, e)) => {
-                error!("Originate filter chain failed: {e}");
-                return Err(services::Error::Internal(e));
+            Err(parse::HeaderFailure::TooLarge { size, max }) => {
+                return Err(services::Error::PayloadTooLarge { size, max });
+            }
+            // The report half is CLA-ingress machinery; an originator
+            // gets the parse or verification error itself.
+            Err(parse::HeaderFailure::Invalid { error, .. }) => {
+                return Err(services::Error::InvalidBundle(error));
             }
         };
 
-        // Now store (single persist operation, preserves filter-applied
-        // metadata). False means duplicate and nothing else: a backend
-        // failure aborts inside store().
-        if !self.store.store(&mut bundle, &data).await {
+        // Verify source matches the registered service endpoint
+        // (registration already validated that the EID belongs to our node).
+        if hv.bundle.primary.id.source != *expected_source {
+            return Err(services::Error::InvalidDestination(
+                hv.bundle.primary.id.source.clone(),
+            ));
+        }
+
+        // Fragmentation is a forwarding-time action (RFC 9171 §5.8): a
+        // source never emits fragments, and admitting one would let a
+        // service fabricate pieces of an ADU it never sent whole. A header
+        // fact, settled before the gates with nothing spooled.
+        if hv.bundle.primary.id.fragment_info.is_some() {
+            return Err(services::Error::FragmentedBundle);
+        }
+
+        let mut metadata = bundle::BundleMetadata::originated();
+
+        // Lifetime/hop admission and the config-gated RFC 9171 validity
+        // checks, at the same pre-drain seat as CLA ingress: the Builder
+        // cannot produce a bundle that trips them, but parse-validated
+        // service bytes can. Nothing is stored yet — a rejection is purely
+        // an error to the caller.
+        if let Some(reason) = hv.gate_reason(metadata.received_at()) {
+            metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+            return Err(services::Error::Dropped(Some(reason)));
+        }
+        if let Some(reason) = self.rfc9171_gate_reason(&hv) {
+            metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+            return Err(services::Error::Dropped(Some(reason)));
+        }
+
+        let parse::HeaderVerify {
+            bundle,
+            extensions,
+            to_remove,
+            // Originated bundles never raise reception reports — reception
+            // is a CLA-ingress notion; the originator learns the outcome
+            // from this call's return value.
+            report: _,
+            deferred_verifiers,
+        } = hv;
+        metadata.extensions = extensions;
+
+        // The §E removals travel with the bundle to the output doors,
+        // sorted for a deterministic persisted order, exactly as at CLA
+        // ingress — the bundle is stored as received.
+        let mut to_remove: Vec<u64> = to_remove.into_iter().collect();
+        to_remove.sort_unstable();
+        metadata.to_remove = to_remove;
+
+        let record = bundle::Bundle {
+            bpv7: bundle,
+            metadata,
+            status: bundle::BundleStatus::Dispatching,
+        };
+
+        // Early duplicate probe, before the decorator and the gate
+        // decisions: raw bytes are externally shaped, so a replay here is
+        // incoming-duplicate traffic exactly as at CLA ingress, settled for
+        // the price of a cache lookup without consuming the caller's
+        // stream. The ADU doors carry no probe — their ids are freshly
+        // generated, and a collision settles at insert_metadata's atomic
+        // refusal. Advisory only: copies racing in concurrently, ids past
+        // the cache's horizon, and a cold cache after restart all settle
+        // at that same refusal.
+        if self.store.seen_recently(record.id()) {
+            debug!("Duplicate bundle detected at the originate gate");
+            return Err(services::Error::DuplicateBundle);
+        }
+
+        // The validating decorator settles the drain verdict — the same
+        // machinery as CLA ingress, mapped to the caller's error surface
+        // instead of status reports.
+        let payload_start = record.bpv7.blocks.get(&1).map_or(headers.len(), |b| {
+            usize::try_from(b.payload_range().start)
+                .expect("parse bounds pre-payload offsets to usize")
+        });
+        let tail_rx = ValidatingReceiver::new(
+            stream,
+            tail,
+            deferred_verifiers,
+            headers.clone(),
+            payload_start,
+        );
+        self.originate_admit(record, headers, tail_rx, &bcb_ops, |rx| {
+            rx.finish().map_err(|failure| {
+                if let Some(reason) = failure.reason_code() {
+                    metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+                }
+                match failure {
+                    // The transfer never completed; the producer may retry.
+                    ValidationFailure::Truncated => services::Error::StreamCancelled,
+                    ValidationFailure::Invalid(e) => services::Error::InvalidBundle(e),
+                    ValidationFailure::IntegrityFailed { .. } => services::Error::InvalidBundle(
+                        hardy_bpv7::bpsec::Error::IntegrityCheckFailed.into(),
+                    ),
+                }
+            })
+        })
+        .await
+    }
+
+    // The shared admission stage where the originate doors merge: the gate
+    // decisions (Originate chain, then the route lookup — the decision of
+    // record) settle first, the spool follows, the door's stream verdict
+    // settles against the save, and the admitted record is written once and
+    // its routing decision executed directly. Originated bundles do not transit the
+    // dispatch queue (`DispatchPending` belongs to the re-dispatch paths),
+    // mirroring fresh CLA arrivals; a crash between the insert and the
+    // execution recovers through restart's `Dispatching` arm.
+    //
+    // `stream` is the door's whole-bundle byte source (`head` included);
+    // `settle` maps the door's post-drain verdict — a `ValidatingReceiver`'s
+    // `finish` at the raw door, nothing at the ADU door — to the caller's
+    // error surface, and runs before anything is persisted.
+    async fn originate_admit<S, F>(
+        &self,
+        bundle: bundle::Bundle,
+        head: Bytes,
+        mut stream: S,
+        bcbs: &HashMap<u64, hardy_bpv7::bpsec::bcb::OperationSet>,
+        settle: F,
+    ) -> Result<Id, services::Error>
+    where
+        S: Receiver<Segment>,
+        F: FnOnce(S) -> Result<(), services::Error>,
+    {
+        // The declared wire size bounds both doors before a byte spools.
+        // The comparison stays in u64: the declaration may exceed this
+        // target's address space.
+        let declared = bundle.bpv7.encoded_len();
+        let max = self.max_bundle_size.unwrap_or(ADDRESSABLE_CAP).get();
+        if declared > max {
+            debug!("Originated bundle declares {declared} bytes, exceeding max_bundle_size {max}");
+            return Err(services::Error::PayloadTooLarge {
+                size: declared,
+                max,
+            });
+        }
+
+        // The gate decisions settle before a byte spools: the Originate
+        // chain's verdict shapes the save itself — a Classifier may set the
+        // storage QoS the spool must honour — so the drain strictly follows
+        // the chain and the route lookup. A rejection returns here with
+        // nothing spooled, never awaiting the payload.
+        let (mut bundle, action, seen) = self.decide_at_originate_gate(bundle, head, bcbs)?;
+
+        // Drain the whole wire form into the store, bounded by
+        // `max_bundle_size` as the defensive backstop. The cap is clamped to
+        // the addressable bound at construction, so it always fits a `usize`.
+        let max_size = self.max_bundle_size_mem();
+        let outcome = self.store.save_stream(&mut stream, max_size).await;
+
+        // Settle the door's stream verdict against the save: a save the
+        // verdict rejects was staged before the verdict settled — the
+        // discard half of the streaming contract.
+        let (storage_name, data_len) = match settle(stream) {
+            Ok(()) => match outcome {
+                Ok(save) => save,
+                // The door's decorator saw a clean stream, so a drain
+                // failure is the transport's: the producer went away, or
+                // the drain's defensive bound tripped.
+                Err(ConcatError::Cancelled) => return Err(services::Error::StreamCancelled),
+                Err(ConcatError::TooLarge { size, max }) => {
+                    return Err(services::Error::PayloadTooLarge {
+                        size: size as u64,
+                        max: max as u64,
+                    });
+                }
+            },
+            Err(e) => {
+                if let Ok((storage_name, _)) = outcome {
+                    self.store.delete_data(&storage_name).await;
+                }
+                return Err(e);
+            }
+        };
+        bundle.metadata.storage_name = Some(storage_name);
+
+        // `insert_metadata` is the authoritative atomic duplicate check;
+        // the duplicate loses its staged data and `DuplicateBundle`
+        // surfaces to the door's caller.
+        if !self.store.insert_metadata(&bundle).await {
+            if let Some(storage_name) = &bundle.metadata.storage_name {
+                self.store.delete_data(storage_name).await;
+            }
             return Err(services::Error::DuplicateBundle);
         }
 
         metrics::counter!("bpa.bundle.originated").increment(1);
-        metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
+        metrics::counter!("bpa.bundle.originated.bytes").increment(data_len as u64);
 
         let bundle_id = bundle.id().clone();
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
-        self.dispatch_bundle(bundle).await;
+        metrics::gauge!("bpa.bundle.status", "state" => otel_metrics::status_label(&bundle.status))
+            .increment(1.0);
+
+        // Execute the routing decision of record directly.
+        self.execute_dispatch_action(bundle, action, seen, self.cla_registry())
+            .await;
         Ok(bundle_id)
+    }
+
+    // The gate decisions for an originated record: the Originate chain on
+    // the resident prefix (the headers and any held peek), then the route
+    // lookup — the decision of record, mirroring `decide_at_gate` at CLA
+    // ingress. Runs before the payload spools; an `Err` returns with nothing
+    // spooled or persisted, so a rejected bundle never awaits its payload
+    // past the peek.
+    fn decide_at_originate_gate(
+        &self,
+        bundle: bundle::Bundle,
+        head: Bytes,
+        bcbs: &HashMap<u64, hardy_bpv7::bpsec::bcb::OperationSet>,
+    ) -> Result<
+        (
+            bundle::Bundle,
+            Option<routing::DispatchAction>,
+            routing::RibSnapshot,
+        ),
+        services::Error,
+    > {
+        // The Originate chain runs synchronously on the record; a
+        // Classifier's metadata deltas survive into the persisted record. A
+        // filter reading a payload that is not all resident gets the reader's
+        // `NotResident`, and its held peek from `payload_peek`.
+        let bundle = if self.filters.has_originate() {
+            match self
+                .filters
+                .run_originate(bundle, head, bcbs, &*self.key_provider)
+            {
+                filter::ChainOutcome::Continue(bundle) => bundle,
+                filter::ChainOutcome::Drop(_, reason) => {
+                    let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+                    metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
+                    debug!("Originate filter chain dropped the bundle: {label:?}");
+                    return Err(services::Error::Dropped(reason));
+                }
+            }
+        } else {
+            bundle
+        };
+
+        // Route at the door — the decision of record for this origination.
+        // The snapshot rides with the decision: if it proves stale, the
+        // failure arms park and re-check it. An explicit Drop route rejects
+        // here — doomed traffic is never persisted — and the originator
+        // always gets an error: even a reasonless (silent) Drop surfaces as
+        // `Dropped(None)`, where the CLA gate drops silently.
+        let seen = self.rib.table_snapshot();
+        let action = self.rib.find(&bundle);
+        if let Some(routing::DispatchAction::Drop(reason)) = action {
+            let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+            metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
+            debug!("Route lookup drops the bundle at the originate door: {label:?}");
+            return Err(services::Error::Dropped(reason));
+        }
+
+        Ok((bundle, action, seen))
+    }
+}
+
+// Why a [`BuiltReceiver`]'s stream ended early: the caller's payload did
+// not honour the declared length. Recorded rather than smuggled through
+// `RecvError`, so the door maps it to the caller's error surface after the
+// spool settles.
+enum LengthViolation {
+    // The payload ran past the declaration; `size` is the count at the
+    // first excess byte.
+    Overrun { size: u64 },
+    // The payload completed short of the declaration.
+    Underrun { size: u64 },
+}
+
+impl LengthViolation {
+    // The caller's error for the violation of a `declared`-byte payload.
+    fn into_error(self, declared: u64) -> services::Error {
+        match self {
+            LengthViolation::Overrun { size } => services::Error::PayloadTooLarge {
+                size,
+                max: declared,
+            },
+            LengthViolation::Underrun { size } => services::Error::PayloadUnderrun {
+                size,
+                expected: declared,
+            },
+        }
+    }
+}
+
+// The build-side twin of the ingress door's validating decorator: presents
+// a [`Builder::build_stream`] output — the wire prefix, the caller's
+// payload stream, and the trailer continuation — as one
+// `Receiver<Segment>` carrying the whole wire form, ready to drive
+// `Dispatcher::spool`. The payload block's CRC is applied at the point of
+// origination: each payload run feeds the [`PayloadTrailer`] digest as it
+// flows, and the trailer's bytes (the CRC field, then the outer break) are
+// yielded as the stream's `Final` segment.
+//
+// The declared length is enforced as the bytes flow — the prefix framed the
+// payload byte string with it, so a violating stream must never reach the
+// store. A violation ends the stream (`RecvError`, surfacing downstream as
+// an incomplete drain) and is recorded for `into_violation`; a producer
+// that goes away early ends the stream without a violation, exactly as any
+// truncated transfer.
+struct BuiltReceiver<'a> {
+    inner: &'a mut dyn Receiver<Segment>,
+    // The resident wire prefix, yielded first; `None` once yielded.
+    prefix: Option<Bytes>,
+    // The emit-side continuation; `None` once its bytes are yielded.
+    trailer: Option<PayloadTrailer>,
+    declared: u64,
+    fed: u64,
+    // The inner stream's `Final` has been absorbed; nothing further is
+    // pulled.
+    inner_done: bool,
+    violation: Option<LengthViolation>,
+}
+
+impl<'a> BuiltReceiver<'a> {
+    fn new(
+        prefix: Bytes,
+        inner: &'a mut dyn Receiver<Segment>,
+        trailer: PayloadTrailer,
+        declared: u64,
+    ) -> Self {
+        Self {
+            inner,
+            prefix: Some(prefix),
+            trailer: Some(trailer),
+            declared,
+            fed: 0,
+            inner_done: false,
+            violation: None,
+        }
+    }
+
+    // The declared-length verdict, settled after the drain: `None` is a
+    // clean pass (or a plain truncation, which the transport surfaces
+    // itself).
+    fn into_violation(self) -> Option<LengthViolation> {
+        self.violation
+    }
+
+    // Holds the payload peek: pulls the caller's stream until the payload's
+    // first `peek` bytes (all of it, if shorter) have arrived, each absorbed
+    // as `recv` absorbs it, and joins them to the prefix, which is still
+    // yielded first. Returns the resident head the gate reads. A violation
+    // ends the hold with it, and a producer gone away with `None`.
+    async fn hold(&mut self, peek: usize) -> Result<Bytes, Option<LengthViolation>> {
+        let prefix = self.prefix.take().unwrap_or_default();
+        let target = (peek as u64).min(self.declared);
+        if self.fed >= target {
+            self.prefix = Some(prefix.clone());
+            return Ok(prefix);
+        }
+        let mut head = prefix.to_vec();
+        while self.fed < target && !self.inner_done {
+            let segment = self.inner.recv().await.map_err(|_| None)?;
+            head.extend_from_slice(&self.absorb(segment).map_err(Some)?);
+        }
+        let head = Bytes::from(head);
+        self.prefix = Some(head.clone());
+        Ok(head)
+    }
+
+    // Absorbs one segment of the caller's stream: the declared-length
+    // checks, then the trailer's digest. Returns the payload bytes.
+    fn absorb(&mut self, segment: Segment) -> Result<Bytes, LengthViolation> {
+        let (bytes, last) = match segment {
+            Segment::Next(bytes) => (bytes, false),
+            Segment::Final(bytes) => (bytes, true),
+        };
+        let fed = self.fed.saturating_add(bytes.len() as u64);
+        if fed > self.declared {
+            return Err(LengthViolation::Overrun { size: fed });
+        }
+        if last && fed < self.declared {
+            return Err(LengthViolation::Underrun { size: fed });
+        }
+        if let Some(trailer) = &mut self.trailer {
+            trailer.update(&bytes);
+        }
+        self.fed = fed;
+        if last {
+            self.inner_done = true;
+        }
+        Ok(bytes)
+    }
+}
+
+#[async_trait]
+impl Receiver<Segment> for BuiltReceiver<'_> {
+    async fn recv(&mut self) -> Result<Segment, RecvError> {
+        // A violation is terminal: never yield more bytes downstream.
+        if self.violation.is_some() {
+            return Err(RecvError);
+        }
+        // The wire prefix goes first. A zero-length payload never pulls the
+        // inner stream at all.
+        if let Some(prefix) = self.prefix.take() {
+            return Ok(Segment::Next(prefix));
+        }
+        // The payload is complete: the trailer terminates the wire form.
+        if self.fed == self.declared && (self.inner_done || self.declared == 0) {
+            let Some(trailer) = self.trailer.take() else {
+                return Err(RecvError);
+            };
+            return Ok(Segment::Final(Bytes::from(trailer.finish())));
+        }
+
+        let segment = self.inner.recv().await?;
+        match self.absorb(segment) {
+            // Inner `Final` is re-tagged: the trailer is the stream's real
+            // end.
+            Ok(bytes) => Ok(Segment::Next(bytes)),
+            Err(violation) => {
+                self.violation = Some(violation);
+                Err(RecvError)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpv7::builder::Builder;
+
+    use super::*;
+
+    const PAYLOAD: usize = 5000;
+    const CHUNK: usize = 700;
+
+    fn source() -> Eid {
+        "ipn:1.2".parse().unwrap()
+    }
+
+    fn destination() -> Eid {
+        "ipn:2.1".parse().unwrap()
+    }
+
+    // Feed `bytes` into a bounded channel as segments (last one `Final`),
+    // the payload producer a `BuiltReceiver` wraps.
+    async fn segment_stream(bytes: &[u8]) -> hardy_async::channel::Receiver<Segment> {
+        let chunks: Vec<&[u8]> = bytes.chunks(CHUNK).collect();
+        let (tx, rx) = hardy_async::channel::bounded(chunks.len().max(1));
+        let last = chunks.len().saturating_sub(1);
+        for (i, c) in chunks.iter().enumerate() {
+            let seg = if i == last {
+                Segment::Final(Bytes::copy_from_slice(c))
+            } else {
+                Segment::Next(Bytes::copy_from_slice(c))
+            };
+            tx.send(seg).await.expect("channel open");
+        }
+        rx
+    }
+
+    // Drain a receiver to completion, returning the concatenated bytes.
+    async fn drain(rx: &mut impl Receiver<Segment>) -> Result<Bytes, RecvError> {
+        let mut out = crate::BytesMut::new();
+        loop {
+            match rx.recv().await? {
+                Segment::Next(b) => out.extend_from_slice(&b),
+                Segment::Final(b) => {
+                    out.extend_from_slice(&b);
+                    return Ok(out.freeze());
+                }
+            }
+        }
+    }
+
+    // The receiver carries the whole wire form — prefix, payload, trailer —
+    // byte-identical to the resident build for the same timestamp: the CRC
+    // applied as the payload streamed is the CRC `build()` would have
+    // written.
+    #[tokio::test]
+    async fn built_receiver_carries_the_whole_wire_form() {
+        let payload = vec![0xC3_u8; PAYLOAD];
+        let timestamp = CreationTimestamp::now();
+        let (_, resident) = Builder::new(source(), destination())
+            .with_payload(payload.as_slice().into())
+            .build(timestamp.clone())
+            .expect("build");
+        let built = Builder::new(source(), destination())
+            .build_stream(payload.len() as u64, timestamp)
+            .expect("build_stream");
+
+        let mut inner = segment_stream(&payload).await;
+        let mut rx = BuiltReceiver::new(
+            Bytes::from(built.prefix),
+            &mut inner,
+            built.trailer,
+            payload.len() as u64,
+        );
+        let yielded = drain(&mut rx).await.expect("clean stream drains");
+        assert_eq!(yielded.as_ref(), resident.as_ref());
+        assert!(rx.into_violation().is_none());
+    }
+
+    // A held peek joins the prefix and is yielded with it: the gate reads
+    // the payload's first bytes, and the drain still carries the whole wire
+    // form, byte-identical to the resident build. Holding pulls only the
+    // segments the peek needs.
+    #[tokio::test]
+    async fn a_held_peek_leads_the_whole_wire_form() {
+        let payload: Vec<u8> = (0..PAYLOAD as u32).map(|i| i as u8).collect();
+        let timestamp = CreationTimestamp::now();
+        let (_, resident) = Builder::new(source(), destination())
+            .with_payload(payload.as_slice().into())
+            .build(timestamp.clone())
+            .expect("build");
+        for (peek, held) in [(0, 0), (1000, 2 * CHUNK), (2 * PAYLOAD, PAYLOAD)] {
+            let built = Builder::new(source(), destination())
+                .build_stream(payload.len() as u64, timestamp.clone())
+                .expect("build_stream");
+            let prefix_len = built.prefix.len();
+            let mut inner = segment_stream(&payload).await;
+            let mut rx = BuiltReceiver::new(
+                Bytes::from(built.prefix),
+                &mut inner,
+                built.trailer,
+                payload.len() as u64,
+            );
+            let head = rx.hold(peek).await.map_err(|_| ()).expect("a clean hold");
+            assert_eq!(
+                head.len(),
+                prefix_len + held,
+                "peek {peek} holds {held} bytes"
+            );
+            assert_eq!(head[prefix_len..], payload[..held]);
+            let yielded = drain(&mut rx).await.expect("clean stream drains");
+            assert_eq!(yielded.as_ref(), resident.as_ref(), "peek {peek}");
+            assert!(rx.into_violation().is_none());
+        }
+    }
+
+    // A violation inside the hold ends it with the violation; a producer
+    // gone away ends it with none.
+    #[tokio::test]
+    async fn a_hold_reports_a_violation_or_a_cancel() {
+        let payload = vec![0xC3_u8; PAYLOAD];
+        let build = || {
+            Builder::new(source(), destination())
+                .build_stream(100, CreationTimestamp::now())
+                .expect("build_stream")
+        };
+        let built = build();
+        let mut inner = segment_stream(&payload).await;
+        let mut rx = BuiltReceiver::new(Bytes::from(built.prefix), &mut inner, built.trailer, 100);
+        assert!(matches!(
+            rx.hold(50).await,
+            Err(Some(LengthViolation::Overrun { size })) if size > 100
+        ));
+
+        let built = build();
+        let (tx, mut inner) = hardy_async::channel::bounded::<Segment>(1);
+        drop(tx);
+        let mut rx = BuiltReceiver::new(Bytes::from(built.prefix), &mut inner, built.trailer, 100);
+        assert!(matches!(rx.hold(50).await, Err(None)));
+    }
+
+    // A zero-length payload never pulls the inner stream: the prefix and
+    // the trailer are the whole wire form.
+    #[tokio::test]
+    async fn built_receiver_zero_length_never_pulls_inner() {
+        let timestamp = CreationTimestamp::now();
+        let (_, resident) = Builder::new(source(), destination())
+            .with_payload(b"".as_slice().into())
+            .build(timestamp.clone())
+            .expect("build");
+        let built = Builder::new(source(), destination())
+            .build_stream(0, timestamp)
+            .expect("build_stream");
+
+        // An inner stream that errors if ever pulled.
+        let (tx, mut inner) = hardy_async::channel::bounded::<Segment>(1);
+        drop(tx);
+
+        let mut rx = BuiltReceiver::new(Bytes::from(built.prefix), &mut inner, built.trailer, 0);
+        let yielded = drain(&mut rx).await.expect("prefix + trailer drain");
+        assert_eq!(yielded.as_ref(), resident.as_ref());
+    }
+
+    // A producer running past the declaration is a recorded overrun: the
+    // stream ends before the excess reaches downstream.
+    #[tokio::test]
+    async fn built_receiver_records_an_overrun() {
+        let payload = vec![0xC3_u8; PAYLOAD];
+        let built = Builder::new(source(), destination())
+            .build_stream(100, CreationTimestamp::now())
+            .expect("build_stream");
+
+        let mut inner = segment_stream(&payload).await;
+        let mut rx = BuiltReceiver::new(Bytes::from(built.prefix), &mut inner, built.trailer, 100);
+        assert!(drain(&mut rx).await.is_err(), "the overrun ends the stream");
+        assert!(matches!(
+            rx.into_violation(),
+            Some(LengthViolation::Overrun { size }) if size > 100
+        ));
+    }
+
+    // A producer completing short of the declaration is a recorded
+    // underrun.
+    #[tokio::test]
+    async fn built_receiver_records_an_underrun() {
+        let payload = vec![0xC3_u8; 100];
+        let built = Builder::new(source(), destination())
+            .build_stream(PAYLOAD as u64, CreationTimestamp::now())
+            .expect("build_stream");
+
+        let mut inner = segment_stream(&payload).await;
+        let mut rx = BuiltReceiver::new(
+            Bytes::from(built.prefix),
+            &mut inner,
+            built.trailer,
+            PAYLOAD as u64,
+        );
+        assert!(
+            drain(&mut rx).await.is_err(),
+            "the underrun ends the stream"
+        );
+        assert!(matches!(
+            rx.into_violation(),
+            Some(LengthViolation::Underrun { size: 100 })
+        ));
+    }
+
+    // A producer that goes away mid-payload ends the stream with no
+    // violation: a plain truncation, the transport's to surface.
+    #[tokio::test]
+    async fn built_receiver_truncation_is_not_a_violation() {
+        let payload = vec![0xC3_u8; PAYLOAD];
+        let built = Builder::new(source(), destination())
+            .build_stream(payload.len() as u64, CreationTimestamp::now())
+            .expect("build_stream");
+
+        // One chunk, then the producer drops without `Final`.
+        let (tx, mut inner) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Next(Bytes::copy_from_slice(&payload[..CHUNK])))
+            .await
+            .expect("channel open");
+        drop(tx);
+
+        let mut rx = BuiltReceiver::new(
+            Bytes::from(built.prefix),
+            &mut inner,
+            built.trailer,
+            payload.len() as u64,
+        );
+        assert!(
+            drain(&mut rx).await.is_err(),
+            "the truncation ends the stream"
+        );
+        assert!(rx.into_violation().is_none());
     }
 }
