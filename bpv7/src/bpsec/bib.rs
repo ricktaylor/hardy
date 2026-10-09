@@ -36,6 +36,59 @@ pub struct OperationArgs<'a> {
     pub blocks: &'a dyn Reader<'a>,
 }
 
+/// Incremental verifier for one BIB operation. Context-dispatching wrapper
+/// over the per-context verifiers; the single verification engine — the
+/// all-in-one [`Operation::verify`] is a thin resident-target wrapper over
+/// it, and the streaming ingress drain feeds it a non-resident payload
+/// target segment by segment.
+///
+/// Owns everything it needs, so it is `Send` and may cross `await` points
+/// and task boundaries. That includes keyed state: the HMAC-SHA2 verifier
+/// holds the MAC state derived from the key (see the per-context verifier
+/// docs for what is copied and what is zeroized).
+///
+/// Contract for future security contexts: a verifier carries the *minimum
+/// derived state* across the drain — a running digest, never a raw key
+/// larger than the digest state. Resolve key material from the
+/// [`KeySource`](super::key::KeySource) inside `begin_verify`'s sync scope;
+/// a context that instead needs the key at settle (a hash-then-verify
+/// signature scheme, say) should extend [`finish`](Self::finish) to take a
+/// `KeySource` — the settle site is sync and can re-resolve — rather than
+/// store the key in the verifier.
+#[allow(clippy::upper_case_acronyms)]
+#[allow(non_camel_case_types)]
+#[must_use = "an unfinished verifier is an unchecked integrity statement — call finish()"]
+pub enum Verifier {
+    /// HMAC-SHA2 incremental verification (RFC 9173).
+    #[cfg(feature = "rfc9173")]
+    HMAC_SHA2(rfc9173::bib_hmac_sha2::Verifier),
+}
+
+impl Verifier {
+    /// Absorb the next run of the target's block-type-specific data.
+    #[cfg_attr(not(feature = "rfc9173"), allow(unused_variables))]
+    pub fn update(&mut self, bytes: &[u8]) {
+        // Match on the place (`*self`), not the reference: with no security
+        // context compiled in the enum is empty, and an empty enum's place
+        // needs no arms, where a reference to it still needs one.
+        match *self {
+            #[cfg(feature = "rfc9173")]
+            Self::HMAC_SHA2(ref mut v) => v.update(bytes),
+        }
+    }
+
+    /// Settle the operation once every byte has been absorbed. Fails with
+    /// [`Error::IntegrityCheckFailed`] on tag mismatch.
+    pub fn finish(self) -> Result<(), Error> {
+        // By-value match: with no security context compiled in the enum is
+        // empty, so the match is exhaustive with no arms.
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::HMAC_SHA2(v) => v.finish(),
+        }
+    }
+}
+
 impl Operation {
     /// Returns `true` if this operation uses an unrecognised security context.
     pub fn is_unsupported(&self) -> bool {
@@ -72,16 +125,30 @@ impl Operation {
         }
     }
 
-    /// Verifies the integrity of the target block using the provided key source.
-    #[allow(unused_variables)]
-    pub fn verify<K>(&self, key_source: &K, args: OperationArgs) -> Result<(), Error>
+    /// Begin incremental verification of this operation: the returned
+    /// [`Verifier`] absorbs the target's data streamed through
+    /// [`Verifier::update`] (the ingress drain); a resident target takes the
+    /// all-in-one [`verify`](Self::verify) instead. Applies the RFC 9172
+    /// Section 3.8 CRC-presence rule; [`Error::NoKey`] is the caller's
+    /// policy skip.
+    ///
+    /// Crate-internal: its one caller,
+    /// [`begin_payload_verification`](crate::checks::begin_payload_verification),
+    /// targets the payload. The streamed IPPT frames the target's raw data,
+    /// which is wrong for a primary-block target's canonical form.
+    #[cfg_attr(not(feature = "rfc9173"), allow(unused_variables))]
+    pub(crate) fn begin_verify<K>(
+        &self,
+        key_source: &K,
+        args: &OperationArgs,
+    ) -> Result<Verifier, Error>
     where
         K: key::KeySource + ?Sized,
     {
-        // RFC 9172 Section 3.8: CRC must be removed for targets "other than the bundle's
-        // primary block". The primary block (block 0) is exempt from this requirement.
+        // RFC 9172 Section 3.8: CRC must be removed for targets "other than
+        // the bundle's primary block". The primary block (block 0) is exempt.
         if args.target != 0
-            && let Some((target_block, _)) = args.blocks.block(args.target)
+            && let Some(target_block) = args.blocks.block_header(args.target)
             && !matches!(target_block.crc_type, crc::CrcType::None)
         {
             return Err(Error::CrcPresent);
@@ -89,7 +156,33 @@ impl Operation {
 
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify(key_source, args),
+            Self::HMAC_SHA2(o) => o.begin_verify(key_source, args).map(Verifier::HMAC_SHA2),
+            Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
+        }
+    }
+
+    /// Verifies the integrity of a fully-resident target block. The
+    /// all-in-one counterpart to the crate's streaming `begin_verify`;
+    /// both share the per-context IPPT/MAC primitives. Applies the RFC 9172
+    /// Section 3.8 CRC-presence rule; [`Error::NoKey`] is the caller's
+    /// policy skip.
+    #[cfg_attr(not(feature = "rfc9173"), allow(unused_variables))]
+    pub fn verify<K>(&self, key_source: &K, args: OperationArgs) -> Result<(), Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        // RFC 9172 Section 3.8: CRC must be removed for targets "other than
+        // the bundle's primary block". The primary block (block 0) is exempt.
+        if args.target != 0
+            && let Some(target_block) = args.blocks.block_header(args.target)
+            && !matches!(target_block.crc_type, crc::CrcType::None)
+        {
+            return Err(Error::CrcPresent);
+        }
+
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::HMAC_SHA2(o) => o.verify(key_source, &args),
             Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
         }
     }

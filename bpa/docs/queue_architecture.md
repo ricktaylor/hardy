@@ -10,8 +10,8 @@ The BPA pipeline can be understood as a set of stateless processing blocks conne
 graph LR
     CLA([CLA]) --> Ingest[Ingest]
     Service([Service]) --> Originate[Originate]
-    Ingest -->|MPSC| Dispatch[Dispatch]
-    Originate -->|MPSC| Dispatch
+    Ingest -->|inline| Dispatch[Dispatch]
+    Originate -->|inline| Dispatch
     Dispatch -->|MPSC per peer| EgressCtl[EgressController]
     EgressCtl -->|MPSC per peer| ClaSend[ClaSend]
     Dispatch --> Deliver[Deliver]
@@ -25,11 +25,11 @@ graph LR
     Reassemble -->|complete| Ingest
 ```
 
-**Legend:** Solid lines = active queues (continuous consumers). Dashed lines = gated queues (event-triggered sweep). Circles = gated holding states.
+**Legend:** Solid lines = active queues (continuous consumers). Dashed lines = gated queues (event-triggered sweep). Circles = gated holding states. An `inline` edge is a direct hand-off on the producer's task, with no queue between the blocks.
 
 ### Processing blocks
 
-- **Ingest** — drive `Sink::write(&dyn Receiver<Segment>)` from the CLA, stream bytes through the parser, the pre-drain gate, and the Ingress filter chain (a single pass — there is no late ingress pass, see [filter_subsystem_design.md](filter_subsystem_design.md)), spool to `BundleStorage::store()`, checkpoint metadata. (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
+- **Ingest** — drive `Sink::write(&dyn Receiver<Segment>)` from the CLA, stream bytes through the parser, the pre-drain gate, and the Ingress filter chain (a single pass — there is no late ingress pass, see [filter_subsystem_design.md](filter_subsystem_design.md)), run the route lookup (the routing decision of record), spool through `Store::save_stream()`, write the metadata record once, and execute the routing decision directly. (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
 - **Originate** — receive from local service, run originate filters, checkpoint to storage
 - **Dispatch** — RIB lookup, fan-out to deliver/admin/reassemble/wait queues. For forwarding, enqueues to a per-peer queue
 - **EgressController** — consumer of per-peer queue. Classifies bundles, rate-limits and reorders by traffic class (HTB scheduling), enqueues to a per-peer CLA queue
@@ -42,7 +42,7 @@ graph LR
 
 **Active queues** have continuous consumers with storage-backed hybrid channels (fast in-memory path with storage-backed slow path for backpressure):
 
-- **Dispatch** (`Dispatching`) — MPSC. Multiple producers (CLA reception, local origination, status reports, reassembly, gated queue sweeps). Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
+- **Dispatch** (`Dispatching`) — MPSC. Multiple producers (status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes, restart); fresh CLA arrivals, reassembled bundles, and local originations execute their gate routing decision directly and never transit it. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
 - **Egress** (`ForwardPending { peer, queue }`) — MPSC per peer per policy queue. Any dispatch worker can produce. Single poller per queue feeds the CLA
 
 **Gated queues** are structurally the same as active queues — ordered, storage-backed — but their consumer blocks on a side-channel signal. The consumer only polls when the signal indicates conditions have changed and draining may be productive:
@@ -53,7 +53,7 @@ graph LR
 **Other states** that are not queues in the current implementation:
 
 - **AduFragment** (`AduFragment { source, timestamp }`) — fragment accumulator. No consumer; completion detected when a new fragment completes the set
-- **New** (`New`) — crash recovery checkpoint between "data stored" and "ingress complete." Not a queue — a transient recovery waypoint
+- **New** (`New`) — the default status of a record under construction, never persisted: ingress and origination write a single `Dispatching` record once the Ingress or Originate chain has run, so a crash before that write leaves bundle data with no metadata, which restart recovers as an orphan
 
 ### Peer loss
 
@@ -149,7 +149,7 @@ In a distributed architecture, the reaper becomes a storage-level maintenance jo
 
 ### Eliminating `New` status
 
-With the redesigned trait, `New` is implicit. A bundle stored via `MetadataStorage::store` but not yet enqueued via `enqueue` is simply unqueued. Crash recovery finds all unqueued bundles and re-runs ingestion.
+The single-write ingress model already makes `New` implicit: ingress writes the metadata record once, at `Dispatching`, after its chain has run, so a crash before that write leaves bundle data with no metadata, which crash recovery re-ingests as an orphan. The redesigned trait keeps that shape — a bundle stored via `MetadataStorage::store` but not yet enqueued via `enqueue` is simply unqueued, and crash recovery finds all unqueued bundles and re-runs ingestion.
 
 ### Resulting queue schema
 

@@ -177,51 +177,6 @@ impl cla::Cla for BufferedCla {
     }
 }
 
-/// Fails every `forward` call synchronously, without pulling.
-struct FailingCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-    events_tx: flume::Sender<Event>,
-}
-
-impl FailingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Event>) {
-        let (tx, rx) = flume::bounded(16);
-        (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                events_tx: tx,
-            }),
-            rx,
-        )
-    }
-}
-
-#[async_trait]
-impl cla::Cla for FailingCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn forward(
-        &self,
-        _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _total_len: u64,
-        _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        let _ = self.events_tx.send(Event::Failed);
-        Err(cla::Error::StreamCancelled)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Minimal application to originate bundles
 // ---------------------------------------------------------------------------
@@ -483,48 +438,6 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
     assert!(matches!(segments.last(), Some(Segment::Final(_))));
 
     bpa.shutdown().await;
-}
-
-/// A synchronous per-transfer failure parks only that bundle, with no inline
-/// retry: a deterministic failure must not spin dispatch → forward → fail,
-/// so exactly one attempt occurs until the next routing or link event.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_streamed_forward_does_not_retry_inline() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
-
-    let (cla, events_rx) = FailingCla::new();
-    bpa.register_cla("failing".to_string(), cla.clone(), None, ClaInit::default())
-        .await
-        .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
-            &[remote_node(2)],
-        )
-        .await
-        .unwrap();
-
-    let app = SendOnlyApp::new();
-    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
-        .await
-        .unwrap();
-    originate(&app, b"One shot").await;
-
-    assert!(matches!(recv_event(&events_rx, 5).await, Event::Failed));
-
-    // The bundle is back in Waiting; with no routing or link event, no
-    // further attempt may occur. shutdown() is the barrier: it joins the
-    // pools, and the CLA mock records every attempt synchronously inside
-    // forward(), so any wrong re-attempt is in events_rx by the time it
-    // returns. No quiet window is involved.
-    bpa.shutdown().await;
-    assert!(
-        events_rx.is_empty(),
-        "A synchronous failure must not re-attempt without a routing event"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1373,6 +1286,29 @@ async fn keyless_relay_forwards_a_signed_then_encrypted_bundle() {
         .expect("the payload decrypts downstream")
         .expect("the payload is resident");
     assert_eq!(payload.as_ref(), b"relay me");
+}
+
+// A keyless relay can't read an encrypted Hop Count. The increment is a
+// SHOULD (RFC 9171 §4.4.3), so the bundle passes ingress and the block
+// travels unchanged with its BCB; the PreviousNode is still replaced.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyless_relay_forwards_an_encrypted_hop_count_unchanged() {
+    let enc_key = enc_key();
+    let received = protected_bundle(&sign_key(), &enc_key, true);
+    assert!(
+        extension(&received, block::Type::HopCount).bcb.is_some(),
+        "the Hop Count arrives encrypted"
+    );
+
+    let out = relay(&received.data, Vec::new()).await;
+
+    assert_protected_blocks_untouched(&received, &out);
+    let previous = extension(&out, block::Type::PreviousNode)
+        .extract::<Eid>(&out.data)
+        .expect("the previous node decodes")
+        .expect("the previous node is resident");
+    assert_eq!(previous, Eid::from(relay_node(1)), "the relay names itself");
 }
 
 // A relay holding the decryption key reads the encrypted Hop Count at

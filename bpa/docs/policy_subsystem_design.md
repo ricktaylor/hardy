@@ -111,7 +111,7 @@ When a bundle reaches a peer for forwarding, the policy's `classify()` method ma
 
 Peer selection during routing does not read a flow label; see [Routing Design](routing_subsystem_design.md) for details.
 
-When multiple peers can reach a destination, the RIB uses a hash of bundle source and destination (the flow label rejoins the hash when classification derives it) for deterministic peer selection. This ensures bundles of the same flow always route to the same peer, preventing out-of-order delivery.
+When multiple peers can reach a destination, the RIB hashes the conversation — bundle source and destination only — for deterministic peer selection; routing-key and flow-label inputs never enter member selection (the flow label's seat is the egress policy). This ensures bundles of the same flow always route to the same peer, preventing out-of-order delivery.
 
 ## Queue Management
 
@@ -392,7 +392,7 @@ See [Routing Design: Route Change Handling](routing_subsystem_design.md#route-ch
 1. INGRESS / ORIGINATE CLASSIFICATION (optional)
    Registered Classifiers annotate metadata via MetadataDelta
 
-2. ROUTING (process_bundle)
+2. ROUTING (the input gates for a fresh bundle; process_bundle on re-dispatch)
    RIB::find() hashes source + destination for ECMP peer selection
    Returns FindResult::Forward(peer_id)
 

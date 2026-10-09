@@ -33,25 +33,30 @@
 //! serves a whole input pass and the Verifiers that close the Deliver
 //! chain, and each Rewriter gets its own, since an edit replaces the bytes.
 //! [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
-//! CBOR-decodes a block body.
+//! CBOR-decodes a block body. A Verifier's and a Classifier's context also
+//! lends the payload's resident prefix, the declared peek among it, through
+//! [`VerifyContext::payload_peek`].
 //!
 //! # Failure and Drop contract
 //!
 //! A [`Verdict::Drop`] is policy, never a failure. Only Verifiers and
 //! Classifiers return one, so nothing at Egress drops a bundle. Its
-//! disposition per hook, and the pipeline's recovery when an input chain
-//! *fails* (the engine could not run its decode pass over the bytes —
-//! never a filter's verdict):
+//! disposition per hook, and what a chain *failure* means there (the engine
+//! could not decode the bytes; never a filter's verdict):
 //!
 //! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
 //! |---|---|---|---|
-//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | `services::Error::Internal` to the caller; nothing was stored |
-//! | Ingress | dropped with a deletion report per the bundle's request flags | deleted silently, even when the flags request reporting | resolved as `BlockUnintelligible` — the stored bytes failed the chain's own decode pass |
+//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | none — like Ingress, the chain runs on the door's own header decode |
+//! | Ingress | dropped before anything is stored, with one reception + deletion report per the bundle's request flags | the same, without the deletion assertion even when the flags request one (a requested reception report is still sent) | none — the chain decodes nothing itself: it runs on the gate's header decode, whose failures are the header pass's |
 //! | Deliver | dropped with a flag-gated deletion report | deleted silently | fatal (below) |
 //!
-//! `bpa.filter.filtered` counts every Drop, `bpa.filter.modified` every
-//! applied rewrite, and `bpa.filter.error` every input chain failure, all
-//! by hook.
+//! At Egress the chain runs on the per-hop rewrite's output, and that
+//! rewrite decodes the stored bytes first (an undecodable stored bundle
+//! parks `Waiting` there, before the chain runs), so an Egress chain
+//! failure means the BPA's own rebuild produced bytes that do not decode.
+//!
+//! `bpa.filter.filtered` counts every Drop and `bpa.filter.modified` every
+//! applied rewrite, both by hook.
 //!
 //! The output chains have no failure path. Their bytes were validated at
 //! ingress and are read back from storage, so an Egress or Deliver chain
@@ -61,9 +66,12 @@
 //! work has not. Either leaves every subsequent processing step undefined,
 //! so the engine panics (naming the failing link's pack-prefixed label, for
 //! a Rewriter), and the panic aborts the process — the fail-fast rule,
-//! applied by analogy with a storage fault. The [`ExtensionEditor`] refuses
-//! at call time the edits it knows a receiver would reject, so a Rewriter
-//! that treats refusals as its no-match path meets those as refusals.
+//! applied by analogy with a storage fault. The bundle stays stored and
+//! restart recovery re-queues it, so a deterministic failure recurs on every
+//! restart: the node crash-loops until the bundle is removed, the accepted
+//! cost of failing fast. The [`ExtensionEditor`] refuses at call time the
+//! edits it knows a receiver would reject, so a Rewriter that treats refusals
+//! as its no-match path meets those as refusals.
 
 use core::fmt::{self, Debug, Formatter};
 
@@ -115,6 +123,7 @@ pub struct VerifyContext<'a> {
     bundle: &'a Bundle,
     reader: &'a dyn Reader<'a>,
     metadata: &'a BundleMetadata,
+    peek: Option<&'a [u8]>,
 }
 
 impl<'a> VerifyContext<'a> {
@@ -122,11 +131,13 @@ impl<'a> VerifyContext<'a> {
         bundle: &'a Bundle,
         reader: &'a dyn Reader<'a>,
         metadata: &'a BundleMetadata,
+        peek: Option<&'a [u8]>,
     ) -> Self {
         Self {
             bundle,
             reader,
             metadata,
+            peek,
         }
     }
 
@@ -144,6 +155,31 @@ impl<'a> VerifyContext<'a> {
     #[must_use]
     pub fn reader(&self) -> &'a dyn Reader<'a> {
         self.reader
+    }
+
+    /// The payload's resident prefix: every byte of the payload block's data
+    /// that has arrived, whether or not the payload is all resident. Where
+    /// the payload is resident, it is all of it.
+    ///
+    /// At the input hooks the door holds at least the first min(P, payload
+    /// length) bytes before the chain runs, P being the largest payload peek
+    /// declared at that hook (see [`FilterPack`](pack::FilterPack)); an empty
+    /// slice means no payload byte has arrived, or the payload is empty, which
+    /// a filter that declared a peek can tell apart. There the bytes may
+    /// precede the payload's CRC and BIB checks, as may block 1 read through
+    /// [`reader`](Self::reader); both settle before the bundle commits or its
+    /// route executes. Treat the peek as unauthenticated input: classify or
+    /// drop on it, but do not let it drive durable or attributable effects,
+    /// which a forged prefix on a genuinely signed bundle would drive under
+    /// its source's name.
+    ///
+    /// `None` for a payload a BCB covers, as no filter reads an encrypted
+    /// payload, and for a fragment past the payload's start, whose bytes are
+    /// not the payload's prefix: the reassembled bundle is peeked when it
+    /// re-crosses the Ingress gate.
+    #[must_use]
+    pub fn payload_peek(&self) -> Option<&'a [u8]> {
+        self.peek
     }
 
     /// The BPA-local record state: provenance, the extension-field cache,
@@ -178,6 +214,7 @@ pub struct ClassifyContext<'a> {
     bundle: &'a Bundle,
     reader: &'a dyn Reader<'a>,
     metadata: &'a BundleMetadata,
+    peek: Option<&'a [u8]>,
 }
 
 impl<'a> ClassifyContext<'a> {
@@ -185,11 +222,13 @@ impl<'a> ClassifyContext<'a> {
         bundle: &'a Bundle,
         reader: &'a dyn Reader<'a>,
         metadata: &'a BundleMetadata,
+        peek: Option<&'a [u8]>,
     ) -> Self {
         Self {
             bundle,
             reader,
             metadata,
+            peek,
         }
     }
 
@@ -207,6 +246,13 @@ impl<'a> ClassifyContext<'a> {
     #[must_use]
     pub fn reader(&self) -> &'a dyn Reader<'a> {
         self.reader
+    }
+
+    /// The payload's resident prefix, as
+    /// [`VerifyContext::payload_peek`] lends it.
+    #[must_use]
+    pub fn payload_peek(&self) -> Option<&'a [u8]> {
+        self.peek
     }
 
     /// The BPA-local record state, including the deltas the preceding
@@ -376,9 +422,10 @@ pub trait Classifier: Send + Sync {
 /// At Egress the Rewriters run before the BPA's per-hop writes (RFC 9171
 /// §5.4), which supersede their edits to the blocks those writes cover: the
 /// Previous Node always; the Hop Count when the bundle arrived with one this
-/// node could read and can update; and the Bundle Age when the bundle
-/// arrived with one or has no creation clock. A per-hop block a Rewriter
-/// adds where the BPA writes none travels as the Rewriter wrote it.
+/// node could read and can update; and the Bundle Age when the bundle arrived
+/// with one or has no creation clock. A per-hop block a
+/// Rewriter adds or edits where the BPA writes none travels as the Rewriter
+/// left it.
 ///
 /// A Rewriter has no verdict: it edits the bundle or leaves it as it is,
 /// and never drops it. An [`ExtensionEditor`] refusal is the Rewriter's
