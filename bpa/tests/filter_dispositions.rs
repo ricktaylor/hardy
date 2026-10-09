@@ -10,9 +10,12 @@
 //! choice, so an abort there would hand any peer a node-kill.
 
 use core::num::{NonZeroU8, NonZeroU64};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use hardy_bpa::{
@@ -20,14 +23,17 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     builder::BpaBuilder,
     cla,
-    filter::{RewriteContext, Rewriter, Verdict, Verifier, VerifyContext, pack::FilterPack},
+    filter::{
+        Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, Verifier, VerifyContext,
+        pack::FilterPack, slots::MetadataDelta,
+    },
     node_ids::NodeIds,
     services,
     storage::{
         BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
         Result as StorageResult,
     },
-    stream::{Receiver, Segment, Sender, buffer_stream},
+    stream::{Receiver, RecvError, Segment, Sender, buffer_stream},
 };
 // Aliased: the editor's error, beside the bpv7 `Error` imported here.
 use hardy_bpv7::{
@@ -41,6 +47,7 @@ use hardy_bpv7::{
     extension_editor::Error as EditorError,
     hop_info::HopInfo,
     parse::parse,
+    reader::Availability,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
 use hardy_cbor::encode::emit;
@@ -141,10 +148,6 @@ impl BundleStorage for ObservedStorage {
     async fn save(&self, data: Bytes) -> StorageResult<Arc<str>> {
         self.saves.fetch_add(1, Ordering::SeqCst);
         self.inner.save(data).await
-    }
-
-    async fn replace(&self, storage_name: &str, data: Bytes) -> StorageResult<()> {
-        self.inner.replace(storage_name, data).await
     }
 
     async fn delete(&self, storage_name: &str) -> StorageResult<()> {
@@ -571,6 +574,413 @@ async fn per_hop_writes_supersede_an_egress_rewriter() {
         .expect("the bundle age decodes")
         .expect("the bundle age is resident");
     assert!(age >= 1000, "this hop's age, at least the received {age}");
+
+    bpa.shutdown().await;
+}
+
+// What an Ingress Verifier finds of the payload: available or not.
+struct PayloadWitness {
+    available_tx: flume::Sender<bool>,
+}
+
+impl Verifier for PayloadWitness {
+    fn verify(&self, ctx: &VerifyContext<'_>) -> Verdict {
+        let available = matches!(ctx.reader().block(1), Some((_, Availability::Available(_))));
+        let _ = self.available_tx.send(available);
+        Verdict::Continue(())
+    }
+}
+
+// A fixed sequence of segments, ending in a `Final`.
+struct Segments(VecDeque<Segment>);
+
+#[async_trait]
+impl Receiver<Segment> for Segments {
+    async fn recv(&mut self) -> Result<Segment, RecvError> {
+        self.0.pop_front().ok_or(RecvError)
+    }
+}
+
+/// The Ingress chain reads the payload whenever its body is resident at the
+/// header pass, its CRC checked or not: a bundle that arrived whole shows it,
+/// as does one whose CRC is still to come, while one whose body is cut short
+/// reads as not resident.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ingress_reads_the_payload_whenever_resident() {
+    let (available_tx, available_rx) = flume::unbounded();
+    let mut pack = FilterPack::new("test");
+    pack.ingress_verifier("witness", PayloadWitness { available_tx });
+    let (bpa, cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+    let build = || {
+        let (_, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
+            .with_payload(b"payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        Bytes::from(data)
+    };
+
+    let mut whole = build();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&node(2)), None, &mut whole)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    assert!(
+        next(&available_rx).await,
+        "a bundle that arrived whole shows its payload"
+    );
+
+    // The bundle ends in the CRC-32 trailer and outer break
+    // (`44 c0 c1 c2 c3 FF`) after the 7-byte body: a `Next` cut 6 bytes from
+    // the end holds the whole body, one cut 9 bytes from the end only part.
+    for (short_by, resident) in [(6, true), (9, false)] {
+        let split = build();
+        let cut = split.len() - short_by;
+        let mut segments = Segments(VecDeque::from([
+            Segment::Next(split.slice(..cut)),
+            Segment::Final(split.slice(cut..)),
+        ]));
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(Some(&node(2)), None, &mut segments)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
+        assert_eq!(
+            next(&available_rx).await,
+            resident,
+            "the payload is visible exactly when its body is resident (cut {short_by} from the end)"
+        );
+    }
+
+    bpa.shutdown().await;
+}
+
+// What an Ingress Classifier finds of the payload through its peek.
+struct PeekWitness {
+    peek_tx: flume::Sender<Option<Vec<u8>>>,
+}
+
+impl Classifier for PeekWitness {
+    fn classify(&self, ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+        let _ = self.peek_tx.send(ctx.payload_peek().map(<[u8]>::to_vec));
+        Verdict::Continue(MetadataDelta::default())
+    }
+}
+
+// Hands `stream`, carrying `data`, to the BPA as an arrival from ipn:0.2.
+// Returns what the witness found, once the bundle is forwarded with its
+// payload as sent: the peek never stands in for a bundle that went no
+// further.
+async fn arrive_peeked(
+    cla: &CapturingCla,
+    peek_rx: &flume::Receiver<Option<Vec<u8>>>,
+    forwarded_rx: &flume::Receiver<Bytes>,
+    data: &Bytes,
+    stream: &mut dyn Receiver<Segment>,
+) -> Option<Vec<u8>> {
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&node(2)), None, stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    let found = next(peek_rx).await;
+    let sent = parse(data.clone()).unwrap();
+    let out = parse(next(forwarded_rx).await).unwrap();
+    assert_eq!(
+        out.bundle.blocks[&1].payload(&out.data),
+        sent.bundle.blocks[&1].payload(&sent.data),
+        "the bundle is forwarded with its payload as sent"
+    );
+    found
+}
+
+// The payload peek these tests declare, and `peek_through`'s segment size.
+// One segment covers the peek, so the hold rests with exactly `SEGMENT`
+// payload bytes resident.
+const PEEK: usize = 16;
+const SEGMENT: usize = 100;
+
+// `arrive_peeked` with `data` in a first segment ending where the payload's
+// data starts, then `SEGMENT`-byte segments, the last a `Final`.
+async fn peek_through(
+    cla: &CapturingCla,
+    peek_rx: &flume::Receiver<Option<Vec<u8>>>,
+    forwarded_rx: &flume::Receiver<Bytes>,
+    data: &Bytes,
+) -> Option<Vec<u8>> {
+    let start = parse(data.clone()).unwrap().bundle.blocks[&1]
+        .payload_range()
+        .start as usize;
+    let mut segments = VecDeque::from([Segment::Next(data.slice(..start))]);
+    let mut at = start;
+    while at < data.len() {
+        let end = (at + SEGMENT).min(data.len());
+        segments.push_back(if end == data.len() {
+            Segment::Final(data.slice(at..end))
+        } else {
+            Segment::Next(data.slice(at..end))
+        });
+        at = end;
+    }
+    arrive_peeked(cla, peek_rx, forwarded_rx, data, &mut Segments(segments)).await
+}
+
+/// An Ingress Classifier reads the payload's first bytes through its declared
+/// peek: the gate holds them though the payload is still arriving. With no
+/// peek declared, the gate holds none of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ingress_classifier_reads_its_declared_peek() {
+    let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
+    let (_, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
+        .with_payload(payload.as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let data = Bytes::from(data);
+
+    for peek in [PEEK, 0] {
+        let (peek_tx, peek_rx) = flume::unbounded();
+        let mut pack = FilterPack::new("test");
+        pack.ingress_classifier_with_peek("peek", PeekWitness { peek_tx }, peek);
+        let (bpa, cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+
+        let found = peek_through(&cla, &peek_rx, &forwarded_rx, &data)
+            .await
+            .expect("an unencrypted payload has a peek");
+        let held = if peek == 0 { 0 } else { SEGMENT };
+        assert_eq!(
+            found.as_slice(),
+            &payload[..held],
+            "the peek is the payload's first {held} bytes"
+        );
+        if peek != 0 {
+            // A bundle that arrives whole lends its payload exactly: the
+            // peek stops at the body's end, before the CRC trailer. A fresh
+            // bundle, as the node would settle a resend as a duplicate.
+            let (_, whole) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
+                .with_payload(payload.as_slice().into())
+                .build(CreationTimestamp::now())
+                .unwrap();
+            let whole = Bytes::from(whole);
+            let found =
+                arrive_peeked(&cla, &peek_rx, &forwarded_rx, &whole, &mut whole.clone()).await;
+            assert_eq!(
+                found.as_deref(),
+                Some(&payload[..]),
+                "the whole payload, exactly"
+            );
+        }
+
+        bpa.shutdown().await;
+    }
+}
+
+/// Each input hook holds its own peek: an Originate registration's peek
+/// leaves the Ingress gate holding nothing past the payload block's header.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_originate_peek_holds_nothing_at_ingress() {
+    let (_, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
+        .with_payload(vec![0xA5_u8; 1000].as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let (available_tx, _available_rx) = flume::unbounded();
+    let (peek_tx, peek_rx) = flume::unbounded();
+    let mut pack = FilterPack::new("test");
+    pack.originate_verifier_with_peek("big", PayloadWitness { available_tx }, 1 << 20)
+        .ingress_classifier("peek", PeekWitness { peek_tx });
+    let (bpa, cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+
+    assert_eq!(
+        peek_through(&cla, &peek_rx, &forwarded_rx, &Bytes::from(data)).await,
+        Some(Vec::new()),
+        "the Ingress gate holds no payload for an Originate peek"
+    );
+
+    bpa.shutdown().await;
+}
+
+/// A fragment past the payload's start has no peek, as its bytes are not the
+/// payload's prefix; the first fragment's peek is the payload's first bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_first_fragment_has_a_peek() {
+    use hardy_bpv7::{
+        bundle::FragmentInfo,
+        editor::{Chunk, Editor},
+    };
+
+    let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
+    let (built, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
+        .with_payload(payload.as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    for (offset, has_peek) in [(0, true), (2000, false)] {
+        let chunks = Editor::new(&built, &data)
+            .with_fragment_info(Some(FragmentInfo {
+                offset,
+                total_adu_length: 4000,
+            }))
+            .map_err(|(_, e)| e)
+            .expect("set the fragment info")
+            .rebuild()
+            .expect("rebuild the fragment");
+        let fragment = Bytes::from(Chunk::flatten(chunks, &data).into_vec());
+
+        let (peek_tx, peek_rx) = flume::unbounded();
+        let mut pack = FilterPack::new("test");
+        pack.ingress_classifier_with_peek("peek", PeekWitness { peek_tx }, PEEK);
+        let (bpa, cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+
+        let found = peek_through(&cla, &peek_rx, &forwarded_rx, &fragment).await;
+        assert_eq!(
+            found.as_deref(),
+            has_peek.then(|| &payload[..SEGMENT]),
+            "offset {offset}: only the first fragment's peek is the payload's prefix"
+        );
+
+        bpa.shutdown().await;
+    }
+}
+
+/// A payload BIB the header pass defers is fed the held peek: the bytes the
+/// peek holds are body bytes the verifier has not yet seen, and the bundle
+/// forwards only if it verifies over them and the streamed rest.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_peek_reaches_the_deferred_payload_bib() {
+    use hardy_bpa::keys::KeyProvider;
+    use hardy_bpv7::{
+        Bundle,
+        bpsec::{
+            // Aliased: the block `Type` is this file's.
+            key::{Key, KeyAlgorithm, KeySet, KeySource, Operation, Type as KeyType},
+            signer::{Context, Signer},
+        },
+    };
+    use rand::{TryRng, rngs::SysRng};
+
+    struct FixedKeys(Vec<Key>);
+
+    impl KeyProvider for FixedKeys {
+        fn key_source(&self, _bundle: &Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+            Box::new(KeySet::new(self.0.clone()))
+        }
+    }
+
+    // Generated per the no-literal-keys rule, and bound once for the
+    // signer and the node.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: Some(KeyAlgorithm::HS256),
+        enc_algorithm: None,
+        operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
+        id: None,
+        key_use: None,
+    };
+    let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
+    let (built, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
+        .with_payload(payload.as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let signed = Bytes::from(
+        Signer::new(&built, &data)
+            .sign_block(
+                1,
+                Context::HMAC_SHA2(Default::default()),
+                SOURCE.parse().unwrap(),
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the payload")
+            .rebuild()
+            .expect("rebuild the signed bundle"),
+    );
+
+    let (peek_tx, peek_rx) = flume::unbounded();
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier_with_peek("peek", PeekWitness { peek_tx }, PEEK);
+    let (bpa, cla, forwarded_rx) = setup(
+        Bpa::builder()
+            .add_filters(pack)
+            .key_provider(Arc::new(FixedKeys(vec![key]))),
+    )
+    .await;
+
+    let found = peek_through(&cla, &peek_rx, &forwarded_rx, &signed)
+        .await
+        .expect("a signed payload has a peek");
+    assert_eq!(
+        found.as_slice(),
+        &payload[..SEGMENT],
+        "the peek holds part of the body, so the BIB is deferred"
+    );
+
+    bpa.shutdown().await;
+}
+
+/// A BCB-covered payload has no peek: no filter reads an encrypted payload.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_encrypted_payload_has_no_peek() {
+    use hardy_bpv7::bpsec::{
+        encryptor::{Context, Encryptor},
+        // Aliased: the block `Type` is this file's.
+        key::{EncAlgorithm, Key, Operation, Type as KeyType},
+    };
+    use rand::{TryRng, rngs::SysRng};
+
+    // Immaterial key value: the node holds no key, so it only has to
+    // encrypt; generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some([Operation::Encrypt].into_iter().collect()),
+        id: None,
+        key_use: None,
+    };
+    let (built, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
+        .with_payload(vec![0xA5_u8; 1000].as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let encrypted = Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                1,
+                Context::AES_GCM(Default::default()),
+                SOURCE.parse().unwrap(),
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    );
+
+    let (peek_tx, peek_rx) = flume::unbounded();
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier_with_peek("peek", PeekWitness { peek_tx }, PEEK);
+    let (bpa, cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+
+    assert_eq!(
+        peek_through(&cla, &peek_rx, &forwarded_rx, &encrypted).await,
+        None
+    );
 
     bpa.shutdown().await;
 }

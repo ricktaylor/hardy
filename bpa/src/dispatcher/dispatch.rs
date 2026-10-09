@@ -5,8 +5,9 @@ use super::*;
 impl Dispatcher {
     /// Queue a bundle for dispatch processing.
     /// The caller must have claimed the bundle (`Dispatching`), or be
-    /// re-queueing one recovered still queued (`DispatchPending`); the send
-    /// moves it to `DispatchPending` until the consumer claims it back.
+    /// re-queueing one recovered still queued (`DispatchPending`); the send's
+    /// conditional swap moves it to `DispatchPending`, the queue's commit
+    /// point, until the consumer claims it back.
     pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) {
         debug_assert!(matches!(
             bundle.status,

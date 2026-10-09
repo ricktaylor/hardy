@@ -1,6 +1,7 @@
-//! Streaming-parser tests for the oversized-payload `Partial` path: driving
-//! [`hardy_bpv7::parse::BundleParser`] segment-by-segment so the payload body
-//! exceeds the buffer, then draining the tail through [`PayloadTail`]. These
+//! Streaming-parser tests for the `Partial` path: driving
+//! [`hardy_bpv7::parse::BundleParser`] segment-by-segment so the payload block
+//! is not complete in the buffer when its header parses, then draining the
+//! tail through [`PayloadTail`]. These
 //! exercise the multi-`push` streaming half of the parser, which the one-shot
 //! `parse()` consumers never reach.
 
@@ -12,8 +13,8 @@ use hardy_bpv7::{
     parse::{BundleParser, ParserProgress, PayloadTail},
 };
 use hex_literal::hex;
-// A bundle with a payload far larger than any sane parser chunk size, so the
-// streaming fallback fires once the payload header is passed.
+// A bundle with a large payload: pushed in pieces, its payload block is
+// incomplete when its header parses, so the parser hands back a tail.
 fn large_payload_bundle() -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
@@ -37,7 +38,9 @@ fn drive_to_partial(
         match parser.push(Bytes::copy_from_slice(c)).unwrap() {
             ParserProgress::NeedMore(_) => {}
             ParserProgress::Partial { consumed, tail } => return (parser, consumed, tail, fed),
-            ParserProgress::Ready(_) => panic!("oversized payload must not parse as Ready"),
+            ParserProgress::Ready(_) => {
+                panic!("a bundle pushed in pieces must reach Partial, not Ready")
+            }
         }
     }
     panic!("parser never reached Partial");
@@ -248,6 +251,29 @@ fn craft_bundle(crc_type: CrcType, indefinite: bool, body: &[u8]) -> Vec<u8> {
     out
 }
 
+// Drive `full` to `Partial`, then push the rest in two pieces split at each of
+// the last 8 bytes: every split through the trailer (CRC value, block break,
+// outer break) and the end of the body leaves the tail incomplete after the
+// first piece and complete, its CRC verified, after the second.
+fn assert_tail_settles_split_anywhere_in_its_trailer(full: &[u8]) {
+    // The longest trailer, CRC-32 in an indefinite block, is seven bytes
+    // (`44 c0 c1 c2 c3 FF FF`); the eighth split falls in the body.
+    for from_end in 1..=8 {
+        let (_, _consumed, mut tail, fed) = drive_to_partial(full, 20, 256);
+        let rest = &full[fed..];
+        let split = rest.len() - from_end;
+        assert!(
+            !tail.push(&rest[..split]).unwrap(),
+            "split {from_end} from the end: the first piece leaves it incomplete"
+        );
+        assert!(
+            tail.push(&rest[split..]).unwrap(),
+            "split {from_end} from the end: the second piece completes it"
+        );
+        tail.finish().unwrap();
+    }
+}
+
 // No-CRC, indefinite-length payload block: the tail's no-digest + block-break
 // path. The crafted bundle is itself valid (one-shot parse accepts it).
 #[test]
@@ -257,10 +283,7 @@ fn crc_none_indefinite_payload() {
         parse::parse(Bytes::copy_from_slice(&full)).is_ok(),
         "craft is a valid bundle"
     );
-
-    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
-    assert!(tail.push(&full[fed..]).unwrap(), "tail should complete");
-    tail.finish().unwrap();
+    assert_tail_settles_split_anywhere_in_its_trailer(&full);
 }
 
 // CRC-32, indefinite-length payload block: the tail feeds the block-level break
@@ -272,17 +295,11 @@ fn crc32_indefinite_payload() {
         parse::parse(Bytes::copy_from_slice(&full)).is_ok(),
         "craft is a valid bundle"
     );
-
-    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
-    assert!(
-        tail.push(&full[fed..]).unwrap(),
-        "tail should complete + verify CRC"
-    );
-    tail.finish().unwrap();
+    assert_tail_settles_split_anywhere_in_its_trailer(&full);
 }
 
-// One-shot `parse()` deals only in complete buffers, so a truncated oversized
-// payload (which would `Partial` under push) is surfaced as truncation.
+// One-shot `parse()` deals only in complete buffers, so a truncated payload
+// (which would `Partial` under push) is surfaced as truncation.
 #[test]
 fn one_shot_rejects_truncated_large_payload() {
     let full = large_payload_bundle();
@@ -332,43 +349,50 @@ fn hostile_claimed_block_length_bounds_reserve() {
     }
 }
 
-// Push a small whole bundle one byte at a time: every possible chunk boundary
-// lands inside some field, so a `NeedMoreData` surfacing anywhere in the
-// field-error chain that is mis-read as a structural reject (instead of being
-// buffered as `NeedMore`) fails here.
+// Push `full` one byte at a time: every possible chunk boundary lands inside
+// some field, so a `NeedMoreData` surfacing anywhere in the field-error chain
+// that is mis-read as a structural reject (instead of being buffered as
+// `NeedMore`) fails here. The parser needs more through the header region,
+// goes `Partial` the byte the payload block's header completes (the payload
+// has not arrived), and the tail, fed the rest a byte at a time, completes at
+// the last byte. Returns the header index.
+fn push_byte_by_byte(full: &[u8]) -> parse::Parsed {
+    let mut parser = BundleParser::default();
+    for (i, b) in full.iter().enumerate() {
+        match parser
+            .push(Bytes::copy_from_slice(&[*b]))
+            .unwrap_or_else(|e| panic!("push of byte {i} must not hard-fail: {e:?}"))
+        {
+            ParserProgress::NeedMore(_) => {}
+            ParserProgress::Partial { consumed, mut tail } => {
+                assert_eq!(consumed.as_ref(), &full[..=i], "consumed is a prefix");
+                let rest = &full[i + 1..];
+                for (j, b) in rest.iter().enumerate() {
+                    let complete = tail
+                        .push(&[*b])
+                        .unwrap_or_else(|e| panic!("tail byte {j} must not fail: {e:?}"));
+                    assert_eq!(complete, j + 1 == rest.len(), "tail byte {j}");
+                }
+                tail.finish().expect("the tail completes at the last byte");
+                return parser.finish(consumed).expect("the headers parse");
+            }
+            ParserProgress::Ready(_) => {
+                panic!("a bundle whose payload has not arrived is not Ready")
+            }
+        }
+    }
+    panic!("the parser never reached the payload block");
+}
+
 #[test]
-fn byte_by_byte_push_reaches_ready() {
+fn byte_by_byte_push_streams_the_payload() {
     let full = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_payload(b"tiny".as_slice().into())
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap()
         .1;
 
-    let mut parser = BundleParser::default();
-    let mut ready = None;
-    for (i, b) in full.iter().enumerate() {
-        match parser.push(Bytes::copy_from_slice(&[*b])).unwrap() {
-            ParserProgress::NeedMore(_) => {
-                assert!(
-                    i + 1 < full.len(),
-                    "parser still hungry after the last byte"
-                )
-            }
-            ParserProgress::Ready(whole) => {
-                ready = Some(whole);
-                break;
-            }
-            ParserProgress::Partial { .. } => panic!("small payload must not go Partial"),
-        }
-    }
-
-    let whole = ready.expect("parser should reach Ready at the final byte");
-    assert_eq!(
-        whole.as_ref(),
-        &full[..],
-        "Ready hands back the whole bundle"
-    );
-    let parsed = parser.finish(whole).unwrap();
+    let parsed = push_byte_by_byte(&full);
     assert_eq!(parsed.bundle.primary.id.source, "ipn:1.0".parse().unwrap());
 }
 
@@ -379,7 +403,7 @@ fn byte_by_byte_push_reaches_ready() {
 // drop an otherwise-valid bundle. Byte-by-byte pushes force every boundary,
 // including that one.
 #[test]
-fn byte_by_byte_push_of_tag24_block_data_reaches_ready() {
+fn byte_by_byte_push_of_tag24_block_data_streams_the_payload() {
     // A hand-crafted bundle (no CRCs) whose payload data is
     // #6.24(bstr "HELLO") — Hardy's own encoder never emits the tag, so
     // this is receive-side interop input by construction.
@@ -389,32 +413,181 @@ fn byte_by_byte_push_of_tag24_block_data_reaches_ready() {
         "ff"
     );
 
-    let mut parser = BundleParser::default();
-    let mut ready = None;
-    for (i, b) in full.iter().enumerate() {
-        match parser
-            .push(Bytes::copy_from_slice(&[*b]))
-            .unwrap_or_else(|e| panic!("push of byte {i} must not hard-fail: {e:?}"))
-        {
-            ParserProgress::NeedMore(_) => {
-                assert!(
-                    i + 1 < full.len(),
-                    "parser still hungry after the last byte"
-                )
-            }
-            ParserProgress::Ready(whole) => {
-                ready = Some(whole);
-                break;
-            }
-            ParserProgress::Partial { .. } => panic!("small payload must not go Partial"),
-        }
-    }
-
-    let whole = ready.expect("parser should reach Ready at the final byte");
-    let parsed = parser.finish(whole).unwrap();
+    let parsed = push_byte_by_byte(&full);
     let payload = parsed.bundle.blocks.get(&1).expect("payload block");
+    assert_eq!(payload.payload(&full).expect("payload in bundle"), b"HELLO");
+}
+
+// A bundle whose payload fits inside one parser chunk.
+fn small_payload_bundle() -> Box<[u8]> {
+    builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(vec![0xCD_u8; 1000].as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap()
+        .1
+}
+
+// A push of `full` short by `short_by` bytes: `Partial`, with the parsed
+// headers in `consumed` and a tail that cannot finish, its `remaining` the
+// exact shortfall.
+fn assert_short_bundle_is_partial(full: &[u8], short_by: usize) {
+    let short = &full[..full.len() - short_by];
+    let mut parser = BundleParser::default();
+    let ParserProgress::Partial { consumed, tail } = parser
+        .push(Bytes::copy_from_slice(short))
+        .unwrap_or_else(|e| panic!("short by {short_by}: push must not fail: {e:?}"))
+    else {
+        panic!("short by {short_by}: a bundle short of its end must be Partial");
+    };
+    assert_eq!(consumed.as_ref(), short, "short by {short_by}: consumed");
     assert_eq!(
-        payload.payload(&parsed.data).expect("payload in bundle"),
-        b"HELLO"
+        tail.remaining(),
+        short_by as u64,
+        "short by {short_by}: remaining is the shortfall"
     );
+    assert!(
+        matches!(
+            tail.finish(),
+            Err(Error::InvalidCBOR(hardy_cbor::decode::Error::NeedMoreData(n))) if n == short_by
+        ),
+        "short by {short_by}: the tail cannot finish"
+    );
+    let parsed = parser
+        .finish(consumed)
+        .unwrap_or_else(|e| panic!("short by {short_by}: the headers parse: {e:?}"));
+    assert_eq!(parsed.bundle.primary.id.source, "ipn:1.0".parse().unwrap());
+}
+
+// Once the payload block's header has parsed, the parser never waits: a
+// bundle short of its end is `Partial` however short — by less than one
+// parser chunk (100), cut exactly at the body's end (6: the CRC-32 trailer
+// and the outer break), inside the CRC value (3), or missing only its outer
+// break (1).
+#[test]
+fn a_short_bundle_is_partial() {
+    let full = small_payload_bundle();
+    for short_by in [100, 6, 3, 1] {
+        assert_short_bundle_is_partial(&full, short_by);
+    }
+}
+
+// The same for the trailer shapes the Builder never emits: an empty payload
+// with no CRC (its block ends where its body starts) missing its outer break,
+// and an indefinite-length payload block short at either break or inside its
+// CRC value.
+#[test]
+fn a_short_crafted_bundle_is_partial() {
+    let empty = craft_bundle(CrcType::None, false, &[]);
+    assert!(parse::parse(Bytes::copy_from_slice(&empty)).is_ok());
+    assert_short_bundle_is_partial(&empty, 1);
+
+    let indefinite = craft_bundle(CrcType::CRC32_CASTAGNOLI, true, &[0xEF; 1000]);
+    assert!(parse::parse(Bytes::copy_from_slice(&indefinite)).is_ok());
+    for short_by in [1, 2, 4] {
+        assert_short_bundle_is_partial(&indefinite, short_by);
+    }
+}
+
+// Short of the payload block's header, the parser needs more: the header
+// region itself is incomplete, so there are no parsed headers to hand back.
+#[test]
+fn a_short_header_region_needs_more() {
+    let full = small_payload_bundle();
+    let payload_start = parse::parse(Bytes::copy_from_slice(&full))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("payload block")
+        .extent
+        .start as usize;
+    // Only the payload block's array head arrived.
+    let short = &full[..payload_start + 1];
+    assert!(matches!(
+        BundleParser::default().push(Bytes::copy_from_slice(short)),
+        Ok(ParserProgress::NeedMore(_))
+    ));
+}
+
+// A whole bundle pushed at once whose payload trailer fails: the parser hands
+// back the parsed headers with a tail that failed, and the tail's `finish`
+// returns the failure.
+fn failed_tail(bytes: &[u8]) -> Error {
+    let mut parser = BundleParser::default();
+    let Ok(ParserProgress::Partial { consumed, tail }) = parser.push(Bytes::copy_from_slice(bytes))
+    else {
+        panic!("a payload trailer failure must be Partial");
+    };
+    parser.finish(consumed).expect("the headers parse");
+    tail.finish().expect_err("the tail failed")
+}
+
+// A payload trailer that fails in the buffer is the tail's verdict, as it
+// would be in a later push: a CRC mismatch, bytes after the outer break, or a
+// malformed outer break. The CRC-32 trailer is `44 c0 c1 c2 c3 FF`.
+#[test]
+fn a_trailer_failure_in_the_buffer_is_the_tails() {
+    let full = small_payload_bundle();
+
+    let mut bad_crc = full.to_vec();
+    let last_crc_byte = bad_crc.len() - 2;
+    bad_crc[last_crc_byte] ^= 0xFF;
+    assert!(matches!(
+        failed_tail(&bad_crc),
+        Error::InvalidCrc(crc::Error::IncorrectCrc)
+    ));
+
+    let mut trailing = full.to_vec();
+    trailing.push(0x00);
+    assert!(matches!(failed_tail(&trailing), Error::AdditionalData));
+
+    let mut bad_break = full.to_vec();
+    let outer_break = bad_break.len() - 1;
+    bad_break[outer_break] = 0x00;
+    assert!(matches!(failed_tail(&bad_break), Error::NotCanonical));
+
+    // The failure is reported by the tail's next push too.
+    let Ok(ParserProgress::Partial { mut tail, .. }) =
+        BundleParser::default().push(Bytes::copy_from_slice(&bad_crc))
+    else {
+        panic!("a payload trailer failure must be Partial");
+    };
+    assert!(matches!(
+        tail.push(&[]),
+        Err(Error::InvalidCrc(crc::Error::IncorrectCrc))
+    ));
+}
+
+// Payloads of zero and one byte, pushed a byte at a time, stream to
+// completion: the tail starts at the trailer, or one byte before it.
+#[test]
+fn byte_by_byte_push_streams_tiny_payloads() {
+    for payload in [&b""[..], b"x"] {
+        let full = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_payload(payload.into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap()
+            .1;
+        let parsed = push_byte_by_byte(&full);
+        assert_eq!(parsed.bundle.blocks[&1].payload(&full), Some(payload));
+    }
+}
+
+// A block spliced after the payload block fails the tail, which expects the
+// outer break: in the buffer, and on the streaming route alike.
+#[test]
+fn a_block_after_the_payload_fails_the_tail() {
+    let full = small_payload_bundle();
+    // array(5)[type 7, number 2, flags 0, CRC none, empty bstr] before the
+    // outer break.
+    let mut spliced = full[..full.len() - 1].to_vec();
+    spliced.extend_from_slice(&[0x85, 0x07, 0x02, 0x00, 0x00, 0x40, 0xFF]);
+
+    assert!(matches!(failed_tail(&spliced), Error::NotCanonical));
+
+    let (_, _consumed, mut tail, fed) = drive_to_partial(&spliced, 20, 256);
+    assert!(matches!(
+        tail.push(&spliced[fed..]),
+        Err(Error::NotCanonical)
+    ));
 }

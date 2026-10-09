@@ -33,7 +33,9 @@
 //! serves a whole input pass and the Verifiers that close the Deliver
 //! chain, and each Rewriter gets its own, since an edit replaces the bytes.
 //! [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
-//! CBOR-decodes a block body.
+//! CBOR-decodes a block body. A Verifier's and a Classifier's context also
+//! lends the payload's resident prefix, the declared peek among it, through
+//! [`VerifyContext::payload_peek`].
 //!
 //! # Failure and Drop contract
 //!
@@ -46,7 +48,7 @@
 //! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
 //! |---|---|---|---|
 //! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | `services::Error::Internal` to the caller; nothing was stored |
-//! | Ingress | dropped with a deletion report per the bundle's request flags | deleted silently, even when the flags request reporting | resolved as `BlockUnintelligible` — the stored bytes failed the chain's own decode pass |
+//! | Ingress | dropped before anything is stored, with one reception + deletion report per the bundle's request flags | the same, without the deletion assertion even when the flags request one (a requested reception report is still sent) | none — the chain decodes nothing itself: it runs on the gate's header decode, whose failures are the header pass's |
 //! | Deliver | dropped with a flag-gated deletion report | deleted silently | fatal (below) |
 //!
 //! `bpa.filter.filtered` counts every Drop, `bpa.filter.modified` every
@@ -115,6 +117,7 @@ pub struct VerifyContext<'a> {
     bundle: &'a Bundle,
     reader: &'a dyn Reader<'a>,
     metadata: &'a BundleMetadata,
+    peek: Option<&'a [u8]>,
 }
 
 impl<'a> VerifyContext<'a> {
@@ -122,11 +125,13 @@ impl<'a> VerifyContext<'a> {
         bundle: &'a Bundle,
         reader: &'a dyn Reader<'a>,
         metadata: &'a BundleMetadata,
+        peek: Option<&'a [u8]>,
     ) -> Self {
         Self {
             bundle,
             reader,
             metadata,
+            peek,
         }
     }
 
@@ -144,6 +149,31 @@ impl<'a> VerifyContext<'a> {
     #[must_use]
     pub fn reader(&self) -> &'a dyn Reader<'a> {
         self.reader
+    }
+
+    /// The payload's resident prefix: every byte of the payload block's data
+    /// that has arrived, whether or not the payload is all resident. Where
+    /// the payload is resident, it is all of it.
+    ///
+    /// At the input hooks the door holds at least the first min(P, payload
+    /// length) bytes before the chain runs, P being the largest payload peek
+    /// declared at that hook (see [`FilterPack`](pack::FilterPack)); an empty
+    /// slice means no payload byte has arrived, or the payload is empty, which
+    /// a filter that declared a peek can tell apart. There the bytes may
+    /// precede the payload's CRC and BIB checks, as may block 1 read through
+    /// [`reader`](Self::reader); both settle before the bundle commits or its
+    /// route executes. Treat the peek as unauthenticated input: classify or
+    /// drop on it, but do not let it drive durable or attributable effects,
+    /// which a forged prefix on a genuinely signed bundle would drive under
+    /// its source's name.
+    ///
+    /// `None` for a payload a BCB covers, as no filter reads an encrypted
+    /// payload, and for a fragment past the payload's start, whose bytes are
+    /// not the payload's prefix: the reassembled bundle is peeked when it
+    /// re-crosses the Ingress gate.
+    #[must_use]
+    pub fn payload_peek(&self) -> Option<&'a [u8]> {
+        self.peek
     }
 
     /// The BPA-local record state: provenance, the extension-field cache,
@@ -178,6 +208,7 @@ pub struct ClassifyContext<'a> {
     bundle: &'a Bundle,
     reader: &'a dyn Reader<'a>,
     metadata: &'a BundleMetadata,
+    peek: Option<&'a [u8]>,
 }
 
 impl<'a> ClassifyContext<'a> {
@@ -185,11 +216,13 @@ impl<'a> ClassifyContext<'a> {
         bundle: &'a Bundle,
         reader: &'a dyn Reader<'a>,
         metadata: &'a BundleMetadata,
+        peek: Option<&'a [u8]>,
     ) -> Self {
         Self {
             bundle,
             reader,
             metadata,
+            peek,
         }
     }
 
@@ -207,6 +240,13 @@ impl<'a> ClassifyContext<'a> {
     #[must_use]
     pub fn reader(&self) -> &'a dyn Reader<'a> {
         self.reader
+    }
+
+    /// The payload's resident prefix, as
+    /// [`VerifyContext::payload_peek`] lends it.
+    #[must_use]
+    pub fn payload_peek(&self) -> Option<&'a [u8]> {
+        self.peek
     }
 
     /// The BPA-local record state, including the deltas the preceding

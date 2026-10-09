@@ -15,10 +15,13 @@ pub trait KeyProvider: Send + Sync {
     /// Returns the [`KeySource`] to use for this bundle.
     ///
     /// The bundle argument is the structural [`hardy_bpv7::Bundle`]
-    /// (primary block + blocks map). The decoded extension fields
-    /// (`previous_node`, `age`, `hop_count`) are *not* available here —
-    /// keyed BPSec hasn't run yet — so an implementation that needs them
-    /// must decode the relevant extension blocks itself.
+    /// (primary block + blocks map), and `data` its resident bytes. At an
+    /// input door `data` may be only a prefix — the header blocks and
+    /// whatever of the payload has arrived — so a block's extent can run
+    /// past its end; at the output doors it is the whole bundle. The decoded
+    /// extension fields (`previous_node`, `age`, `hop_count`) are *not*
+    /// available here — keyed BPSec hasn't run yet — so an implementation
+    /// that needs them must decode the relevant extension blocks itself.
     ///
     /// [`KeySource`]: hardy_bpv7::bpsec::key::KeySource
     fn key_source(&self, bundle: &hardy_bpv7::Bundle, data: &[u8]) -> Box<dyn KeySource>;

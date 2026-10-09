@@ -1,7 +1,7 @@
 //! BPA-local keyed Bundle parse pipelines. Each composes the per-section
-//! [`hardy_bpv7::checks`] helpers (and [`rewrite::apply_rewrites`]) and returns
-//! the structurally-parsed `Bundle` together with the §D-decoded extension
-//! fields the BPA records in metadata.
+//! [`hardy_bpv7::checks`] helpers and returns the structurally-parsed
+//! `Bundle` together with the §D-decoded extension fields the BPA records in
+//! metadata.
 //!
 //! Two entry points. Neither canonicalises: non-canonical CBOR is rejected at
 //! parse (RFC 9171 §4.1), and rewriting it is a configurable mutating-filter
@@ -15,21 +15,27 @@
 //!   `filter::chain` pass it to [`reject_undecryptable_liveness`], which applies
 //!   the liveness policy (locally originated / re-emitted bytes must be fully
 //!   decryptable).
-//! * [`parse_headers`] + [`finalize_with_provider`] — the ingress pipeline,
-//!   split so the streaming gate can early-reject before the payload is spooled.
-//!   The header pass classifies and *schedules* the removals — the
-//!   `delete_block_on_failure`-flagged unknowns and the §5.1.1 failure-drops
-//!   ([`HeaderVerify::to_remove`]) — and drains BPSec down to the deferred
-//!   block-1 (payload) targets; the finalize pass verifies those and applies
-//!   the removals — including the re-encryption cascade for BCB-covered BIBs
-//!   whose target list shrinks — once the payload is resident.
-//!   Used by `dispatcher::ingress`; on a keyed failure returns the recoverable
-//!   bundle so the caller can emit a status report.
+//! * [`parse_headers`] — the streaming ingress header pass, which the gate can
+//!   early-reject on before the payload is spooled. It classifies and
+//!   *schedules* the removals — the `delete_block_on_failure`-flagged unknowns
+//!   and the §5.1.1 failure-drops ([`HeaderVerify::to_remove`]) — and, in the
+//!   same keyed pass, begins incremental verification of the BIB targets
+//!   deferred to the not-yet-resident payload
+//!   ([`HeaderVerify::deferred_verifiers`], via
+//!   [`hardy_bpv7::checks::begin_payload_verification`]); the dispatcher's
+//!   payload drain feeds those as the payload streams. The bundle is
+//!   **stored as received** — no editing on input — so the removals ride the
+//!   metadata and are applied per attempt at the output doors, ahead of each
+//!   door's filter chain, where the BPSec cascade for a BCB-covered BIB
+//!   whose target list shrinks runs. Used by
+//!   `dispatcher::ingress`; on a keyed failure returns the recoverable bundle
+//!   so the caller can emit a status report.
 
-use bytes::Bytes;
+use core::mem::take;
+
+use bytes::{Bytes, BytesMut};
 use hardy_bpv7::{
-    Bundle as Bpv7Bundle, block, bpsec, bundle_age, checks, editor::Chunk, parse, rewrite,
-    status_report::ReasonCode,
+    Bundle as Bpv7Bundle, block, bpsec, bundle_age, checks, parse, status_report::ReasonCode,
 };
 use time::OffsetDateTime;
 use tracing::debug;
@@ -57,7 +63,8 @@ pub fn extract_from_built(
 }
 
 /// Map a keyed-validation error to the status-report reason BPA emits with the
-/// deletion notice. Used by [`parse_headers`] and the ingress finalize path.
+/// deletion notice. Used by [`parse_headers`] and the payload drain's
+/// `ValidationFailure::reason_code` (crate-internal, in `dispatcher`).
 ///
 /// The RFC 9172 codes selectable here are the ones detectable without security
 /// policy: `UnknownSecurityOperation` (an operation this node cannot understand
@@ -81,24 +88,91 @@ pub fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
     }
 }
 
-/// Reception-report reason from the §A `report_on_failure` facts plus the
-/// §5.1.1 failure-drop outcome. The RFC 9172 security codes outrank the
-/// generic RFC 9171 block code when several fire: a dropped corrupt operation
-/// is the most material event, then an operation this node cannot understand,
-/// then an unrecognised plain block.
-pub fn reception_reason_for(
+/// The §5.6 reception-reporting facts the header verify established: what
+/// reason the reception assertion carries, and whether a block's own
+/// `report_on_failure` flag demands the report be emitted regardless of the
+/// bundle-level receipt flag (§5.6 Step 4's block-flag-alone trigger). The
+/// nonsense states — a demanded "No additional information", a non-demanded
+/// "Block unsupported" — are unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceptionReport {
+    /// Nothing beyond §5.6 Step 2: reason "No additional information",
+    /// emitted only when the bundle requests reception reports.
+    Requested,
+    /// A §5.1.1 failure-drop was scheduled: reason "Failed security
+    /// operation", still bundle-flag-gated (RFC 9172 keeps failure
+    /// reporting at requested-MAY level).
+    FailureDropped,
+    /// A block's `report_on_failure` flag demands the report: emitted even
+    /// when the bundle-level receipt flag is clear. Carries "Block
+    /// unsupported" / "Unknown security operation" — or "Failed security
+    /// operation" when a failure-drop also fired and outranks them in the
+    /// record's one reason slot. Never produced for an admin-record or
+    /// anonymous bundle: the parser rejects the flag combination (§4.2.4).
+    Demanded(ReasonCode),
+}
+
+impl ReceptionReport {
+    /// The reason code the reception assertion carries.
+    pub fn reason(&self) -> ReasonCode {
+        match self {
+            Self::Requested => ReasonCode::NoAdditionalInformation,
+            Self::FailureDropped => ReasonCode::FailedSecurityOperation,
+            Self::Demanded(reason) => *reason,
+        }
+    }
+
+    /// §5.6 Step 4's block-flag-alone trigger: the report is emitted even
+    /// when the bundle-level receipt flag is clear.
+    pub fn demanded(&self) -> bool {
+        matches!(self, Self::Demanded(_))
+    }
+}
+
+/// Reception-reporting facts from the §A `report_on_failure` classification
+/// plus the §5.1.1 failure-drop outcome. The RFC 9172 security codes outrank
+/// the generic RFC 9171 block code when several fire: a dropped corrupt
+/// operation is the most material event, then an operation this node cannot
+/// understand, then an unrecognised plain block — but only the block-flag
+/// facts make the report [`Demanded`](ReceptionReport::Demanded).
+pub fn reception_report_for(
     classification: &checks::Classification,
     failure_dropped: bool,
-) -> ReasonCode {
-    if failure_dropped {
-        ReasonCode::FailedSecurityOperation
-    } else if classification.report_unsupported_security {
-        ReasonCode::UnknownSecurityOperation
-    } else if classification.report_unsupported_block {
-        ReasonCode::BlockUnsupported
-    } else {
-        ReasonCode::NoAdditionalInformation
+) -> ReceptionReport {
+    let demanded =
+        classification.report_unsupported_security || classification.report_unsupported_block;
+    match (demanded, failure_dropped) {
+        (false, false) => ReceptionReport::Requested,
+        (false, true) => ReceptionReport::FailureDropped,
+        (true, _) => ReceptionReport::Demanded(if failure_dropped {
+            ReasonCode::FailedSecurityOperation
+        } else if classification.report_unsupported_security {
+            ReasonCode::UnknownSecurityOperation
+        } else {
+            ReasonCode::BlockUnsupported
+        }),
     }
+}
+
+// The report for a header-pass rejection that precedes the keyed header
+// verification: the parsed bundle, the reception facts its own blocks
+// establish (the §A classification's `report_on_failure` flags), and the
+// deletion reason `error` maps to.
+fn reported_drop(
+    parsed: parse::Parsed,
+    error: &hardy_bpv7::Error,
+) -> (Bpv7Bundle, ReceptionReport, ReasonCode) {
+    let (classification, _) = checks::classify_unsupported_and_verdict(
+        &parsed.bundle.blocks,
+        &parsed.bcbs,
+        &parsed.bibs,
+        &[],
+    );
+    (
+        parsed.bundle,
+        reception_report_for(&classification, false),
+        status_report_reason_for(error),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -210,30 +284,38 @@ pub fn reject_undecryptable_liveness(
 }
 
 // ---------------------------------------------------------------------------
-// Full ingress — split into a pre-drain header pass and a post-drain finalize
-// so the streaming gate can early-reject before the payload is spooled.
+// Streaming ingress — the pre-drain header pass. The gate early-rejects on it
+// before the payload is spooled; the dispatcher's drain then streams and
+// verifies the payload.
 // ---------------------------------------------------------------------------
 
 /// Result of the pre-drain header pass: everything the streaming gate needs to
-/// decide whether to drain, plus the inputs [`finalize_with_provider`] needs to
-/// finish once the payload is resident. `bundle` is the structural parse, kept so
-/// a key source can still be built (`key_provider` takes a `&Bundle`) for the
-/// post-drain payload verify and rewrite.
+/// decide whether to drain, plus the inputs the dispatcher's payload drain
+/// needs to finish once the payload streams.
 pub struct HeaderVerify {
     pub bundle: Bpv7Bundle,
     pub extensions: ExtensionFields,
-    /// Unrecognised / unsupported blocks to drop in the post-drain §E rewrite.
+    /// Unrecognised / unsupported blocks scheduled for removal: the output
+    /// doors drop them per attempt (`BundleMetadata::to_remove`).
     pub to_remove: HashSet<u64>,
-    /// Reception-report reason chosen from the §A `report_on_failure` facts
-    /// and the §5.1.1 failure-drop outcome (see [`reception_reason_for`]);
-    /// `NoAdditionalInformation` when none fired.
-    pub report_reason: ReasonCode,
-    /// BIB op-sets `checks::verify` left targeting the not-yet-resident payload
-    /// (block 1) — re-verified against the full bundle by
-    /// [`finalize_with_provider`]. Empty when the payload was resident. A block-1
-    /// *BCB* (payload confidentiality) needs no deferral — it's decrypted at
-    /// delivery via [`hardy_bpv7::bpsec::DecryptingReader`].
-    pub deferred_bibs: HashMap<u64, bpsec::bib::OperationSet>,
+    /// The §5.6 reception-reporting facts (see [`reception_report_for`]).
+    /// Carried on the reception assertion whether the bundle is accepted or
+    /// rejected downstream — Step 4's facts precede either outcome — though
+    /// a reject's deletion reason takes the report's one reason slot when
+    /// both are asserted.
+    pub report: ReceptionReport,
+    /// One incremental verifier per BIB op-set `checks::verify` left targeting
+    /// the not-yet-resident payload (block 1), each paired with its BIB's
+    /// block number for failure attribution. Begun (via
+    /// [`hardy_bpv7::checks::begin_payload_verification`]) inside the header
+    /// pass, where the key source already exists: the `!Send` source is
+    /// resolved once per bundle and stays sync-scoped — only these `Send`
+    /// verifiers (carrying copied key material, the recorded exception) cross
+    /// the drain's `await`s. The dispatcher's payload drain feeds and settles
+    /// them. Empty when the payload was resident. A block-1 *BCB* (payload
+    /// confidentiality) needs no deferral — it's decrypted at delivery via
+    /// [`hardy_bpv7::bpsec::DecryptingReader`].
+    pub deferred_verifiers: Vec<(u64, bpsec::bib::Verifier)>,
 }
 
 impl HeaderVerify {
@@ -274,82 +356,105 @@ pub enum HeaderFailure {
     /// The accumulated stream crossed the caller's size bound.
     TooLarge { size: usize, max: usize },
     /// Structural or keyed-validation failure. When the bundle id was
-    /// recoverable the caller emits a reception report with the reason,
-    /// then drops.
-    Invalid(Option<(Bpv7Bundle, ReasonCode)>),
+    /// recoverable the caller reports the drop — the reception facts
+    /// established before the failure, then deletion citing the reason (RFC
+    /// 9171 §5.6/§5.10) — then drops.
+    Invalid(Option<(Bpv7Bundle, ReceptionReport, ReasonCode)>),
 }
 
 /// Drive the structural parser off the segment stream up to the parsed header
-/// chain (*without* draining an oversized payload), then run the keyed header
+/// chain (*without* draining a payload still to arrive), then run the keyed header
 /// verification against the resident bytes — the streaming gate's whole
-/// pre-drain stage in one call. The header verification drains the
-/// payload-block BPSec into [`HeaderVerify::deferred_bibs`] for the post-drain
-/// [`finalize_with_provider`].
+/// pre-drain stage in one call. The header verification begins incremental
+/// verification of the payload-block BIBs ([`HeaderVerify::deferred_verifiers`])
+/// for the dispatcher's streaming payload drain to feed and settle.
 ///
-/// `Ok` is the verified headers, the resident header `Bytes` (the whole bundle
-/// when it fit, else the `consumed` prefix), and the payload `tail` the caller
-/// drains — the drain continues the byte count this pass starts against
-/// `max_size`, which here bounds hostile unbounded header chains. `Err` is a
-/// [`HeaderFailure`]; see its variants for who handles what.
+/// Before verifying, the pass holds the payload peek: it pulls segments until
+/// the payload's first `peek` bytes (all of it, if shorter) are resident, each
+/// fed through the tail, so the gate's chain can read them. A `peek` of 0, or
+/// a payload with no peekable prefix ([`peekable_payload`]: one a BCB covers,
+/// or a fragment past the payload's start), pulls nothing past the payload
+/// block's header.
+///
+/// `Ok` is the verified headers, the resident `Bytes` (the whole bundle when
+/// it completed in this pass, else the headers and whatever of the payload
+/// block has arrived), the payload `tail` the caller drains — the drain
+/// continues the byte count this pass starts against `max_size`, which here
+/// bounds hostile unbounded header chains — and the header-region BCB
+/// OperationSets for the caller's Ingress gate chain, handed back from the one
+/// decode rather than re-derived. `Err` is a [`HeaderFailure`]; see its
+/// variants for who handles what.
 #[allow(clippy::result_large_err, clippy::type_complexity)]
 pub async fn parse_headers<F>(
     stream: &mut dyn Receiver<Segment>,
     max_size: usize,
+    peek: usize,
     key_provider: F,
-) -> Result<(HeaderVerify, Bytes, Option<parse::PayloadTail>), HeaderFailure>
+) -> Result<
+    (
+        HeaderVerify,
+        Bytes,
+        Option<parse::PayloadTail>,
+        HashMap<u64, bpsec::bcb::OperationSet>,
+    ),
+    HeaderFailure,
+>
 where
     F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
     let mut parser = parse::BundleParser::default();
     // Drive the parser up to the header chain. `headers` is the resident bytes
-    // (the whole bundle, or the `consumed` prefix for an oversized payload);
+    // (the whole bundle, or the `consumed` prefix of one still arriving);
     // `tail` (if any) drains the rest back in `dispatcher::ingress`.
-    let mut total: usize = 0;
+    let mut arrival = Arrival {
+        stream,
+        total: 0,
+        max: max_size,
+    };
     let (parsed, headers, tail) = loop {
-        let (bytes, last) = match stream.recv().await {
-            Ok(Segment::Next(b)) => (b, false),
-            Ok(Segment::Final(b)) => (b, true),
-            Err(_) => {
-                debug!("Bundle stream cancelled");
-                return Err(HeaderFailure::Cancelled);
-            }
-        };
-        total = total.saturating_add(bytes.len());
-        if total > max_size {
-            return Err(HeaderFailure::TooLarge {
-                size: total,
-                max: max_size,
-            });
-        }
+        let (bytes, last) = arrival.next().await?;
         match parser.push(bytes) {
+            // The stream ended inside the header region: with no parsed
+            // headers there is no bundle id to report — the §4.1 discard.
             Ok(parse::ParserProgress::NeedMore(_)) if last => {
-                debug!("Truncated bundle");
+                debug!("Truncated bundle: the stream ended inside its headers");
                 return Err(HeaderFailure::Invalid(None));
             }
             Ok(parse::ParserProgress::NeedMore(_)) => {}
             Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
-                Ok(parsed) => break (parsed, whole, None),
+                Ok(parsed) => {
+                    break (
+                        await_final(&mut *arrival.stream, parsed, last).await?,
+                        whole,
+                        None,
+                    );
+                }
                 Err(e) => {
                     debug!("Bundle BPSec structural validation failed: {e}");
                     return Err(HeaderFailure::Invalid(None));
                 }
             },
-            // A `Partial` after the stream has already ended is a truncated
-            // bundle: the declared payload cannot complete (`tail.remaining()`
-            // is positive), so reject it exactly like `NeedMore` at end-of-
-            // stream instead of handing an exhausted stream to the payload drain.
-            Ok(parse::ParserProgress::Partial { .. }) if last => {
-                debug!("Truncated bundle (oversized payload, stream ended)");
-                return Err(HeaderFailure::Invalid(None));
+            // A `Partial` from the stream's last segment is never handed to
+            // the payload drain, whose stream is exhausted; its headers
+            // parsed, so the drop is reported.
+            Ok(parse::ParserProgress::Partial { consumed, tail }) if last => {
+                let Ok(parsed) = parser
+                    .finish(consumed)
+                    .inspect_err(|e| debug!("Bundle BPSec structural validation failed: {e}"))
+                else {
+                    return Err(HeaderFailure::Invalid(None));
+                };
+                return Err(tail_rejected_at_final(tail, parsed));
             }
             Ok(parse::ParserProgress::Partial { consumed, tail }) => {
-                match parser.finish(consumed.clone()) {
-                    Ok(parsed) => break (parsed, consumed, Some(tail)),
+                let parsed = match parser.finish(consumed.clone()) {
+                    Ok(parsed) => parsed,
                     Err(e) => {
                         debug!("Bundle BPSec structural validation failed: {e}");
                         return Err(HeaderFailure::Invalid(None));
                     }
-                }
+                };
+                break hold_peek(&mut arrival, parsed, consumed, tail, peek).await?;
             }
             Err(e) => {
                 debug!("Bundle structural parse failed: {e}");
@@ -359,8 +464,8 @@ where
     };
 
     // Header verification (§A–§D) against the resident bytes. On a keyed failure
-    // the recoverable `bundle` is returned so the caller need only emit a reception
-    // report; on success it moves into the returned `HeaderVerify`.
+    // the recoverable `bundle` is returned so the caller can report the drop;
+    // on success it moves into the returned `HeaderVerify`.
     let parse::Parsed {
         bundle,
         bcbs: bcb_ops,
@@ -369,25 +474,186 @@ where
     } = parsed;
     let key_source = key_provider(&bundle, &headers);
     match verify_headers(&headers, &*key_source, bundle, &bcb_ops, &mut bib_ops) {
-        Ok(hv) => Ok((hv, headers, tail)),
-        Err((bundle, error)) => {
+        // The header-region BCB OperationSets ride back to the caller for
+        // the Ingress gate chain, handed back from this one decode rather
+        // than re-derived from the prefix later.
+        Ok(hv) => Ok((hv, headers, tail, bcb_ops)),
+        Err((bundle, error, reception)) => {
             debug!("Invalid bundle received: {error}");
             Err(HeaderFailure::Invalid(Some((
                 bundle,
+                reception,
                 status_report_reason_for(&error),
             ))))
         }
     }
 }
 
+// A bundle complete before its stream's `Final` commits only once the stream
+// confirms the end: until then the producer can still abandon the transfer.
+// Empty `Next` segments are padding the `Segment` contract allows; a byte past
+// the outer break is reported as the payload drain reports one.
+#[allow(clippy::result_large_err)]
+async fn await_final(
+    stream: &mut dyn Receiver<Segment>,
+    parsed: parse::Parsed,
+    mut ended: bool,
+) -> Result<parse::Parsed, HeaderFailure> {
+    while !ended {
+        match stream.recv().await {
+            Ok(Segment::Next(b)) if b.is_empty() => {}
+            Ok(Segment::Final(b)) if b.is_empty() => ended = true,
+            Ok(_) => {
+                debug!("Bytes follow a complete bundle");
+                return Err(HeaderFailure::Invalid(Some(reported_drop(
+                    parsed,
+                    &hardy_bpv7::Error::AdditionalData,
+                ))));
+            }
+            Err(_) => {
+                debug!("Bundle stream cancelled after a complete bundle");
+                return Err(HeaderFailure::Cancelled);
+            }
+        }
+    }
+    Ok(parsed)
+}
+
+// The arrival as the header pass pulls it: each segment counts against the
+// caller's size bound, a count the payload drain continues. Every return from
+// the pass leaves exactly the counted bytes resident (`headers.len() ==
+// total`), so the drain counts on from the resident bytes.
+struct Arrival<'s> {
+    stream: &'s mut dyn Receiver<Segment>,
+    total: usize,
+    max: usize,
+}
+
+impl Arrival<'_> {
+    // The next segment's bytes, and whether it is the stream's `Final`. A
+    // producer gone away is `Cancelled`, a count past the bound `TooLarge`.
+    #[allow(clippy::result_large_err)]
+    async fn next(&mut self) -> Result<(Bytes, bool), HeaderFailure> {
+        let (bytes, last) = match self.stream.recv().await {
+            Ok(Segment::Next(b)) => (b, false),
+            Ok(Segment::Final(b)) => (b, true),
+            Err(_) => {
+                debug!("Bundle stream cancelled");
+                return Err(HeaderFailure::Cancelled);
+            }
+        };
+        self.total = self.total.saturating_add(bytes.len());
+        if self.total > self.max {
+            return Err(HeaderFailure::TooLarge {
+                size: self.total,
+                max: self.max,
+            });
+        }
+        Ok((bytes, last))
+    }
+}
+
+// A complete transfer whose payload block the tail did not accept — the
+// stream ended inside it, or a trailer check failed on the bytes that came —
+// reported as the payload drain reports the same failure.
+fn tail_rejected_at_final(tail: parse::PayloadTail, parsed: parse::Parsed) -> HeaderFailure {
+    let error = tail
+        .finish()
+        .expect_err("a tail incomplete at `Final` is unfinished or failed");
+    debug!("Payload block rejected at the stream's Final: {error}");
+    HeaderFailure::Invalid(Some(reported_drop(parsed, &error)))
+}
+
+/// The payload block, when the bytes resident ahead of its body's end are the
+/// payload's own prefix: `None` for a payload a BCB covers, which no filter
+/// reads, and for a fragment past the payload's start, whose bytes are not
+/// the payload's prefix. The rule the header pass's hold and the filters'
+/// `payload_peek` share.
+pub fn peekable_payload(bundle: &Bpv7Bundle) -> Option<&block::Block> {
+    let later_fragment = bundle
+        .primary
+        .id
+        .fragment_info
+        .as_ref()
+        .is_some_and(|fragment| fragment.offset > 0);
+    if later_fragment {
+        return None;
+    }
+    bundle
+        .blocks
+        .get(&1)
+        .filter(|payload| payload.bcb.is_none())
+}
+
+// The header pass's result before keyed verification: the parsed bundle, its
+// resident bytes, and the payload tail still to drain, if any.
+type Resident = (parse::Parsed, Bytes, Option<parse::PayloadTail>);
+
+// Holds the payload peek: pulls segments until the payload's first `peek`
+// bytes (all of it, if shorter) are resident, and returns them with
+// `consumed` as the resident bytes. Each pulled segment is fed to `tail`,
+// which runs on it the checks the drain would run on the same bytes, so a
+// trailer failure here is reported at once. A tail that completes leaves the
+// whole bundle resident, and it commits on the stream's `Final` as one that
+// arrived whole does.
+#[allow(clippy::result_large_err)]
+async fn hold_peek(
+    arrival: &mut Arrival<'_>,
+    mut parsed: parse::Parsed,
+    consumed: Bytes,
+    mut tail: parse::PayloadTail,
+    peek: usize,
+) -> Result<Resident, HeaderFailure> {
+    // A `Partial` has parsed the payload block's header, so its data range
+    // is known though its bytes are not all resident. Nothing is held for a
+    // payload with no peekable prefix (`peekable_payload`), nor, defensively,
+    // for a missing payload block, which a `Partial` never has. Compared in
+    // u64: the range is wire-derived.
+    let held_to = peekable_payload(&parsed.bundle).map_or(0, |payload| {
+        let body = payload.payload_range();
+        body.start + (peek as u64).min(body.end - body.start)
+    });
+    if consumed.len() as u64 >= held_to {
+        return Ok((parsed, consumed, Some(tail)));
+    }
+    // Nothing downstream reads the parse's own view of the buffer. Dropping
+    // it leaves `consumed` uniquely held when the parser owned the buffer, so
+    // the hold extends it in place; when one segment held the whole header
+    // region, `consumed` still shares it, and the hold copies.
+    drop(take(&mut parsed.data));
+    let mut held = consumed
+        .try_into_mut()
+        .unwrap_or_else(|consumed| BytesMut::from(&consumed[..]));
+    loop {
+        let (bytes, last) = arrival.next().await?;
+        held.extend_from_slice(&bytes);
+        match tail.push(&bytes) {
+            Ok(true) => {
+                let parsed = await_final(&mut *arrival.stream, parsed, last).await?;
+                return Ok((parsed, held.freeze(), None));
+            }
+            Ok(false) if last => return Err(tail_rejected_at_final(tail, parsed)),
+            Ok(false) if held.len() as u64 >= held_to => {
+                return Ok((parsed, held.freeze(), Some(tail)));
+            }
+            Ok(false) => {}
+            Err(error) => {
+                debug!("Payload block rejected while holding the payload peek: {error}");
+                return Err(HeaderFailure::Invalid(Some(reported_drop(parsed, &error))));
+            }
+        }
+    }
+}
+
 /// Header verification (§A classify → §B/§C8/§C7 verify → §D extract) against the
-/// resident `headers` buffer — the `consumed` prefix for an oversized streamed
-/// payload, or the whole bundle otherwise. Takes the structural bundle by value
+/// resident `headers` buffer — the `consumed` prefix of a bundle still
+/// arriving, or the whole bundle otherwise. Takes the structural bundle by value
 /// and returns it inside the assembled [`HeaderVerify`] (BIB coverage stamps
-/// applied, the deferred block-1 op-sets drained out of `bib_ops` for
-/// [`finalize_with_provider`] to re-verify once the payload is resident; the §E
-/// removals are deferred there too). On a keyed failure the recoverable bundle
-/// rides the error, mirroring `finalize_with_provider`.
+/// applied, and one begun incremental verifier per block-1 (payload) op-set
+/// the keyed verify deferred, for the dispatcher's payload drain to feed as
+/// the payload streams; the §E removals are deferred to the output doors
+/// too). On a keyed failure the recoverable bundle rides the error, with the
+/// reception facts established before it.
 #[allow(clippy::result_large_err)]
 fn verify_headers(
     headers: &[u8],
@@ -395,7 +661,7 @@ fn verify_headers(
     bundle: Bpv7Bundle,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
-) -> Result<HeaderVerify, (Bpv7Bundle, hardy_bpv7::Error)> {
+) -> Result<HeaderVerify, (Bpv7Bundle, hardy_bpv7::Error, ReceptionReport)> {
     // Assembled up front with empty facts; the verification closure fills
     // them in place (keeping `?` ergonomics — its borrow ends at the call),
     // and the recoverable bundle rides whichever arm results.
@@ -403,15 +669,21 @@ fn verify_headers(
         bundle,
         extensions: ExtensionFields::default(),
         to_remove: HashSet::new(),
-        report_reason: ReasonCode::NoAdditionalInformation,
-        deferred_bibs: HashMap::new(),
+        report: ReceptionReport::Requested,
+        deferred_verifiers: Vec::new(),
     };
 
     let verified = (|hv: &mut HeaderVerify| {
-        // §A — classify; collect deletables; the report_* facts feed the
-        // reception-report reason below.
-        let classification =
-            checks::classify_unsupported(&hv.bundle.blocks, bcb_ops, bib_ops, &[])?;
+        // §A — classify; collect deletables. The report_* facts stand from
+        // here, so every rejection below — a block demanding the bundle's
+        // deletion (RFC 9171 §5.6 Step 4 reports, then deletes) or a keyed
+        // failure — still honours a block's report demand.
+        let (classification, delete_bundle) =
+            checks::classify_unsupported_and_verdict(&hv.bundle.blocks, bcb_ops, bib_ops, &[]);
+        hv.report = reception_report_for(&classification, false);
+        if let Some(error) = delete_bundle {
+            return Err(error);
+        }
 
         hv.to_remove
             .extend(classification.unrecognised_deletable.iter().copied());
@@ -467,96 +739,39 @@ fn verify_headers(
         }
         // Anything still in `facts.failed` here was queued for failure-drop (the
         // fatal cases returned above) — surface that in the reception report.
-        hv.report_reason = reception_reason_for(&classification, !facts.failed.is_empty());
+        hv.report = reception_report_for(&classification, !facts.failed.is_empty());
 
         // Ingress accepts/forwards, so an undecipherable liveness block is fatal; any
         // other undecipherable block is forwarded intact for a downstream acceptor.
         reject_undecryptable_liveness(&facts.nokey_ext, is_clocked)?;
 
         // §D — decode the well-known extension fields; the caller records them in
-        // the bundle's metadata. Decode only: no canonical re-emission is queued —
-        // `finalize_with_provider` passes an empty rewrite map (see the §E note
-        // there; non-canonical CBOR is rejected at parse). Extension blocks only —
+        // the bundle's metadata. Decode only: no canonical re-emission is queued
+        // (non-canonical CBOR is rejected at parse). Extension blocks only —
         // never the payload, so header-resident.
         hv.extensions = extract_extension_block_fields(headers, &hv.bundle.blocks, &decrypted)?;
-        hv.deferred_bibs = facts.deferred_bibs;
+
+        // Begin incremental verification of the deferred block-1 (payload)
+        // targets here, where `key_source` already exists: the source
+        // (possibly an expensive provider lookup) is resolved once per
+        // bundle and never crosses an `await` — only the returned `Send`
+        // verifiers, carrying copied key material (the recorded exception),
+        // ride the async drain. Empty deferral (a resident payload) yields
+        // an empty vec.
+        hv.deferred_verifiers = checks::begin_payload_verification(
+            headers,
+            key_source,
+            &hv.bundle.blocks,
+            &facts.deferred_bibs,
+        )?;
 
         Ok::<_, hardy_bpv7::Error>(())
     })(&mut hv);
 
     match verified {
         Ok(()) => Ok(hv),
-        Err(e) => Err((hv.bundle, e)),
+        Err(e) => Err((hv.bundle, e, hv.report)),
     }
-}
-
-/// Post-drain finalize: verify the deferred block-1 BIB targets and apply the
-/// queued §E block removals — both against the now-resident full bundle `whole`.
-/// Returns the (possibly-rewritten) structural [`Bpv7Bundle`]. The decoded extension
-/// fields are *not* returned: they were captured at header time
-/// ([`HeaderVerify::extensions`]) and the §E rewrite only removes blocks (never
-/// a still-decodable well-known extension block), so the caller pairs the bundle
-/// with the `extensions` it already holds. The key source is rebuilt here
-/// (synchronously, never held across the drain's `await`) from the structural
-/// `bundle`. On a keyed failure returns the structural bundle for a status report.
-#[allow(clippy::result_large_err, clippy::type_complexity)]
-pub fn finalize_with_provider<F>(
-    whole: &[u8],
-    mut hv: HeaderVerify,
-    key_provider: F,
-) -> Result<(Bpv7Bundle, Option<Vec<Chunk>>, ReasonCode), (Bpv7Bundle, hardy_bpv7::Error)>
-where
-    F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
-{
-    // Only the deferred-payload verify and the §E rewrite below consume keys.
-    // The common no-BPSec, no-removal bundle must not pay a second
-    // KeyProvider call and KeySource allocation (the header pass already
-    // built one), so construct it lazily, once, iff a branch needs it.
-    let key_source = (!hv.deferred_bibs.is_empty() || !hv.to_remove.is_empty())
-        .then(|| key_provider(&hv.bundle, whole));
-
-    // Deferred payload pass: verify exactly the block-1 BIB targets (header
-    // targets were already checked in the header pass — no repeated crypto).
-    if !hv.deferred_bibs.is_empty() {
-        let key_source = key_source
-            .as_deref()
-            .expect("built when a BPSec branch runs");
-        let no_decrypted = HashMap::new();
-        let no_updates = HashMap::new();
-        if let Err(e) = checks::verify_payload(
-            whole,
-            key_source,
-            &hv.bundle.blocks,
-            &hv.deferred_bibs,
-            &no_decrypted,
-            &no_updates,
-        ) {
-            return Err((hv.bundle, e));
-        }
-    }
-
-    // §E — apply block removals (`delete_block_on_failure` unknowns + dropped
-    // BIBs) if any. Needs the whole bundle: the Editor copies/references every
-    // block, including the payload. Canonical re-emits are not done here (see the
-    // module docs) — only removals, hence the empty rewrite map.
-    let chunks = if hv.to_remove.is_empty() {
-        None
-    } else {
-        let key_source = key_source
-            .as_deref()
-            .expect("built when a BPSec branch runs");
-        match rewrite::apply_rewrites(whole, &hv.bundle, key_source, HashMap::new(), hv.to_remove) {
-            Ok(rewritten) => rewritten.map(|(new_bundle, chunks)| {
-                hv.bundle = new_bundle;
-                chunks
-            }),
-            Err(e) => {
-                return Err((hv.bundle, e));
-            }
-        }
-    };
-
-    Ok((hv.bundle, chunks, hv.report_reason))
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +841,7 @@ fn extract_extension_block_fields<V: AsRef<[u8]>>(
 
 #[cfg(test)]
 mod tests {
+    use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
     use hex_literal::hex;
 
     use super::*;
@@ -689,21 +905,34 @@ mod tests {
             .await
             .expect("channel open");
 
-        let Ok((hv, headers, tail)) = parse_headers(&mut rx, 1 << 20, |_, _| keys()).await else {
+        let Ok((hv, _headers, tail, _)) = parse_headers(&mut rx, 1 << 20, 0, |_, _| keys()).await
+        else {
             panic!("headers must verify: only the corrupt BIB target fails");
         };
         assert!(tail.is_none(), "the small bundle is fully resident");
 
-        let (bundle, chunks, _reason) = finalize_with_provider(&headers, hv, |_, _| keys())
-            .map_err(|(_, e)| e)
-            .expect("§5.1.1 failure-drop: bundle survives a corrupt target of a shared BCB");
-        assert!(chunks.is_some(), "the bundle must be rewritten");
-        assert!(!bundle.blocks.contains_key(&3), "corrupt BIB dropped");
+        // §5.1.1 failure-drop is *scheduled* at ingress, not applied: the
+        // bundle is stored as received and the corrupt target rides the removal
+        // set to the output doors, where the BPSec cascade runs per attempt
+        // (the shared BCB survives there, still covering the payload). A small
+        // resident bundle defers no payload BIB, so the header pass already
+        // holds the complete schedule.
         assert!(
-            bundle.blocks.contains_key(&2),
-            "shared BCB survives, still covering the payload"
+            hv.deferred_verifiers.is_empty(),
+            "a resident bundle defers no BIB"
         );
-        assert!(bundle.blocks.contains_key(&1), "payload survives");
+        let mut to_remove: Vec<u64> = hv.to_remove.iter().copied().collect();
+        to_remove.sort_unstable();
+        assert_eq!(to_remove, vec![3], "only the corrupt target is scheduled");
+        assert!(
+            hv.bundle.blocks.contains_key(&3),
+            "no editing on input: the corrupt block is still present in the stored bundle"
+        );
+        assert!(
+            hv.bundle.blocks.contains_key(&2),
+            "shared BCB retained as received"
+        );
+        assert!(hv.bundle.blocks.contains_key(&1), "payload survives");
     }
 
     // The NoKey liveness policy through both real keyed pipelines: a
@@ -780,8 +1009,8 @@ mod tests {
         tx.send(Segment::Final(encrypted.clone()))
             .await
             .expect("channel open");
-        match parse_headers(&mut rx, 1 << 20, no_keys).await {
-            Err(HeaderFailure::Invalid(Some((_, reason)))) => {
+        match parse_headers(&mut rx, 1 << 20, 0, no_keys).await {
+            Err(HeaderFailure::Invalid(Some((_, _, reason)))) => {
                 assert_eq!(reason, ReasonCode::BlockUnintelligible)
             }
             Ok(_) => panic!("an undecryptable Hop Count must be fatal at ingress"),
@@ -808,162 +1037,128 @@ mod tests {
         ));
     }
 
+    // A keyed verification failure keeps the facts the §A classification
+    // established: an unrecognised block flagged `report_on_failure` still
+    // demands its reception report (RFC 9171 §5.6 Step 4) when a BIB over
+    // another block fails integrity, and the deletion cites the failed
+    // security operation.
     #[cfg(feature = "rfc9173")]
-    fn sign_key() -> bpsec::key::Key {
-        use bpsec::key::{Key, KeyAlgorithm, Operation, Type};
-        Key {
-            key_type: Type::octet_sequence(b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice()),
-            key_algorithm: Some(KeyAlgorithm::HS256),
-            enc_algorithm: None,
-            operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
-            id: Some("ipn:2.1".into()),
-            key_use: None,
-        }
-    }
-
-    // A bundle whose payload (block 1) is BIB-signed and far larger than the
-    // parser's default chunk, so `parse_headers` must take the `Partial`
-    // route and defer the block-1 op-set to `finalize_with_provider`.
-    #[cfg(feature = "rfc9173")]
-    fn signed_oversized_bundle() -> Bytes {
+    #[tokio::test]
+    async fn a_keyed_failure_keeps_the_block_facts() {
         use hardy_bpv7::{
-            bpsec::signer::{Context, Signer},
+            bpsec::{
+                key::{Key, KeyAlgorithm, KeySet, Operation, Type},
+                signer::{Context, Signer},
+            },
             builder::Builder,
             creation_timestamp::CreationTimestamp,
         };
+        use rand::{TryRng, rngs::SysRng};
 
-        let (_, base) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
-            .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
+        // Immaterial key value: generated, and bound once for the signer and
+        // the verifying key source.
+        let mut k = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut k).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(k),
+            key_algorithm: Some(KeyAlgorithm::HS256),
+            enc_algorithm: None,
+            operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
+            id: None,
+            key_use: None,
+        };
+
+        // Block type 777 is signed and carries no flags; block type 999 asks
+        // for a report on failure.
+        let (_, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .add_extension_block(block::Type::Unrecognised(777))
+            .unwrap()
+            .build(b"signed".as_slice().into())
+            .add_extension_block(block::Type::Unrecognised(999))
+            .unwrap()
+            .with_flags(block::Flags {
+                report_on_failure: true,
+                ..Default::default()
+            })
+            .build(b"unknown".as_slice().into())
+            .with_payload(b"payload".as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
-        let parsed = parse::parse(Bytes::from(base)).expect("parse the built bundle");
-        Bytes::from(
-            Signer::new(&parsed.bundle, &parsed.data)
-                .sign_block(
-                    1,
-                    Context::HMAC_SHA2(Default::default()),
-                    "ipn:2.1".parse().unwrap(),
-                    &sign_key(),
-                )
-                .map_err(|(_, e)| e)
-                .expect("sign the payload block")
-                .rebuild()
-                .expect("rebuild the signed bundle"),
-        )
-    }
+        let built = parse::parse(Bytes::from(data)).unwrap();
+        let signed_block = *built
+            .bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| matches!(b.block_type, block::Type::Unrecognised(777)))
+            .expect("the 777 block is present")
+            .0;
+        let signed = Signer::new(&built.bundle, &built.data)
+            .sign_block(
+                signed_block,
+                Context::HMAC_SHA2(Default::default()),
+                "ipn:1.2".parse().unwrap(),
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the 777 block")
+            .rebuild()
+            .expect("rebuild the signed bundle");
 
-    // Drive `parse_headers` down the `Partial` route in CLA-sized segments,
-    // then drain the tail the way `dispatcher::ingress` does, returning the
-    // header handover plus the reassembled whole bundle.
-    #[cfg(feature = "rfc9173")]
-    async fn headers_then_drain(full: &Bytes) -> (HeaderVerify, crate::BytesMut) {
-        use bpsec::key::KeySet;
+        // Flip the signed block's first data byte.
+        let at = parse::parse(Bytes::copy_from_slice(&signed))
+            .unwrap()
+            .bundle
+            .blocks
+            .get(&signed_block)
+            .expect("the signed block is present")
+            .payload_range()
+            .start as usize;
+        let mut tampered = signed.to_vec();
+        tampered[at] ^= 0xFF;
 
-        let segments: Vec<Bytes> = full.chunks(1000).map(Bytes::copy_from_slice).collect();
-        let (tx, mut rx) = hardy_async::channel::bounded(segments.len());
-        let last = segments.len() - 1;
-        for (i, seg) in segments.into_iter().enumerate() {
-            let seg = if i == last {
-                Segment::Final(seg)
-            } else {
-                Segment::Next(seg)
-            };
-            tx.send(seg).await.expect("channel open");
-        }
-
-        let keys = |_: &Bpv7Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
-            Box::new(KeySet::new(vec![sign_key()]))
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Final(Bytes::from(tampered)))
+            .await
+            .expect("channel open");
+        let keys = move |_: &Bpv7Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
+            Box::new(KeySet::new(vec![key]))
         };
-        let Ok((hv, headers, tail)) = parse_headers(&mut rx, 1 << 20, keys).await else {
-            panic!("the header pass must verify: the payload target is deferred");
+        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
+            parse_headers(&mut rx, 1 << 20, 0, keys).await
+        else {
+            panic!("a failed BIB must reject the bundle with a report");
         };
-        let mut tail = tail.expect("an oversized payload must take the Partial route");
-
-        let mut whole = crate::BytesMut::from(headers.as_ref());
-        loop {
-            let bytes = match rx.recv().await.expect("segments were all sent") {
-                Segment::Next(b) | Segment::Final(b) => b,
-            };
-            let complete = tail.push(&bytes).expect("the drained tail is well-formed");
-            whole.extend_from_slice(&bytes);
-            if complete {
-                break;
-            }
-        }
-        (hv, whole)
-    }
-
-    // The deferred payload-BIB handover across the gate seams: the block-1
-    // op-set `parse_headers` defers must ride `HeaderVerify::deferred_bibs`
-    // into `finalize_with_provider`'s payload verify. Emptying the handover
-    // map (or skipping the finalize payload pass) must fail both this test
-    // and the tamper companion below.
-    #[cfg(feature = "rfc9173")]
-    #[tokio::test]
-    async fn deferred_payload_bib_verified_at_finalize() {
-        let full = signed_oversized_bundle();
-        let (hv, whole) = headers_then_drain(&full).await;
         assert_eq!(
-            hv.deferred_bibs.len(),
-            1,
-            "the block-1 BIB op-set must ride the handover"
+            reception,
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
         );
-
-        let (bundle, chunks, _reason) = finalize_with_provider(&whole, hv, |_, _| {
-            Box::new(bpsec::key::KeySet::new(vec![sign_key()]))
-        })
-        .map_err(|(_, e)| e)
-        .expect("the deferred payload BIB verifies against the drained bundle");
-        assert!(chunks.is_none(), "nothing was scheduled for removal");
-        assert!(bundle.blocks.contains_key(&1), "payload survives");
-    }
-
-    // A payload byte flipped after the drain: the header pass never saw the
-    // payload and the tail's CRC check already passed on the clean bytes, so
-    // the deferred BIB at finalize is the only check that can catch it.
-    #[cfg(feature = "rfc9173")]
-    #[tokio::test]
-    async fn deferred_payload_bib_tamper_fails_at_finalize() {
-        let full = signed_oversized_bundle();
-        let (hv, mut whole) = headers_then_drain(&full).await;
-
-        let mid = whole.len() / 2;
-        whole[mid] ^= 0xFF;
-        let error = match finalize_with_provider(&whole, hv, |_, _| {
-            Box::new(bpsec::key::KeySet::new(vec![sign_key()]))
-        }) {
-            Err((_, error)) => error,
-            Ok(_) => panic!("a tampered payload must fail the deferred BIB"),
-        };
-        assert!(
-            matches!(
-                error,
-                hardy_bpv7::Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed)
-            ),
-            "expected IntegrityCheckFailed, got {error:?}"
-        );
+        assert_eq!(reason, ReasonCode::FailedSecurityOperation);
     }
 
     #[test]
-    fn reception_reason_precedence() {
+    fn reception_report_precedence() {
         let mut c = checks::Classification::default();
+        assert_eq!(reception_report_for(&c, false), ReceptionReport::Requested);
+        // A failure-drop alone reports, but is not block-demanded.
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::NoAdditionalInformation
+            reception_report_for(&c, true),
+            ReceptionReport::FailureDropped
         );
         c.report_unsupported_block = true;
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::BlockUnsupported
+            reception_report_for(&c, false),
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
         );
         c.report_unsupported_security = true;
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::UnknownSecurityOperation
+            reception_report_for(&c, false),
+            ReceptionReport::Demanded(ReasonCode::UnknownSecurityOperation)
         );
+        // The failure-drop outranks in the reason slot without erasing the
+        // block's demand.
         assert_eq!(
-            reception_reason_for(&c, true),
-            ReasonCode::FailedSecurityOperation
+            reception_report_for(&c, true),
+            ReceptionReport::Demanded(ReasonCode::FailedSecurityOperation)
         );
     }
 
@@ -993,5 +1188,476 @@ mod tests {
             status_report_reason_for(&bpsec::Error::NoKey.into()),
             ReasonCode::BlockUnintelligible
         );
+    }
+
+    // A small bundle the header pass completes from one segment, with the
+    // structural bundle its id is read from.
+    fn small_bundle() -> (Bpv7Bundle, Bytes) {
+        let (bundle, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"complete at head".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        (bundle, Bytes::from(data))
+    }
+
+    // A stream carrying `segments`, whose producer has gone away once they
+    // are drained.
+    async fn stream_of(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment> {
+        let (tx, rx) = hardy_async::channel::bounded(segments.len());
+        for segment in segments {
+            tx.send(segment).await.expect("channel open");
+        }
+        rx
+    }
+
+    // A bundle complete on a non-final segment commits once `Final` follows,
+    // past any empty `Next` padding.
+    #[tokio::test]
+    async fn complete_at_head_commits_at_final() {
+        let (_, data) = small_bundle();
+        let mut rx = stream_of(vec![
+            Segment::Next(data.clone()),
+            Segment::Next(Bytes::new()),
+            Segment::Final(Bytes::new()),
+        ])
+        .await;
+
+        let Ok((_, headers, tail, _)) = parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        else {
+            panic!("a bundle confirmed by `Final` must pass the header pass");
+        };
+        assert_eq!(headers, data, "the whole bundle is resident");
+        assert!(tail.is_none(), "nothing is left to drain");
+    }
+
+    // A producer that goes away after a complete bundle but before `Final`
+    // has abandoned the transfer: cancelled, so the CLA refuses it and
+    // withholds its acknowledgement.
+    #[tokio::test]
+    async fn complete_at_head_without_final_is_cancelled() {
+        let (_, data) = small_bundle();
+        let mut rx = stream_of(vec![Segment::Next(data)]).await;
+
+        assert!(matches!(
+            parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await,
+            Err(HeaderFailure::Cancelled)
+        ));
+    }
+
+    // Bytes after a complete bundle are trailing data: the bundle is
+    // dropped and reported, as the payload drain treats bytes past the
+    // outer break.
+    #[tokio::test]
+    async fn bytes_after_a_complete_bundle_are_invalid() {
+        let (bundle, data) = small_bundle();
+        let mut rx = stream_of(vec![
+            Segment::Next(data),
+            Segment::Final(Bytes::from_static(&[0x00])),
+        ])
+        .await;
+
+        let Err(HeaderFailure::Invalid(Some((reported, _, reason)))) =
+            parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        else {
+            panic!("trailing bytes must reject the bundle with a report");
+        };
+        assert_eq!(
+            reported.primary.id, bundle.primary.id,
+            "the report names the bundle"
+        );
+        assert_eq!(reason, ReasonCode::BlockUnintelligible);
+    }
+
+    // A small bundle carrying an unrecognised block flagged
+    // `report_on_failure`: a reception report it demands (§5.6 Step 4).
+    fn report_flagged_bundle() -> Bytes {
+        let (_, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .add_extension_block(block::Type::Unrecognised(999))
+            .unwrap()
+            .with_flags(block::Flags {
+                report_on_failure: true,
+                ..Default::default()
+            })
+            .build(b"unknown".as_slice().into())
+            .with_payload(b"complete at head".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        Bytes::from(data)
+    }
+
+    // Trailing bytes reject the bundle before any keyed verification runs,
+    // yet the report keeps the facts the bundle's own blocks establish.
+    #[tokio::test]
+    async fn bytes_after_a_complete_bundle_keep_the_block_facts() {
+        let mut rx = stream_of(vec![
+            Segment::Next(report_flagged_bundle()),
+            Segment::Final(Bytes::from_static(&[0x00])),
+        ])
+        .await;
+
+        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
+            parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        else {
+            panic!("trailing bytes must reject the bundle with a report");
+        };
+        assert_eq!(
+            reception,
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
+        );
+        assert_eq!(reason, ReasonCode::BlockUnintelligible);
+    }
+
+    // A `Final` that ends the stream inside the payload block: the bundle is
+    // reported from its parsed headers, with the facts its blocks establish,
+    // as unintelligible.
+    #[tokio::test]
+    async fn a_short_final_is_reported_with_the_block_facts() {
+        let data = report_flagged_bundle();
+        // Short by four bytes: inside the CRC value, as the payload's CRC-32
+        // trailer is `44 c0 c1 c2 c3 FF`.
+        let mut rx = stream_of(vec![Segment::Final(data.slice(..data.len() - 4))]).await;
+
+        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
+            parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        else {
+            panic!("a short Final must reject the bundle with a report");
+        };
+        assert_eq!(
+            reception,
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
+        );
+        assert_eq!(reason, ReasonCode::BlockUnintelligible);
+    }
+
+    // A bundle whose 1000-byte payload counts up from 0, for the peek tests,
+    // with the offset its payload's data starts at.
+    fn peek_bundle() -> (Bytes, usize) {
+        let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
+        let (bundle, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(payload.as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let start = bundle.blocks[&1].payload_range().start as usize;
+        (Bytes::from(data), start)
+    }
+
+    // `data` as a first segment ending where the payload's data starts, then
+    // `size`-byte segments, the last of them `Final`.
+    fn segmented(data: &Bytes, start: usize, size: usize) -> Vec<Segment> {
+        let mut segments = vec![Segment::Next(data.slice(..start))];
+        let mut at = start;
+        while at < data.len() {
+            let end = (at + size).min(data.len());
+            segments.push(Segment::Next(data.slice(at..end)));
+            at = end;
+        }
+        if let Some(Segment::Next(last)) = segments.pop() {
+            segments.push(Segment::Final(last));
+        }
+        segments
+    }
+
+    // `segments` with the bytes of its `Final` moved to a `Next`, closed by an
+    // empty `Final`.
+    fn final_apart(mut segments: Vec<Segment>) -> Vec<Segment> {
+        let Some(Segment::Final(last)) = segments.pop() else {
+            unreachable!("segmented ends in a Final");
+        };
+        segments.push(Segment::Next(last));
+        segments.push(Segment::Final(Bytes::new()));
+        segments
+    }
+
+    // The segments a header pass left for the drain.
+    async fn left(rx: &mut hardy_async::channel::Receiver<Segment>) -> usize {
+        let mut n = 0;
+        while rx.recv().await.is_ok() {
+            n += 1;
+        }
+        n
+    }
+
+    // A declared peek pulls segments until the payload's first `peek` bytes
+    // are resident, and no further: the rest is the drain's.
+    #[tokio::test]
+    async fn the_header_pass_holds_the_payload_peek() {
+        let (data, start) = peek_bundle();
+        let segments = segmented(&data, start, 100);
+        let count = segments.len();
+        let mut rx = stream_of(segments).await;
+
+        let Ok((_, headers, tail, _)) = parse_headers(&mut rx, 1 << 20, 150, bpsec::no_keys).await
+        else {
+            panic!("a peeked bundle must pass the header pass");
+        };
+        assert!(tail.is_some(), "the payload is still arriving");
+        assert_eq!(headers.len(), start + 200, "two 100-byte segments hold 150");
+        assert_eq!(
+            headers[..],
+            data[..start + 200],
+            "the held bytes are the bundle's"
+        );
+        // Pulled: the header segment and the two body segments the peek
+        // needs.
+        assert_eq!(
+            left(&mut rx).await,
+            count - 3,
+            "no segment past the peek is pulled"
+        );
+    }
+
+    // With no peek the header pass stops at the payload block's header.
+    #[tokio::test]
+    async fn no_peek_pulls_nothing_past_the_payload_header() {
+        let (data, start) = peek_bundle();
+        let segments = segmented(&data, start, 100);
+        let count = segments.len();
+        let mut rx = stream_of(segments).await;
+
+        let Ok((_, headers, tail, _)) = parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        else {
+            panic!("the header pass must pass");
+        };
+        assert!(tail.is_some());
+        assert_eq!(headers.len(), start);
+        assert_eq!(left(&mut rx).await, count - 1);
+    }
+
+    // A peek covering the whole payload holds its body and stops there: the
+    // trailer is the drain's. The 1000-byte body is ten 100-byte segments, so
+    // the last one held ends exactly at the body's end.
+    #[tokio::test]
+    async fn a_peek_covering_the_payload_holds_its_body() {
+        let (data, start) = peek_bundle();
+        let mut rx = stream_of(segmented(&data, start, 100)).await;
+
+        let Ok((_, headers, tail, _)) = parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
+        else {
+            panic!("a peeked bundle must pass the header pass");
+        };
+        assert!(tail.is_some(), "the trailer is still to come");
+        assert_eq!(headers[..], data[..start + 1000], "the body is resident");
+    }
+
+    // A segment that completes the peek and the bundle with it leaves the
+    // whole bundle resident: the tail completes, and the bundle commits on
+    // the stream's `Final`, as one that arrived whole does — whether the
+    // completing segment is the `Final` itself or a `Next` an empty `Final`
+    // follows.
+    #[tokio::test]
+    async fn a_peek_completing_the_bundle_holds_it_whole() {
+        let (data, start) = peek_bundle();
+        for (shape, segments) in [
+            ("completing Final", segmented(&data, start, 300)),
+            (
+                "Next then empty Final",
+                final_apart(segmented(&data, start, 300)),
+            ),
+        ] {
+            let mut rx = stream_of(segments).await;
+
+            let Ok((_, headers, tail, _)) =
+                parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
+            else {
+                panic!("{shape}: a complete bundle confirmed by `Final` must pass");
+            };
+            assert!(tail.is_none(), "{shape}: nothing is left to drain");
+            assert_eq!(headers, data, "{shape}");
+            assert_eq!(
+                left(&mut rx).await,
+                0,
+                "{shape}: the pass pulls the `Final`"
+            );
+        }
+    }
+
+    // A peeked bundle complete before `Final` whose producer goes away has
+    // abandoned the transfer.
+    #[tokio::test]
+    async fn a_peek_completing_the_bundle_still_waits_for_final() {
+        let (data, start) = peek_bundle();
+        let mut rx = stream_of(vec![
+            Segment::Next(data.slice(..start)),
+            Segment::Next(data.slice(start..)),
+        ])
+        .await;
+
+        assert!(matches!(
+            parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await,
+            Err(HeaderFailure::Cancelled)
+        ));
+    }
+
+    // A payload a BCB covers has no peek, so the header pass holds nothing
+    // for it, however large the declared peek.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn a_bcb_covered_payload_holds_no_peek() {
+        use hardy_bpv7::bpsec::{
+            encryptor::{Context, Encryptor},
+            key::{EncAlgorithm, Key, Operation, Type},
+        };
+        use rand::{TryRng, rngs::SysRng};
+
+        // Immaterial key value: the pass runs with `no_keys`, so the key
+        // only has to encrypt; generated per the no-literal-keys rule.
+        let mut key_bytes = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(key_bytes),
+            key_algorithm: None,
+            enc_algorithm: Some(EncAlgorithm::A256GCM),
+            operations: Some([Operation::Encrypt].into_iter().collect()),
+            id: None,
+            key_use: None,
+        };
+        let (built, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(vec![0xA5_u8; 1000].as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let encrypted = Bytes::from(
+            Encryptor::new(&built, &data)
+                .encrypt_block(
+                    1,
+                    Context::AES_GCM(Default::default()),
+                    "ipn:1.2".parse().unwrap(),
+                    &key,
+                )
+                .map_err(|(_, e)| e)
+                .expect("encrypt the payload")
+                .rebuild()
+                .expect("rebuild the encrypted bundle"),
+        );
+        let start = parse::parse(encrypted.clone()).unwrap().bundle.blocks[&1]
+            .payload_range()
+            .start as usize;
+        let segments = segmented(&encrypted, start, 100);
+        let count = segments.len();
+        let mut rx = stream_of(segments).await;
+
+        let Ok((_, headers, tail, _)) = parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
+        else {
+            panic!("an encrypted payload must pass the header pass");
+        };
+        assert!(tail.is_some());
+        assert_eq!(
+            headers.len(),
+            start,
+            "nothing is held past the payload header"
+        );
+        assert_eq!(left(&mut rx).await, count - 1);
+    }
+
+    // `data` rebuilt as a fragment whose payload starts at `offset` of a
+    // 4000-byte ADU.
+    fn as_fragment(data: &Bytes, offset: u64) -> Bytes {
+        use hardy_bpv7::{
+            bundle::FragmentInfo,
+            editor::{Chunk, Editor},
+        };
+
+        let parsed = parse::parse(data.clone()).unwrap();
+        let chunks = Editor::new(&parsed.bundle, data)
+            .with_fragment_info(Some(FragmentInfo {
+                offset,
+                total_adu_length: 4000,
+            }))
+            .map_err(|(_, e)| e)
+            .expect("set the fragment info")
+            .rebuild()
+            .expect("rebuild the fragment");
+        Bytes::from(Chunk::flatten(chunks, data).into_vec())
+    }
+
+    // A fragment past the payload's start has no peek, so the header pass
+    // holds nothing for it; the first fragment's bytes are the payload's
+    // prefix and are held.
+    #[tokio::test]
+    async fn only_a_first_fragment_holds_the_peek() {
+        let (data, _) = peek_bundle();
+        for (offset, holds) in [(0, true), (2000, false)] {
+            let fragment = as_fragment(&data, offset);
+            let start = parse::parse(fragment.clone()).unwrap().bundle.blocks[&1]
+                .payload_range()
+                .start as usize;
+            let mut rx = stream_of(segmented(&fragment, start, 100)).await;
+
+            let Ok((_, headers, tail, _)) =
+                parse_headers(&mut rx, 1 << 20, 150, bpsec::no_keys).await
+            else {
+                panic!("a fragment must pass the header pass");
+            };
+            assert!(tail.is_some());
+            assert_eq!(
+                headers.len() > start,
+                holds,
+                "offset {offset}: the peek is held only for the first fragment"
+            );
+        }
+    }
+
+    // A `Final` inside the peek, the payload short, is reported as a short
+    // `Final` after the header pass is.
+    #[tokio::test]
+    async fn a_final_inside_the_peek_is_reported() {
+        let (data, start) = peek_bundle();
+        let short = data.slice(..start + 500);
+        let mut rx = stream_of(segmented(&short, start, 100)).await;
+
+        let Err(HeaderFailure::Invalid(Some((_, _, reason)))) =
+            parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
+        else {
+            panic!("a short Final inside the peek must reject the bundle with a report");
+        };
+        assert_eq!(reason, ReasonCode::BlockUnintelligible);
+    }
+
+    // A trailer the tail rejects while the peek is held is reported at once,
+    // before the stream's `Final`: a payload byte flipped fails the CRC when
+    // the segment completing the body brings the trailer too.
+    #[tokio::test]
+    async fn a_crc_mismatch_inside_the_peek_is_reported() {
+        let (data, start) = peek_bundle();
+        let mut bad = data.to_vec();
+        bad[start + 10] ^= 0x01;
+        let bad = Bytes::from(bad);
+        let mut rx = stream_of(final_apart(segmented(&bad, start, 300))).await;
+
+        let Err(HeaderFailure::Invalid(Some((_, _, reason)))) =
+            parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
+        else {
+            panic!("a CRC mismatch inside the peek must reject the bundle with a report");
+        };
+        assert_eq!(reason, ReasonCode::BlockUnintelligible);
+        assert_eq!(left(&mut rx).await, 1, "the empty `Final` is left unpulled");
+    }
+
+    // The bytes the peek pulls count against the size bound.
+    #[tokio::test]
+    async fn the_peek_counts_against_the_size_bound() {
+        let (data, start) = peek_bundle();
+        let mut rx = stream_of(segmented(&data, start, 100)).await;
+
+        assert!(matches!(
+            parse_headers(&mut rx, start + 150, 4096, bpsec::no_keys).await,
+            Err(HeaderFailure::TooLarge { size, max }) if size == start + 200 && max == start + 150
+        ));
+    }
+
+    // A producer that goes away while the peek is held has abandoned the
+    // transfer.
+    #[tokio::test]
+    async fn a_stream_cancelled_inside_the_peek_is_cancelled() {
+        let (data, start) = peek_bundle();
+        let mut rx = stream_of(vec![
+            Segment::Next(data.slice(..start)),
+            Segment::Next(data.slice(start..start + 100)),
+        ])
+        .await;
+
+        assert!(matches!(
+            parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await,
+            Err(HeaderFailure::Cancelled)
+        ));
     }
 }

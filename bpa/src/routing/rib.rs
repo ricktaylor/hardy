@@ -13,6 +13,7 @@ use hardy_bpv7::{
     status_report::ReasonCode,
 };
 use hardy_eid_patterns::EidPattern;
+use portable_atomic::{AtomicUsize, Ordering};
 use tracing::{debug, info, trace};
 
 #[cfg(feature = "instrument")]
@@ -65,6 +66,15 @@ pub struct Rib {
     ecmp_hash_state: RandomState,
     pub(crate) tasks: TaskPool,
     poll_waiting_notify: Arc<Notify>,
+    // Waiting-poll requests raised so far (wrapping). The poll task records
+    // the count each poll covers, so a wakeup with nothing new — the permit
+    // `Notify` stores for a request that lands after a poll woke but before
+    // it read the count — skips the redundant scan.
+    poll_requests: AtomicUsize,
+    #[cfg(test)]
+    polls_covered: AtomicUsize,
+    #[cfg(test)]
+    polls_covered_notify: Notify,
     store: Arc<Store>,
     service_priority: u32,
 }
@@ -114,6 +124,11 @@ impl Rib {
             ecmp_hash_state: RandomState::default(),
             tasks: TaskPool::new(),
             poll_waiting_notify: Arc::new(Notify::new()),
+            poll_requests: AtomicUsize::new(0),
+            #[cfg(test)]
+            polls_covered: AtomicUsize::new(0),
+            #[cfg(test)]
+            polls_covered_notify: Notify::new(),
             store,
             service_priority,
         }
@@ -123,20 +138,55 @@ impl Rib {
         let cancel_token = self.tasks.cancel_token().clone();
         let rib = self.clone();
         hardy_async::spawn!(self.tasks, "poll_waiting_task", async move {
+            let mut covered = 0;
             loop {
                 select_biased! {
                     _ = cancel_token.cancelled().fuse() => {
                         break;
                     }
                     _ = rib.poll_waiting_notify.notified().fuse() => {
-                        dispatcher.poll_waiting(cancel_token.clone()).await;
+                        // Read before scanning: every request counted here
+                        // made its change first, so this poll sees it.
+                        let requested = rib.poll_requests.load(Ordering::Acquire);
+                        if requested != covered {
+                            dispatcher.poll_waiting(cancel_token.clone()).await;
+                            covered = requested;
+
+                            #[cfg(test)]
+                            {
+                                rib.polls_covered.store(covered, Ordering::Release);
+                                rib.polls_covered_notify.notify_one();
+                            }
+                        }
                     },
                 }
             }
             debug!("Poll waiting task complete");
         });
 
+        self.request_poll();
+    }
+
+    // Wakes the poll task to re-dispatch Waiting bundles. Callers make their
+    // routing or queue change first: the poll task reads the count before
+    // scanning, so a counted request's change is visible to that scan.
+    fn request_poll(&self) {
+        self.poll_requests.fetch_add(1, Ordering::Release);
         self.poll_waiting_notify.notify_one();
+    }
+
+    /// Waits until the poll task has finished a poll covering every request
+    /// raised so far, so a test can order a bundle's arrival in Waiting after
+    /// the polls its own setup triggered.
+    #[cfg(test)]
+    pub async fn poll_waiting_idle(&self) {
+        // The poll task's notify_one stores a permit if it lands between the
+        // check and the await, so no completion is missed.
+        while self.polls_covered.load(Ordering::Acquire)
+            != self.poll_requests.load(Ordering::Acquire)
+        {
+            self.polls_covered_notify.notified().await;
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -267,7 +317,7 @@ impl Rib {
 
         // notify if not AdminEndpoint
         if !matches!(action, Action::Internal(InternalAction::AdminEndpoint)) {
-            self.poll_waiting_notify.notify_one();
+            self.request_poll();
         }
 
         Ok(true)
@@ -305,7 +355,7 @@ impl Rib {
                 if let Some(peers) = self.find_peers(to)
                     && self.reset_peer_queues(peers).await
                 {
-                    self.poll_waiting_notify.notify_one();
+                    self.request_poll();
                 }
             }
             Action::Internal(InternalAction::Forward(peer)) => {
@@ -315,7 +365,7 @@ impl Rib {
                 let queued = self.store.reset_peer_queue(peer).await;
                 let in_flight = self.store.reset_peer_ack_pending(peer).await;
                 if queued || in_flight {
-                    self.poll_waiting_notify.notify_one();
+                    self.request_poll();
                 }
             }
             Action::Internal(InternalAction::Local(ref service)) => {
@@ -325,7 +375,7 @@ impl Rib {
                 // (DeliveryAckPending) are untouched — they resolve
                 // themselves.
                 self.store.reset_service_queue(service.eid()).await;
-                self.poll_waiting_notify.notify_one();
+                self.request_poll();
             }
             _ => {}
         }
@@ -365,7 +415,7 @@ impl Rib {
             }
         }
         if changed {
-            self.poll_waiting_notify.notify_one();
+            self.request_poll();
         }
     }
 

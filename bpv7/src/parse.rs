@@ -183,42 +183,54 @@ enum State {
     PrimaryBlock(usize),
     Blocks(usize),
     Done,
-    /// Headers + all BPSec blocks parsed, but the payload body is larger than
-    /// the buffer (the streaming-fallback in `parse_blocks` fired). Terminal,
-    /// like `Done`, but `push` reports it as [`ParserProgress::Partial`].
+    /// Headers + all BPSec blocks parsed, and the payload block's tail is
+    /// the caller's: not complete in the buffer, or failed on what is.
+    /// Terminal, like `Done`, but `push` reports it as
+    /// [`ParserProgress::Partial`].
     Partial,
 }
 
-/// The outcome of a [`BundleParser::push`] call: either more input is needed,
-/// or parsing reached one of its terminal states.
+/// The outcome of a [`BundleParser::push`] call.
+///
+/// Through the header region a push answers [`NeedMore`](Self::NeedMore).
+/// Once the payload block's header has parsed, a push is terminal:
+/// [`Ready`](Self::Ready) if the bundle is complete through the outer break
+/// and its payload trailer verifies, else [`Partial`](Self::Partial), whose
+/// tail owns the rest of the payload block and its verdict.
 pub enum ParserProgress {
-    /// More input is required before parsing can continue; carries a
-    /// lower-bound hint for the number of additional bytes to feed next.
+    /// The header region is incomplete: more input is required before
+    /// parsing can continue. Carries a lower-bound hint for the number of
+    /// additional bytes to feed next.
     NeedMore(usize),
-    /// Parsing is complete. Carries the concatenation of all bytes received
-    /// via `push()` as a single contiguous `Bytes`. Yielded exactly once.
+    /// Parsing is complete and the payload trailer verified. Carries the
+    /// concatenation of all bytes received via `push()` as a single contiguous
+    /// `Bytes`. Yielded exactly once.
     Ready(Bytes),
-    /// Headers and all BPSec blocks are parsed, but the payload body is larger
-    /// than the buffer. `consumed` is everything received so far (headers plus
-    /// any payload-body prefix); pass it to [`BundleParser::finish`] to obtain
-    /// the (header-only) [`Parsed`] index — in that `Parsed` the payload
-    /// block's `extent` over-claims and `data` holds only `consumed`.
+    /// Headers and all BPSec blocks are parsed; the rest of the payload block
+    /// is the tail's. `consumed` is everything received so far — headers plus
+    /// any of the payload block, possibly all of it and more; pass it to
+    /// [`BundleParser::finish`] to obtain the (header-only) [`Parsed`] index —
+    /// in that `Parsed` the payload block's `extent` may over-claim and
+    /// `data` holds only `consumed`.
     ///
     /// The caller owns the rest of the stream from here: it drains the
     /// remaining bytes (e.g. from the CLA segment stream) and persists them.
-    /// `tail` is a synchronous continuation, already fed the header and the
-    /// body prefix in `consumed`; feed it each subsequent run of bytes via
+    /// `tail` is a synchronous continuation, already fed what `consumed` holds
+    /// of the payload block; feed it each subsequent run of bytes via
     /// [`PayloadTail::push`] to carry the payload CRC and the block/outer-break
-    /// checks to completion. Yielded at most once; do not `push` the parser
-    /// after it.
+    /// checks to completion. The tail may already have failed on the bytes in
+    /// `consumed` — a CRC mismatch, a malformed break, bytes after the outer
+    /// break — in which case its next `push`, or its `finish`, reports that.
+    /// Yielded at most once; do not `push` the parser after it.
     Partial { consumed: Bytes, tail: PayloadTail },
 }
 
-/// Synchronous continuation that carries an oversized payload block's CRC and
-/// termination checks across the streamed tail. Handed back in
-/// [`ParserProgress::Partial`], already fed the block header and the body
-/// prefix that were in `consumed`. The caller pushes each subsequent run of
-/// bytes through [`push`](Self::push); the continuation feeds the running CRC
+/// Synchronous continuation that carries a payload block's CRC and termination
+/// checks: over the bytes the parser's buffer already holds, then across the
+/// streamed rest. Handed back in [`ParserProgress::Partial`], already fed what
+/// `consumed` holds of the payload block — and failed, if those bytes failed a
+/// check. The caller pushes each subsequent run of bytes through
+/// [`push`](Self::push); the continuation feeds the running CRC
 /// (entering the CRC-value field as zeros per RFC 9171 §4.2.2), validates the
 /// block-level and outer `0xFF` breaks, verifies the CRC, and reports when the
 /// bundle is complete. It performs no I/O and owns no storage — persisting the
@@ -237,6 +249,9 @@ pub struct PayloadTail {
     /// Captured wire CRC value bytes (`crc_value[..crc_value_len]`).
     crc_value: [u8; 4],
     crc_filled: usize,
+    /// A check that failed on the bytes the parser fed in: reported once, by
+    /// the next `push` or by `finish`.
+    failure: Option<Error>,
 }
 
 /// Where in the post-`consumed` byte stream a [`PayloadTail`] currently is.
@@ -307,6 +322,21 @@ impl PayloadTail {
             remaining,
             crc_value: [0; 4],
             crc_filled: 0,
+            failure: None,
+        }
+    }
+
+    // Feeds the bytes the parser's buffer already holds, and returns whether
+    // they complete the bundle. A check that fails on them is kept rather
+    // than returned, so the parser still hands the tail back; the next `push`
+    // or `finish` reports it.
+    fn prefeed(&mut self, data: &[u8]) -> bool {
+        match self.push(data) {
+            Ok(complete) => complete,
+            Err(failure) => {
+                self.failure = Some(failure);
+                false
+            }
         }
     }
 
@@ -316,13 +346,29 @@ impl PayloadTail {
         self.remaining
     }
 
+    /// Payload block-type-specific data bytes not yet seen — the target's
+    /// own content, excluding the CRC and break trailer. A caller feeding a
+    /// per-target digest (e.g. a deferred payload BIB) reads this before and
+    /// after each [`push`](Self::push) to slice the body prefix of the run
+    /// out from the trailer: the body is always consumed from the front, so
+    /// `body_remaining` before minus after is the run's leading body length.
+    pub fn body_remaining(&self) -> u64 {
+        self.body_remaining
+    }
+
     /// Feed the next run of streamed bytes. Returns `true` once the bundle is
     /// complete (body drained, CRC verified, breaks consumed). Errors on a CRC
     /// mismatch ([`crc::Error::IncorrectCrc`]), a malformed trailer
     /// ([`Error::NotCanonical`]), or bytes after the outer break
     /// ([`Error::AdditionalData`]). On `Ok`, the whole run belonged to the
-    /// bundle and should be persisted by the caller.
+    /// bundle and should be persisted by the caller. A tail handed back
+    /// already failed reports that failure here. After an `Err` the tail
+    /// must not be pushed again: its state past the failure is unspecified.
+    /// Every caller settles on the first `Err`.
     pub fn push(&mut self, mut bytes: &[u8]) -> Result<bool, Error> {
+        if let Some(failure) = self.failure.take() {
+            return Err(failure);
+        }
         let start = bytes.len();
         while let Some(&b) = bytes.first() {
             match self.phase {
@@ -393,10 +439,14 @@ impl PayloadTail {
         Ok(matches!(self.phase, TailPhase::Done))
     }
 
-    /// Assert the bundle completed. Errors with `NeedMoreData` (the still-
-    /// outstanding count) if the stream ended before the outer break — i.e. the
-    /// bundle was truncated.
+    /// Assert the bundle completed. Errors with the failure a tail handed back
+    /// already failed carries, else with `NeedMoreData` (the still-outstanding
+    /// count) if the stream ended before the outer break — i.e. the bundle was
+    /// truncated.
     pub fn finish(self) -> Result<(), Error> {
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
         if matches!(self.phase, TailPhase::Done) {
             Ok(())
         } else {
@@ -462,8 +512,9 @@ pub struct BundleParser {
     /// coverage on target blocks before the BIB pass runs.
     bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
 
-    /// Set when the streaming-fallback fires on an oversized payload: the CRC
-    /// continuation, pre-fed the header + body prefix, that `push` hands out in
+    /// Set when the payload block's tail is the caller's — not complete in
+    /// the buffer, or failed on what is: the CRC continuation, fed whatever
+    /// of the payload block arrived, that `push` hands out in
     /// [`ParserProgress::Partial`]. `None` on every other path.
     deferred: Option<PayloadTail>,
 }
@@ -491,8 +542,7 @@ impl BundleParser {
     }
 
     /// Feeds the next run of bytes and advances parsing, returning a
-    /// [`ParserProgress`]: `NeedMore` if more input is required, or a terminal
-    /// `Ready` / `Partial` result.
+    /// [`ParserProgress`] — see there for when a push is terminal.
     ///
     /// # Panics
     ///
@@ -529,9 +579,9 @@ impl BundleParser {
                     None => data_in,
                 };
                 match self.state {
-                    // Oversized payload: the body didn't fit. Hand the caller
-                    // the CRC continuation `parse_blocks` stashed (pre-fed the
-                    // header + body prefix) so it can drain the tail.
+                    // The payload block's tail is the caller's: hand it the
+                    // continuation `parse_blocks` stashed, fed what the buffer
+                    // holds of the block.
                     State::Partial => {
                         let tail = self
                             .deferred
@@ -924,47 +974,55 @@ impl BundleParser {
                 .ok_or(Error::InvalidCBOR(CborError::TooBig))?;
 
             let is_payload = matches!(header.block_type, block::Type::Payload);
-            if (data.len() as u64) < body_end {
-                // Body doesn't fit in the buffer yet. Keep the shortfall in
-                // u64: the streaming-fallback path below must stay reachable on
-                // 32-bit for a payload whose missing byte count exceeds usize
-                // (`Block::extent` is u64 precisely so streamed bundles need
-                // not fit in usize), so the `usize` conversion is deferred into
-                // the two `NeedMoreData` returns that actually need it.
-                let shortfall = body_end - data.len() as u64;
 
-                if is_payload {
-                    // For payloads, "small wait" vs "streaming fallback":
-                    // the trailer is tiny, so if the remaining chunk
-                    // capacity covers body + trailer, we prefer to wait
-                    // one more chunk over falling back to streaming.
-                    // Compare in u64: on 32-bit a wire-derived shortfall of
-                    // usize::MAX would overflow the usize add and wrap the
-                    // threshold test onto the small-wait path.
-                    let needed = shortfall + trailer_len as u64;
-                    if needed <= self.chunk_size.saturating_sub(offset) as u64 {
-                        // The threshold bounds `shortfall` below `chunk_size`
-                        // (a usize), so this conversion is infallible; the
-                        // hint is only a lower bound `push` re-clamps anyway.
-                        let hint = usize::try_from(shortfall).unwrap_or(usize::MAX);
-                        return Err(Error::InvalidCBOR(CborError::NeedMoreData(hint)));
+            // The payload block's trailer (CRC, breaks) is the tail's, fed
+            // whatever of the block the buffer holds (see `ParserProgress`).
+            // Extension blocks must arrive whole and are checked inline.
+            let mut payload_tail = None;
+            if is_payload {
+                // `Digest::new` rejects an unrecognised CRC type here.
+                let digest = match header.crc_type {
+                    crc::CrcType::None => None,
+                    _ => {
+                        let mut digest = crc::Digest::new(header.crc_type)?;
+                        digest.push(&data[block_start..offset]);
+                        Some(digest)
                     }
-                    // Body too big to inline — streaming fallback for the
-                    // payload. `offset` stays at the post-header position so
-                    // the BPA's spool picks up from there. `extent.end` is
-                    // still known (computed above) — only the CRC over the
-                    // body is deferred.
+                };
+                // The bundle ends with the payload block's trailer and the
+                // outer break. Kept in u64: `extent_end` is wire-derived and
+                // can exceed usize on 32-bit. Saturating, unlike the two
+                // checks above: an extent ending at u64::MAX is a payload no
+                // buffer holds, reported as truncation
+                // (`crafted_max_extent_payload`), not as too big.
+                let bundle_end = extent_end.saturating_add(1);
+                let offset_u64 = offset as u64;
+                let mut tail = PayloadTail::new(
+                    digest,
+                    header.crc_type,
+                    header.is_indefinite,
+                    body_end - offset_u64,
+                    bundle_end - offset_u64,
+                );
+                if tail.prefeed(&data[offset..]) {
+                    // Complete and verified through the outer break, with
+                    // nothing after it: the bundle is `Ready`, and the return
+                    // below reports the whole buffer consumed.
+                    offset = data.len();
                 } else {
-                    // Extension blocks must fit fully in the buffer; a shortfall
-                    // beyond usize is unrepresentable (and unaddressable) here.
-                    let shortfall_usize =
-                        usize::try_from(shortfall).map_err(|_| CborError::TooBig)?;
-                    return Err(Error::InvalidCBOR(CborError::NeedMoreData(shortfall_usize)));
+                    payload_tail = Some(tail);
                 }
+            } else if (data.len() as u64) < body_end {
+                // An extension block's body doesn't fit in the buffer yet; it
+                // must arrive whole. A shortfall beyond usize is
+                // unrepresentable (and unaddressable) here.
+                let shortfall =
+                    usize::try_from(body_end - data.len() as u64).map_err(|_| CborError::TooBig)?;
+                return Err(Error::InvalidCBOR(CborError::NeedMoreData(shortfall)));
             } else {
-                // Body is in the buffer. Consume CRC + trailing break and
-                // verify the CRC. Any NeedMoreData from here propagates
-                // normally — we want the small wait.
+                // An extension block's body is in the buffer. Consume CRC +
+                // trailing break and verify the CRC; a short trailer surfaces
+                // as NeedMoreData.
                 offset = body_end as usize;
                 let (new_offset, crc_value_start) = try_consume_block_after_body(
                     data,
@@ -984,54 +1042,6 @@ impl BundleParser {
                     if digest.finalize() != data[crc_value_start..crc_value_end] {
                         return Err(crc::Error::IncorrectCrc.into());
                     }
-                }
-            }
-
-            // The payload block's terminal steps are fallible, so run them
-            // before the bookkeeping below (retry safety, as above).
-            let mut payload_tail = None;
-            if is_payload {
-                if offset as u64 == extent_end {
-                    // Inline payload (body fit in the buffer): consume the
-                    // outer indefinite-array `0xFF` break and reject any
-                    // trailing data after it. Bundle is complete.
-                    match data.get(offset) {
-                        Some(&0xFF) => offset += 1,
-                        Some(_) => return Err(Error::NotCanonical),
-                        None => return Err(Error::InvalidCBOR(CborError::NeedMoreData(1))),
-                    }
-                    if offset != data.len() {
-                        return Err(Error::AdditionalData);
-                    }
-                } else {
-                    // Streaming-fallback fired above: the payload body exceeds
-                    // the buffer, so `offset` still sits at the post-header
-                    // position and the body, trailer, and outer break have not
-                    // arrived. The payload block's `extent` over-claims (its
-                    // `end` lies beyond the buffer). Build the CRC continuation
-                    // pre-fed with the header + body prefix already in `data`
-                    // (`Digest::new` also rejects an unrecognised CRC type here,
-                    // matching the body-fits path); `push` hands it to the
-                    // caller as `ParserProgress::Partial` to drain the tail.
-                    let digest = match header.crc_type {
-                        crc::CrcType::None => None,
-                        _ => {
-                            let mut digest = crc::Digest::new(header.crc_type)?;
-                            digest.push(&data[block_start..data.len()]);
-                            Some(digest)
-                        }
-                    };
-                    let body_remaining = body_end - data.len() as u64;
-                    let remaining = extent_end
-                        .saturating_add(1)
-                        .saturating_sub(data.len() as u64);
-                    payload_tail = Some(PayloadTail::new(
-                        digest,
-                        header.crc_type,
-                        header.is_indefinite,
-                        body_remaining,
-                        remaining,
-                    ));
                 }
             }
 
@@ -1209,8 +1219,8 @@ fn try_consume_block_after_body(
 /// at `data[*offset]`, followed by exactly `value_len` value bytes.
 /// Returns the absolute offset of the first CRC value byte and advances
 /// `*offset` past the CRC. `NeedMoreData` is reported for the exact
-/// shortfall so the caller can wait one chunk; any other shape is a
-/// canonical-encoding violation.
+/// shortfall, so an extension block whose trailer has not arrived waits for
+/// it; any other shape is a canonical-encoding violation.
 fn consume_crc(
     data: &[u8],
     offset: &mut usize,
@@ -1317,33 +1327,29 @@ fn slow_block_array_error(data: &[u8]) -> Error {
 /// For streamed input arriving in pieces, drive a [`BundleParser`]
 /// directly via [`BundleParser::push`] until it yields
 /// [`ParserProgress::Ready`] (complete) or [`ParserProgress::Partial`]
-/// (oversized payload — the caller drains the body tail).
+/// (headers parsed, the rest still to come — the caller drains it).
 pub fn parse(data: Bytes) -> Result<Parsed, Error> {
     let mut parser = BundleParser::default();
     let data = match parser.push(data)? {
         ParserProgress::NeedMore(more) => {
             return Err(Error::InvalidCBOR(CborError::NeedMoreData(more)));
         }
-        // A one-shot buffer that triggers the streaming fallback is, by
-        // definition, a truncated oversized payload (a complete one fits and
-        // takes the body-fits path). One-shot `parse` deals only in complete
-        // buffers, so surface it as truncation.
+        // A one-shot buffer that yields a tail is truncated, or failed a
+        // payload trailer check: the tail's `finish` says which.
         ParserProgress::Partial { tail, .. } => {
-            return Err(Error::InvalidCBOR(CborError::NeedMoreData(
-                usize::try_from(tail.remaining()).unwrap_or(usize::MAX),
-            )));
+            return Err(tail
+                .finish()
+                .expect_err("a Partial tail is unfinished or failed"));
         }
         ParserProgress::Ready(data) => data,
     };
 
     let parsed = parser.finish(data)?;
 
-    // For one-shot parse(), enforce that the bundle is complete. The inline
-    // payload path (small payload) already consumed the outer 0xFF and checked
-    // for trailing data before returning Ok. Only the streaming-fallback path
-    // (large payload body that didn't fit in the buffer) can reach here without
-    // having done so — that path is designed for the multi-push BPA use case,
-    // not one-shot use.
+    // For one-shot parse(), enforce that the bundle is complete. The payload
+    // tail already consumed the outer 0xFF and checked for trailing data
+    // before the parser returned `Ready`, and a `Partial` returned above; the
+    // check below keeps the guarantee local to one-shot use.
     //
     // `extent.end` is a u64 derived from an attacker-controlled byte-string
     // length: it can exceed both the buffer and `usize` (on 32-bit targets).
