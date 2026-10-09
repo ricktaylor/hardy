@@ -18,11 +18,11 @@ The storage layer sits between the BPA and a SQLite database file:
 
 ```mermaid
 flowchart LR
-    BPA --> store["store_bundle()"]
-    BPA --> poll["poll_for_*()"]
-    BPA --> update["update_status()"]
-    BPA --> get["get_bundle()"]
-    BPA --> remove["remove_bundle()"]
+    BPA --> store["insert()"]
+    BPA --> poll["poll_*()"]
+    BPA --> update["swap_status()"]
+    BPA --> get["get()"]
+    BPA --> remove["tombstone()"]
 
     store & poll & update & get & remove --> pool["ConnectionPool"]
     pool --> sqlite["SQLite (WAL mode)"]
@@ -61,15 +61,11 @@ The status is encoded as a numeric code with parameters rather than as a string 
 
 ### Status Columns as Source of Truth
 
-Because the status is stored in both the indexed columns and the serialised bundle blob, the two can diverge if an operation updates one without the other. Rather than requiring every status mutation to deserialise, modify, and re-serialise the blob, the indexed status columns are treated as authoritative.
+The processing status is stored only in the indexed columns: the serialised blob is the BPA's `StoredBundle` record — the wire bundle and its `BundleMetadata` — which carries no status. Every read path (`get`, `confirm_exists`, `poll_expiry`, `poll_waiting`, `poll_pending`, `poll_adu_fragments`, `poll_service_waiting`) re-imposes the status through `StoredBundle::into_bundle`, either decoding the columns with `to_status()` or taking the status the query filtered on, so the blob and the columns cannot disagree about it.
 
-This matters most for `reset_peer_queue`, which moves all bundles for a given peer from `ForwardPending` back to `Waiting`. This operation can touch many rows and may be called frequently (whenever a peer connection drops). Making it a single `UPDATE … SET status_code = 1` is substantially cheaper than deserialising and re-serialising every matching bundle.
+This matters most for status transitions, which touch only the columns. `swap_status` is a conditional compare-and-swap on the status columns, and the queue sweeps (`reset_peer_queue`, `reset_peer_ack_pending`, `reset_service_queue`) can touch many rows and may be called frequently (whenever a peer connection drops); each is a single `UPDATE … SET status_code = …` rather than a deserialise and re-serialise of every matching bundle.
 
-The read paths (`get`, `confirm_exists`, `poll_expiry`, `poll_waiting`) reconstruct the `BundleStatus` from the indexed columns via `to_status()` and override the value deserialised from the blob. For polling methods that filter by exact status (`poll_pending`, `poll_adu_fragments`, `poll_service_waiting`), no override is needed. Currently `reset_peer_queue` is the only operation that updates status columns without rewriting the blob, and it only moves bundles *away from* `ForwardPending` (to `Waiting`), never *toward* it. So rows matched by `poll_pending` (which filters on `ForwardPending`), `poll_adu_fragments` (which filters on `AduFragment`), or `poll_service_waiting` (which filters on `WaitingForService`) were never subject to a column-only update, and their blob and columns still agree.
-
-If a new column-only status mutation is added in the future, this invariant must be re-verified: either the new operation's target status is not queried by any unoverridden read path, or those read paths must be updated to override as well.
-
-The trade-off is a small amount of extra work on every read (extracting and mapping the status columns), but this cost is negligible compared to the I/O already involved in reading the row. The benefit is that bulk status transitions remain simple SQL updates with no serialisation overhead.
+The trade-off is a small amount of extra work on every read (extracting and mapping the status columns), but this cost is negligible compared to the I/O already involved in reading the row. The benefit is that status transitions remain simple SQL updates with no serialisation overhead.
 
 ### Write Serialisation
 
@@ -83,7 +79,7 @@ Schema migrations follow the pattern established by Flyway: numbered SQL files a
 
 Migration files are embedded at compile time, so there's no risk of missing migration scripts at runtime. Each migration's hash is stored in the database; if a hash doesn't match on startup, the storage refuses to open (indicating the schema was modified outside the migration system).
 
-The `upgrade` configuration option allows administrators to control when migrations run. In production, this prevents unexpected schema changes during routine restarts.
+The `upgrade` argument to `SqliteStorage::new` (hardy-bpa-server's `--upgrade-store` flag) allows administrators to control when migrations run. In production, this prevents unexpected schema changes during routine restarts.
 
 ## Recovery Support
 

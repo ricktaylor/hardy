@@ -374,3 +374,164 @@ impl BpaRegistration for Bpa {
         self.rib.register_agent(name, agent).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use core::{num::NonZeroU64, time::Duration};
+
+    use hardy_async::sync::spin::Once;
+    use hardy_bpv7::{
+        bundle::Id,
+        // Aliased: the glob import below brings in `services::Service`.
+        eid::{Eid, IpnNodeId, Service as ServiceId},
+        status_report::ReasonCode,
+    };
+    use time::OffsetDateTime;
+    use tokio::time::timeout;
+
+    use super::*;
+    use crate::{
+        Bytes,
+        stream::{Receiver, Segment},
+    };
+
+    /// Fails every `forward` call synchronously, without pulling, recording
+    /// the bundle each attempt was for.
+    struct FailingCla {
+        sink: Once<Box<dyn cla::Sink>>,
+        attempts_tx: flume::Sender<Id>,
+    }
+
+    #[async_trait]
+    impl Cla for FailingCla {
+        async fn on_register(
+            &self,
+            sink: Box<dyn cla::Sink>,
+            _node_ids: &[NodeId],
+            _max_bundle_size: Option<NonZeroU64>,
+        ) {
+            self.sink.call_once(|| sink);
+        }
+
+        async fn on_unregister(&self) {}
+
+        async fn forward(
+            &self,
+            _lane: Option<u32>,
+            _cla_addr: &cla::ClaAddress,
+            bundle_id: &Id,
+            _total_len: u64,
+            _stream: &mut dyn Receiver<Segment>,
+        ) -> cla::Result<cla::ForwardBundleResult> {
+            let _ = self.attempts_tx.send(bundle_id.clone());
+            Err(cla::Error::StreamCancelled)
+        }
+    }
+
+    /// Originates bundles; never has any delivered.
+    struct SendOnlyApp {
+        sink: Once<Box<dyn services::ApplicationSink>>,
+    }
+
+    #[async_trait]
+    impl services::Application for SendOnlyApp {
+        async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+            self.sink.call_once(|| sink);
+        }
+
+        async fn on_unregister(&self) {}
+
+        async fn on_deliver(
+            &self,
+            _bundle_id: &Id,
+            _expiry: OffsetDateTime,
+            _ack_requested: bool,
+            _total_len: u64,
+            _stream: &mut dyn Receiver<Segment>,
+        ) -> services::Result<()> {
+            Ok(())
+        }
+
+        async fn on_status_notify(
+            &self,
+            _bundle_id: &Id,
+            _from: &Eid,
+            _kind: services::StatusNotify,
+            _reason: ReasonCode,
+            _timestamp: Option<OffsetDateTime>,
+        ) {
+        }
+    }
+
+    /// A synchronous per-transfer failure parks only that bundle, with no
+    /// inline retry: a deterministic failure must not spin dispatch →
+    /// forward → fail, so exactly one attempt occurs until the next routing
+    /// or link event.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_forward_does_not_retry_inline() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        bpa.start(false).await;
+
+        let (attempts_tx, attempts_rx) = flume::unbounded();
+        let cla = Arc::new(FailingCla {
+            sink: Once::new(),
+            attempts_tx,
+        });
+        bpa.register_cla("failing".to_string(), cla.clone(), None, ClaInit::default())
+            .await
+            .unwrap();
+        cla.sink
+            .get()
+            .unwrap()
+            .add_peer(
+                cla::ClaAddress::Private("peer-a".as_bytes().into()),
+                &[NodeId::Ipn(IpnNodeId {
+                    allocator_id: 0,
+                    node_number: 2,
+                })],
+            )
+            .await
+            .unwrap();
+
+        let app = Arc::new(SendOnlyApp { sink: Once::new() });
+        bpa.register_application(ServiceId::Ipn(42), app.clone())
+            .await
+            .unwrap();
+
+        // Each registration above is a routing change that wakes the Waiting
+        // poller; a poll still scanning when the failed bundle parks would
+        // re-attempt it for a change that predates it. Let them finish.
+        bpa.rib.poll_waiting_idle().await;
+
+        let sent = app
+            .sink
+            .get()
+            .unwrap()
+            .send(
+                "ipn:0.2.99".parse().unwrap(),
+                Bytes::from_static(b"One shot"),
+                Duration::from_secs(3600),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // the timeout only bounds a regression
+        let attempt = timeout(Duration::from_secs(5), attempts_rx.recv_async())
+            .await
+            .expect("Timed out waiting for the forward attempt")
+            .expect("Attempt channel closed");
+        assert_eq!(attempt, sent);
+
+        // The bundle is back in Waiting; with no routing or link event since,
+        // no further attempt may occur. shutdown() is the barrier: it joins
+        // the pools, and the CLA records every attempt synchronously inside
+        // forward(), so any wrong re-attempt is in attempts_rx by the time it
+        // returns. No quiet window is involved.
+        bpa.shutdown().await;
+        assert!(
+            attempts_rx.is_empty(),
+            "A synchronous failure must not re-attempt without a routing event"
+        );
+    }
+}

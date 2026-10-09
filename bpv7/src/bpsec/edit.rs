@@ -24,8 +24,9 @@ The capability is opt-in: callers that want it pull
 `use hardy_bpv7::bpsec::edit::BPSecEditor;` into scope; callers that
 don't, don't see the methods.
 
-Both the BPA ingress pipeline (via `rewrite::apply_rewrites`) and external
-tools / third-party callers go through this trait for anything that
+Both the BPA's output doors (applying the RFC 9172 §5.1.1 removals its
+ingress scheduled) and external tools / third-party callers (including
+`rewrite::apply_rewrites`) go through this trait for anything that
 needs a [`key::KeySource`].
 */
 

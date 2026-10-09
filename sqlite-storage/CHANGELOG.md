@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - Records (de)serialize through `hardy-bpa`'s `StoredBundle`/`StoredBundleRef` — the on-disk format is unchanged, and the status is re-imposed from the typed columns by construction.
 - `MetadataStorage::update_status` is gone (removed from the `hardy-bpa` trait): every persisted status transition after first dispatch is a conditional compare-and-swap.
+- `MetadataStorage::replace` is gone (removed from the `hardy-bpa` trait): a record's non-status metadata is fixed at insert.
 - `poll_expiry` pages with a keyset cursor `(expiry, rowid)` and streams until the consumer closes the stream, per the revised `hardy-bpa` trait contract (the `limit` parameter is gone).
 - **BREAKING:** the persisted record format changed in `hardy-bpa` (the wire-bundle key rename `bundle` → `bpv7` and the new required `origin` provenance key). Rows written by earlier versions no longer deserialize: recovery logs each as "Garbage bundle found in metadata" and tombstones it, and the restart re-ingest then discards the orphaned bundle data as duplicates of the tombstoned rows. Wipe the metadata database when upgrading a node with a populated store — restart then re-ingests the bundle store cleanly.
 - Tracking the `hardy-bpa` forwarding-queue change, `forward_pending` (code 2) encodes the resolved next-hop adjacency EID in `status_param3` (previously unused for this code, so no schema change): the pending-poll for a forwarding queue matches on queue identity (`status_param1`/`status_param2`) and emits each row's own adjacency, and the peer-queue reset clears `status_param3`.
@@ -24,7 +25,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - `confirm_exists` treats a tombstoned row as absent (`Ok(None)`) instead of failing on its NULL columns. Previously a bundle-data blob whose metadata row was tombstoned — a crash between tombstone and data deletion leaves exactly that — made startup recovery panic on every boot, an unrecoverable crash loop cleared only by manual database surgery; the row now matches the same `bundle IS NOT NULL` predicate every other tombstone-aware query uses, recovery re-ingests the blob as an orphan, the insert reports it as a duplicate of the tombstone, and the stranded data is deleted — the store self-heals.
 - A status update or tombstone for a concurrently deleted bundle logs at debug rather than error: delete is terminal and the write quietly loses.
-- `replace` no longer resurrects a tombstoned bundle. A deleted row survives with its columns nulled, so the unqualified `UPDATE ... WHERE bundle_id = ?1` wrote the caller's snapshot straight back in, undoing the expiry reaper or a peer sweep and returning the bundle to the queues. The statement now carries the same `bundle IS NOT NULL` predicate as every other tombstone-aware query, so a metadata write that lost the race matches no row and quietly loses.
 
 ## [0.6.0]
 

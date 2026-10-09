@@ -75,10 +75,16 @@ impl Dispatcher {
         &self,
         service: Arc<Service>,
         service_eid: Eid,
-        bundle: bundle::Bundle,
+        mut bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
+        // The §E removals the ingress gate deferred apply first, so the
+        // Deliver chain sees the bundle as it will be delivered, and the
+        // strip can never delete a Rewriter's insert into a removed block's
+        // number.
+        let data = self.strip_removed_blocks(&mut bundle, data);
+
         // Deliver chain: Rewriters (transport-block strip), then Verifiers.
         let (bundle, mut data) = match self.filters.run_deliver(bundle, data, &*self.key_provider) {
             filter::ChainOutcome::Continue(bundle, data) => (bundle, data),

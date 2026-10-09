@@ -33,14 +33,23 @@ pub async fn meta_02_duplicate_insert(store: Arc<dyn MetadataStorage>) {
     );
 }
 
-/// META-03: Update (Replace)
-pub async fn meta_03_update_replace(store: Arc<dyn MetadataStorage>) {
+/// META-03: Update status (every transition is a compare-and-swap)
+pub async fn meta_03_update_status(store: Arc<dyn MetadataStorage>) {
     let mut bundle = fixtures::random_bundle();
     bundle.status = BundleStatus::Waiting;
     assert!(store.insert(&bundle).await.unwrap());
 
-    bundle.status = BundleStatus::Dispatching;
-    store.replace(&bundle).await.unwrap();
+    assert!(
+        store
+            .swap_status(
+                bundle.id(),
+                &BundleStatus::Waiting,
+                &BundleStatus::Dispatching
+            )
+            .await
+            .unwrap(),
+        "a swap from the live snapshot must win"
+    );
 
     let got = store.get(bundle.id()).await.unwrap().unwrap();
     assert_eq!(got.status, BundleStatus::Dispatching);
@@ -59,34 +68,6 @@ pub async fn meta_04_tombstone(store: Arc<dyn MetadataStorage>) {
     assert!(
         !store.insert(&bundle).await.unwrap(),
         "insert after tombstone should return false (prevents resurrection)"
-    );
-}
-
-/// META-17: Replace does not resurrect a tombstone
-///
-/// `replace` is unconditional, so it races `tombstone`, the peer-loss
-/// sweeps and the expiry reaper: a caller writing back the snapshot it
-/// took before the deletion must not undo it. The lost write is also not
-/// an error, so a backend that reports one panics its callers through
-/// `Store::update_metadata`.
-pub async fn meta_17_replace_does_not_resurrect_tombstone(store: Arc<dyn MetadataStorage>) {
-    let mut bundle = fixtures::random_bundle();
-    assert!(store.insert(&bundle).await.unwrap());
-
-    store.tombstone(bundle.id()).await.unwrap();
-
-    // The snapshot the racing caller holds, mutated as it would be by the
-    // work that raced the deletion.
-    bundle.status = BundleStatus::Dispatching;
-    store.replace(&bundle).await.unwrap();
-
-    assert!(
-        store.get(bundle.id()).await.unwrap().is_none(),
-        "replace must leave a tombstoned bundle deleted"
-    );
-    assert!(
-        !store.insert(&bundle).await.unwrap(),
-        "the tombstone must still block a re-insert after the lost replace"
     );
 }
 
