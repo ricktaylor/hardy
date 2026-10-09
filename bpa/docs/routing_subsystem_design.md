@@ -16,7 +16,7 @@ The BPA routing system consists of two interconnected components, driven by plug
 | Component | Purpose | Key Structure |
 |-----------|---------|---------------|
 | **RIB** | Unified pattern-based route storage and lookup | Priority-ordered BTreeMap of EidPatterns to Actions |
-| **Peer Table** | Reachable neighbors via CLAs | HashMap of NodeId to ClaAddress to peer_id |
+| **Peer Table** | Reachable neighbors via CLAs | Per CLA, a HashMap of ClaAddress to (NodeIds, peer_id) |
 
 All routes — admin endpoints, service registrations, CLA peers, static routes, TVR contacts, and drop rules — live in a single priority-ordered table. There is no separate local table or FIB. Forwarding decisions are recorded in bundle metadata as `BundleStatus::ForwardPending { peer, queue, next_hop }`.
 
@@ -119,7 +119,7 @@ The peer table maps auto-incrementing peer IDs to `Peer` structs. Each peer hold
 
 ### CLA Registry Mapping
 
-Each registered CLA keeps its own address map, `ClaAddress → (NodeIds, peer_id)`: the CL address keys the adjacency, one address may carry several node IDs (a multi-homed node), and each node ID gets a `Forward` route to the peer.
+Each registered CLA keeps its own address map, `ClaAddress → (NodeIds, peer_id)`: the CL address keys the adjacency, one address may carry several node IDs (a node known under more than one, such as an `ipn` and a `dtn` node ID), and each node ID gets a `Forward` route to the peer. A multi-homed node, one node at several addresses, is several adjacencies, and the routes for its node ID form one ECMP group across them.
 
 ### Peer Registration Flow
 

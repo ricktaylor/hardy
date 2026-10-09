@@ -47,7 +47,7 @@ The code separates concerns across four layers:
 
 RFC 9174 Section 3.1 defines session states: Connecting, Contact Negotiating, Session Negotiating, Established, Ending, Terminated, and Failed. Rather than implementing an explicit state enum, the implementation represents states implicitly through code flow.
 
-The contact exchange and session initialization occur in `Connector::connect()` and `Listener::new_contact()`. Once complete, control transfers to `Session::run()` which handles the Established state. Termination is handled by `Session::shutdown()` and `Session::on_terminate()`.
+The contact exchange and session initialization occur in `Connector::connect()` and `ConnectionContext::new_contact()`. Once complete, control transfers to `Session::run()` which handles the Established state. Termination is handled by `Session::shutdown()` and `Session::on_terminate()`.
 
 This approach was chosen because the state transitions are linear during setup, and the Established state requires different handling (bidirectional transfer loop) that maps naturally to a separate function.
 
@@ -56,11 +56,31 @@ This approach was chosen because the state transitions are linear during setup, 
 Each `ConnectionPool` maintains separate sets of idle and active connections. When forwarding a bundle:
 
 1. Try an idle connection first, moving it to the active set
-2. If no idle connections exist and the pool isn't at capacity, signal the caller to establish a new connection
+2. If no idle connections exist and the pool isn't at capacity, signal the caller to dial the pool's address (for a pool of inbound sessions that address is the peer's source port: see [Peer identity](#peer-identity))
 3. If at capacity, queue to a random active connection
 4. If establishing a new connection fails while sessions remain open, queue to a busy session anyway — a peer with asymmetric reachability (RFC 9174 Section 3.3) can hold a session open without being able to accept another
 
 This balances connection reuse against parallelism. The `max_idle_connections` configuration (default: 6) limits memory usage from idle connections while allowing burst capacity. Concurrent forwards may each signal a dial before the first new session registers, briefly overshooting the bound; excess connections are shed after use when they fail the idle-return check.
+
+### Peer identity
+
+**A pool per remote address.** The registry keys connection pools by the remote socket address: a session joins the pool for the address it was dialled at or accepted from. Once SESS_INIT names the peer, the pool registers one adjacency with the BPA, `add_peer(ClaAddress::Tcp(address), [node ID])`, and removes it when its last session ends. A peer that sends an empty node ID gets no adjacency, so the BPA cannot forward to it, even over its live session. Sessions carry transfers in both directions whichever side dialled, so an inbound session carries outbound bundles too.
+
+**Node identity belongs to the BPA.** Adjacencies that announce the same node ID join one ECMP group in the RIB, so more than one adjacency per node is legal:
+
+- A node that both dials and accepts appears once per pool. RFC 9174 Section 3.5 anticipates such duplicate sessions where peers have not agreed which of them initiates.
+- A multi-homed node appears once per address, with independent failover.
+- Every adjacency has its own egress queues, flow controller and `max_outstanding_transfers` budget, so a node's budget scales with its adjacency count.
+
+**Inbound pools are dialled today.** An inbound pool's address is the peer's source address, normally an ephemeral port that accepts no connections. A busy inbound pool with spare capacity dials it like any other (step 2 of the pooling strategy): against a firewalled peer each such forward waits out the contact timeout before falling back to the busy session, and every inbound address that has overflowed leaves a permanent entry in the registry's dial-lock map. The target: an inbound pool is never dialled. A pool records whether its address can be dialled (it can when an outbound connect created the pool), and a busy inbound pool queues.
+
+**A pool can hold two nodes today.** A session whose node ID differs from its pool's (an address reused by another node, or a peer that changed identity) joins the pool, but the BPA refuses a second adjacency on a claimed address. The second node is then unroutable, while bundles for the first can leave over the second node's session, although RFC 9174 Section 4.6 associates a session with the node ID in its own SESS_INIT. The target: such a session is not pooled with the other node's sessions.
+
+**Teardown races registration today.** A pool decides it is empty, awaits the BPA's `remove_peer`, and only then leaves the registry. A session registering at the same address inside that await joins the departing pool, so the session is never used and the BPA keeps a peer that nothing will remove. The target: one lock per remote address, taken first by registration and unregistration, held across the pool decision, the registry change and the BPA call, and removed with the pool.
+
+**Node IDs are not authenticated.** RFC 9174 Section 4.4.4.3 authenticates a SESS_INIT node ID against a NODE-ID subject alternative name in the peer's certificate. Hardy checks certificates against the PKI only (the dialer against the configured server name, `localhost` or the IP address; the listener through its client-authentication policy), so a verified peer is a member of the PKI, not necessarily the node it names. Until NODE-ID certificates can be issued and validated (the planned ACME support), Hardy routes on unauthenticated node IDs, against Section 4.6's "SHOULD NOT be used by a BPA for any discovery or routing functions". This is deliberate local policy, with a consequence: anything that can connect can claim a node ID, and each such session becomes another adjacency in that node's ECMP group, drawing a share of its flows. Restricting who can connect (TLS client authentication against a private CA, network controls) bounds the exposure; it does not bind the node ID.
+
+**Pools are not coalesced by node ID.** On an unauthenticated node ID, coalescing would let a forged session join its victim's pool unseen. It would also turn the advertised address into a handle that matches no particular socket, move the choice between a node's addresses from the BPA's ECMP into the CLA, and key the registry's locking by node ID. Once node IDs are authenticated, two shapes are open: attaching an inbound session to the outbound pool of the same node, or keying pools by node ID. Resolving neighbours to peers in the BPA (BP-ARP) is the longer-term answer; it needs a seam the `cla::Sink` lacks today, since `add_peer` on a claimed address is refused and a peer's node IDs cannot be updated.
 
 ### Tower Service for Listener
 
@@ -68,11 +88,11 @@ The TCP listener wraps connection acceptance as a Tower `Service`, enabling midd
 
 ```rust
 tower::ServiceBuilder::new()
-    .rate_limit(1024, Duration::from_secs(1))
+    .rate_limit(u64::from(connection_rate_limit.get()), Duration::from_secs(1))
     .service(ListenerService::new(listener))
 ```
 
-This provides connection flood protection without modifying the core acceptance logic. Future security layers (IP blocking, authentication gates) can be composed as additional middleware.
+This provides connection flood protection (`connection_rate_limit`, default 64 per second) without modifying the core acceptance logic. Future security layers (IP blocking, authentication gates) can be composed as additional middleware.
 
 ### TLS Integration
 
@@ -82,6 +102,8 @@ Server certificate validation supports three modes for the server name:
 1. Configured server name (for certificates issued to domain names)
 2. "localhost" for loopback connections
 3. IP address (may fail if certificate is domain-issued)
+
+Neither side binds the peer's certificate to the node ID in its SESS_INIT (RFC 9174 Section 4.4.4.3): see [Peer identity](#peer-identity).
 
 The deliberately insecure trust policy (`Tls::builder().dangerous().insecure_skip_verify()`) accepts self-signed certificates for testing, with prominent warnings and the hazard spelled out at every call site.
 
@@ -140,7 +162,7 @@ At session teardown, every terminal path converges on one epilogue: the ingest q
 
 ### Deferred forward outcomes
 
-`Cla::forward` answers `Accepted` once the transfer passes admission, and the transfer runs to its terminal state on a spawned task: pooled-session transmit, dialing new connections as the pool allows. The outcome is reported out-of-band via `Sink::transfer_outcome` — `Completed` once the peer has fully acknowledged the transfer, `Failed` otherwise, after which the BPA re-routes the bundle. This is what lets transfers overlap: the per-transfer acknowledgment round trip no longer holds the BPA's forward call, so throughput scales with the connection pool rather than being paced at one transfer per round trip.
+`Cla::forward` answers `Accepted` once the transfer passes admission, and the transfer runs to its terminal state on a spawned task: pooled-session transmit, dialing new connections as the pool allows. The outcome is reported out-of-band via `Sink::transfer_outcome` — `Completed` once the peer has fully acknowledged the transfer, `Failed` otherwise, after which the BPA re-routes the bundle. This is what lets transfers overlap: the per-transfer acknowledgment round trip does not hold the BPA's forward call, so throughput scales with the connection pool rather than being paced at one transfer per round trip.
 
 Admission is a per-peer semaphore (`Tcpclv4Builder::max_outstanding_transfers`) bounding accepted-but-unresolved transfers, which caps the bundle bytes held by in-flight and queued transfers to each peer. When exhausted, `forward` is held unanswered — withholding the verdict is the designed flow control back to the BPA's per-peer egress poller. The scope matters: dial attempts to an unreachable peer can pin a transfer for the full connect-timeout cycle, and a shared bound would let one such peer starve admission for every other. Transfers to the same peer may complete out of order across pooled connections, and the pool's retry of a failed session is at-least-once: both are absorbed by DTN semantics and receiver-side deduplication. An unreachable-but-routed peer is re-probed per bundle — each accepted transfer spends a dial cycle before its deferred `Failed`, and the BPA re-dispatches until the bundle's lifetime expires; see [Deferred CLA Transfer Outcomes](../../bpa/docs/design.md#deferred-cla-transfer-outcomes) for why that loop is deliberately un-damped. A non-TCP address is still refused synchronously with `NoNeighbour`: that is the wrong-queue signal, while dial exhaustion is a probe result reported out-of-band.
 
@@ -169,7 +191,7 @@ The library parses no configuration files: `Tcpclv4::builder()` is the construct
 | Builder input | Default | Description |
 |--------|---------|-------------|
 | `listen(SocketAddr)` / `listen_default()` | no listeners | Adds a passive listening element, zero or more per RFC 9174 Section 2.1, bound eagerly by `build()`; `listen_default()` is the IANA-registered `[::]:4556` (Section 8.1) |
-| `segment_mru(NonZeroU64)` | 16384 | Maximum segment payload size to receive |
+| `segment_mru(NonZeroU64)` | 16384 | Maximum segment payload size to receive, advertised in SESS_INIT; a received XFER_SEGMENT is not yet checked against it |
 | `transfer_mru(NonZeroU64)` | 1 GiB | Maximum total bundle size to receive (assembled in memory) |
 | `max_idle_connections(usize)` | 6 | Maximum idle connections per peer address; 0 disables pooling |
 | `connection_rate_limit(NonZeroU32)` | 64 | Maximum incoming connections per second |
@@ -183,7 +205,7 @@ The keepalive SHOULD range of 30 to 600 seconds (Section 5.1.1) is advisory, so 
 
 ### With hardy-bpa
 
-Implements `hardy_bpa::cla::Cla` trait. The BPA provides a `Sink` for dispatching received bundles and registering discovered peers. When a session learns the peer's node ID during SESS_INIT, it registers the peer via `sink.add_peer()`.
+Implements `hardy_bpa::cla::Cla` trait. The BPA provides a `Sink` for dispatching received bundles and registering discovered peers. When SESS_INIT names the peer, the session's pool registers it as an adjacency via `sink.add_peer()`, keyed by the pool's remote address (see [Peer identity](#peer-identity)).
 
 ### With hardy-bpa-server
 
@@ -210,6 +232,7 @@ A standalone application linking this library with hardy-proto for gRPC connecti
 - **Outbound transfer pipelining**: A session completes each outbound transfer (fully acknowledged) before accepting the next, so per-peer goodput is bounded by one bundle per round trip. RFC 9174 Section 3.7 explicitly permits pipelining transfers without waiting for acknowledgments. A transfer window is blocked on the BPA egress-policy work supplying more than one in-flight forward per peer; the strict-FIFO ack matcher and ingest ordering already generalise across concurrent transfers
 - **Priority queues**: Exposing `Cla::queue_count()` priority queues, most likely mapped to parallel sessions per peer — RFC 9174 Section 3.2 names multiple sessions as the interleaving mechanism, and strict priority on a single session would conflict with the no-interleaving rule
 - **The refusal cause under native ingress streaming**: The session reassembles a transfer before dispatching it, so a BPA refusal can only mean a bundle over the cap, which it answers with XFER_REFUSE `NotAcceptable`. Once segments dispatch as they arrive, a transfer cut short is refused too, and RFC 9174 Section 5.2.3 gives that case its own code, `Retransmit` (0x03). `cla::Acceptance::Refused` carries no cause, so the session cannot choose between them; the native-streaming leg settles how a cause reaches the CLA
+- **Peer identity**: never dialling inbound pools, one node per pool, the teardown lock, and RFC 9174 Section 4.4.4.3 node ID authentication once NODE-ID certificates can be issued; see [Peer identity](#peer-identity)
 - **Uniform writer-task tracking**: The active-side writer task is spawned on the CLA task pool while the passive-side writer is not, so unregistration does not wait for passive writers to finish their final flush
 
 ## Standards Compliance
