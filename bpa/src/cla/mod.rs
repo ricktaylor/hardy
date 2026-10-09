@@ -225,8 +225,8 @@ pub enum TransferOutcome {
 /// registers with `ClaInit::default()`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClaInit {
-    /// The address type this CLA handles, if any: the BPA registers the
-    /// CLA as the handler for addresses of this type.
+    /// The address type this CLA handles, if any. The BPA records it
+    /// against the CLA, but no lookup consults the record.
     pub address_type: Option<ClaAddressType>,
 
     /// The CLA's lane count: its honest parallelism, the number of
@@ -481,10 +481,10 @@ pub trait Sink: Send + Sync {
     ///
     /// The `node_ids` slice provides the BPA-layer identifiers for the peer:
     /// - An **empty slice** means the CLA has discovered a link-layer adjacency but does not yet
-    ///   know the remote node's EID (a "Neighbour"). The BPA will record the address but will not
-    ///   install a routing entry until the EID is resolved (e.g., via BP-ARP).
-    /// - A **non-empty slice** means the CLA knows one or more EIDs for the peer (a "Peer").
-    ///   Multi-homed nodes may have multiple EIDs at the same CL address.
+    ///   know the remote node's EID (a "Neighbour"). The BPA records the adjacency but installs no
+    ///   routing entry, and no interface yet supplies the EID later, so a neighbour stays unroutable.
+    /// - A **non-empty slice** means the CLA knows one or more EIDs for the peer (a "Peer"). A node
+    ///   known under several EIDs (an `ipn` and a `dtn` one, say) lists them all at its CL address.
     ///
     /// The BPA will update its routing information accordingly.
     async fn add_peer(
