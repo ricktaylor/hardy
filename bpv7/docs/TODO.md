@@ -192,6 +192,10 @@ This is the "inappropriate `pub` inner" smell, but unlike `BundleAge`/`Lifetime`
 
 Spotted 2026-06-05 during the bpv7 newtype `pub`-field review. The other single-value wrappers were checked and are fine: `IpnNodeId` (plain coordinate pair), `StatusAssertion`, and the rfc9173 `Results` wrappers (transparent value holders, no `From` redundancy, no construction invariant).
 
+## A key source cannot select by algorithm
+
+`KeySource::key(source, operations)` takes no algorithm, so a source returns the first key whose `key_ops` match: `KeySet` (`bpsec/key.rs`) and bpa-server's `PatternKeySource` both do. A second key for the same operation (a rotation, or another HMAC variant) can never be selected, and the variant check then reports the mismatch as `IntegrityCheckFailed` (`rfc9173/bib_hmac_sha2.rs`), indistinguishable from tampering, rather than `NoKey`. With bpa-server's example key file, a BIB using RFC 9173's default HMAC 384/384 gets the HS256 key and fails. Fix direction: pass the security context's algorithm (or its parameters) into `key()` so the source can filter on `alg`, and report a mismatch as `NoKey`.
+
 ## Key-material zeroization gaps (ingress-spool key review, 2026-09-03)
 
 Gaps found while auditing what key material the streaming ingress carries across `await` points (answer: none — the raw CEK copy is confined to `begin_verify`'s sync scope and wiped, and only key-*derived*, fixed-size MAC state rides the drain). Both are in material that *stays behind*:
