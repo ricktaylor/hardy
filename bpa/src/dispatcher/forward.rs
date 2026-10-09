@@ -1,8 +1,11 @@
 // `EditorError` keeps bpv7's editor error apart from this crate's `Error`,
 // in scope through the parent module.
-use hardy_bpv7::editor::Error as EditorError;
+use hardy_bpv7::editor::{Editor, Error as EditorError};
 
-use super::*;
+use super::{
+    output::{ChunkReceiver, Resident, pull_headers},
+    *,
+};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
@@ -24,10 +27,12 @@ impl Dispatcher {
         };
         let next_hop = next_hop.clone();
 
-        // Get bundle data from store, now we know we need it!
-        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
+        // Open the stored bundle, now we know we need it, and hold it until
+        // its headers are resident: the payload streams on to the CLA.
+        let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
             return;
         };
+        let resident = pull_headers(&bundle.bpv7, stream).await;
 
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).
@@ -66,7 +71,7 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Forward,
-            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, data, seen)
+            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, resident, seen)
                 .await,
         )
         .await
@@ -83,52 +88,74 @@ impl Dispatcher {
         lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
         next_hop: Eid,
-        bundle: bundle::Bundle,
-        data: Bytes,
+        mut bundle: bundle::Bundle,
+        resident: Resident,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // Egress chain: the registered Rewriters, on the stored wire form.
-        // Nothing at Egress drops a bundle, so the chain hands back the pair.
-        // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Edits are in-memory only (like Deliver), NOT persisted
-        // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress runs again with fresh context
-        let (mut bundle, data) =
-            self.filters
-                .run_egress(bundle, data, &next_hop, &*self.key_provider);
+        // One editor serves the attempt, over the record's block index and
+        // the resident bytes: the scheduled removals, the Egress Rewriters
+        // and the per-hop writes all edit through it, and the bundle is
+        // rebuilt once. The keys are derived once, over the stored bundle;
+        // the key source is `!Send`, so it stays inside this block, ahead of
+        // the CLA's await.
+        let chunks = {
+            let keys = filter::output_keys(&bundle.bpv7, &resident.bytes, &*self.key_provider);
+            let editor = Editor::new(&bundle.bpv7, &resident.bytes);
 
-        // The per-hop writes follow the Rewriters, so they supersede any
-        // Rewriter edit to the blocks they write, and the BPSec blocks (BIB/
-        // BCB, possibly peer-specific) belong after them. The rewrite shifts
-        // block extents, so the rebuilt block map replaces the old one. It is
-        // in-memory only: parks persist status alone, and a re-dispatch
-        // re-enters from the persisted representation (see park_bundle), so
-        // no exit needs to restore the stored map.
-        let mut data = match self.update_extension_blocks(&bundle, data, &next_hop) {
-            Ok((new_bundle, data)) => {
-                bundle.bpv7.blocks = new_bundle.blocks;
-                data
-            }
-            Err(PerHopRefusal::ProtectedPrimary) => {
-                debug!(
-                    "Legacy next hop {next_hop} needs a re-encoded primary, which a BPSec operation covers"
-                );
-                return OfferOutcome::Dropped(
-                    bundle,
-                    Some(ReasonCode::UnexpectedSecurityOperation),
-                );
-            }
-            Err(PerHopRefusal::Covered(e)) => {
-                warn!("Failed to update extension blocks: {e}");
-                return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
-            }
+            // The §E removals the ingress gate deferred apply first, so the
+            // Rewriters see the bundle as it will travel, and the strip can never
+            // delete a Rewriter's insert into a removed block's number.
+            let (mut editor, _) = self.strip_removed_blocks(&bundle, editor, &*keys);
+
+            // Egress chain: the registered Rewriters, on the stripped bundle.
+            // Nothing at Egress drops a bundle.
+            // - Runs after dequeue from ForwardPending, just before CLA send
+            // - Edits are in-memory only (like Deliver), NOT persisted
+            // - If send fails or peer goes down, bundle returns to Waiting and may
+            //   route to a different peer, so Egress runs again with fresh context
+            self.filters
+                .run_egress(&mut editor, &bundle.metadata, &next_hop, &*keys);
+
+            // The per-hop writes follow the Rewriters, so they supersede any
+            // Rewriter edit to the blocks they write, and the BPSec blocks (BIB/
+            // BCB, possibly peer-specific) belong after them.
+            let editor = match self.update_extension_blocks(&bundle, editor, &next_hop) {
+                Ok(editor) => editor,
+                Err(PerHopRefusal::ProtectedPrimary) => {
+                    debug!(
+                        "Legacy next hop {next_hop} needs a re-encoded primary, which a BPSec operation covers"
+                    );
+                    return OfferOutcome::Dropped(
+                        bundle,
+                        Some(ReasonCode::UnexpectedSecurityOperation),
+                    );
+                }
+                Err(PerHopRefusal::Covered(e)) => {
+                    warn!("Failed to update extension blocks: {e}");
+                    return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
+                }
+            };
+
+            // The one rebuild. The edits shift block extents, so the rebuilt block
+            // map replaces the old one; its bytes were validated at ingress and
+            // every edit was checked when it was staged, so a failure is a BPA or
+            // bpv7 bug, and fatal. It is in-memory only: parks persist status
+            // alone, and a re-dispatch re-enters from the persisted representation
+            // (see park_bundle), so no exit needs to restore the stored map.
+            let (rebuilt, chunks) = editor
+                .rebuild_bundle()
+                .trace_expect("The egress rewrite failed to rebuild the bundle");
+            bundle.bpv7.blocks = rebuilt.blocks;
+            chunks
         };
 
-        // And pass to CLA: the whole bundle is in hand, so it travels as a
-        // single Final segment.
-        let total_len = data.len() as u64;
+        // And pass to CLA: the rebuild's chunks travel as segments, the kept
+        // payload streaming on from the store, and the rebuilt block map
+        // gives the exact length.
+        let total_len = bundle.bpv7.encoded_len();
+        let mut stream = ChunkReceiver::new(chunks, resident, total_len);
         match cla
-            .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
+            .forward(lane, cla_addr, bundle.id(), total_len, &mut stream)
             .await
         {
             Ok(cla::ForwardBundleResult::Sent) => OfferOutcome::Completed(bundle),
@@ -150,6 +177,16 @@ impl Dispatcher {
                 self.store.reset_peer_queue(peer).await;
                 OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
+            Err(cla::Error::StreamCancelled) => {
+                // A cancelled transfer is a failed acceptance: the bundle was
+                // not forwarded, and is valid to retry, so it re-enters
+                // dispatch at once, as a deferred `Failed` outcome does, with
+                // no routing or link event; resolve_offer re-claims it and
+                // counts the failure. A CLA that cancels every attempt loops
+                // until the bundle expires.
+                debug!("Transfer to peer {peer} was cancelled, re-dispatching");
+                OfferOutcome::Redispatch(bundle)
+            }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
                 debug!("Failed to forward bundle to peer {peer}: {e}, returning it to Waiting");
@@ -157,13 +194,14 @@ impl Dispatcher {
                 // Bundle-scoped evidence about a single transfer: park only
                 // this bundle, leaving the rest of the peer's queue alone —
                 // resetting the queue is the response to link-scoped
-                // evidence, above. Unlike the deferred `Failed` outcome,
-                // which is paced by a network round trip, a synchronous
-                // failure can be deterministic and instantaneous, so
-                // re-running dispatch inline here could spin; the retry
-                // waits in Waiting for the next routing or link event —
-                // park_bundle re-dispatches at most once, and only if such
-                // an event landed while this transfer was in flight.
+                // evidence, above. Unlike a cancellation, or the deferred
+                // `Failed` outcome, which is paced by a network round trip,
+                // any other synchronous failure can be deterministic and
+                // instantaneous, so re-running dispatch inline here could
+                // spin; the retry waits in Waiting for the next routing or
+                // link event — park_bundle re-dispatches at most once, and
+                // only if such an event landed while this transfer was in
+                // flight.
                 OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
         }
@@ -182,7 +220,7 @@ impl Dispatcher {
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: cla::TransferOutcome,
     ) {
-        let Some(mut bundle) = self.store.get_metadata(bundle_id).await else {
+        let Some(bundle) = self.store.get_metadata(bundle_id).await else {
             debug!("Transfer outcome for unknown bundle {bundle_id}, ignored");
             return;
         };
@@ -204,8 +242,8 @@ impl Dispatcher {
 
         // Claim the bundle: the snapshot checks above race the peer sweep,
         // the expiry reaper, and duplicate outcomes, and losing the claim —
-        // resolve_offer's conditional tombstone for a completion, the
-        // Dispatching swap below for a failure — means one of them resolved
+        // resolve_offer's conditional tombstone for a completion, its
+        // Dispatching re-claim for a failure — means one of them resolved
         // the bundle first. A completion must not hop through Dispatching:
         // that status is recoverable by the dispatch queue's storage poller
         // mid-resolution, driving a duplicate transmission after delivery.
@@ -215,19 +253,6 @@ impl Dispatcher {
                     .await
             }
             cla::TransferOutcome::Failed => {
-                if !self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                    .await
-                {
-                    debug!(
-                        "Transfer outcome for bundle {bundle_id} lost the resolution race, ignored"
-                    );
-                    return;
-                }
-
-                metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-
                 // Bundle-scoped evidence about a single transfer: re-run the
                 // routing decision now, rather than parking in Waiting (whose
                 // semantic is "nowhere to go") or resetting the whole peer
@@ -241,31 +266,25 @@ impl Dispatcher {
         }
     }
 
-    // The per-hop rewrite, over the Egress Rewriters' output. Its bytes were
-    // validated at ingress, so any failure other than a PerHopRefusal is a
-    // BPA bug or storage corruption, and fatal.
+    // The per-hop writes, on the attempt's editor after the scheduled removals
+    // and the Egress Rewriters. The editor works over the record's block
+    // index, whose coverage stamps are the ones ingress derived: keyed for a
+    // key holder, so this node edits the blocks it has proven no encrypted
+    // BIB covers. The bytes were validated at ingress, so any failure other
+    // than a PerHopRefusal is a BPA bug or storage corruption, and fatal.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    fn update_extension_blocks(
+    fn update_extension_blocks<'a>(
         &self,
         bundle: &bundle::Bundle,
-        source_data: Bytes,
+        editor: Editor<'a>,
         next_hop: &Eid,
-    ) -> Result<(hardy_bpv7::Bundle, Bytes), PerHopRefusal> {
+    ) -> Result<Editor<'a>, PerHopRefusal> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
         // bumped values back: the rewrite is per-attempt and in-memory only, and
         // the cache mirrors the stored bytes, which stay as received. The cache
         // IS observed again after this rewrite: a park's reaper expiry watch
         // reads `extensions.age`, and wants the original, un-bumped value.
-        //
-        // Editor needs a `&Bundle`, so re-parse structurally.
-        let hardy_bpv7::parse::Parsed {
-            data: source_data,
-            bundle: raw,
-            ..
-        } = hardy_bpv7::parse::parse(source_data)
-            .trace_expect("The per-hop rewrite's bytes do not decode");
-
         let legacy = self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop));
 
         // RFC 9171 §4.2.3-4/-5: an admin-record or anonymous bundle's blocks
@@ -285,14 +304,20 @@ impl Dispatcher {
         // security acceptor and verified it at ingress, as for a hop-by-hop
         // PreviousNode signature, the strip also discharges the RFC 9172
         // §5.1.2 acceptor duty; elsewhere the node in effect acts as the
-        // acceptor of an operation it may not have verified. A Previous Node
-        // or Bundle Age block the editor cannot safely update (BCB-covered,
-        // so possibly under an encrypted BIB) refuses, and the caller parks
-        // the bundle: both writes are MUSTs (RFC 9171 §5.4).
+        // acceptor of an operation it may not have verified. A BCB-covered
+        // block is stripped from its BCB and written in plaintext: this node,
+        // required to update the block, is the acceptor of its confidentiality
+        // operation too (forwarder policy). The editor refuses a block whose
+        // coverage reads `BibCoverage::Maybe` — BCB-covered beside an
+        // encrypted BIB this node could not decrypt at ingress, so the BIB may
+        // cover it — or one an encrypted BIB is known to cover, whose
+        // operation cannot be stripped from the ciphertext. A refused
+        // Previous Node or Bundle Age write parks the bundle: both are MUSTs
+        // (RFC 9171 §5.4).
         let covered = |(_, e)| PerHopRefusal::Covered(e);
 
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
+        let mut editor = editor
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(covered)?
             .with_flags(hardy_bpv7::block::Flags {
@@ -312,10 +337,16 @@ impl Dispatcher {
 
         // Increment Hop Count, where the block can be updated. The increment
         // is a SHOULD (RFC 9171 §4.4.3): a Hop Count block the editor refuses
-        // (BCB-covered beside an encrypted BIB that may cover it) travels
+        // (one an encrypted BIB may or does cover) travels
         // unchanged, with its security operations, rather than holding the
-        // bundle back.
-        if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
+        // bundle back. One this node could not read at ingress has no cached
+        // value, and travels unchanged too. Origination is not a hop: a bundle
+        // this node originated leaves with the count it was built with, and
+        // the next node makes the first increment.
+        let originated = matches!(bundle.metadata.origin(), bundle::Origin::Originated);
+        if let Some(hop_count) = &bundle.metadata.extensions.hop_count
+            && !originated
+        {
             editor = match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
                 Ok(block) => block
                     .with_flags(hardy_bpv7::block::Flags {
@@ -410,19 +441,7 @@ impl Dispatcher {
             }
         }
 
-        // rebuild_bundle() returns a Bundle whose block extents index the
-        // rewritten data, keeping the (bundle, data) pair consistent for the
-        // CLA hand-off
-        let (new_bundle, chunks) = editor
-            .rebuild_bundle()
-            .trace_expect("The per-hop rewrite failed to rebuild the bundle");
-
-        // Zero-copy in place if `source_data` uniquely owns; otherwise
-        // allocates a fresh buffer.
-        Ok((
-            new_bundle,
-            hardy_bpv7::editor::Chunk::flatten_bytes(chunks, source_data),
-        ))
+        Ok(editor)
     }
 }
 
@@ -509,8 +528,7 @@ mod tests {
         let storage_name = data_store.save(data.clone()).await.unwrap();
         let parsed =
             crate::bundle::parse::parse_validate_with_provider(data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
+                .unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -544,44 +562,6 @@ mod tests {
         assert!(
             metadata_store.get(&bundle_id).await.unwrap().is_none(),
             "the expired bundle is resolved terminally as LifetimeExpired"
-        );
-    }
-
-    /// The per-hop rewrite's bytes were validated at ingress and come back
-    /// from storage, so failing to decode them is a BPA bug or storage
-    /// corruption: fatal, never a park. Driven as a direct call because a
-    /// panic inside a running BPA aborts the test process.
-    #[tokio::test]
-    #[should_panic(expected = "The per-hop rewrite's bytes do not decode")]
-    async fn undecodable_per_hop_bytes_are_fatal() {
-        let dispatcher = dispatcher(
-            Arc::new(MetadataMemStorage::new(None)),
-            Arc::new(BundleMemStorage::new(None, None)),
-        )
-        .await;
-        let (_, data) = hardy_bpv7::builder::Builder::new(
-            "ipn:0.2.1".parse().unwrap(),
-            "ipn:0.3.2".parse().unwrap(),
-        )
-        .with_payload(b"truncated in storage".to_vec().into())
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .unwrap();
-        let data = Bytes::from(data);
-        let bundle = bundle::Bundle {
-            bpv7: crate::bundle::parse::parse_validate_with_provider(
-                data.clone(),
-                hardy_bpv7::bpsec::no_keys,
-            )
-            .unwrap()
-            .bundle,
-            metadata: bundle::BundleMetadata::originated(),
-            status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
-        };
-
-        let _ = dispatcher.update_extension_blocks(
-            &bundle,
-            data.slice(..data.len() - 1),
-            &"ipn:0.3.0".parse().unwrap(),
         );
     }
 }

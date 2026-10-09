@@ -20,14 +20,14 @@ Trait-level contract testing (CRUD, polling, ordering, state transitions, recove
 
 | Ref | Description | Verified By |
 | :--- | :--- | :--- |
-| **8.1** | Store additional metadata in a remote PostgreSQL database instance | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite A–C (META-01..17) |
+| **8.1** | Store additional metadata in a remote PostgreSQL database instance | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite A–C (META-01..16) |
 | **8.2** | Restart the system and recover state from a remote PostgreSQL instance | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) META-05, META-12, META-13 |
 
 ## 3. Generic Harness Coverage
 
 This backend is registered in the storage harness with `storage_meta_tests_async!(postgres, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. The following suites run against PostgreSQL:
 
-- Suite A: Basic CRUD Operations (META-01..04, META-15, META-17)
+- Suite A: Basic CRUD Operations (META-01..04, META-15)
 - Suite B: Polling & Ordering (META-06..10, META-14)
 - Suite C: State Transitions & Bulk Ops (META-05, META-11..13, META-16)
 

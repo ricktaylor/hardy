@@ -1,11 +1,19 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
 use futures::join;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::{
+    bpsec::{edit::BPSecEditor, key::KeySource},
+    editor::Editor,
+    eid::Eid,
+    status_report::ReasonCode,
+};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
-use crate::filter::pack::chains::FilterChains;
+use crate::{
+    filter::pack::chains::FilterChains,
+    stream::{Receiver, Segment},
+};
 
 mod admin;
 mod deliver;
@@ -13,9 +21,11 @@ mod dispatch;
 mod forward;
 mod ingress;
 mod originate;
+mod output;
 mod reassemble;
 mod report;
 mod restart;
+mod validate;
 
 // The default bound on a single reassembled bundle. Streaming producers
 // dissolved the transport-level caps that used to bound ingress implicitly,
@@ -69,7 +79,9 @@ enum OfferOutcome {
     /// Deliberate detach: the CLA owns the transfer (`Accepted`) and
     /// resolves the claim later via `transfer_outcome`.
     Detached(bundle::Bundle),
-    /// Re-enter dispatch for a fresh routing decision.
+    /// Re-enter dispatch for a fresh routing decision: `resolve_offer`
+    /// re-claims the bundle out of its hand-off status and reloads it from
+    /// storage first.
     Redispatch(bundle::Bundle),
 }
 
@@ -206,14 +218,29 @@ impl Dispatcher {
     /// `LifetimeExpired`).
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn load_data_or_drop(&self, bundle: bundle::Bundle) -> Option<(bundle::Bundle, Bytes)> {
-        let storage_name = bundle
-            .metadata
-            .storage_name
-            .as_ref()
-            .trace_expect("Bundle without storage_name reached load_data_or_drop");
+        let data = self.store.load_data(stored_name(&bundle)).await;
+        self.loaded_or_drop(bundle, data).await
+    }
 
-        match self.store.load_data(storage_name).await {
-            Some(data) => Some((bundle, data)),
+    /// Open bundle data as a segment stream, dropping the bundle as
+    /// [`load_data_or_drop`](Self::load_data_or_drop) does when the data is
+    /// missing.
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    async fn load_stream_or_drop(
+        &self,
+        bundle: bundle::Bundle,
+    ) -> Option<(bundle::Bundle, Box<dyn Receiver<Segment>>)> {
+        let stream = self.store.load_stream(stored_name(&bundle)).await;
+        self.loaded_or_drop(bundle, stream).await
+    }
+
+    async fn loaded_or_drop<T>(
+        &self,
+        bundle: bundle::Bundle,
+        loaded: Option<T>,
+    ) -> Option<(bundle::Bundle, T)> {
+        match loaded {
+            Some(loaded) => Some((bundle, loaded)),
             None => {
                 if !bundle.has_expired() {
                     // Bundle data was deleted while queued - not reaped
@@ -351,7 +378,35 @@ impl Dispatcher {
                 // still reaps it promptly.
                 self.store.watch_bundle(bundle).await
             }
-            OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
+            OfferOutcome::Redispatch(mut bundle) => {
+                // The re-claim is a conditional swap from the in-hand status:
+                // a concurrent resolver (the reaper, a peer sweep, a
+                // duplicate outcome) may have got there first, and its
+                // resolution stands.
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!(
+                        "Re-dispatch of {} lost the resolution race, ignored",
+                        bundle.id()
+                    );
+                    return;
+                }
+                if matches!(kind, OfferKind::Forward) {
+                    metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
+                }
+                // Re-enter from the persisted representation: the in-hand
+                // copy may carry the attempt's in-memory rewrites, whose
+                // block extents no longer index the stored bytes (see
+                // park_bundle).
+                let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
+                    debug!("Re-dispatch lost the bundle to a concurrent resolution");
+                    return;
+                };
+                self.dispatch_bundle(bundle).await
+            }
         }
     }
 
@@ -439,6 +494,43 @@ impl Dispatcher {
     ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
         self.key_provider.key_source(bundle, data)
     }
+
+    // Applies the §E block removals the ingress gate deferred (RFC 9172
+    // §5.1.1 failure-drops and honoured `delete_block_on_failure` unknowns)
+    // to the attempt's editor, ahead of the door's filter chain; the stored
+    // bundle keeps the blocks. The editor works over the record's block
+    // index, the parse ingress verified, and its coverage stamps (keyed for a
+    // key holder), so nothing is re-parsed. Nothing scheduled costs one
+    // branch. bpv7's cascade retains, rather than fails on, a removal it
+    // cannot complete for want of a key; the bytes were validated at ingress,
+    // so any failure here is a BPA bug or storage corruption, and fatal.
+    // Returns whether a block was removed.
+    fn strip_removed_blocks<'a>(
+        &self,
+        bundle: &bundle::Bundle,
+        editor: Editor<'a>,
+        keys: &dyn KeySource,
+    ) -> (Editor<'a>, bool) {
+        if bundle.metadata.to_remove.is_empty() {
+            return (editor, false);
+        }
+        let to_remove = bundle.metadata.to_remove.iter().copied().collect();
+        let (editor, removed) = editor
+            .remove_blocks(to_remove, keys)
+            .map_err(|(_, e)| e)
+            .trace_expect("The scheduled block removals failed");
+        (editor, !removed.is_empty())
+    }
+}
+
+// The storage name of a bundle an output door loads: every record in the
+// pipeline has its data stored.
+fn stored_name(bundle: &bundle::Bundle) -> &str {
+    bundle
+        .metadata
+        .storage_name
+        .as_ref()
+        .trace_expect("Bundle without storage_name reached an output door")
 }
 
 // Fixtures shared by the dispatcher's submodule tests.

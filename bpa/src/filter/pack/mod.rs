@@ -8,8 +8,8 @@
 //! splices packs into the per-hook chains — chain order is call order,
 //! within a pack and across `add_filters` calls — and
 //! [`build()`](crate::builder::BpaBuilder::build) freezes the chains and
-//! fixes the node-wide payload peek as the maximum declared across every
-//! registration.
+//! fixes each input hook's payload peek as the maximum its registrations
+//! declare.
 
 use alloc::format;
 use core::fmt::{self, Debug, Formatter};
@@ -40,10 +40,12 @@ pub(crate) mod chains;
 /// Hook registrations take a `label`, carried as `"<pack>.<label>"` in logs
 /// and metrics — purely diagnostic, never unique. The `_with_peek` variants
 /// at the input hooks declare a payload-prefix byte count folded into the
-/// node-wide payload peek at `build()`; the base methods declare 0. Until the
-/// streaming ingress gate lands (Phase 3, `filter_subsystem_design.md`),
-/// the declaration is recorded but has no effect: hooks run with the full
-/// bundle resident and the peek is unconsumed.
+/// hook's payload peek P at `build()`; the base methods declare 0. Before
+/// an input chain runs, its door holds the payload's first min(P, payload
+/// length) bytes — up to P bytes per concurrent arrival, held before header
+/// verification — which a filter reads through
+/// [`VerifyContext::payload_peek`](crate::filter::VerifyContext::payload_peek),
+/// whose doc states what they are.
 #[must_use = "a filter pack registers nothing until it is handed to BpaBuilder::add_filters"]
 pub struct FilterPack {
     name: Arc<str>,
@@ -107,9 +109,10 @@ impl FilterPack {
     /// Appends a [`Verifier`] to the Ingress chain, declaring a `peek`-byte
     /// payload prefix.
     ///
-    /// Recorded but inert until the Phase 3 streaming ingress gate lands
-    /// (`filter_subsystem_design.md`): hooks currently run with the full
-    /// bundle resident.
+    /// The Ingress gate holds the payload's first min(P, payload length) bytes,
+    /// up to P per concurrent arrival before header verification, P being
+    /// the largest peek declared at that hook; see
+    /// [`VerifyContext::payload_peek`](crate::filter::VerifyContext::payload_peek).
     pub fn ingress_verifier_with_peek(
         &mut self,
         label: &str,
@@ -133,9 +136,10 @@ impl FilterPack {
     /// Appends a [`Verifier`] to the Originate chain, declaring a
     /// `peek`-byte payload prefix.
     ///
-    /// Recorded but inert until the Phase 3 streaming ingress gate lands
-    /// (`filter_subsystem_design.md`): hooks currently run with the full
-    /// bundle resident.
+    /// The Originate door holds the payload's first min(P, payload length) bytes,
+    /// up to P per concurrent arrival before header verification, P being
+    /// the largest peek declared at that hook; see
+    /// [`VerifyContext::payload_peek`](crate::filter::VerifyContext::payload_peek).
     pub fn originate_verifier_with_peek(
         &mut self,
         label: &str,
@@ -172,9 +176,10 @@ impl FilterPack {
     /// Appends a [`Classifier`] to the Ingress chain, declaring a
     /// `peek`-byte payload prefix.
     ///
-    /// Recorded but inert until the Phase 3 streaming ingress gate lands
-    /// (`filter_subsystem_design.md`): hooks currently run with the full
-    /// bundle resident.
+    /// The Ingress gate holds the payload's first min(P, payload length) bytes,
+    /// up to P per concurrent arrival before header verification, P being
+    /// the largest peek declared at that hook; see
+    /// [`VerifyContext::payload_peek`](crate::filter::VerifyContext::payload_peek).
     pub fn ingress_classifier_with_peek(
         &mut self,
         label: &str,
@@ -199,9 +204,10 @@ impl FilterPack {
     /// Appends a [`Classifier`] to the Originate chain, declaring a
     /// `peek`-byte payload prefix.
     ///
-    /// Recorded but inert until the Phase 3 streaming ingress gate lands
-    /// (`filter_subsystem_design.md`): hooks currently run with the full
-    /// bundle resident.
+    /// The Originate door holds the payload's first min(P, payload length) bytes,
+    /// up to P per concurrent arrival before header verification, P being
+    /// the largest peek declared at that hook; see
+    /// [`VerifyContext::payload_peek`](crate::filter::VerifyContext::payload_peek).
     pub fn originate_classifier_with_peek(
         &mut self,
         label: &str,
@@ -264,7 +270,7 @@ impl FilterPack {
 }
 
 // Input-hook pending record: the declared peek rides beside the entry
-// until freeze folds it into the node-wide P.
+// until freeze folds it into its hook's P.
 pub(super) struct Pending<E> {
     peek: usize,
     entry: E,

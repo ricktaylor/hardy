@@ -19,8 +19,8 @@
 | — | Configuration validation | **Pass** | 7 error-case tests (malformed files, invalid values) |
 | — | Storage config | **Pass** | `storage_memory_config` |
 | — | CLA config | **Pass** | `cla_list_parsing`, `empty_cla_list` |
-| — | BPSec key store & bindings configuration | **Pass** | `config/bpsec.rs` (8 tests), `bpsec_config_parses`, `no_bpsec_config` |
-| — | BPSec pattern-based key resolution | **Pass** | `bpsec.rs` (16 tests) |
+| — | BPSec key store & bindings configuration | **Pass** | `bpsec.rs` `load_tests` (8 tests), `bpsec_config_parses`, `no_bpsec_config` |
+| — | BPSec pattern-based key resolution | **Pass** | `bpsec.rs` `tests` (16 tests) |
 | 3.2 | Process startup | **Pass** | Interop + CI (implicit) |
 | 3.2 | BPA gRPC registration | **Pass** | Interop + CI (implicit) |
 | 3.2 | Graceful shutdown | **Pass** | Interop + CI (implicit) |
@@ -57,11 +57,11 @@
 | `bpsec_config_parses` | — | BPSec section parsed into typed config |
 | `no_bpsec_config` | — | Absent BPSec section is valid |
 
-#### BPSec Key Configuration (`config/bpsec.rs` — 8 tests)
+#### BPSec Key Configuration (`bpsec.rs` `load_tests` — 8 tests)
 
 Validation of the key store and pattern bindings at config-build time: a valid key file and bindings build successfully; a missing key file, an unknown `kid` reference, a duplicate `kid`, an empty binding, a key without `key_ops`, and a non-symmetric key are each rejected; a key store with no bindings remains valid.
 
-#### BPSec Key Resolution (`bpsec.rs` — 16 tests)
+#### BPSec Key Resolution (`bpsec.rs` `tests` — 16 tests)
 
 The `PatternKeySource` resolution logic: EID pattern matching (wildcard, specific-overrides-wildcard, most-specific-role-wins), role-based key release (verifier withholds decrypt keys, source releases only protection keys, integrity-only bindings), operation routing via `key_ops`, missing-`kid` and no-match cases returning `None`, and key-order priority. Provider-level tests cover the empty provider, `set` replacing a previous key source, and snapshot isolation. Two end-to-end tests verify role behaviour on real bundles: a verifier forwards a BCB intact, and an acceptor decrypts the payload at delivery.
 

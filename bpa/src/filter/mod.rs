@@ -31,39 +31,52 @@
 //! not (not resident, no key, not decryptable). It memoises, decrypting a
 //! covered block at most once for the filters that share it: one reader
 //! serves a whole input pass and the Verifiers that close the Deliver
-//! chain, and each Rewriter gets its own, since an edit replaces the bytes.
-//! [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
-//! CBOR-decodes a block body.
+//! chain. [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
+//! CBOR-decodes a block body. A Verifier's and a Classifier's context also
+//! lends the payload's resident prefix, the declared peek among it, through
+//! [`VerifyContext::payload_peek`].
+//!
+//! The Rewriters of an output hook edit one editor, the attempt's, which
+//! the output door rebuilds once. A Rewriter reads a snapshot of the edits
+//! its predecessors staged ([`StagedView`](hardy_bpv7::editor::StagedView)),
+//! never its own: the bundle as the preceding links left it, through a
+//! reader over that snapshot. Links that leave the editor as it was share a
+//! snapshot and its reader; a link that edits starts a fresh one. At Egress
+//! the editor works over the stored bundle's resident bytes: the headers
+//! always, and the payload while it is in hand. A payload still streaming
+//! from the store reads as `NotResident`; until a storage backend streams
+//! its load, the whole bundle is resident.
 //!
 //! # Failure and Drop contract
 //!
 //! A [`Verdict::Drop`] is policy, never a failure. Only Verifiers and
 //! Classifiers return one, so nothing at Egress drops a bundle. Its
-//! disposition per hook, and the pipeline's recovery when an input chain
-//! *fails* (the engine could not run its decode pass over the bytes —
-//! never a filter's verdict):
+//! disposition per hook, and what a chain *failure* means there (the engine
+//! could not decode the bytes; never a filter's verdict):
 //!
 //! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
 //! |---|---|---|---|
-//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | `services::Error::Internal` to the caller; nothing was stored |
-//! | Ingress | dropped with a deletion report per the bundle's request flags | deleted silently, even when the flags request reporting | resolved as `BlockUnintelligible` — the stored bytes failed the chain's own decode pass |
+//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | none — like Ingress, the chain runs on the door's own header decode |
+//! | Ingress | dropped before anything is stored, with one reception + deletion report per the bundle's request flags | the same, without the deletion assertion even when the flags request one (a requested reception report is still sent) | none — the chain decodes nothing itself: it runs on the gate's header decode, whose failures are the header pass's |
 //! | Deliver | dropped with a flag-gated deletion report | deleted silently | fatal (below) |
 //!
-//! `bpa.filter.filtered` counts every Drop, `bpa.filter.modified` every
-//! applied rewrite, and `bpa.filter.error` every input chain failure, all
-//! by hook.
+//! `bpa.filter.filtered` counts every Drop and `bpa.filter.modified` every
+//! Rewriter that edited, both by hook.
 //!
-//! The output chains have no failure path. Their bytes were validated at
-//! ingress and are read back from storage, so an Egress or Deliver chain
-//! that cannot decode them has met a BPA bug or storage corruption. A
-//! [`Rewriter`] execution failure — an invalid edit, or an edit whose
-//! materialised bytes do not re-parse — means a rewrite that was meant to
-//! work has not. Either leaves every subsequent processing step undefined,
-//! so the engine panics (naming the failing link's pack-prefixed label, for
-//! a Rewriter), and the panic aborts the process — the fail-fast rule,
-//! applied by analogy with a storage fault. The [`ExtensionEditor`] refuses
-//! at call time the edits it knows a receiver would reject, so a Rewriter
-//! that treats refusals as its no-match path meets those as refusals.
+//! The output chains have no failure path. They work from the record's
+//! block index, the parse ingress verified, and decode only the BCB
+//! operation sets it locates; those bytes were validated at ingress and are
+//! read back from storage, so a failure to decode them is a BPA bug or
+//! storage corruption. Every edit is checked when it is staged, so the
+//! output door's one rebuild fails only on a BPA or bpv7 bug. Either leaves
+//! every subsequent processing step undefined, so the BPA panics, and the
+//! panic aborts the process — the fail-fast rule, applied by analogy with a
+//! storage fault. The bundle stays stored and
+//! restart recovery re-queues it, so a deterministic failure recurs on every
+//! restart: the node crash-loops until the bundle is removed, the accepted
+//! cost of failing fast. The [`ExtensionEditor`] refuses at call time the
+//! edits it knows a receiver would reject, so a Rewriter that treats refusals
+//! as its no-match path meets those as refusals.
 
 use core::fmt::{self, Debug, Formatter};
 
@@ -75,7 +88,7 @@ use crate::{Arc, bundle::BundleMetadata};
 
 mod engine;
 
-pub(crate) use self::engine::ChainOutcome;
+pub(crate) use self::engine::{ChainOutcome, output_keys};
 
 pub mod pack;
 pub mod slots;
@@ -115,6 +128,7 @@ pub struct VerifyContext<'a> {
     bundle: &'a Bundle,
     reader: &'a dyn Reader<'a>,
     metadata: &'a BundleMetadata,
+    peek: Option<&'a [u8]>,
 }
 
 impl<'a> VerifyContext<'a> {
@@ -122,11 +136,13 @@ impl<'a> VerifyContext<'a> {
         bundle: &'a Bundle,
         reader: &'a dyn Reader<'a>,
         metadata: &'a BundleMetadata,
+        peek: Option<&'a [u8]>,
     ) -> Self {
         Self {
             bundle,
             reader,
             metadata,
+            peek,
         }
     }
 
@@ -144,6 +160,31 @@ impl<'a> VerifyContext<'a> {
     #[must_use]
     pub fn reader(&self) -> &'a dyn Reader<'a> {
         self.reader
+    }
+
+    /// The payload's resident prefix: every byte of the payload block's data
+    /// that has arrived, whether or not the payload is all resident. Where
+    /// the payload is resident, it is all of it.
+    ///
+    /// At the input hooks the door holds at least the first min(P, payload
+    /// length) bytes before the chain runs, P being the largest payload peek
+    /// declared at that hook (see [`FilterPack`](pack::FilterPack)); an empty
+    /// slice means no payload byte has arrived, or the payload is empty, which
+    /// a filter that declared a peek can tell apart. There the bytes may
+    /// precede the payload's CRC and BIB checks, as may block 1 read through
+    /// [`reader`](Self::reader); both settle before the bundle commits or its
+    /// route executes. Treat the peek as unauthenticated input: classify or
+    /// drop on it, but do not let it drive durable or attributable effects,
+    /// which a forged prefix on a genuinely signed bundle would drive under
+    /// its source's name.
+    ///
+    /// `None` for a payload a BCB covers, as no filter reads an encrypted
+    /// payload, and for a fragment past the payload's start, whose bytes are
+    /// not the payload's prefix: the reassembled bundle is peeked when it
+    /// re-crosses the Ingress gate.
+    #[must_use]
+    pub fn payload_peek(&self) -> Option<&'a [u8]> {
+        self.peek
     }
 
     /// The BPA-local record state: provenance, the extension-field cache,
@@ -178,6 +219,7 @@ pub struct ClassifyContext<'a> {
     bundle: &'a Bundle,
     reader: &'a dyn Reader<'a>,
     metadata: &'a BundleMetadata,
+    peek: Option<&'a [u8]>,
 }
 
 impl<'a> ClassifyContext<'a> {
@@ -185,11 +227,13 @@ impl<'a> ClassifyContext<'a> {
         bundle: &'a Bundle,
         reader: &'a dyn Reader<'a>,
         metadata: &'a BundleMetadata,
+        peek: Option<&'a [u8]>,
     ) -> Self {
         Self {
             bundle,
             reader,
             metadata,
+            peek,
         }
     }
 
@@ -207,6 +251,13 @@ impl<'a> ClassifyContext<'a> {
     #[must_use]
     pub fn reader(&self) -> &'a dyn Reader<'a> {
         self.reader
+    }
+
+    /// The payload's resident prefix, as
+    /// [`VerifyContext::payload_peek`] lends it.
+    #[must_use]
+    pub fn payload_peek(&self) -> Option<&'a [u8]> {
+        self.peek
     }
 
     /// The BPA-local record state, including the deltas the preceding
@@ -229,25 +280,30 @@ impl Debug for ClassifyContext<'_> {
 /// block bodies, the BPA-local record state, the [`Boundary`] it runs at,
 /// and the scoped [`ExtensionEditor`] its edits go through.
 ///
-/// Built by the engine for each Rewriter, over the wire form as the
-/// preceding link left it. The read getters return the lent views
-/// themselves, not borrows of the context, so a Rewriter can hold a block
-/// it read while it edits; see [reading the bundle](self#reading-the-bundle).
-pub struct RewriteContext<'a> {
-    bundle: &'a Bundle,
-    reader: &'a dyn Reader<'a>,
-    metadata: &'a BundleMetadata,
-    boundary: Boundary<'a>,
-    editor: ExtensionEditor<'a>,
+/// Built by the engine for each Rewriter, over a snapshot of the edits the
+/// preceding links staged; its editor is a handle on the attempt's one
+/// editor. The read getters return the lent views themselves, not borrows
+/// of the context, so a Rewriter can hold a block it read while it edits;
+/// see [reading the bundle](self#reading-the-bundle).
+///
+/// `'e` is the invocation's lending lifetime and `'a` the lifetime of the
+/// bundle data the engine's editor borrows; a Rewriter names neither
+/// (`RewriteContext<'_, '_>`).
+pub struct RewriteContext<'e, 'a> {
+    bundle: &'e Bundle,
+    reader: &'e dyn Reader<'e>,
+    metadata: &'e BundleMetadata,
+    boundary: Boundary<'e>,
+    editor: ExtensionEditor<'e, 'a>,
 }
 
-impl<'a> RewriteContext<'a> {
+impl<'e, 'a> RewriteContext<'e, 'a> {
     pub(crate) fn new(
-        bundle: &'a Bundle,
-        reader: &'a dyn Reader<'a>,
-        metadata: &'a BundleMetadata,
-        boundary: Boundary<'a>,
-        editor: ExtensionEditor<'a>,
+        bundle: &'e Bundle,
+        reader: &'e dyn Reader<'e>,
+        metadata: &'e BundleMetadata,
+        boundary: Boundary<'e>,
+        editor: ExtensionEditor<'e, 'a>,
     ) -> Self {
         Self {
             bundle,
@@ -258,21 +314,25 @@ impl<'a> RewriteContext<'a> {
         }
     }
 
-    /// The wire bundle as this invocation received it: the primary block
-    /// and the per-block headers.
+    /// The bundle as the preceding links left it: the primary block and the
+    /// block headers, with their current BPSec coverage.
     ///
-    /// This is the parsed [`hardy_bpv7::Bundle`], not the BPA's stored
-    /// [`Bundle`](crate::bundle::Bundle) record. Edits made through
+    /// This is a [`hardy_bpv7::Bundle`], not the BPA's stored
+    /// [`Bundle`](crate::bundle::Bundle) record. A block a preceding link
+    /// inserted or replaced is staged, not yet on the wire, so its `extent`
+    /// and `data` index nothing: read block bodies through the
+    /// [`reader`](Self::reader). Edits made through
     /// [`editor`](Self::editor) do not show here; the next link sees them.
     #[must_use]
-    pub fn bundle(&self) -> &'a Bundle {
+    pub fn bundle(&self) -> &'e Bundle {
         self.bundle
     }
 
-    /// The reader over the block bodies as this invocation received them:
-    /// plaintext, or BCB-decrypted with the node's keys.
+    /// The reader over the block bodies as the preceding links left them:
+    /// a staged block's data, or a wire block's plaintext, BCB-decrypted
+    /// with the node's keys.
     #[must_use]
-    pub fn reader(&self) -> &'a dyn Reader<'a> {
+    pub fn reader(&self) -> &'e dyn Reader<'e> {
         self.reader
     }
 
@@ -284,30 +344,30 @@ impl<'a> RewriteContext<'a> {
     /// Rewriters run before the BPA writes this hop's Previous Node, Hop
     /// Count and Bundle Age, so both show those blocks as received.
     #[must_use]
-    pub fn metadata(&self) -> &'a BundleMetadata {
+    pub fn metadata(&self) -> &'e BundleMetadata {
         self.metadata
     }
 
     /// The boundary this invocation runs at, with any boundary-specific
     /// context.
     #[must_use]
-    pub fn boundary(&self) -> Boundary<'a> {
+    pub fn boundary(&self) -> Boundary<'e> {
         self.boundary
     }
 
     /// The scoped editor: insert, replace and remove extension blocks only.
     #[must_use]
-    pub fn editor(&mut self) -> &mut ExtensionEditor<'a> {
+    pub fn editor(&mut self) -> &mut ExtensionEditor<'e, 'a> {
         &mut self.editor
     }
 
-    // Hands the editor back to the engine, which materialises its edits.
-    pub(crate) fn into_editor(self) -> ExtensionEditor<'a> {
-        self.editor
+    // Whether the invocation edited, so the engine rebuilds its editor.
+    pub(crate) fn is_modified(&self) -> bool {
+        self.editor.is_modified()
     }
 }
 
-impl Debug for RewriteContext<'_> {
+impl Debug for RewriteContext<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RewriteContext")
             .field("bundle", &self.bundle.primary.id)
@@ -370,32 +430,35 @@ pub trait Classifier: Send + Sync {
 /// Its edits are confined to *extension* blocks — never the payload — so it
 /// runs before the payload's BPSec decrypt at Deliver; the reader decrypts
 /// any block it needs to inspect. Each Rewriter sees its predecessors'
-/// edits: the engine materialises every invocation's edits into the wire
-/// form before the next invocation reads it.
+/// edits: they all edit the attempt's one editor, and each reads a snapshot
+/// of the edits staged before it. Nothing is materialised until the output
+/// door rebuilds the bundle, once.
 ///
 /// At Egress the Rewriters run before the BPA's per-hop writes (RFC 9171
 /// §5.4), which supersede their edits to the blocks those writes cover: the
-/// Previous Node always; the Hop Count when the bundle arrived with one this
-/// node could read and can update; and the Bundle Age when the bundle
-/// arrived with one or has no creation clock. A per-hop block a Rewriter
-/// adds where the BPA writes none travels as the Rewriter wrote it.
+/// Previous Node always; the Hop Count when the bundle arrived from a peer
+/// with one this node could read and can update (origination is not a hop,
+/// so the originating node never writes it); and the Bundle Age when the
+/// bundle arrived with one or has no creation clock. A per-hop block a
+/// Rewriter adds or edits where the BPA writes none travels as the Rewriter
+/// left it.
 ///
 /// A Rewriter has no verdict: it edits the bundle or leaves it as it is,
 /// and never drops it. An [`ExtensionEditor`] refusal is the Rewriter's
 /// no-match path. A block the Rewriter inserted is a valid target for its
-/// own later `replace` or `remove` in the same invocation. An edit the
-/// editor accepted that then fails to materialise aborts the process (see
-/// the [failure contract](self#failure-and-drop-contract)).
+/// own later `replace` or `remove` in the same invocation. The editor checks
+/// every edit when it is staged, so an accepted edit materialises (see the
+/// [failure contract](self#failure-and-drop-contract)).
 pub trait Rewriter: Send + Sync {
     /// Edit extension blocks through the context's
     /// [`editor`](RewriteContext::editor) — insert/replace/remove only,
     /// never the primary, payload, or BIB/BCB blocks, and never a block
-    /// under existing BPSec coverage. The context's bundle and reader are
-    /// the wire form as this invocation received it, and its
+    /// under existing BPSec coverage. The context's bundle and reader show
+    /// the bundle as the preceding links left it, and its
     /// [`boundary`](RewriteContext::boundary) says where it runs (and, at
-    /// Egress, the resolved next hop). The engine materialises the
-    /// accepted edits when it returns.
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>);
+    /// Egress, the resolved next hop). The accepted edits stay staged in the
+    /// attempt's editor, which the output door rebuilds.
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>);
 }
 
 // Forwarding impls: a filter built from configuration is held as a boxed
@@ -425,13 +488,13 @@ impl<T: Classifier + ?Sized> Classifier for Arc<T> {
 }
 
 impl<T: Rewriter + ?Sized> Rewriter for Box<T> {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         (**self).rewrite(ctx)
     }
 }
 
 impl<T: Rewriter + ?Sized> Rewriter for Arc<T> {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         (**self).rewrite(ctx)
     }
 }
