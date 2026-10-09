@@ -307,6 +307,10 @@ The `keys` module provides the `KeyProvider` trait for BPSec key management; the
 - Integration with external key management systems (HSMs, Vault)
 - Key rotation and expiration handling
 
+### Dial on Demand
+
+Name resolution and dialling move into a subsystem of their own, with which a CLA registers its ability to dial, separate from CLA registration and from the forward path; `forward` then sends only over adjacencies that exist, and `ClaAddress` becomes an opaque handle scoped to its CLA, with no address family. See [`dial_on_demand_plan.md`](dial_on_demand_plan.md).
+
 ### Storage Priority and Eviction
 
 When storage capacity is exhausted, bundles must be evicted. The planned shape is an eviction-rank property of the bundle's traffic class, assigned by ingress classification (see [Filter Subsystem](filter_subsystem_design.md) and [`policy_subsystem_redesign.md`](policy_subsystem_redesign.md)). This infrastructure is not yet implemented.

@@ -186,6 +186,7 @@ The queue architecture replaces the status-based lifecycle with durable queue as
 | Status | Task |
 |---|---|
 | 🔲 | A review pass over the two redesign docs, settling their open questions (`routing_table_redesign.md`: table identity, selection-policy shape, sweep granularity, RoutingAgent API; `policy_subsystem_redesign.md`: `[classes]` format, `ClassId` representation, FlowController trait shape, PolicyAgent protocol, eviction rank, per-source fairness, adaptive de-staging parameters, the storage seat, retry damping, storage QoS as a class property, policy registration). The filter questions are settled in `filter_subsystem_design.md`; its remaining open items are Phase 3 rows |
+| 🔲 | Settle `dial_on_demand_plan.md`'s open questions (who probes a plan-less static route's peer, when `ClaAddressType` and the registration's `address_type` go, the opaque address handle's representation, the gRPC shape of a dial capability, the CL protocol identifiers, trying targets in order or racing them, trust in alternate EIDs, the demand signal), then schedule its P1–P6 |
 | 🔲 | Each redesign doc folds into its tracked home (`routing_subsystem_design.md`, `policy_subsystem_design.md`) as its tranche implements it, and the draft retires then |
 
 ## Routing and policy tranches (pointers, not tasks here)
