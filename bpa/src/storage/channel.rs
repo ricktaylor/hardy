@@ -60,8 +60,9 @@
 use core::result::Result;
 
 use futures::{FutureExt, pin_mut, select_biased};
-use hardy_async::{Notify, closeable::TrySendError};
+use hardy_async::{Notify, closeable::TrySendError, time::sleep};
 use portable_atomic::{AtomicUsize, Ordering};
+use time::Duration;
 use trace_err::*;
 use tracing::debug;
 
@@ -126,6 +127,12 @@ struct Shared {
     // synchronizing on the event itself.
     #[cfg(test)]
     state_notify: Notify,
+    /// Drain cycles the poller has completed (storage had nothing more to
+    /// load), signalled through `drain_notify` for tests to wait on.
+    #[cfg(test)]
+    drain_cycles: AtomicUsize,
+    #[cfg(test)]
+    drain_notify: Notify,
 }
 
 impl Shared {
@@ -300,6 +307,10 @@ impl Sender {
     }
 }
 
+/// How often the poller re-checks a buffer still above the re-open threshold
+/// once storage has drained: the consumer's progress raises no notification.
+const REOPEN_TICK: Duration = Duration::milliseconds(50);
+
 /// Whether the poller should re-open the fast path, given the number of
 /// bundles currently buffered in memory and the channel capacity.
 ///
@@ -329,6 +340,10 @@ impl Store {
             notify: Arc::new(Notify::new()),
             #[cfg(test)]
             state_notify: Notify::new(),
+            #[cfg(test)]
+            drain_cycles: AtomicUsize::new(0),
+            #[cfg(test)]
+            drain_notify: Notify::new(),
         });
 
         let store = self.clone();
@@ -395,20 +410,38 @@ impl Store {
                     }
                 }
             }
-
-            // Re-open the fast path if the buffer has drained to half
-            // capacity or less and no new work arrived.
-            if should_reopen(shared.tx.len(), cap)
-                && shared
-                    .compare_exchange_state(
-                        ChannelState::Draining,
-                        ChannelState::Open,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_err()
+            #[cfg(test)]
             {
-                continue; // Congested — loop again without waiting
+                shared.drain_cycles.fetch_add(1, Ordering::Relaxed);
+                shared.drain_notify.notify_one();
+            }
+
+            // Re-open the fast path once the buffer has drained to half
+            // capacity or less. The consumer's progress raises no
+            // notification, so while the buffer sits above the threshold
+            // the check must repeat on a short tick; parking on `notify`
+            // alone would leave the fast path closed until the next send.
+            let reopened = loop {
+                if should_reopen(shared.tx.len(), cap) {
+                    break shared
+                        .compare_exchange_state(
+                            ChannelState::Draining,
+                            ChannelState::Open,
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok();
+                }
+                select_biased! {
+                    _ = shared.notify.notified().fuse() => break false,
+                    _ = cancel.cancelled().fuse() => return,
+                    _ = sleep(REOPEN_TICK).fuse() => {}
+                }
+            };
+            if !reopened {
+                // Congested, or new work arrived while the buffer drained:
+                // loop again without waiting.
+                continue;
             }
 
             // Wait for new work, or bail if the store is shutting down.
@@ -520,6 +553,60 @@ mod tests {
                 tx.state()
             )
         })
+    }
+
+    // Await the poller completing `n` drain cycles, synchronized on its
+    // signal; the timeout only bounds a regression.
+    async fn wait_for_drain_cycles(tx: &Sender, n: usize) {
+        tokio::time::timeout(tokio::time::Duration::from_secs(30), async {
+            while tx.shared.drain_cycles.load(Ordering::Relaxed) < n {
+                tx.shared.drain_notify.notified().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("Timed out waiting for drain cycle {n}"))
+    }
+
+    // A drain cycle can end with the buffer above half capacity: storage has
+    // nothing left to deliver, but the buffer still holds bundles the consumer
+    // has not taken. The consumer draining them raises no notification and no
+    // further send arrives, yet the fast path must re-open.
+    #[tokio::test(start_paused = true)]
+    async fn the_fast_path_reopens_once_the_consumer_drains() {
+        let store = make_store();
+        let cap = 4;
+        let (tx, rx) = store.channel(STATUS, cap);
+        // The poller's initial cycle, over empty storage.
+        wait_for_drain_cycles(&tx, 1).await;
+
+        // Fill the buffer, then tombstone its bundles: they are the
+        // consumer's now, and storage holds nothing to re-deliver.
+        for i in 1..=cap as u32 {
+            let bundle = make_bundle(i);
+            let id = bundle.id().clone();
+            send(&tx, bundle).await.unwrap();
+            store.tombstone_metadata(&id).await;
+        }
+        // Overflow with a bundle already expired, which the poller filters
+        // out: the send moves the channel to Draining and wakes the poller,
+        // whose drain cycle then delivers nothing and ends with the buffer
+        // full.
+        send(&tx, make_expired_bundle(cap as u32 + 1))
+            .await
+            .unwrap();
+        assert_eq!(tx.state(), ChannelState::Draining);
+        wait_for_drain_cycles(&tx, 2).await;
+        assert_eq!(rx.len(), cap, "the drain cycle ended with the buffer full");
+
+        // The consumer drains the buffer; no further send arrives.
+        for _ in 0..cap {
+            rx.recv().await.expect("a buffered bundle");
+        }
+        wait_for_state(&tx, ChannelState::Open).await;
+
+        drop(rx);
+        tx.close();
+        store.shutdown().await;
     }
 
     // The fast path must re-open after draining even for tiny capacities.
