@@ -65,9 +65,9 @@ A bundle entering from a CLA follows this path:
 1. **Ingress**: CLA calls `Sink::dispatch()` with raw bytes and peer information
 2. **Validation**: `process_received_bundle()` parses the header chain off the stream with keyed BPSec verification before the payload drains. Invalid bundles are dropped internally with status reports — errors are never returned to the CLA
 3. **Filtering**: the Ingress chain (Verifiers, then Classifiers) runs at the pre-drain gate on the resident header prefix, and may drop or annotate the bundle
-4. **Storage**: the payload drains with its CRC and deferred payload BIBs verified as it flows, the bundle data is stored exactly as received, and the finished record is written once to metadata storage with `Dispatching` status and queued for dispatch
-5. **Dispatch**: Destination examined — local delivery, admin endpoint, or forwarding
-6. **Routing**: RIB lookup determines next hop for forwarding bundles
+4. **Routing**: the RIB lookup at the gate is the routing decision of record — local delivery, admin endpoint, forwarding, or a drop that rejects the bundle before anything is stored
+5. **Storage**: the payload drains through `Store::save_stream` with its CRC and deferred payload BIBs verified as it flows, the bundle data is stored exactly as received, and the finished record is written once to metadata storage with `Dispatching` status
+6. **Dispatch**: the gate's routing decision executes directly — fresh arrivals do not transit the dispatch queue
 7. **Egress**: Bundle queued to CLA for transmission, egress filters applied
 
 Locally-originated bundles (from services) run the Originate chain pre-store, store with `Dispatching` status, and skip the Ingress chain. Fragment reassembly shares the same `process_received_bundle()` path as CLA ingress, ensuring reassembled bundles get full-mode parsing and validation.

@@ -1731,6 +1731,38 @@ impl Receiver<cla::Segment> for SegmentReceiver {
     }
 }
 
+// A segment source that yields a fixed prefix of a bundle's segments and
+// then parks forever — a transfer whose producer never completes. A
+// consumer that returns while this source is parked provably did not wait
+// for the payload.
+struct ParkedReceiver {
+    segments: VecDeque<cla::Segment>,
+}
+
+impl ParkedReceiver {
+    // The first `count` `chunk`-byte segments of `data`, all `Next` — the
+    // stream never completes.
+    fn new(data: &[u8], chunk: usize, count: usize) -> Self {
+        Self {
+            segments: data
+                .chunks(chunk)
+                .take(count)
+                .map(|c| cla::Segment::Next(Bytes::copy_from_slice(c)))
+                .collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl Receiver<cla::Segment> for ParkedReceiver {
+    async fn recv(&mut self) -> Result<cla::Segment, hardy_bpa::stream::RecvError> {
+        match self.segments.pop_front() {
+            Some(seg) => Ok(seg),
+            None => futures::future::pending().await,
+        }
+    }
+}
+
 // An inbound bundle with a 20 KB payload, delivered in 1000-byte segments, is
 // reassembled and delivered intact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3012,8 +3044,10 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         bpa.shutdown().await;
     }
 
-    // Drain phase: a cap that admits the header (so parse yields `Partial`) but
-    // not the payload tail trips `drain_payload`.
+    // Declared phase: a cap that admits the header chain (parse yields
+    // `Partial`) but not the declared payload refuses at the gate, before a
+    // single payload byte is drained — proved by a source that parks
+    // forever after the header chunks. The timeout only bounds a regression.
     {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
@@ -3031,16 +3065,17 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         )
         .await
         .unwrap();
-        let mut stream = SegmentReceiver::new(&inbound, 1000);
+        let mut stream = ParkedReceiver::new(&inbound, 1000, 3);
         assert_eq!(
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(None, None, &mut stream)
-                .await
-                .unwrap(),
+            tokio::time::timeout(
+                tokio::time::Duration::from_secs(5),
+                cla.sink.get().unwrap().dispatch(None, None, &mut stream)
+            )
+            .await
+            .expect("Timeout: the declared over-cap refusal must not wait for the payload")
+            .unwrap(),
             cla::Acceptance::Refused,
-            "drain-phase over-cap must be refused"
+            "declared over-cap must be refused pre-drain"
         );
         bpa.shutdown().await;
     }
@@ -3410,6 +3445,89 @@ async fn egress_filter_sees_consistent_extents() {
         out.bundle.blocks[&1].payload(&out.data),
         Some(b"Hello remote".as_slice())
     );
+
+    bpa.shutdown().await;
+}
+
+/// Keys traffic for the unrouted ipn:0.3 node onto ipn:0.2.1 — the
+/// SR-shaped per-bundle override, honouring the skip-self discipline by
+/// keying only a foreign destination.
+struct KeyingClassifier;
+
+impl hardy_bpa::filter::Classifier for KeyingClassifier {
+    fn classify(
+        &self,
+        ctx: &hardy_bpa::filter::ClassifyContext<'_>,
+    ) -> hardy_bpa::filter::Verdict<hardy_bpa::filter::slots::MetadataDelta> {
+        let mut delta = hardy_bpa::filter::slots::MetadataDelta::default();
+        if let Eid::Ipn { fqnn, .. } = &ctx.bundle().primary.destination
+            && fqnn.node_number == 3
+        {
+            delta.route_key = Some("ipn:0.2.1".parse().unwrap());
+        }
+        hardy_bpa::filter::Verdict::Continue(delta)
+    }
+}
+
+/// A Classifier-written route_key persists in the record's metadata and
+/// drives the RIB lookup: a bundle whose destination has no route forwards
+/// via the route for its key. Without the key threading the bundle parks
+/// Waiting forever, so the forward event is the proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn classifier_route_key_drives_the_lookup() {
+    let mut pack = hardy_bpa::filter::pack::FilterPack::new("test");
+    pack.originate_classifier("keyer", KeyingClassifier);
+    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
+    bpa.start(false).await;
+
+    // A peer exists for ipn:0.2 only; ipn:0.3 has no route.
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[remote_node],
+        )
+        .await
+        .unwrap();
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.3.99".parse().unwrap(),
+            Bytes::from_static(b"Keyed onward"),
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the keyed bundle to forward")
+    .expect("Channel closed");
 
     bpa.shutdown().await;
 }
@@ -4403,6 +4521,148 @@ async fn peer_removed_mid_construction_is_withdrawn() {
     );
 
     bpa.shutdown().await;
+}
+
+// Routing is decided at the ingress gate: a destination resolving to an
+// explicit Drop route rejects the bundle before its payload is drained —
+// the stream is left unconsumed and nothing spools. Drop-with-reason
+// reports like any gated drop (the combined reception + deletion record);
+// Drop-without-reason is silent, exactly as dispatch's delete path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn early_route_drop_never_awaits_the_payload() {
+    use hardy_bpa::routing::{RouteAction, StaticRoutingAgent};
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // A peer for the report route (report-to defaults to the source), plus
+    // Drop routes: reasoned for one destination, silent for another.
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+    bpa.register_routing_agent(
+        "drop-routes".to_string(),
+        Arc::new(StaticRoutingAgent::new(&[
+            (
+                "ipn:0.9.99".parse().unwrap(),
+                RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
+                1,
+            ),
+            ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
+        ])),
+    )
+    .await
+    .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let oversized = |dest: &str| {
+        let (_, data) = Builder::new(remote_source.clone(), dest.parse().unwrap())
+            .with_flags(Flags {
+                receipt_report_requested: true,
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+        data
+    };
+
+    // Reasoned Drop: accepted with one combined report, while the payload
+    // source is parked forever — the verdict returning at all proves the
+    // decision never awaited the drain, and a rejected arrival spools
+    // nothing. The timeout only bounds a regression.
+    let data = oversized("ipn:0.9.99");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    assert_eq!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(Some(&remote_node), None, &mut stream)
+        )
+        .await
+        .expect("Timeout: the route drop must not wait for the payload")
+        .unwrap(),
+        cla::Acceptance::Accepted,
+        "a route-dropped bundle is accepted and terminated, never refused"
+    );
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(parsed.bundle.primary.flags.is_admin_record);
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::NoKnownRouteToDestinationFromHere);
+
+    // Silent Drop: accepted while the source is parked, no report at all.
+    let data = oversized("ipn:0.9.98");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    assert_eq!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(Some(&remote_node), None, &mut stream)
+        )
+        .await
+        .expect("Timeout: the silent route drop must not wait for the payload")
+        .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "a reasonless Drop route emits nothing"
+    );
 }
 
 /// A builder-configured CLA goes live at `start`, not at `build`: activation
