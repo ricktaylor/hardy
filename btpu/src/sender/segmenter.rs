@@ -3,11 +3,11 @@
 use alloc::{collections::VecDeque, vec::Vec};
 use core::ops::RangeInclusive;
 
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, Bytes};
 
-use super::SegmentCutStrategy;
 #[cfg(doc)]
 use super::{NextPduOptions, Sender};
+use super::{SegmentCutStrategy, pack::Sink};
 use crate::codec::{encode_segment_head, hint::HintItem, segment_message_len};
 
 /// The copies emitted of each segment.  Repetition (Section 6) would make
@@ -19,7 +19,7 @@ pub const COPIES: u32 = 1;
 /// [`Sender::enqueue`]) until the last copy of its End is packed.
 ///
 /// Its segments are cut as PDUs are packed, each sized to the room left in
-/// the PDU (see [`Self::chunk_for`]) and written straight from the chunks
+/// the PDU (see [`Self::chunk_for`]) and taken straight from the chunks
 /// pushed into it, so a queued transfer costs one queue entry and handles
 /// on the pushed buffers rather than one message per segment.
 pub struct QueuedTransfer {
@@ -270,27 +270,24 @@ impl QueuedTransfer {
         total
     }
 
-    /// Write the next segment message, carrying `len` data bytes, into
-    /// `dst`, and return the pushed bytes it releases.  The caller sizes
-    /// `len` with [`Self::next_chunk`] or [`Self::flush_chunk`].  The last
-    /// segment is a Transfer End.  Bytes are released only with a segment's
-    /// last copy.
-    pub fn cut(&mut self, len: usize, dst: &mut impl BufMut) -> usize {
+    /// Append the next segment message, carrying `len` data bytes, to
+    /// `dst`, and return the pushed bytes it releases.  The segment's data
+    /// comes from the chunks it was pushed in, shared if `dst` can.  The
+    /// caller sizes `len` with
+    /// [`Self::next_chunk`] or [`Self::flush_chunk`].  The last segment is a
+    /// Transfer End.  Bytes are released only with a segment's last copy.
+    pub fn cut(&mut self, len: usize, dst: &mut impl Sink) -> usize {
         let index = self.next_index;
         let end = self.offset + len == self.total_len;
-        encode_segment_head(
-            end,
-            self.transfer_number,
-            index,
-            self.hints_at(index),
-            len,
-            dst,
-        )
+        let hints = self.hints_at(index);
+        dst.put_copied(|head| {
+            encode_segment_head(end, self.transfer_number, index, hints, len, head)
+        })
         .expect("segments are sized against the PDU");
         let mut left = len;
         for chunk in &self.chunks {
             let n = left.min(chunk.len());
-            dst.put_slice(&chunk[..n]);
+            dst.put_shared(chunk, n);
             left -= n;
             if left == 0 {
                 break;
@@ -334,13 +331,14 @@ impl QueuedTransfer {
 mod tests {
     use alloc::vec;
 
-    use bytes::BytesMut;
-
     use super::*;
-    use crate::codec::{
-        decode_pdu,
-        hint::encoded_hints_len,
-        message::{Message, SEGMENT_FRAMING},
+    use crate::{
+        codec::{
+            decode_pdu,
+            hint::encoded_hints_len,
+            message::{Message, SEGMENT_FRAMING},
+        },
+        sender::PduSlices,
     };
 
     // The room in a PDU that holds a full segment of 40 data bytes.
@@ -458,9 +456,11 @@ mod tests {
         });
         assert_eq!(t.next_chunk(SEGMENT_FRAMING + 40), Some(25));
         assert_eq!(t.next_chunk(SEGMENT_FRAMING + 24), None);
-        let mut buf = BytesMut::new();
+        let mut buf = PduSlices::new();
         assert_eq!(t.cut(25, &mut buf), 25);
-        let Some(Ok(Message::TransferSegment(m))) = decode_pdu(buf.freeze()).next() else {
+        let Some(Ok(Message::TransferSegment(m))) =
+            decode_pdu(Bytes::from(buf.iter().collect::<Vec<_>>().concat())).next()
+        else {
             panic!("expected a segment");
         };
         assert_eq!(m.segment_index, 2);
@@ -478,14 +478,16 @@ mod tests {
         t.push(Bytes::from(vec![0; 30]));
         assert_eq!(t.next_chunk(SEGMENT_FRAMING + 40), None);
         assert_eq!(t.next_chunk(SEGMENT_FRAMING + 30), Some(30));
-        // A segment spanning two pushed chunks is copied from both, and
+        // A segment spanning two pushed chunks takes from both, and
         // only the bytes it carries are released.
         t.push(Bytes::from(vec![1; 30]));
-        let mut buf = BytesMut::new();
+        let mut buf = PduSlices::new();
         assert_eq!(t.cut(40, &mut buf), 40);
         assert_eq!(t.buffered, 20);
         assert_eq!(t.chunks.len(), 1);
-        let Some(Ok(Message::TransferSegment(m))) = decode_pdu(buf.freeze()).next() else {
+        let Some(Ok(Message::TransferSegment(m))) =
+            decode_pdu(Bytes::from(buf.iter().collect::<Vec<_>>().concat())).next()
+        else {
             panic!("expected a segment");
         };
         assert_eq!(&m.data[..], [[0; 30].as_slice(), &[1; 10]].concat());

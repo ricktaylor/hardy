@@ -12,8 +12,8 @@ use crate::owner::Owner;
 /// **Dropping a handle does not cancel its bundle.**  The handle is a token,
 /// not a borrow of the sender, so it cannot reach the sender when dropped.
 /// A bundle whose producer gives up stays queued, supplying nothing, and a
-/// segmented one holds its window slot, until the CLA calls
-/// `cancel(handle)`.  A CLA that keeps the sender in `Arc<Mutex<_>>` can
+/// segmented one holds its transfer number outstanding, until the CLA
+/// calls `cancel(handle)`.  A CLA that keeps the sender in `Arc<Mutex<_>>` can
 /// wrap the handle in a guard of its own that cancels on drop.  A lost
 /// handle's bundle is still listed by [`Sender::outstanding`], and can be
 /// cancelled by its ID.
@@ -121,7 +121,7 @@ impl fmt::Debug for SendId {
 /// bundle is enqueued or begun.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SendKind {
-    /// Segmented into a transfer.  Its window slot is released by the
+    /// Segmented into a transfer.  Its transfer number is released by the
     /// sender itself once the transfer's End message has been packed into
     /// a PDU.
     Transfer,
