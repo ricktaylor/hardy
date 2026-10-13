@@ -85,6 +85,8 @@ impl From<crate::stream::BufferError> for Error {
 pub enum ClaAddressType {
     /// IPv4 and IPv6 address + port.
     Tcp,
+    /// IPv4 and IPv6 address + UDP port of a QUIC endpoint.
+    Quic,
     /// A private address type.
     Private,
 }
@@ -95,6 +97,8 @@ pub enum ClaAddressType {
 pub enum ClaAddress {
     /// An TCP address, represented as a standard socket address.
     Tcp(core::net::SocketAddr),
+    /// A QUIC address, represented as a standard socket address.
+    Quic(core::net::SocketAddr),
     /// An address for an unknown or custom CLA, containing the type identifier and the raw address bytes.
     #[cfg_attr(feature = "serde", serde(with = "private_addr_serde"))]
     Private(Bytes),
@@ -124,6 +128,7 @@ impl ClaAddress {
     pub fn address_type(&self) -> ClaAddressType {
         match self {
             ClaAddress::Tcp(_) => ClaAddressType::Tcp,
+            ClaAddress::Quic(_) => ClaAddressType::Quic,
             ClaAddress::Private(_) => ClaAddressType::Private,
         }
     }
@@ -134,15 +139,18 @@ impl TryFrom<(ClaAddressType, Bytes)> for ClaAddress {
 
     fn try_from((addr_type, addr): (ClaAddressType, Bytes)) -> Result<Self> {
         match addr_type {
-            ClaAddressType::Tcp => Ok(ClaAddress::Tcp(
-                String::from_utf8(addr.into())
-                    .map_err(|e| Error::Internal(Box::new(e)))?
-                    .parse()
-                    .map_err(|e| Error::Internal(Box::new(e)))?,
-            )),
+            ClaAddressType::Tcp => Ok(ClaAddress::Tcp(parse_socket_addr(addr)?)),
+            ClaAddressType::Quic => Ok(ClaAddress::Quic(parse_socket_addr(addr)?)),
             ClaAddressType::Private => Ok(ClaAddress::Private(addr)),
         }
     }
+}
+
+fn parse_socket_addr(addr: Bytes) -> Result<core::net::SocketAddr> {
+    String::from_utf8(addr.into())
+        .map_err(|e| Error::Internal(Box::new(e)))?
+        .parse()
+        .map_err(|e| Error::Internal(Box::new(e)))
 }
 
 impl From<ClaAddress> for (ClaAddressType, Bytes) {
@@ -150,6 +158,10 @@ impl From<ClaAddress> for (ClaAddressType, Bytes) {
         match value {
             ClaAddress::Tcp(socket_addr) => (
                 ClaAddressType::Tcp,
+                socket_addr.to_string().into_bytes().into(),
+            ),
+            ClaAddress::Quic(socket_addr) => (
+                ClaAddressType::Quic,
                 socket_addr.to_string().into_bytes().into(),
             ),
             ClaAddress::Private(bytes) => (ClaAddressType::Private, bytes),
@@ -161,6 +173,7 @@ impl core::fmt::Display for ClaAddress {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ClaAddress::Tcp(socket_addr) => write!(f, "tcp:{socket_addr}"),
+            ClaAddress::Quic(socket_addr) => write!(f, "quic:{socket_addr}"),
             ClaAddress::Private(bytes) => {
                 write!(f, "private:{bytes:02x?}")
             }
@@ -532,6 +545,15 @@ mod tests {
         let (t, b): (ClaAddressType, Bytes) = cla_v6.clone().into();
         let recovered = ClaAddress::try_from((t, b)).unwrap();
         assert_eq!(recovered, cla_v6);
+
+        // QUIC address: the same text form as TCP, a distinct type
+        let quic_addr = ClaAddress::Quic(tcp_v6);
+        assert_eq!(quic_addr.address_type(), ClaAddressType::Quic);
+        let (t, b): (ClaAddressType, Bytes) = quic_addr.clone().into();
+        assert_eq!(t, ClaAddressType::Quic);
+        let recovered = ClaAddress::try_from((t, b)).unwrap();
+        assert_eq!(recovered, quic_addr);
+        assert_eq!(quic_addr.to_string(), "quic:[::1]:4556");
 
         // Private address
         let private_data = Bytes::from_static(b"\x01\x02\x03\x04");

@@ -10,15 +10,12 @@ pub mod cla {
 
         fn try_from(value: ClaAddress) -> Result<Self, Self::Error> {
             match (value.address_type.try_into(), value.address) {
-                (Ok(ClaAddressType::Tcp), address) => {
-                    let address = str::from_utf8(&address).map_err(|e| {
-                        tonic::Status::invalid_argument(format!("Invalid address: {e}"))
-                    })?;
-                    let address = address.parse().map_err(|e| {
-                        tonic::Status::invalid_argument(format!("Invalid address: {e}"))
-                    })?;
-                    Ok(hardy_bpa::cla::ClaAddress::Tcp(address))
-                }
+                (Ok(ClaAddressType::Tcp), address) => Ok(hardy_bpa::cla::ClaAddress::Tcp(
+                    parse_socket_addr(&address)?,
+                )),
+                (Ok(ClaAddressType::Quic), address) => Ok(hardy_bpa::cla::ClaAddress::Quic(
+                    parse_socket_addr(&address)?,
+                )),
                 (Ok(ClaAddressType::Private) | Err(_), address) => {
                     Ok(hardy_bpa::cla::ClaAddress::Private(address))
                 }
@@ -26,11 +23,22 @@ pub mod cla {
         }
     }
 
+    fn parse_socket_addr(address: &[u8]) -> Result<core::net::SocketAddr, tonic::Status> {
+        str::from_utf8(address)
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?
+            .parse()
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))
+    }
+
     impl From<hardy_bpa::cla::ClaAddress> for ClaAddress {
         fn from(value: hardy_bpa::cla::ClaAddress) -> Self {
             match value {
                 hardy_bpa::cla::ClaAddress::Tcp(address) => ClaAddress {
                     address_type: ClaAddressType::Tcp.into(),
+                    address: address.to_string().into(),
+                },
+                hardy_bpa::cla::ClaAddress::Quic(address) => ClaAddress {
+                    address_type: ClaAddressType::Quic.into(),
                     address: address.to_string().into(),
                 },
                 hardy_bpa::cla::ClaAddress::Private(address) => ClaAddress {
