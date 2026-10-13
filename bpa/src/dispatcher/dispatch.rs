@@ -80,21 +80,74 @@ impl Dispatcher {
         bundle: bundle::Bundle,
         cla_registry: &cla::registry::ClaRegistry,
     ) {
+        // The decision carries the table it was made against: the parks
+        // re-check it to close the park-vs-poll window (see park_bundle). A
+        // Forward result names the peer, whose egress queue carries the
+        // adjacency.
+        let decision = self.rib.decide(&bundle);
+        self.execute_dispatch_action(bundle, decision, cla_registry)
+            .await
+    }
+
+    // Execute an input door's routing decision of record, after the
+    // metadata insert, on the door's task. The decision was made at the
+    // pre-drain gate, so it is made again if the table changed during the
+    // drain: a route withdrawn meanwhile must not carry the bundle. That
+    // narrows the window to the one dispatch always has, from here to the
+    // hand-off, without closing it. The arms whose cost scales with
+    // embedder callbacks or the payload — the admin endpoint, and a
+    // fragment's reassembly, which may complete the ADU — go through the
+    // dispatch queue to the processing pool, so the door's caller (a CLA
+    // session awaiting its acknowledgement) waits on nothing heavier than a
+    // status swap and a queue push. The queue send never awaits a pool
+    // permit, so this is safe from pool tasks too.
+    pub(super) async fn execute_admitted(
+        &self,
+        bundle: bundle::Bundle,
+        mut decision: routing::Decision,
+    ) {
+        if self.rib.table_changed_since(&decision.seen) {
+            debug!("Routing changed during the drain, deciding again");
+            decision = self.rib.decide(&bundle);
+        }
+
+        match decision.action {
+            Some(routing::DispatchAction::AdminEndpoint) => self.dispatch_bundle(bundle).await,
+            Some(routing::DispatchAction::Deliver(_)) if bundle.id().fragment_info.is_some() => {
+                self.dispatch_bundle(bundle).await
+            }
+            _ => {
+                self.execute_dispatch_action(bundle, decision, self.cla_registry())
+                    .await
+            }
+        }
+    }
+
+    // Execute a routing decision. Shared by `process_bundle` (which routes
+    // at dispatch: the re-dispatch, poll, sweep, and recovery paths) and
+    // `execute_admitted` (the input doors' decision of record). A decision
+    // that proves stale at the hand-off lands in a failure arm whose park
+    // re-checks the table it was made against and re-enters dispatch; one
+    // the hand-off accepts stands, so callers keep the window between the
+    // decision and this call short.
+    pub(super) async fn execute_dispatch_action(
+        &self,
+        bundle: bundle::Bundle,
+        decision: routing::Decision,
+        cla_registry: &cla::registry::ClaRegistry,
+    ) {
+        let routing::Decision { action, seen } = decision;
+
         // Expiry checkpoint: the reaper defers the hand-off statuses
         // (DeliveryAckPending/ForwardAckPending), so an expired bundle can
         // re-enter dispatch through a transfer outcome, a sweep, or a poll —
-        // resolve it here rather than routing it onward.
+        // and the ingress drain takes real time — so resolve expiry here
+        // rather than routing the bundle onward.
         if bundle.has_expired() {
             return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
 
-        // Snapshot the routing table before the lookup: the parks below
-        // re-check it to close the park-vs-poll window (see park_bundle).
-        let seen = self.rib.table_snapshot();
-
-        // Perform RIB lookup; a Forward result names the peer, whose egress
-        // queue carries the adjacency EID.
-        match self.rib.find(&bundle) {
+        match action {
             Some(routing::DispatchAction::Drop(reason)) => {
                 if let Some(reason) = reason {
                     debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
@@ -145,15 +198,21 @@ impl Dispatcher {
                 }
             }
             None => {
-                // No opportunity available — wait for one. A local
-                // destination waits for its service to register; anything
-                // else waits for a route.
+                // No opportunity available — wait for one, under the inputs
+                // the lookup walked. A local lookup EID (the key, else the
+                // destination) waits for its service to register; anything
+                // else waits for a route, including a table other than the
+                // default, which no registration can satisfy.
                 debug!("Storing bundle until a forwarding opportunity arises");
 
-                let parked = match self
-                    .node_ids
-                    .local_service_eid(&bundle.primary().destination)
-                {
+                let key = bundle.metadata.routing_key();
+                let service = match key.unknown_table() {
+                    Some(_) => None,
+                    None => self
+                        .node_ids
+                        .local_service_eid(key.lookup_eid(&bundle.primary().destination)),
+                };
+                let parked = match service {
                     Some(service) => bundle::BundleStatus::WaitingForService { service },
                     None => bundle::BundleStatus::Waiting,
                 };

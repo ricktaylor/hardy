@@ -153,6 +153,8 @@ Route table: NodeId pattern → Forward(peer_id) at priority 0
 
 ### Algorithm
 
+The lookup key is the bundle's Classifier-set `route_key` when its classification record carries one, otherwise the destination EID; a record naming any `route_table` other than the default is a strict no-match, and the bundle waits (see [`routing_table_redesign.md`](routing_table_redesign.md)).
+
 1. **Search unified route table by priority**
    - Iterate priorities low to high (0, 1, 100, ...)
    - Within each priority, patterns are ordered by specificity score (descending)
@@ -167,7 +169,7 @@ Route table: NodeId pattern → Forward(peer_id) at priority 0
    - An unresolvable next-hop — no matching route, or a loop detected by the trail set — is skipped, and the lookup falls through to less-specific patterns and lower priorities (see "Unresolvable next-hops" below)
 
 3. **ECMP selection** (if multiple peers)
-   - Hash of: bundle source + destination (the flow label rejoins the hash when the policy tranche derives it from classification)
+   - Hash of: bundle source + destination — the conversation only: the lookup's `route_key`/`route_table` select the ECMP group, never the member, and policy-injected entropy belongs to the egress flow-label input, not this hash
    - Uses a per-instance `RandomState` (seeded once at RIB creation) for deterministic peer selection within a BPA instance
 
 ### Specificity Scoring
@@ -229,7 +231,7 @@ The bundle status tracks where a bundle is in the processing pipeline. See [Bund
        ┌─────────────┐
        │ Dispatching │
        └──────┬──────┘
-              │ process_bundle() / RIB::find()
+              │ RIB::find() — at the gate for fresh arrivals, in process_bundle() on re-dispatch
               │
     ┌─────────┼─────────┬──────────┐
     ▼         ▼         ▼          ▼
@@ -282,7 +284,7 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
    Destination: ipn:200.42
    Ingress chain at the pre-drain gate (in memory); the single insert persists it as Dispatching
 
-2. ROUTE LOOKUP (process_bundle)
+2. ROUTE LOOKUP (at the pre-drain gate; the commit executes it)
    RIB::find() searches unified table:
    - priority 0: no match (admin endpoints, CLA peers)
    - priority 100: ipn:200.* via dtn://tunnel1

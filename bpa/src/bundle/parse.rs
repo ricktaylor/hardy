@@ -353,8 +353,12 @@ impl HeaderVerify {
 pub enum HeaderFailure {
     /// The producer went away before the bundle completed.
     Cancelled,
-    /// The accumulated stream crossed the caller's size bound.
-    TooLarge { size: usize, max: usize },
+    /// The caller's size bound was crossed — by the accumulated stream, or
+    /// by the whole-bundle wire size the header chain declares (canonical
+    /// CBOR gives the payload a definite-length head, so the full size is
+    /// known before the payload arrives). `u64` end to end: a declared
+    /// size may exceed a 32-bit target's address space.
+    TooLarge { size: u64, max: u64 },
     /// Structural or keyed-validation failure. When the bundle id was
     /// recoverable the caller reports the drop — the reception facts
     /// established before the failure, then deletion citing the reason (RFC
@@ -380,14 +384,16 @@ pub enum HeaderFailure {
 /// it completed in this pass, else the headers and whatever of the payload
 /// block has arrived), the payload `tail` the caller drains — the drain
 /// continues the byte count this pass starts against `max_size`, which here
-/// bounds hostile unbounded header chains — and the header-region BCB
-/// OperationSets for the caller's Ingress gate chain, handed back from the one
-/// decode rather than re-derived. `Err` is a [`HeaderFailure`]; see its
-/// variants for who handles what.
+/// bounds hostile unbounded header chains and, once the chain parses,
+/// refuses a declared whole-bundle size over the bound before a single
+/// payload byte drains — and the header-region BCB OperationSets for the
+/// caller's Ingress gate chain, handed back from the one decode rather than
+/// re-derived. `Err` is a [`HeaderFailure`]; see its variants for who
+/// handles what.
 #[allow(clippy::result_large_err, clippy::type_complexity)]
 pub async fn parse_headers<F>(
     stream: &mut dyn Receiver<Segment>,
-    max_size: usize,
+    max_size: u64,
     peek: usize,
     key_provider: F,
 ) -> Result<
@@ -447,20 +453,38 @@ where
                 return Err(tail_rejected_at_final(tail, parsed));
             }
             Ok(parse::ParserProgress::Partial { consumed, tail }) => {
-                let parsed = match parser.finish(consumed.clone()) {
-                    Ok(parsed) => parsed,
+                match parser.finish(consumed.clone()) {
+                    Ok(parsed) => break (parsed, consumed, Some(tail)),
                     Err(e) => {
                         debug!("Bundle BPSec structural validation failed: {e}");
                         return Err(HeaderFailure::Invalid(None));
                     }
-                };
-                break hold_peek(&mut arrival, parsed, consumed, tail, peek).await?;
+                }
             }
             Err(e) => {
                 debug!("Bundle structural parse failed: {e}");
                 return Err(HeaderFailure::Invalid(None));
             }
         }
+    };
+
+    // The header chain declares the whole wire size, so the caller's bound
+    // applies to the full bundle here — resident or still on the wire —
+    // before a single payload byte is drained, and before any keyed work
+    // below is spent on a bundle that will be refused.
+    let declared = parsed.bundle.encoded_len();
+    if declared > max_size {
+        return Err(HeaderFailure::TooLarge {
+            size: declared,
+            max: max_size,
+        });
+    }
+
+    // The payload peek is held once the bundle is admissible by size, and
+    // before the keyed work, which then verifies over the held bytes too.
+    let (parsed, headers, tail) = match tail {
+        Some(tail) => hold_peek(&mut arrival, parsed, headers, tail, peek).await?,
+        None => (parsed, headers, None),
     };
 
     // Header verification (§A–§D) against the resident bytes. On a keyed failure
@@ -525,8 +549,8 @@ async fn await_final(
 // total`), so the drain counts on from the resident bytes.
 struct Arrival<'s> {
     stream: &'s mut dyn Receiver<Segment>,
-    total: usize,
-    max: usize,
+    total: u64,
+    max: u64,
 }
 
 impl Arrival<'_> {
@@ -542,7 +566,7 @@ impl Arrival<'_> {
                 return Err(HeaderFailure::Cancelled);
             }
         };
-        self.total = self.total.saturating_add(bytes.len());
+        self.total = self.total.saturating_add(bytes.len() as u64);
         if self.total > self.max {
             return Err(HeaderFailure::TooLarge {
                 size: self.total,
@@ -1632,16 +1656,25 @@ mod tests {
         assert_eq!(left(&mut rx).await, 1, "the empty `Final` is left unpulled");
     }
 
-    // The bytes the peek pulls count against the size bound.
+    // A bundle declaring more than the size bound is refused before the
+    // peek pulls a byte of its payload.
     #[tokio::test]
-    async fn the_peek_counts_against_the_size_bound() {
+    async fn an_oversize_declaration_refuses_before_the_peek() {
         let (data, start) = peek_bundle();
-        let mut rx = stream_of(segmented(&data, start, 100)).await;
+        let segments = segmented(&data, start, 100);
+        let count = segments.len();
+        let mut rx = stream_of(segments).await;
+        let bound = (start + 150) as u64;
 
         assert!(matches!(
-            parse_headers(&mut rx, start + 150, 4096, bpsec::no_keys).await,
-            Err(HeaderFailure::TooLarge { size, max }) if size == start + 200 && max == start + 150
+            parse_headers(&mut rx, bound, 4096, bpsec::no_keys).await,
+            Err(HeaderFailure::TooLarge { size, max }) if size == data.len() as u64 && max == bound
         ));
+        assert_eq!(
+            left(&mut rx).await,
+            count - 1,
+            "nothing is pulled past the payload header"
+        );
     }
 
     // A producer that goes away while the peek is held has abandoned the
@@ -1659,5 +1692,33 @@ mod tests {
             parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await,
             Err(HeaderFailure::Cancelled)
         ));
+    }
+
+    // The size bound applies to the declared whole-bundle size the moment
+    // the header chain parses, carried in u64: a payload head declaring
+    // 8 GiB refuses with the full declaration, from the head alone, before
+    // a payload byte arrives.
+    #[tokio::test]
+    async fn a_declaration_beyond_32_bits_refuses_at_the_header_pass() {
+        let (data, start) = peek_bundle();
+
+        // Swap the payload's 1000-byte definite head for an 8 GiB one, and
+        // send nothing past it.
+        assert_eq!(data[start - 3..start], hex!("59 03 E8"));
+        let mut head = data[..start - 3].to_vec();
+        head.extend_from_slice(&hex!("5B 00 00 00 02 00 00 00 00"));
+        let mut rx = stream_of(vec![Segment::Next(Bytes::from(head))]).await;
+
+        let Err(HeaderFailure::TooLarge { size, max }) =
+            parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        else {
+            panic!("an over-declared bundle must refuse");
+        };
+        // The bundle as built, less its 1000 payload bytes, with the head
+        // six bytes longer, plus the 8 GiB declared.
+        let declared = u64::try_from(data.len() - 1000 + 6).unwrap() + (8 << 30);
+        assert_eq!(size, declared, "the declared wire size is reported");
+        assert!(size > u64::from(u32::MAX));
+        assert_eq!(max, 1 << 20);
     }
 }
