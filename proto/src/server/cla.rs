@@ -294,6 +294,7 @@ async fn run_cla_session(
                         .address_type
                         .map(|address_type| match address_type.try_into() {
                             Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
+                            Ok(ClaAddressType::Quic) => hardy_bpa::cla::ClaAddressType::Quic,
                             Err(_) | Ok(ClaAddressType::Private) => {
                                 hardy_bpa::cla::ClaAddressType::Private
                             }

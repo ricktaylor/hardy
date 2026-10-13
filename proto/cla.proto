@@ -76,6 +76,8 @@ enum ClaAddressType {
   CLA_ADDRESS_TYPE_PRIVATE = 0;
   // IPv4 or IPv6 address and TCP port.
   CLA_ADDRESS_TYPE_TCP     = 1;
+  // IPv4 or IPv6 address and UDP port of a QUIC endpoint.
+  CLA_ADDRESS_TYPE_QUIC    = 2;
 }
 
 // Represents a network address for a specific Convergence Layer Adapter.

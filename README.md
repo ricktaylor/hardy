@@ -76,6 +76,7 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 | [**`hardy-tcpclv4`**](./tcpclv4/) | RFC 9174 TCPCLv4 implementation with TLS support, session management, and structured logging. |
 | [**`hardy-file-cla`**](./file-cla/) | File-system-based CLA for bundle exchange via watched directories. |
 | [**`hardy-bibe`**](./bibe/) | Bundle-in-Bundle Encapsulation (BIBE) for tunneling bundles through intermediate networks. |
+| [**`hardy-qbcl`**](./qbcl/) | Qubicle (DTN over QUIC) convergence layer per draft-ek-dtn-qubicle, with mutually authenticated sessions and one bundle per QUIC stream. |
 
 ### Services
 

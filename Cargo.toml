@@ -25,6 +25,7 @@ members = [
     "otel",
     "s3-storage",
     "proto",
+    "qbcl",
     "sqlite-storage",
     "tcpclv4",
     "tcpclv4/fuzz",

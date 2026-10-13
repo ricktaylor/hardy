@@ -247,6 +247,7 @@ pub async fn register_cla(
             address_type: init.address_type.map(|a| {
                 match a {
                     hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp,
+                    hardy_bpa::cla::ClaAddressType::Quic => ClaAddressType::Quic,
                     hardy_bpa::cla::ClaAddressType::Private => ClaAddressType::Private,
                 }
                 .into()
