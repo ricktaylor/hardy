@@ -1,13 +1,19 @@
 //! Packed PDUs and the bundles they carry.
 
-use core::{fmt, ops::Deref, slice};
+use alloc::vec::Vec;
+use core::{
+    fmt,
+    iter::FusedIterator,
+    ops::{Deref, Range},
+    slice,
+};
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 use smallvec::SmallVec;
 
-use super::SendId;
 #[cfg(doc)]
 use super::Sender;
+use super::{Error, Result, SendId};
 
 /// A bundle with bytes in a PDU, as listed by [`Pdu::carried`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -137,4 +143,189 @@ pub struct Pdu {
     /// Every bundle with bytes in `data`, once each, in the order packed.
     /// Empty for a PDU holding only a Transfer Cancel.
     pub carried: CarriedList,
+}
+
+/// A packed PDU as a sequence of byte slices, filled by
+/// [`Sender::next_pdu_vectored`] for a caller that gathers it into its own
+/// memory or hands it to a vectored write.
+///
+/// The slices, in order, concatenate to exactly the bytes
+/// [`Sender::next_pdu`] would have returned, and none is empty.  How the
+/// PDU is split into slices, and which slices share the buffers bundles
+/// were enqueued in rather than holding copied bytes, is unspecified and
+/// may change between releases.
+///
+/// # Memory
+///
+/// A filled value holds references into the enqueued buffers its PDU
+/// shares, keeping them alive until it is refilled, [`Self::clear`]ed, or
+/// dropped.  Refilling or clearing keeps its own buffers, so a value reused
+/// for every PDU stops allocating once it has grown to the largest PDU
+/// seen.
+#[derive(Default)]
+pub struct PduSlices {
+    /// Bytes copied into the PDU: message headers, padding, and any data
+    /// not shared.
+    copied: Vec<u8>,
+    /// The PDU's slices, in order.
+    spans: Vec<Span>,
+    /// The PDU's length: the sum of the slices' lengths.
+    len: usize,
+}
+
+/// One slice of a [`PduSlices`].
+enum Span {
+    /// A range of [`PduSlices::copied`].
+    Copied(Range<usize>),
+    /// Bytes shared with an enqueued buffer.
+    Shared(Bytes),
+}
+
+impl PduSlices {
+    /// The fewest bytes shared rather than copied: below this, copying
+    /// costs less than counting a reference to the buffer and releasing it.
+    pub(super) const SHARE_MIN: usize = 256;
+
+    /// An empty PDU, holding no buffers.
+    pub const fn new() -> Self {
+        Self {
+            copied: Vec::new(),
+            spans: Vec::new(),
+            len: 0,
+        }
+    }
+
+    /// The PDU's length in bytes: the sum of the slices' lengths.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the PDU is empty, as it is when new, cleared, or after a
+    /// call that packed nothing.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The PDU's slices, in order.
+    pub fn iter(&self) -> PduSlicesIter<'_> {
+        PduSlicesIter {
+            copied: &self.copied,
+            spans: self.spans.iter(),
+        }
+    }
+
+    /// Copy the PDU to the start of `dst`, returning its length.  The rest
+    /// of `dst` is left as it was.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BufferTooShort`] if `dst` is shorter than the PDU, leaving
+    /// `dst` untouched.
+    pub fn copy_to_slice(&self, dst: &mut [u8]) -> Result<usize> {
+        let len = dst.len();
+        let Some(mut out) = dst.get_mut(..self.len) else {
+            return Err(Error::BufferTooShort {
+                needed: self.len,
+                len,
+            });
+        };
+        for slice in self {
+            out.put_slice(slice);
+        }
+        Ok(self.len)
+    }
+
+    /// Empty the PDU, releasing its references into enqueued buffers and
+    /// keeping its own buffers.
+    pub fn clear(&mut self) {
+        self.copied.clear();
+        self.spans.clear();
+        self.len = 0;
+    }
+
+    /// Append the bytes `f` writes to the copied buffer, returning what it
+    /// returns.
+    pub(super) fn put_copied<R>(&mut self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        let start = self.copied.len();
+        let r = f(&mut self.copied);
+        let end = self.copied.len();
+        if end > start {
+            self.len += end - start;
+            match self.spans.last_mut() {
+                // Copied bytes are only appended, so the last copied span
+                // ends where the new bytes start.
+                Some(Span::Copied(range)) if range.end == start => range.end = end,
+                _ => self.spans.push(Span::Copied(start..end)),
+            }
+        }
+        r
+    }
+
+    /// Append the first `len` bytes of `bytes`, shared rather than copied
+    /// unless shorter than [`Self::SHARE_MIN`].
+    pub(super) fn put_shared(&mut self, bytes: &Bytes, len: usize) {
+        if len < Self::SHARE_MIN {
+            self.put_copied(|buf| buf.extend_from_slice(&bytes[..len]));
+            return;
+        }
+        self.len += len;
+        self.spans.push(Span::Shared(if len == bytes.len() {
+            bytes.clone()
+        } else {
+            bytes.slice(..len)
+        }));
+    }
+}
+
+impl<'a> IntoIterator for &'a PduSlices {
+    type Item = &'a [u8];
+    type IntoIter = PduSlicesIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// Summarises the PDU rather than printing its bytes.
+impl fmt::Debug for PduSlices {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PduSlices")
+            .field("len", &self.len)
+            .field("slices", &self.spans.len())
+            .finish()
+    }
+}
+
+/// The slices of a [`PduSlices`], in order, returned by
+/// [`PduSlices::iter`].
+#[derive(Clone)]
+pub struct PduSlicesIter<'a> {
+    copied: &'a [u8],
+    spans: slice::Iter<'a, Span>,
+}
+
+impl<'a> Iterator for PduSlicesIter<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        Some(match self.spans.next()? {
+            Span::Copied(range) => &self.copied[range.clone()],
+            Span::Shared(bytes) => bytes,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.spans.size_hint()
+    }
+}
+
+impl FusedIterator for PduSlicesIter<'_> {}
+
+/// Summarises the slices left rather than printing their bytes.
+impl fmt::Debug for PduSlicesIter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PduSlicesIter")
+            .field("slices", &self.spans.len())
+            .finish()
+    }
 }

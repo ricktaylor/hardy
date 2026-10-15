@@ -1,19 +1,24 @@
 //! Packing the queue into PDUs.
 
 use alloc::vec::Vec;
-use core::ops::RangeInclusive;
+use core::{
+    mem::take,
+    ops::RangeInclusive,
+    task::{Context, Poll},
+};
 
 use bytes::{BufMut, Bytes, BytesMut};
 
 use super::{
-    Carried, CarriedList, Error, NextPduOptions, Pdu, Result, SendId, Sender,
+    Carried, CarriedList, Error, NextPduOptions, Pdu, PduSlices, Result, SendId, Sender,
     id::LocalId,
     queue::{QueueEntry, Seq, cancel_message_len},
 };
 #[cfg(doc)]
 use super::{LinkFraming, PduSize, segmenter::QueuedTransfer};
 use crate::codec::{
-    encoded_message_len, header::HEADER_SIZE, message::Message, put_message, put_padding,
+    encoded_message_len, header::HEADER_SIZE, message::Message, put_message, put_message_head,
+    put_padding,
 };
 
 /// The fewest bytes any queued message takes, so a PDU already holding a
@@ -56,7 +61,7 @@ impl Sender {
     /// The list starts inline, so it allocates only for a PDU carrying
     /// more than [`CarriedList::INLINE`] bundles.
     ///
-    /// Packing a Transfer End releases its transfer's window slot (see
+    /// Packing a Transfer End releases its transfer's number (see
     /// [`Sender`]).
     #[must_use = "a PDU is packed once; dropping it loses what it carries"]
     pub fn next_pdu(&mut self) -> Option<Pdu> {
@@ -93,28 +98,19 @@ impl Sender {
         carried: &mut CarriedList,
         options: NextPduOptions,
     ) -> Option<Bytes> {
-        carried.clear();
-        if !self.ready(options) {
-            return None;
-        }
         let pdu_size = self.pdu_size.get();
         let padded_len = self.padded_len();
-        let mut buf = BytesMut::with_capacity(if padded_len == pdu_size {
-            pdu_size
-        } else {
-            self.planned_len(pdu_size).max(padded_len)
-        });
-        let packed = self
-            .pack(carried, options, &mut buf)
-            .expect("a BytesMut grows to fit any message");
-        let pdu = match packed {
-            Packed::InBuf => buf.freeze(),
-            Packed::Bare(data) => data,
+        let mut sink = BytesSink {
+            buf: BytesMut::with_capacity(if padded_len == pdu_size {
+                pdu_size
+            } else {
+                self.planned_len(pdu_size).max(padded_len)
+            }),
+            frame: None,
         };
-        // Draining frees send-queue capacity (and possibly a window slot);
-        // wake any task parked on `poll_ready`.
-        self.wake_enqueue();
-        Some(pdu)
+        self.gather(carried, &mut sink, options)
+            .expect("a BytesMut grows to fit any message")
+            .then(|| sink.frame.unwrap_or_else(|| sink.buf.freeze()))
     }
 
     /// [`Self::next_pdu_into`], writing the PDU at the start of `out` and
@@ -164,44 +160,150 @@ impl Sender {
                 len,
             });
         }
-        if !self.ready(options) {
-            return Ok(None);
-        }
-        let mut rest = &mut *out;
-        let packed = self.pack(carried, options, &mut rest)?;
-        let written = match packed {
-            Packed::InBuf => len - rest.len(),
-            Packed::Bare(data) => {
-                out[..data.len()].copy_from_slice(&data);
-                data.len()
-            }
+        let mut sink = SliceSink {
+            rest: out,
+            start: len,
         };
-        // As in `next_pdu_into_with`.
-        self.wake_enqueue();
-        Ok(Some(written))
+        Ok(self
+            .gather(carried, &mut sink, options)?
+            .then(|| sink.used()))
     }
 
-    /// Whether [`Self::pack`] has anything to pack.
-    fn ready(&mut self, options: NextPduOptions) -> bool {
+    /// [`Self::next_pdu_into`], filling `out` with the PDU as a sequence of
+    /// slices rather than one buffer, and returning its length, for a
+    /// caller that gathers the PDU into memory it does not allocate (a ring
+    /// slot or a DMA buffer, say) or hands it to a vectored write.  Bundle
+    /// data in the PDU can share the buffers it was enqueued in, so the
+    /// sender copies little or nothing of it.
+    ///
+    /// `out` is cleared first, keeping its buffers, and is left empty when
+    /// `None` is returned.  `carried` is cleared first, as for
+    /// [`Self::next_pdu_into`].
+    ///
+    /// The length returned is never 0: it is `pdu_size` under
+    /// [`LinkFraming::FixedSize`], and at most `pdu_size` under
+    /// [`LinkFraming::Variable`].
+    #[must_use = "a PDU is packed once; dropping it loses what it carries"]
+    pub fn next_pdu_vectored(
+        &mut self,
+        carried: &mut CarriedList,
+        out: &mut PduSlices,
+    ) -> Option<usize> {
+        self.next_pdu_vectored_with(carried, out, NextPduOptions::default())
+    }
+
+    /// [`Self::next_pdu_vectored`], packed as `options` asks.
+    #[must_use = "a PDU is packed once; dropping it loses what it carries"]
+    pub fn next_pdu_vectored_with(
+        &mut self,
+        carried: &mut CarriedList,
+        out: &mut PduSlices,
+        options: NextPduOptions,
+    ) -> Option<usize> {
+        out.clear();
+        self.gather(carried, out, options)
+            .expect("only a bounded sink refuses a message")
+            .then(|| out.len())
+    }
+
+    /// [`Self::next_pdu_write`] for a drain that parks: `Ready` with the
+    /// PDU's length or the error, and `Pending` while nothing is ready to
+    /// pack, with the task registered to be woken when a bundle or a
+    /// Transfer Cancel is queued, or a push lets a waiting transfer supply
+    /// a PDU.  A push that leaves its transfer waiting does not wake it.
+    ///
+    /// The drain has one consumer: a poll from another task replaces the
+    /// task registered before.  The task that drains must not also wait on
+    /// [`Self::poll_admit`] or [`Self::poll_push_ready`], since only the
+    /// drain frees what they wait for.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::next_pdu_write`].
+    pub fn poll_next_pdu_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        carried: &mut CarriedList,
+        out: &mut [u8],
+    ) -> Poll<Result<usize>> {
+        match self.next_pdu_write(carried, out) {
+            Ok(None) => {
+                self.register_drain_waker(cx);
+                Poll::Pending
+            }
+            Ok(Some(len)) => Poll::Ready(Ok(len)),
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+
+    /// [`Self::next_pdu_vectored`] for a drain that parks, as
+    /// [`Self::poll_next_pdu_write`] parks.
+    pub fn poll_next_pdu_vectored(
+        &mut self,
+        cx: &mut Context<'_>,
+        carried: &mut CarriedList,
+        out: &mut PduSlices,
+    ) -> Poll<usize> {
+        match self.next_pdu_vectored(carried, out) {
+            Some(len) => Poll::Ready(len),
+            None => {
+                self.register_drain_waker(cx);
+                Poll::Pending
+            }
+        }
+    }
+
+    /// Pack the next PDU into the empty `out`, recording the bundles it
+    /// carries in `carried`, and return whether anything was ready.  Every
+    /// PDU-producing call packs through here, each with its own [`Sink`].
+    fn gather(
+        &mut self,
+        carried: &mut CarriedList,
+        out: &mut impl Sink,
+        options: NextPduOptions,
+    ) -> Result<bool> {
+        carried.clear();
+        let mut scan = take(&mut self.scan);
+        let packed = self
+            .ready(&mut scan, options)
+            .map(|first| self.pack(&mut scan, first, carried, options, out))
+            .transpose();
+        self.restore_scan(scan);
+        if packed?.is_none() {
+            return Ok(false);
+        }
+        // Draining frees queued bytes, may open the window, and may leave
+        // a transfer waiting on its producer; wake the producers it frees.
+        self.wake_producers();
+        Ok(true)
+    }
+
+    /// How [`Self::pack`] starts the next PDU, or `None` if it has nothing
+    /// to pack.  `scan` is reset and left as the first message's lookup
+    /// filled it, for [`Self::pack`] to carry on from, so the queue is
+    /// walked once per PDU.
+    fn ready(&self, scan: &mut Scan, options: NextPduOptions) -> Option<Start> {
         let pdu_size = self.pdu_size.get();
-        let mut scan = Scan::default();
-        let ready = self.next_source(&mut scan, 0, pdu_size).is_some()
-            || (options.flush && self.flush_source(Seq(0), 0, pdu_size).is_some());
+        scan.reset();
+        if let Some(source) = self.next_source(scan, 0, pdu_size) {
+            return Some(Start::Source(source));
+        }
+        (options.flush && self.flush_source(Seq(0), 0, pdu_size).is_some()).then_some(Start::Flush)
+    }
+
+    /// Return the [`Scan`] taken for a PDU, keeping its buffer for the
+    /// next.
+    fn restore_scan(&mut self, scan: Scan) {
         #[cfg(test)]
         {
             self.probes += scan.probes;
         }
-        ready
+        self.scan = scan;
     }
 
-    /// Pack the queue's next PDU onto the end of `buf`, recording the
-    /// bundles it carries in `carried`.  The caller has checked that it is
-    /// [`Self::ready`], and that `buf` has room for [`PduSize`] bytes.
-    ///
-    /// The PDU's length so far is what `buf` has taken: every [`BufMut`]
-    /// write reduces [`BufMut::remaining_mut`] by exactly the bytes
-    /// written, so one packer serves a growing [`BytesMut`] and a caller's
-    /// fixed slice alike.
+    /// Pack the queue's next PDU into the empty `out`, recording the
+    /// bundles it carries in `carried`.  `first` and `scan` are what
+    /// [`Self::ready`] found.
     ///
     /// The loop is driven by the queue, not by a count planned up front:
     /// [`Self::next_source`] names the entry that supplies each message,
@@ -212,38 +314,45 @@ impl Sender {
     /// transfer's full segments to fit or refuses the bundle, and a
     /// Transfer Cancel is smaller than any segment of the transfer it
     /// cancels), but were it otherwise the message would go out as one
-    /// oversized PDU rather than stall the queue, or, if `buf` has no room
-    /// for it, be refused with [`Error::BufferTooShort`] before anything is
-    /// packed.
-    fn pack<B: BufMut>(
+    /// oversized PDU rather than stall the queue, or, if longer than
+    /// [`Sink::capacity`], be refused with [`Error::BufferTooShort`] before
+    /// anything is packed.
+    fn pack<S: Sink>(
         &mut self,
+        scan: &mut Scan,
+        first: Start,
         carried: &mut CarriedList,
         options: NextPduOptions,
-        buf: &mut B,
-    ) -> Result<Packed> {
+        out: &mut S,
+    ) -> Result<()> {
         let pdu_size = self.pdu_size.get();
         let owner = self.owner;
-        let start = buf.remaining_mut();
-        let used = |buf: &B| start - buf.remaining_mut();
         // Only the first message can be larger than the room the PDU size
         // leaves (see above).
-        let fits = |buf: &B, message: &Message| {
-            let needed = encoded_message_len(message);
-            if used(buf) > 0 || needed <= buf.remaining_mut() {
-                Ok(())
-            } else {
-                Err(Error::BufferTooShort { needed, len: start })
+        let fits = |out: &S, message: &Message| match out.capacity() {
+            Some(len) if out.used() == 0 => {
+                let needed = encoded_message_len(message);
+                if needed <= len {
+                    Ok(())
+                } else {
+                    Err(Error::BufferTooShort { needed, len })
+                }
             }
+            _ => Ok(()),
         };
-        let mut scan = Scan::default();
-        while let Some(source) = self.next_source(&mut scan, used(buf), pdu_size) {
+        let mut next = match first {
+            Start::Source(source) => Some(source),
+            Start::Flush => None,
+        };
+        while let Some(source) = next {
             let seq = match source {
                 Source::Cancel => {
                     let transfer_number = *self.cancels.front().expect("named by next_source");
                     let message = Message::TransferCancel { transfer_number };
-                    fits(buf, &message)?;
+                    fits(out, &message)?;
                     self.cancels.pop_front();
-                    encode_queued(&message, buf);
+                    put_queued(&message, out);
+                    next = self.next_source(scan, out.used(), pdu_size);
                     continue;
                 }
                 Source::Entry(seq) => seq,
@@ -256,24 +365,24 @@ impl Sender {
                         id: SendId::new(owner, LocalId::Bare(*id)),
                         completes: true,
                     });
-                    let data = data.clone();
+                    out.put_frame(data);
                     self.dequeue(seq);
-                    return Ok(Packed::Bare(data));
+                    return Ok(());
                 }
                 QueueEntry::Message { id, message } => {
-                    fits(buf, message)?;
+                    fits(out, message)?;
                     carried.push(Carried {
                         id: SendId::new(owner, *id),
                         completes: true,
                     });
-                    encode_queued(message, buf);
+                    put_queued(message, out);
                     true
                 }
                 QueueEntry::Transfer(t) => {
                     let len = t
-                        .next_chunk(pdu_size.saturating_sub(used(buf)))
+                        .next_chunk(pdu_size.saturating_sub(out.used()))
                         .expect("next_source checked that it fits");
-                    self.queued_bytes -= t.cut(len, buf) as u64;
+                    self.queued_bytes -= t.cut(len, out) as u64;
                     let completes = t.finished();
                     // A transfer supplies one segment to a PDU: the cut
                     // either fills the room, ends the transfer, or under
@@ -284,11 +393,11 @@ impl Sender {
                     });
                     if completes {
                         // The transfer's End is packed; nothing further will
-                        // be emitted for it, so its slot is free.
+                        // be emitted for it, so its number is released.
                         self.allocator.release(t.transfer_number);
                     }
                     debug_assert!(
-                        completes || t.next_chunk(pdu_size.saturating_sub(used(buf))).is_none(),
+                        completes || t.next_chunk(pdu_size.saturating_sub(out.used())).is_none(),
                         "a transfer supplies one segment to a PDU"
                     );
                     completes
@@ -299,18 +408,15 @@ impl Sender {
             } else {
                 self.settle(seq);
             }
-        }
-        #[cfg(test)]
-        {
-            self.probes += scan.probes;
+            next = self.next_source(scan, out.used(), pdu_size);
         }
         if options.flush {
             let mut from = Seq(0);
-            while let Some((seq, len)) = self.flush_source(from, used(buf), pdu_size) {
+            while let Some((seq, len)) = self.flush_source(from, out.used(), pdu_size) {
                 let t = self
                     .transfer_mut(seq)
                     .expect("flush_source names transfers");
-                let released = t.cut(len, buf);
+                let released = t.cut(len, out);
                 let transfer_number = t.transfer_number;
                 self.queued_bytes -= released as u64;
                 // A flushed segment never ends its transfer, and a transfer
@@ -324,8 +430,9 @@ impl Sender {
                 from = seq.next();
             }
         }
-        put_padding(buf, self.padded_len().saturating_sub(used(buf)));
-        Ok(Packed::InBuf)
+        let padding = self.padded_len().saturating_sub(out.used());
+        out.put_copied(|buf| put_padding(buf, padding));
+        Ok(())
     }
 
     /// What supplies the next message of a PDU holding `used` bytes, or
@@ -441,13 +548,13 @@ impl Sender {
     }
 }
 
-/// Where [`Sender::pack`] left the PDU.
-enum Packed {
-    /// In the buffer it was given.
-    InBuf,
-    /// A queued bare bundle frame, which is the whole PDU, left in its own
-    /// buffer.
-    Bare(Bytes),
+/// How a PDU begins (see [`Sender::ready`]).
+enum Start {
+    /// With the message this supplies.
+    Source(Source),
+    /// With a flush: nothing supplies a message, but a transfer waiting on
+    /// its producer has bytes buffered (see [`NextPduOptions::flush`]).
+    Flush,
 }
 
 /// What supplies the next message of a PDU (see [`Sender::next_source`]).
@@ -459,9 +566,11 @@ enum Source {
 }
 
 /// What packing one PDU has learned of the queue (see
-/// [`Sender::next_source`]).
+/// [`Sender::next_source`]).  The sender keeps one and resets it for each
+/// PDU, so its `revisit` buffer is allocated once, by the first PDU that
+/// passes over a transfer.
 #[derive(Default)]
-struct Scan {
+pub struct Scan {
     /// Every entry of the order before this position has supplied to the
     /// PDU or been passed over.
     next: Seq,
@@ -473,9 +582,139 @@ struct Scan {
     probes: usize,
 }
 
-/// Append a queued message to a PDU being packed.
-fn encode_queued(message: &Message, buf: &mut impl BufMut) {
-    put_message(message, buf).expect("queued messages are validated at enqueue");
+impl Scan {
+    /// Forget the last PDU, keeping the `revisit` buffer.
+    fn reset(&mut self) {
+        self.next = Seq(0);
+        self.revisit.clear();
+        #[cfg(test)]
+        {
+            self.probes = 0;
+        }
+    }
+}
+
+/// Where [`Sender::pack`] puts a PDU.  One packer serves every output,
+/// each sink choosing whether to copy bundle data or share the buffers it
+/// was enqueued in.
+pub trait Sink {
+    /// What copied bytes are written into.
+    type Buf: BufMut;
+
+    /// The PDU's length so far.
+    fn used(&self) -> usize;
+
+    /// The most bytes the sink takes, or `None` if it grows to fit.
+    fn capacity(&self) -> Option<usize>;
+
+    /// Append the bytes `f` writes, returning what it returns.
+    fn put_copied<R>(&mut self, f: impl FnOnce(&mut Self::Buf) -> R) -> R;
+
+    /// Append the first `len` bytes of `bytes`.
+    fn put_shared(&mut self, bytes: &Bytes, len: usize);
+
+    /// Append a bare bundle frame, which is the whole PDU.
+    fn put_frame(&mut self, frame: &Bytes) {
+        self.put_shared(frame, frame.len());
+    }
+}
+
+/// Shares bundle data with the buffers it was enqueued in.
+impl Sink for PduSlices {
+    type Buf = Vec<u8>;
+
+    fn used(&self) -> usize {
+        self.len()
+    }
+
+    fn capacity(&self) -> Option<usize> {
+        None
+    }
+
+    fn put_copied<R>(&mut self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        PduSlices::put_copied(self, f)
+    }
+
+    fn put_shared(&mut self, bytes: &Bytes, len: usize) {
+        PduSlices::put_shared(self, bytes, len);
+    }
+}
+
+/// Copies the PDU into a caller's slice, which must have room for it.
+struct SliceSink<'a> {
+    /// The slice beyond the PDU so far.
+    rest: &'a mut [u8],
+    /// The slice's whole length.
+    start: usize,
+}
+
+impl<'a> Sink for SliceSink<'a> {
+    type Buf = &'a mut [u8];
+
+    fn used(&self) -> usize {
+        self.start - self.rest.len()
+    }
+
+    fn capacity(&self) -> Option<usize> {
+        Some(self.start)
+    }
+
+    fn put_copied<R>(&mut self, f: impl FnOnce(&mut &'a mut [u8]) -> R) -> R {
+        f(&mut self.rest)
+    }
+
+    fn put_shared(&mut self, bytes: &Bytes, len: usize) {
+        self.rest.put_slice(&bytes[..len]);
+    }
+}
+
+/// Copies the PDU into a new buffer, but keeps a bare bundle frame in its
+/// own.
+struct BytesSink {
+    buf: BytesMut,
+    /// The bare bundle frame that is the whole PDU, if it is one.
+    frame: Option<Bytes>,
+}
+
+impl Sink for BytesSink {
+    type Buf = BytesMut;
+
+    fn used(&self) -> usize {
+        self.buf.len()
+    }
+
+    fn capacity(&self) -> Option<usize> {
+        None
+    }
+
+    fn put_copied<R>(&mut self, f: impl FnOnce(&mut BytesMut) -> R) -> R {
+        f(&mut self.buf)
+    }
+
+    fn put_shared(&mut self, bytes: &Bytes, len: usize) {
+        self.buf.put_slice(&bytes[..len]);
+    }
+
+    fn put_frame(&mut self, frame: &Bytes) {
+        debug_assert!(self.buf.is_empty(), "a bare frame is packed alone");
+        self.frame = Some(frame.clone());
+    }
+}
+
+/// Append a queued message to a PDU being packed, a Bundle Message's
+/// bundle by [`Sink::put_shared`].
+fn put_queued(message: &Message, out: &mut impl Sink) {
+    const VALID: &str = "queued messages are validated at enqueue";
+    match message {
+        Message::Bundle { data, .. } => {
+            out.put_copied(|head| put_message_head(message, head))
+                .expect(VALID);
+            out.put_shared(data, data.len());
+        }
+        _ => out
+            .put_copied(|buf| put_message(message, buf))
+            .expect(VALID),
+    }
 }
 
 #[cfg(test)]
@@ -514,11 +753,12 @@ mod tests {
         }
 
         // 14 Bundle Messages of 104 bytes to a PDU: seven full PDUs and one
-        // of two.  Each PDU visits the entry it is ready with, then each
-        // entry it packs; a full one also visits the message that does not
-        // fit.  The last call finds the order empty.
+        // of two.  Each PDU visits each entry it packs once, the first
+        // when finding it has something to pack; a full one also visits
+        // the message that does not fit.  The last call finds the order
+        // empty.
         assert_eq!(pdus, 8);
-        assert_eq!(s.probes, 7 * (1 + 14 + 1) + (1 + 2));
+        assert_eq!(s.probes, 7 * (14 + 1) + 2);
         assert!(s.has_pending());
     }
 
@@ -541,10 +781,55 @@ mod tests {
         let pdu = s.next_pdu().unwrap();
 
         // The first transfer's segment fills the PDU, leaving no room.  The
-        // PDU visits that transfer to find it ready and again to pack it,
+        // PDU visits that transfer once, finding it ready and packing it,
         // and never the fifteen behind it.
         assert_eq!(pdu.data.len(), PDU);
-        assert_eq!(s.probes, 2);
+        assert_eq!(s.probes, 1);
+    }
+
+    // Whether `slice` lies within `buf`'s bytes.
+    fn within(slice: &[u8], buf: &Bytes) -> bool {
+        buf.as_ptr_range().contains(&slice.as_ptr())
+    }
+
+    #[test]
+    fn pdu_slices_share_long_bundle_data_and_copy_the_rest() {
+        let mut s = Sender::new(
+            SenderConfig {
+                pdu_size: PduSize::new(1500).unwrap(),
+                ..SenderConfig::default()
+            },
+            0,
+        );
+        let short = Bytes::from(vec![1; PduSlices::SHARE_MIN - 1]);
+        let long = Bytes::from(vec![2; PduSlices::SHARE_MIN]);
+        let segmented = Bytes::from(vec![3; 4000]);
+        for bundle in [&short, &long, &segmented] {
+            s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+        }
+        let mut carried = CarriedList::new();
+        let mut out = PduSlices::new();
+
+        s.next_pdu_vectored(&mut carried, &mut out).unwrap();
+        let slices: Vec<_> = out.iter().collect();
+        // The short bundle is copied in with the headers around it; the
+        // long one and the first segment's data are shared.
+        assert!(!slices.iter().any(|slice| within(slice, &short)));
+        assert_eq!(
+            slices.iter().filter(|slice| within(slice, &long)).count(),
+            1
+        );
+        assert_eq!(
+            slices
+                .iter()
+                .filter(|slice| within(slice, &segmented))
+                .count(),
+            1
+        );
+        assert!(!long.is_unique());
+
+        out.clear();
+        assert!(long.is_unique());
     }
 
     #[test]
