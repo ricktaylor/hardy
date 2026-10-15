@@ -45,7 +45,7 @@ caps = "0.5"
 
 # --- Windows-specific dependencies ---
 [target.'cfg(target_os = "windows")'.dependencies]
-check_elevation = "0.2"
+check_elevation = "0.3"
 
 # --- Other Unix (e.g., macOS, BSD) dependencies ---
 [target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
