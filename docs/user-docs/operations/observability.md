@@ -85,6 +85,7 @@ Metrics are exported every 60 seconds to the collector.
 | `bpa.bundle.received.duplicate` | counter | | Duplicate bundles detected |
 | `bpa.bundle.originated` | counter | | Bundles originated by local services |
 | `bpa.bundle.originated.bytes` | counter | | Total bytes originated |
+| `bpa.bundle.originated.dropped` | counter | `reason` | Originations refused before storage with a reason code (invalid raw bundle, admission gates, filter chain, route Drop, or payload verdict), labelled by reason code |
 | `bpa.bundle.forwarded` | counter | | Bundles successfully forwarded to CLAs |
 | `bpa.bundle.forwarding.failed` | counter | | Forward attempts that failed |
 | `bpa.bundle.delivered` | counter | | Bundles delivered to local services |

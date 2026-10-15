@@ -4,12 +4,14 @@
 //! resident prefix, a synchronous [`PayloadTail`] continuation, and —
 //! begun in its keyed pass via
 //! [`begin_payload_verification`](hardy_bpv7::checks::begin_payload_verification)
-//! — one incremental [`bib::Verifier`] per deferred payload BIB. The CLA
-//! ingress door marries those to the arrival's segment stream through a
-//! [`ValidatingReceiver`], then drains it through `Store::save_stream`: the
-//! validation is invisible downstream, surfacing only as a pull that fails
-//! when the bytes are bad, with the categorised verdict settled by `finish`
-//! once the drain returns and mapped to the door's status reports.
+//! — one incremental [`bib::Verifier`] per deferred payload BIB. An input
+//! door — CLA ingress, or the raw originate door — marries those to the
+//! arrival's segment stream through a [`ValidatingReceiver`], then drains it
+//! through `Store::save_stream`: the validation is invisible downstream,
+//! surfacing only as a pull that fails when the bytes are bad, with the
+//! categorised verdict settled by `finish` once the drain returns and mapped
+//! by each door to its own surface (status reports at ingress, a
+//! `services::Error` at originate).
 
 use hardy_async::async_trait;
 use hardy_bpv7::{bpsec::bib, parse::PayloadTail, status_report::ReasonCode};

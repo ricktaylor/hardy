@@ -4,7 +4,7 @@ use hardy_bpv7::{
     block::BibCoverage, bpsec::bcb::OperationSet, crc::CrcType, eid::NodeId,
     status_report::ReasonCode,
 };
-use tracing::{debug, error};
+use tracing::debug;
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -25,6 +25,14 @@ use crate::{
     routing::{Decision, DispatchAction},
     stream::{ConcatError, Receiver},
 };
+
+/// Count a drop of a received bundle, labelled by reason. Every drop site in
+/// the received pipeline increments this counter exactly once (see the drop
+/// accounting note on `receive_bundle`); a new drop site calls this rather
+/// than respelling the counter name and label vocabulary.
+fn count_received_dropped(reason: &ReasonCode) {
+    metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(reason)).increment(1);
+}
 
 // An arrival the gate decisions (Ingress chain + route lookup) admitted.
 // The gate returns `None` for a rejection, which it has already counted and
@@ -162,7 +170,7 @@ impl Dispatcher {
                 debug!("Bundle exceeds max_bundle_size: {size} > {max}; refused");
                 return Received::Refused;
             }
-            Err(HeaderFailure::Invalid(report)) => {
+            Err(HeaderFailure::Invalid { report, .. }) => {
                 let reason = match report {
                     Some((bundle, reception, reason)) => {
                         // Complete but invalid, with a recoverable id: the
@@ -182,8 +190,7 @@ impl Dispatcher {
                     }
                     None => ReasonCode::BlockUnintelligible,
                 };
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&reason))
-                    .increment(1);
+                count_received_dropped(&reason);
                 return Received::Disposed;
             }
         };
@@ -199,12 +206,11 @@ impl Dispatcher {
         }
 
         // Early-reject gate (lifetime / hop) before the payload is drained, so a
-        // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
-        // re-checks lifetime post-store in the ingress filter — a cheap, harmless
+        // dead bundle is dropped having spooled nothing. (The dispatch expiry
+        // checkpoint re-checks lifetime after the store — a cheap, harmless
         // overlap.)
         if let Some(reason) = hv.gate_reason(metadata.received_at()) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&reason))
-                .increment(1);
+            count_received_dropped(&reason);
             if let ReasonCode::LifetimeExpired = reason {
                 // A bundle that arrives already expired is treated as if it
                 // never arrived, not amplified into report traffic — §5.10
@@ -231,8 +237,7 @@ impl Dispatcher {
         // structural validity (deployments may relax them), reported like
         // any other gated drop (§5.6/§5.10).
         if let Some(reason) = self.rfc9171_gate_reason(&hv) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&reason))
-                .increment(1);
+            count_received_dropped(&reason);
             self.report_bundle_reception(
                 &hv.bundle,
                 metadata.received_at(),
@@ -297,11 +302,10 @@ impl Dispatcher {
         // resident payload prefix at construction, the streamed remainder
         // as it arrives — feeding the payload CRC, the block+outer framing,
         // and each deferred BIB digest as the bytes stream past.
-        let payload_start = bundle
-            .bpv7
-            .blocks
-            .get(&1)
-            .map_or(headers.len(), |b| b.payload_range().start as usize);
+        let payload_start = bundle.bpv7.blocks.get(&1).map_or(headers.len(), |b| {
+            usize::try_from(b.payload_range().start)
+                .expect("parse bounds pre-payload offsets to usize")
+        });
         let mut tail_rx =
             ValidatingReceiver::new(stream, tail, deferred_verifiers, headers, payload_start);
 
@@ -355,8 +359,7 @@ impl Dispatcher {
                 // §5.6/§5.10). Nothing remains staged: the settle above
                 // discarded any save the verdict rejected.
                 debug!("Streamed payload rejected: {failure}");
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&reason))
-                    .increment(1);
+                count_received_dropped(&reason);
                 self.report_bundle_reception(
                     &bundle.bpv7,
                     bundle.metadata.received_at(),
@@ -387,11 +390,10 @@ impl Dispatcher {
         self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
             .await;
 
-        // `insert_metadata` is the authoritative atomic dup check — the one place
-        // a duplicate is caught, so a duplicate *valid* bundle is dropped here and
-        // never dispatched. We don't pre-check existence earlier: that would add a
-        // metadata read to every received bundle to catch a comparatively rare
-        // replay.
+        // `insert_metadata` is the authoritative atomic dup check: the gate's
+        // advisory `seen_recently` probe only sees committed records, so duplicate
+        // copies racing in concurrently both spool and settle here — the
+        // loser is dropped and never dispatched.
         //
         // A duplicate *invalid* bundle (rejected before reaching here) isn't
         // deduplicated — a replay re-parses and may re-report. Accepted, not fixed:
@@ -437,6 +439,22 @@ impl Dispatcher {
         bcb_ops: &HashMap<u64, OperationSet>,
         report: ReceptionReport,
     ) -> Option<Admitted> {
+        // Early duplicate probe, first — before any filter or route work: a
+        // replay is DoS-shaped traffic, so a recently-committed id settles
+        // it for the price of a cache lookup, without touching storage.
+        // Advisory only: copies racing in concurrently, ids past the
+        // cache's horizon, and a cold cache after restart all settle at
+        // insert_metadata's atomic refusal. Reception is still reported
+        // (RFC 9171 §5.6 reports on reception; dedup is a dispatch
+        // concern), exactly as the post-spool duplicate path reports it.
+        if self.store.seen_recently(bundle.id()) {
+            debug!("Duplicate bundle detected at the ingress gate");
+            metrics::counter!("bpa.bundle.received.duplicate").increment(1);
+            self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
+                .await;
+            return None;
+        }
+
         // Ingress chain at the pre-drain gate, on the resident prefix: the
         // headers and whatever of the payload has arrived, at least the held
         // peek. It runs synchronously on the record and returns it in every
@@ -448,29 +466,15 @@ impl Dispatcher {
                 .filters
                 .run_ingress(bundle, headers, bcb_ops, &*self.key_provider)
             {
-                Ok(ChainOutcome::Continue(bundle, _)) => bundle,
-                Ok(ChainOutcome::Drop(bundle, reason)) => {
+                ChainOutcome::Continue(bundle, _) => bundle,
+                ChainOutcome::Drop(bundle, reason) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&label)).increment(1);
+                    count_received_dropped(&label);
                     self.report_bundle_reception(
                         &bundle.bpv7,
                         bundle.metadata.received_at(),
                         report,
                         reason,
-                    )
-                    .await;
-                    return None;
-                }
-                Err((bundle, e)) => {
-                    // The resident prefix failed the chain's own decode pass —
-                    // an internal inconsistency, since it parsed at reception.
-                    error!("Ingress filter chain failed: {e}");
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                    self.report_bundle_reception(
-                        &bundle.bpv7,
-                        bundle.metadata.received_at(),
-                        report,
-                        Some(ReasonCode::BlockUnintelligible),
                     )
                     .await;
                     return None;
@@ -490,8 +494,7 @@ impl Dispatcher {
         let decision = self.rib.decide(&bundle);
         if let Some(DispatchAction::Drop(reason)) = decision.action {
             let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&label))
-                .increment(1);
+            count_received_dropped(&label);
             // Drop-with-reason reports like the sibling gate drops;
             // Drop-without-reason is silent — not even the reception
             // report, which a bundle dropped by dispatch's delete_bundle
@@ -517,8 +520,9 @@ impl Dispatcher {
 
     // The config-gated RFC 9171 validity checks: policy requirements beyond
     // structural validity, checked pre-drain — everything they read is
-    // header material the keyed verify pass has already established.
-    fn rfc9171_gate_reason(&self, hv: &HeaderVerify) -> Option<ReasonCode> {
+    // header material the keyed verify pass has already established. Both
+    // input doors apply them (the originate raw door at its own gate).
+    pub(super) fn rfc9171_gate_reason(&self, hv: &HeaderVerify) -> Option<ReasonCode> {
         // RFC 9171 §4.3.1: "A CRC SHALL be present in the primary block
         // unless the bundle includes a BPSec Block Integrity Block whose
         // target is the primary block". `Maybe` coverage (undecryptable

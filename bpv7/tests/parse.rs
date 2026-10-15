@@ -256,9 +256,9 @@ fn truncated_large_payload() {
 }
 
 // A payload byte-string whose declared length pushes the payload block's
-// `extent.end` to exactly `usize::MAX`, then truncated so the streaming
-// fallback is taken. parse()'s post-finish completeness check must report a
-// truncation error, not overflow on `payload_end + 1`.
+// `extent.end` to exactly `u64::MAX`, leaving no room for the outer break:
+// the bundle's length is unrepresentable, so the declaration is refused as
+// too big rather than parsed into a bundle whose `encoded_len` overflows.
 #[test]
 fn crafted_max_extent_payload() {
     let (_, good) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -283,17 +283,136 @@ fn crafted_max_extent_payload() {
         .start;
     let len = u64::MAX - block_start - 19;
 
-    let mut evil = good[..block_start as usize].to_vec();
+    let mut evil = good[..usize::try_from(block_start).unwrap()].to_vec();
     evil.extend_from_slice(&[0x86, 0x01, 0x01, 0x04, 0x02, 0x5b]);
     evil.extend_from_slice(&len.to_be_bytes());
 
-    // Must return a truncation error, not panic on overflow.
     assert!(
         matches!(
             parse::parse(Bytes::copy_from_slice(&evil)),
-            Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
+            Err(Error::InvalidCBOR(CborError::TooBig))
         ),
         "crafted max-extent payload must be rejected, not overflow"
+    );
+}
+
+// An extension block whose declared body pushes its extent past the 256 MiB
+// pre-payload bound must be rejected from the declaration alone — a typed
+// `PrePayloadTooLarge`, not a `NeedMoreData` invitation to spool a
+// quarter-gigabyte the parser must reject anyway. Only a handful of real
+// bytes are ever fed.
+#[test]
+fn oversized_extension_block_rejected_from_declaration() {
+    let (_, good) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(b"x".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    // Keep the outer array head + primary block, then graft an extension
+    // block — array(5)[type=7, num=2, flags=0, crc=none, data=bstr(len)] with
+    // the canonical 4-byte length head (256 MiB fits u32): 5 array/field
+    // bytes + a 5-byte byte-string head, so the body starts 10 bytes after
+    // the block and the extent ends right where the body does (no CRC
+    // trailer).
+    let prim_end = parse::parse(Bytes::copy_from_slice(&good))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&0)
+        .expect("primary block")
+        .extent
+        .end;
+    let len: u64 = 256 * 1024 * 1024;
+
+    let mut evil = good[..usize::try_from(prim_end).unwrap()].to_vec();
+    evil.extend_from_slice(&[0x85, 0x07, 0x02, 0x00, 0x00, 0x5A]);
+    evil.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
+
+    assert!(
+        matches!(
+            parse::parse(Bytes::copy_from_slice(&evil)),
+            Err(Error::PrePayloadTooLarge(end)) if end == prim_end + 10 + len
+        ),
+        "oversized extension block must fail with the typed bound error"
+    );
+}
+
+// The bound's edge: an extension block whose extent ends exactly at 256 MiB
+// is within it (the parse only waits for the missing body), and one byte
+// more is refused from the declaration.
+#[test]
+fn pre_payload_bound_edge() {
+    let (_, good) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(b"x".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let prim_end = parse::parse(Bytes::copy_from_slice(&good))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&0)
+        .expect("primary block")
+        .extent
+        .end;
+    let bound: u64 = 256 * 1024 * 1024;
+
+    // The same graft as above: the body starts 10 bytes after the block and
+    // the extent ends where the body does.
+    let graft = |len: u64| {
+        let mut evil = good[..usize::try_from(prim_end).unwrap()].to_vec();
+        evil.extend_from_slice(&[0x85, 0x07, 0x02, 0x00, 0x00, 0x5A]);
+        evil.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
+        parse::parse(Bytes::from(evil))
+    };
+    let at_bound = bound - prim_end - 10;
+    assert!(
+        matches!(
+            graft(at_bound),
+            Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
+        ),
+        "an extent ending at the bound only waits for its body"
+    );
+    assert!(
+        matches!(
+            graft(at_bound + 1),
+            Err(Error::PrePayloadTooLarge(end)) if end == bound + 1
+        ),
+        "one byte past the bound is refused"
+    );
+}
+
+// The primary block is bounded like the blocks after it: a source EID whose
+// text declares 256 MiB is refused from the declaration alone, not met with
+// a `NeedMoreData` invitation to buffer it.
+#[test]
+fn oversized_primary_eid_rejected_from_declaration() {
+    let (_, good) = builder::Builder::new(
+        "dtn://node/svc".parse().unwrap(),
+        "ipn:2.0".parse().unwrap(),
+    )
+    .with_payload(b"x".as_slice().into())
+    .build(creation_timestamp::CreationTimestamp::now())
+    .unwrap();
+
+    // Replace the source EID's text head (`//node/svc`, 10 bytes) with a
+    // 256 MiB declaration and send nothing past it.
+    let text = b"\x6a//node/svc";
+    let at = good
+        .windows(text.len())
+        .position(|w| w == text)
+        .expect("source EID text");
+    let len: u64 = 256 * 1024 * 1024;
+    let mut evil = good[..at].to_vec();
+    evil.push(0x7A);
+    evil.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
+    let body_start = u64::try_from(evil.len()).unwrap();
+
+    assert!(
+        matches!(
+            parse::parse(Bytes::from(evil)),
+            Err(Error::PrePayloadTooLarge(end)) if end == body_start + len
+        ),
+        "an oversized primary must fail with the typed bound error"
     );
 }
 

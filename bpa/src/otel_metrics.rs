@@ -41,6 +41,11 @@ pub fn init() {
         metrics::Unit::Bytes,
         "Total bytes of bundle data originated by local services"
     );
+    metrics::describe_counter!(
+        "bpa.bundle.originated.dropped",
+        metrics::Unit::Count,
+        "Originations refused before storage with a reason code (invalid raw bundle, admission gates, filter chain, route Drop, or payload verdict), labelled by reason code"
+    );
 
     // -- C. Bundle Status Gauges --
     metrics::describe_gauge!(
@@ -91,11 +96,6 @@ pub fn init() {
         "bpa.filter.modified",
         metrics::Unit::Count,
         "Rewriter edits applied, one per editing link (by hook)"
-    );
-    metrics::describe_counter!(
-        "bpa.filter.error",
-        metrics::Unit::Count,
-        "Filter execution errors (by hook)"
     );
 
     // -- F. Administrative Records --

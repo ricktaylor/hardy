@@ -392,7 +392,7 @@ See [Routing Design: Route Change Handling](routing_subsystem_design.md#route-ch
 1. INGRESS / ORIGINATE CLASSIFICATION (optional)
    Registered Classifiers annotate metadata via MetadataDelta
 
-2. ROUTING (the ingress gate for a fresh CLA arrival; process_bundle otherwise)
+2. ROUTING (the input gates for a fresh bundle; process_bundle on re-dispatch)
    RIB::find() hashes source + destination for ECMP peer selection
    Returns FindResult::Forward(peer_id)
 

@@ -18,13 +18,13 @@ use hardy_bpa::{
     node_ids::NodeIds,
     routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
     services,
-    storage::{MetadataMemStorage, MetadataStorage},
+    storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
     block::{Flags as BlockFlags, Type},
     builder::Builder,
-    bundle::{Flags, Id},
+    bundle::{Flags, FragmentInfo, Id},
     crc::CrcType,
     creation_timestamp::CreationTimestamp,
     dtn_time::DtnTime,
@@ -37,10 +37,18 @@ use hardy_bpv7::{
     reader::Availability,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion},
 };
+// Aliased: the key type, beside the block `Type` imported above.
+#[cfg(feature = "rfc9173")]
+use hardy_bpv7::bpsec::{
+    encryptor::{Context as EncryptContext, Encryptor},
+    key::{EncAlgorithm, Key, Operation, Type as KeyType},
+};
 use hardy_cbor::{
     decode::skip_value,
     encode::{Raw, emit, emit_array},
 };
+#[cfg(feature = "rfc9173")]
+use rand::{TryRng, rngs::SysRng};
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -1157,6 +1165,100 @@ async fn service_streamed_send_rejects_spoofed_source() {
     bpa.shutdown().await;
 }
 
+// Sends `data` through the raw service door and returns the bundle the
+// CLA forwards: origination admitted it.
+#[cfg(feature = "rfc9173")]
+async fn originate_raw_and_forward(
+    svc: &EchoService,
+    forwarded_rx: &flume::Receiver<Bytes>,
+    data: Bytes,
+) -> Parsed {
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    tx.send(Segment::Final(data)).await.unwrap();
+    drop(tx);
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut rx)
+        .await
+        .expect("origination admits the bundle");
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the forwarded bundle")
+    .expect("channel closed");
+    parse(forwarded).expect("the forwarded bundle parses")
+}
+
+/// Origination admits a Hop Count block this node cannot decrypt, as
+/// ingress does (its increment is a SHOULD), and the bundle leaves with the
+/// block unchanged.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some([Operation::Encrypt].into_iter().collect()),
+        id: None,
+        key_use: None,
+    };
+    let (built, data) = Builder::new(source_eid.clone(), "ipn:0.2.1".parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 0,
+        })
+        .with_payload(b"undecryptable hop count".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let hop_count = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::HopCount)
+        .expect("the builder emitted the Hop Count block")
+        .0;
+    let encrypted = parse(Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                hop_count,
+                EncryptContext::AES_GCM(Default::default()),
+                source_eid,
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the Hop Count block")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+
+    let out = originate_raw_and_forward(&svc, &forwarded_rx, encrypted.data.clone()).await;
+    let before = &encrypted.bundle.blocks[&hop_count];
+    let after = out
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::HopCount)
+        .expect("the Hop Count block travels");
+    assert!(after.bcb.is_some(), "the block stays encrypted");
+    assert_eq!(
+        after.payload(&out.data),
+        before.payload(&encrypted.data),
+        "the encrypted block travels unchanged"
+    );
+
+    bpa.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // INT-BPA-03: Local Delivery
 // ---------------------------------------------------------------------------
@@ -1825,6 +1927,83 @@ async fn segmented_payload_local_delivery() {
     );
 
     bpa.shutdown().await;
+}
+
+// A replayed arrival is settled at the ingress gate: the first copy was
+// committed (and, once delivered, tombstoned), so the replay's duplicate
+// probe fires while its payload source is still parked — the transfer is
+// acked and dropped without spooling a byte. A consumer that returns while
+// the source is parked provably did not wait for the payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_arrival_never_awaits_the_payload() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let payload = vec![0xA5_u8; 20_000];
+    let inbound = build_bundle(&remote_source, &local_dest, &payload);
+
+    // First copy: delivered whole, so the record commits and its id enters
+    // the gates' recently-committed cache (delivery tombstones the record,
+    // but the probe answers from the cached id, not the record's state).
+    let mut stream = SegmentReceiver::new(&inbound, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        .await
+        .expect("Timeout waiting for first delivery")
+        .expect("Channel closed");
+
+    // Replay: headers resident, payload parked forever. The gate's duplicate
+    // probe must settle the transfer — acked, dropped — without the payload.
+    // The timeout only bounds a regression: a door that waits for the
+    // payload parks forever.
+    let mut replay = ParkedReceiver::new(&inbound, 1000, 3);
+    let acceptance = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        cla.sink.get().unwrap().dispatch(None, None, &mut replay),
+    )
+    .await
+    .expect("Timeout: the duplicate arrival awaited its parked payload")
+    .unwrap();
+    assert_eq!(
+        acceptance,
+        cla::Acceptance::Accepted,
+        "a committed duplicate is acked so the peer stops resending"
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "the duplicate must not deliver");
 }
 
 // A bundle whose creation time + lifetime is already in the past — expired on
@@ -3086,6 +3265,70 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
     }
 }
 
+// A payload declaration whose wire form ends at `u64::MAX` leaves no room
+// for the outer break. The header pass rejects it as invalid, so the CLA door
+// disposes of it (accepted, never stored) without pulling a payload byte and
+// without computing the bundle's length, which would overflow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+    let (cla, _fwd) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    // A built bundle with its payload block replaced by a CRC-32 payload
+    // header (`86 01 01 04 02 5b` + an 8-byte length) whose extent ends at
+    // exactly u64::MAX:
+    //   extent.end = block_start + header(14) + len + crc_trailer(5)
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let good = build_bundle(&remote_source, &local_dest, b"x");
+    let block_start = parse(good.clone())
+        .expect("built bundle parses")
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("payload block")
+        .extent
+        .start;
+    let len = u64::MAX - block_start - 19;
+    let mut crafted = good[..usize::try_from(block_start).unwrap()].to_vec();
+    crafted.extend_from_slice(&[0x86, 0x01, 0x01, 0x04, 0x02, 0x5b]);
+    crafted.extend_from_slice(&len.to_be_bytes());
+
+    // The headers arrive whole and the source then parks forever, so a door
+    // that admitted the declaration would wait on the payload. The timeout
+    // only bounds a regression.
+    let mut stream = ParkedReceiver::new(&crafted, crafted.len(), 1);
+    assert_eq!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            cla.sink.get().unwrap().dispatch(None, None, &mut stream)
+        )
+        .await
+        .expect("Timeout: the rejection must not wait for the payload")
+        .unwrap(),
+        cla::Acceptance::Accepted,
+    );
+
+    bpa.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // PERF-01: Throughput (REQ-13: >1000 bundles/sec)
 // ---------------------------------------------------------------------------
@@ -3923,8 +4166,8 @@ async fn deferred_outcome_failed_redispatches() {
 // ---------------------------------------------------------------------------
 
 /// A transfer answered `Accepted` whose outcome is reported `Completed` is
-/// complete: no re-offer, a late duplicate outcome is ignored, and the
-/// tombstone dedups a re-arrival of the same bundle.
+/// complete: no re-offer, a late duplicate outcome is ignored, and a
+/// re-arrival of the same bundle is dropped as a duplicate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_completed_resolves() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
@@ -3955,8 +4198,8 @@ async fn deferred_outcome_completed_resolves() {
         .unwrap();
     expect_no_offer(&offers_rx).await;
 
-    // The completed bundle was deleted with a tombstone: a re-arrival of the
-    // same bundle is dropped as a duplicate rather than re-forwarded.
+    // The completed bundle's id was committed: a re-arrival of the same
+    // bundle is dropped as a duplicate rather than re-forwarded.
     assert_eq!(
         cla.sink().dispatch(None, None, &mut data).await.unwrap(),
         cla::Acceptance::Accepted
@@ -5050,6 +5293,613 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
     bpa.shutdown().await;
 }
 
+// ---------------------------------------------------------------------------
+// The originate door: the validation split, route-at-door, and the caller's
+// error surface
+// ---------------------------------------------------------------------------
+
+/// Routing is decided at the originate door: a destination resolving to an
+/// explicit Drop route rejects the send before its payload is drained — the
+/// stream is left unconsumed and nothing spools. Unlike the CLA gate there
+/// is never a status report, report flags notwithstanding: the error return
+/// is the originator's notification, and even a reasonless (silent) Drop
+/// route surfaces as `Dropped(None)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originate_route_drop_never_awaits_the_payload() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    bpa.register_routing_agent(
+        "drop-routes".to_string(),
+        Arc::new(StaticRoutingAgent::new(&[
+            (
+                "ipn:0.9.99".parse().unwrap(),
+                RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
+                1,
+            ),
+            ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
+        ])),
+    )
+    .await
+    .unwrap();
+
+    let oversized = |dest: &str| {
+        let (_, data) = Builder::new(source_eid.clone(), dest.parse().unwrap())
+            .with_flags(Flags {
+                receipt_report_requested: true,
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+        data
+    };
+
+    // Reasoned Drop: the error returns while the payload source is parked
+    // forever — returning at all proves the decision never awaited the
+    // drain, and the cancelled spool persists nothing. The timeout only
+    // bounds a regression.
+    let data = oversized("ipn:0.9.99");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the route drop must not wait for the payload");
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(
+            ReasonCode::NoKnownRouteToDestinationFromHere
+        )))
+    ));
+
+    // Silent Drop: the originator still gets an error where the CLA gate
+    // drops silently.
+    let data = oversized("ipn:0.9.98");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the silent route drop must not wait for the payload");
+    assert!(matches!(result, Err(services::Error::Dropped(None))));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "an originate rejection must not emit status reports"
+    );
+}
+
+// The ADU doors refuse a bundle that expires at creation, as the raw door's
+// admission gate does: a zero lifetime surfaces as `Dropped(LifetimeExpired)`
+// with nothing admitted, whole-buffer or streamed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adu_originate_refuses_a_zero_lifetime() {
+    let (bpa, _svc, forwarded_rx, _) = streamed_originate_setup().await;
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.2.1".parse().unwrap(),
+            Bytes::from_static(b"expired"),
+            Duration::ZERO,
+            None,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+    ));
+
+    // The streamed door, the same refusal before the payload is pulled: the
+    // source pends forever if pulled. The timeout only bounds a regression.
+    let mut stream = ParkedReceiver::new(b"expired", 7, 0);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        app.sink.get().unwrap().send_streamed(
+            "ipn:0.2.1".parse().unwrap(),
+            7,
+            &mut stream,
+            Duration::ZERO,
+            None,
+        ),
+    )
+    .await
+    .expect("Timeout: the expired send must not pull the payload");
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing was admitted");
+}
+
+/// The raw door carries the validation the ADU door doesn't: hop-exhausted
+/// service bytes trip the lifetime/hop admission check, and the
+/// config-gated RFC 9171 validity checks (strict by default) now apply to
+/// raw sends at the same seat — each surfacing as `Dropped(reason)` to the
+/// caller, with nothing admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_applies_the_admission_gates() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // Hop-exhausted (count past limit): the lifetime/hop admission pair.
+    let (_, data) = Builder::new(source_eid.clone(), dest.clone())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(1).unwrap(),
+            count: 2,
+        })
+        .with_payload(Cow::Borrowed(b"exhausted".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(ReasonCode::HopLimitExceeded)))
+    ));
+
+    // Unprotected primary block: RFC 9171 §4.3.1, newly applied to raw
+    // sends.
+    let (_, data) = Builder::new(source_eid.clone(), dest.clone())
+        .with_crc_type(CrcType::None)
+        .with_payload(Cow::Borrowed(b"no integrity".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(
+            ReasonCode::BlockUnintelligible
+        )))
+    ));
+
+    // Clockless without a Bundle Age block: RFC 9171 §4.4.2.
+    let (_, data) = Builder::new(source_eid.clone(), dest)
+        .with_payload(Cow::Borrowed(b"no clock".as_slice()))
+        .build(CreationTimestamp::default())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing was admitted");
+}
+
+/// A service-built fragment is rejected at the raw door: fragmentation is
+/// a forwarding-time action (RFC 9171 §5.8), so a source never emits
+/// fragments — the send surfaces `FragmentedBundle` and nothing is
+/// admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_rejects_a_fragment() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // A valid bundle, rewritten as a self-declared fragment: the editor
+    // sets the fragment flag from the fragment_info and re-emits canonical
+    // bytes, so only the fragment fact can trip the door.
+    let (_, data) = Builder::new(source_eid, dest)
+        .with_payload(Cow::Borrowed(b"a piece of an adu".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let Parsed {
+        bundle: raw, data, ..
+    } = parse(Bytes::from(data)).expect("parse the built bundle");
+    let editor = Editor::new(&raw, &data)
+        .with_fragment_info(Some(FragmentInfo {
+            offset: 0,
+            total_adu_length: 1024,
+        }))
+        .map_err(|(_, e)| e)
+        .expect("set fragment info");
+    let chunks = editor.rebuild().expect("rebuild the fragment");
+    let mut fragment = Chunk::flatten_bytes(chunks, data);
+
+    let result = svc.sink.get().unwrap().send(&mut fragment).await;
+    assert!(matches!(result, Err(services::Error::FragmentedBundle)));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the fragment must not be admitted");
+}
+
+/// A duplicate raw send surfaces `DuplicateBundle` to the caller — service
+/// bundles carry service-authored ids, so the door cannot retry for them —
+/// and the first copy is unaffected: forwarded exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_duplicate_surfaces_to_the_caller() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let data = build_bundle(&source_eid, &dest, b"send once");
+
+    let mut first = data.clone();
+    let id = svc
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut first)
+        .await
+        .expect("first send admits");
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+    assert_eq!(
+        parse(forwarded).expect("parse forwarded").bundle.primary.id,
+        id
+    );
+
+    let mut second = data;
+    let result = svc.sink.get().unwrap().send(&mut second).await;
+    assert!(matches!(result, Err(services::Error::DuplicateBundle)));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
+}
+
+// The originate twin of the gate-side duplicate probe: once the first send
+// commits, a replay through the raw door is refused with `DuplicateBundle`
+// while its payload source is still parked — the caller's stream is never
+// drained for a bundle the node already holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_duplicate_never_awaits_the_payload() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    // Oversized payload so the replay genuinely streams (headers < payload).
+    let payload = vec![0x5A_u8; 20_000];
+    let data = build_bundle(&source_eid, &dest, &payload);
+
+    let mut first = data.clone();
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut first)
+        .await
+        .expect("first send admits");
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+
+    // Replay with the payload parked: the duplicate must surface from the
+    // gate probe, not from an insert that waited on the whole payload. The
+    // timeout only bounds a regression: a door that waits for the payload
+    // parks forever.
+    let mut replay = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut replay),
+    )
+    .await
+    .expect("Timeout: the duplicate origination awaited its parked payload");
+    assert!(
+        matches!(result, Err(services::Error::DuplicateBundle)),
+        "the parked replay must surface DuplicateBundle without the payload"
+    );
+
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
+}
+
+// A node whose storage survives a restart, with a peer for ipn:0.2.
+async fn restart_setup(
+    metadata: Arc<MetadataMemStorage>,
+    bundles: Arc<BundleMemStorage>,
+) -> (
+    Bpa,
+    Arc<EchoService>,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+) {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .metadata_storage(metadata)
+        .bundle_storage(bundles)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let svc = EchoService::new();
+    bpa.register_service(Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+    (bpa, svc, cla, forwarded_rx)
+}
+
+// The number of bundles `bundles` holds.
+async fn stored_bundles(bundles: &BundleMemStorage) -> usize {
+    let (tx, rx) = hardy_async::channel::unbounded();
+    bundles.recover(&tx).await.unwrap();
+    drop(tx);
+    let mut count = 0;
+    while rx.recv().await.is_ok() {
+        count += 1;
+    }
+    count
+}
+
+// The duplicate refusal of record is the metadata insert; the recent-id
+// cache answers only for what this process committed. Bundles forwarded
+// before a restart arrive again after it, the cache now cold: a CLA arrival
+// is accepted and refused at the insert, a raw send surfaces
+// `DuplicateBundle`, neither is forwarded again, and neither copy's spooled
+// data is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_duplicate_after_a_restart_is_refused_at_the_insert() {
+    let metadata = Arc::new(MetadataMemStorage::new(None));
+    let bundles = Arc::new(BundleMemStorage::new(None, None));
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let arrival = build_bundle(&"ipn:0.3.1".parse().unwrap(), &dest, b"arrives once");
+    let raw = build_bundle(&"ipn:0.1.7".parse().unwrap(), &dest, b"sent once");
+
+    // First life: both forward. The timeouts only bound a regression.
+    let (bpa, svc, cla, forwarded_rx) = restart_setup(metadata.clone(), bundles.clone()).await;
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut arrival.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut raw.clone())
+        .await
+        .expect("the first raw send admits");
+    for _ in 0..2 {
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for a first-life forward")
+        .expect("Channel closed");
+    }
+    bpa.shutdown().await;
+
+    // Second life over the same storage.
+    let held = stored_bundles(&bundles).await;
+    let (bpa, svc, cla, forwarded_rx) = restart_setup(metadata, bundles.clone()).await;
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut arrival.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    let result = svc.sink.get().unwrap().send(&mut raw.clone()).await;
+    assert!(matches!(result, Err(services::Error::DuplicateBundle)));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "neither duplicate forwards");
+    assert_eq!(
+        stored_bundles(&bundles).await,
+        held,
+        "neither duplicate's spooled data is kept"
+    );
+}
+
+/// An origination declaring more than `max_bundle_size` is refused before a
+/// byte spools, at both doors: the raw door from its headers' declared size
+/// (the header pass), the ADU door from its declared payload. Both payload
+/// sources park after their first segments, so a refusal returning at all
+/// proves the door never drained the payload, and each refusal reports a
+/// declared size rather than a count of bytes taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_originate_refuses_before_the_payload() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .max_bundle_size(NonZeroU64::new(2048).unwrap())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let svc = EchoService::new();
+    bpa.register_service(Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    // Raw: the headers declare the whole ~50 KB bundle. The timeout only
+    // bounds a regression.
+    let (_, data) = Builder::new("ipn:0.1.7".parse().unwrap(), "ipn:0.2.1".parse().unwrap())
+        .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the raw size refusal must not wait for the payload");
+    match result {
+        Err(services::Error::PayloadTooLarge { size, max }) => {
+            assert_eq!(size, data.len() as u64, "the declared wire size");
+            assert_eq!(max, 2048);
+        }
+        other => panic!("expected PayloadTooLarge, got {other:?}"),
+    }
+
+    // ADU: a 50 KB declared payload, streamed. The timeout only bounds a
+    // regression.
+    let payload = vec![0u8; 50_000];
+    let mut stream = ParkedReceiver::new(&payload, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        app.sink.get().unwrap().send_streamed(
+            "ipn:0.2.1".parse().unwrap(),
+            50_000,
+            &mut stream,
+            Duration::from_secs(60),
+            None,
+        ),
+    )
+    .await
+    .expect("Timeout: the ADU size refusal must not wait for the payload");
+    match result {
+        Err(services::Error::PayloadTooLarge { size, max }) => {
+            assert!(size >= 50_000, "a declared size, got {size}");
+            assert_eq!(max, 2048);
+        }
+        other => panic!("expected PayloadTooLarge, got {other:?}"),
+    }
+
+    bpa.shutdown().await;
+}
+
+// An ADU whose payload fits `max_bundle_size` but whose headers carry the
+// bundle over it is refused by the shared stage's declared-size bound before
+// the payload is pulled: the source parks on its first pull. The declared
+// size is the built bundle's, whose length depends on the width of the
+// creation timestamp's sequence number, so it is checked against twins built
+// at one creation time with a sequence number of each CBOR width.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adu_originate_refuses_headers_over_the_cap() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .max_bundle_size(NonZeroU64::new(2048).unwrap())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    let source = bpa
+        .register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let destination: Eid = "ipn:0.2.1".parse().unwrap();
+    let lifetime = Duration::from_secs(60);
+
+    let payload = vec![0u8; 2040];
+    let creation_time = DtnTime::now();
+    let twins: Vec<u64> = [0, 24, 256, 65_536]
+        .into_iter()
+        .map(|sequence_number| {
+            let (_, data) = Builder::new(source.clone(), destination.clone())
+                .with_lifetime(lifetime)
+                .with_payload(Cow::Borrowed(&payload))
+                .build(CreationTimestamp::from_parts(
+                    Some(creation_time),
+                    sequence_number,
+                ))
+                .expect("Failed to build bundle");
+            data.len() as u64
+        })
+        .collect();
+    assert!(
+        twins.iter().all(|&size| size > 2048),
+        "the headers carry every twin over the cap: {twins:?}"
+    );
+
+    // The timeout only bounds a regression.
+    let mut stream = ParkedReceiver::new(&payload, 1000, 0);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        app.sink
+            .get()
+            .unwrap()
+            .send_streamed(destination, 2040, &mut stream, lifetime, None),
+    )
+    .await
+    .expect("Timeout: the size refusal must not wait for the payload");
+    match result {
+        Err(services::Error::PayloadTooLarge { size, max }) => {
+            assert!(
+                twins.contains(&size),
+                "expected one of {twins:?}, got {size}"
+            );
+            assert_eq!(max, 2048);
+        }
+        other => panic!("expected PayloadTooLarge, got {other:?}"),
+    }
+
+    bpa.shutdown().await;
+}
+
 /// A builder-configured CLA goes live at `start`, not at `build`: activation
 /// waits for storage recovery, so the quiescent-store contract covers the
 /// configuration path exactly as it covers dynamic registrations.
@@ -5104,4 +5954,383 @@ async fn configured_endpoints_activate_at_start() {
     );
 
     bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// The streamed ADU door: ApplicationSink::send_streamed
+// ---------------------------------------------------------------------------
+
+/// A payload streamed through `send_streamed` originates a bundle
+/// wire-equivalent to the whole-buffer `send` of the same payload: same
+/// source, destination, flags, and payload bytes (the ids differ only by
+/// creation timestamp), and the streamed form parses canonically — the CRC
+/// computed as the payload flowed is the CRC a resident build writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_matches_whole_buffer_send() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let payload = vec![0xB7_u8; 9000];
+
+    // Streamed: several Next segments and a Final.
+    let (tx, mut rx) = hardy_async::channel::bounded(8);
+    for chunk in payload.chunks(2000) {
+        tx.send(Segment::Next(Bytes::copy_from_slice(chunk)))
+            .await
+            .unwrap();
+    }
+    tx.send(Segment::Final(Bytes::new())).await.unwrap();
+    drop(tx);
+    let streamed_id = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(
+            dest.clone(),
+            payload.len() as u64,
+            &mut rx,
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .expect("streamed send failed");
+
+    // Whole-buffer twin.
+    let buffered_id = app
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            dest.clone(),
+            Bytes::from(payload.clone()),
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .expect("whole-buffer send failed");
+
+    // Event-driven waits; the timeouts only bound a regression.
+    let mut parsed = Vec::new();
+    for _ in 0..2 {
+        let forwarded = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for forwarded bundle")
+        .expect("Channel closed");
+        parsed.push(parse(forwarded).expect("forwarded bundle parses"));
+    }
+    parsed.sort_by_key(|p| p.bundle.primary.id != streamed_id);
+    let (streamed, buffered) = (&parsed[0], &parsed[1]);
+
+    assert_eq!(streamed.bundle.primary.id, streamed_id);
+    assert_eq!(buffered.bundle.primary.id, buffered_id);
+    assert_eq!(streamed.bundle.primary.destination, dest);
+    assert_eq!(streamed.bundle.primary.flags, buffered.bundle.primary.flags);
+    assert_eq!(
+        streamed.bundle.blocks.len(),
+        buffered.bundle.blocks.len(),
+        "same block structure"
+    );
+    // Past the primary, which carries each bundle's own id, the two are the
+    // same bytes.
+    let after_primary = |p: &Parsed| {
+        let end = usize::try_from(p.bundle.blocks[&0].extent.end).unwrap();
+        p.data.slice(end..)
+    };
+    assert_eq!(after_primary(streamed), after_primary(buffered));
+    assert_eq!(
+        streamed.bundle.blocks[&1]
+            .payload(&streamed.data)
+            .expect("streamed payload resident"),
+        payload.as_slice()
+    );
+
+    bpa.shutdown().await;
+}
+
+/// A producer that goes away before its final segment cancels the streamed
+/// ADU send: `StreamCancelled`, nothing originated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_producer_drop_cancels() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Next(Bytes::from(vec![0u8; 1000])))
+        .await
+        .unwrap();
+    drop(tx); // no Final — the producer aborts
+
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(
+            "ipn:0.2.1".parse().unwrap(),
+            5000,
+            &mut rx,
+            Duration::from_secs(3600),
+            None,
+        )
+        .await;
+    assert!(matches!(result, Err(services::Error::StreamCancelled)));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "a cancelled streamed send must not originate a bundle"
+    );
+}
+
+/// The declared-length contract is enforced with nothing persisted: an
+/// over-delivering producer is rejected `PayloadTooLarge`, an
+/// under-delivering one `PayloadUnderrun`, each carrying the declared
+/// total.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_enforces_the_declared_length() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // Overrun: 2000 bytes against a declaration of 1000.
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Final(Bytes::from(vec![0u8; 2000])))
+        .await
+        .unwrap();
+    drop(tx);
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(dest.clone(), 1000, &mut rx, Duration::from_secs(3600), None)
+        .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::PayloadTooLarge { max: 1000, .. })
+    ));
+
+    // Underrun: 1000 bytes against a declaration of 2000.
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Final(Bytes::from(vec![0u8; 1000])))
+        .await
+        .unwrap();
+    drop(tx);
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(dest.clone(), 2000, &mut rx, Duration::from_secs(3600), None)
+        .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::PayloadUnderrun {
+            size: 1000,
+            expected: 2000
+        })
+    ));
+
+    // A declaration past `max_bundle_size` is refused with its declared
+    // length before the payload is pulled, however large: `u64::MAX` would
+    // otherwise overflow the built bundle's extents. The timeout only bounds
+    // a regression.
+    let mut stream = ParkedReceiver::new(&[], 1, 0);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        app.sink.get().unwrap().send_streamed(
+            dest,
+            u64::MAX,
+            &mut stream,
+            Duration::from_secs(3600),
+            None,
+        ),
+    )
+    .await
+    .expect("Timeout: the size refusal must not wait for the payload");
+    assert!(matches!(
+        result,
+        Err(services::Error::PayloadTooLarge { size: u64::MAX, .. })
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing was originated");
+}
+
+/// The trait's provided `send_streamed` buffers and delegates to `send`
+/// with the same error surface, so third-party sinks (the gRPC bridge
+/// included) get the streamed API without implementing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_default_buffers_and_delegates() {
+    struct RecordingSink(flume::Sender<Bytes>);
+
+    #[async_trait]
+    impl services::ApplicationSink for RecordingSink {
+        async fn unregister(&self) {}
+
+        async fn send(
+            &self,
+            _destination: Eid,
+            data: Bytes,
+            _lifetime: Duration,
+            _options: Option<services::SendOptions>,
+        ) -> services::Result<Id> {
+            self.0.send(data).unwrap();
+            Ok(Id::default())
+        }
+    }
+
+    let (tx, sent_rx) = flume::bounded(1);
+    let sink = RecordingSink(tx);
+
+    // A clean stream is buffered whole and handed to `send`.
+    let payload = vec![0x11_u8; 3000];
+    let (seg_tx, mut rx) = hardy_async::channel::bounded(4);
+    for chunk in payload.chunks(1024) {
+        seg_tx
+            .send(Segment::Next(Bytes::copy_from_slice(chunk)))
+            .await
+            .unwrap();
+    }
+    seg_tx.send(Segment::Final(Bytes::new())).await.unwrap();
+    drop(seg_tx);
+    services::ApplicationSink::send_streamed(
+        &sink,
+        "ipn:0.2.1".parse().unwrap(),
+        payload.len() as u64,
+        &mut rx,
+        Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("default send_streamed delegates");
+    assert_eq!(sent_rx.recv().unwrap().as_ref(), payload.as_slice());
+
+    // The declared-length contract holds before `send` is ever called.
+    let (seg_tx, mut rx) = hardy_async::channel::bounded(2);
+    seg_tx
+        .send(Segment::Final(Bytes::from(vec![0u8; 100])))
+        .await
+        .unwrap();
+    drop(seg_tx);
+    let result = services::ApplicationSink::send_streamed(
+        &sink,
+        "ipn:0.2.1".parse().unwrap(),
+        500,
+        &mut rx,
+        Duration::from_secs(60),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::PayloadUnderrun {
+            size: 100,
+            expected: 500
+        })
+    ));
+    assert!(sent_rx.is_empty(), "a violating stream never reaches send");
 }

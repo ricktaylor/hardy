@@ -64,7 +64,7 @@ A bundle entering from a CLA follows this path:
 
 1. **Ingress**: CLA calls `Sink::dispatch()` with raw bytes and peer information
 2. **Validation**: `process_received_bundle()` parses the header chain off the stream with keyed BPSec verification before the payload drains. Invalid bundles are dropped internally with status reports — errors are never returned to the CLA
-3. **Filtering**: the Ingress chain (Verifiers, then Classifiers) runs at the pre-drain gate on the resident header prefix, and may drop or annotate the bundle
+3. **Filtering**: the Ingress chain (Verifiers, then Classifiers) runs at the pre-drain gate on the resident prefix (the headers and whatever of the payload has arrived, at least the declared peek), and may drop or annotate the bundle
 4. **Routing**: the RIB lookup at the gate is the routing decision of record — local delivery, admin endpoint, forwarding, or a drop that rejects the bundle before anything is stored
 5. **Storage**: the payload drains through `Store::save_stream` with its CRC and deferred payload BIBs verified as it flows, the bundle data is stored exactly as received, and the finished record is written once to metadata storage with `Dispatching` status
 6. **Dispatch**: the gate's routing decision executes on the arriving task, made again if the routing table changed during the drain — fresh arrivals do not transit the dispatch queue, except the admin-endpoint and fragment arms, which queue for the processing pool
@@ -108,7 +108,7 @@ See the storage backend packages for production implementations:
 
 ### Streamed Bundle Ingestion (interim accumulation)
 
-Both input doors accept a bundle as a pull-driven stream of `stream::Segment`s: `cla::Sink::dispatch` (CLA ingress) and `services::ServiceSink::send` (service origination). A caller holding a whole buffer passes it directly — `Bytes` implements `stream::Receiver`, draining as a single `Segment::Final` through the same path — so each door has one pipeline.
+Both bundle input doors accept a bundle as a pull-driven stream of `stream::Segment`s: `cla::Sink::dispatch` (CLA ingress) and `services::ServiceSink::send` (service origination); the application door streams its payload the same way (`services::ApplicationSink::send_streamed`, with a declared `total_len`), and the BPA builds the bundle around it as it flows. A caller holding a whole buffer passes it directly — `Bytes` implements `stream::Receiver`, draining as a single `Segment::Final` through the same path — so each door has one pipeline.
 
 Completion is explicit: `Final` marks a clean end, and a producer that drops its sender earlier has truncated the bundle — the door surfaces `StreamCancelled` rather than success, so a CLA withholds its transfer acknowledgement and the peer retransmits. Reassembly currently accumulates in memory (`stream::concat_stream`) bounded by `BpaBuilder::max_bundle_size` (default 64 MiB, `max-bundle-size` in bpa-server configuration) — a custody-admission bound sized for the in-memory interim. Registration liveness is enforced per segment: a CLA or service that unregisters mid-stream fails the next pull and never lands its bundle.
 
@@ -251,9 +251,9 @@ See [Policy Subsystem Design](policy_subsystem_design.md#hybrid-channel-architec
 
 The BPA parses through its `bundle::parse` layer over hardy-bpv7, in three shapes:
 
-- `parse_headers` for CLA ingress and fragment reassembly (untrusted: a streamed header pass with keyed BPSec verification before the payload drains; the payload CRC and deferred payload BIBs verify as it drains, and the bundle is stored exactly as received, its RFC 9172 block removals riding the metadata to the output doors)
-- `parse_validate_with_provider` for service input and restart recovery (one-shot keyed validation with no block removal or rewriting — non-canonical CBOR is rejected)
-- `extract_from_built` for bundles the BPA builds itself (the Builder emits valid bundles by construction)
+- `parse_headers` for CLA ingress, fragment reassembly, and raw service input (untrusted: a streamed header pass with keyed BPSec verification before the payload drains; the payload CRC and deferred payload BIBs verify as it drains, and the bundle is stored exactly as received, its RFC 9172 block removals riding the metadata to the output doors)
+- `parse_validate_with_provider` for restart recovery (one-shot keyed validation with no block removal or rewriting)
+- `extract_from_built` for bundles the BPA builds itself — status reports, and application payloads built as they stream (`Builder::build_stream`) — which are valid by construction
 
 ### With Storage Backends
 

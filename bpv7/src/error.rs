@@ -58,6 +58,18 @@ pub enum Error {
     #[error("Bundle has multiple {0:?} blocks")]
     DuplicateBlocks(block::Type),
 
+    /// Indicates that the region before the payload block's data runs past
+    /// the 256 MiB implementation bound. Everything before the payload body —
+    /// the primary block, every extension block and the payload block's
+    /// header — must be resident for verification, and real header chains
+    /// are kilobytes; only the payload body itself may exceed the bound.
+    /// Detected from the declared lengths alone, before any body byte
+    /// arrives.
+    #[error(
+        "The region before the payload data ends at byte {0}, beyond the 256 MiB implementation bound"
+    )]
+    PrePayloadTooLarge(u64),
+
     /// Indicates that a block has an unsupported block type or block content sub-type.
     #[error("Block {0} has an unsupported block type or block content sub-type")]
     Unsupported(u64),

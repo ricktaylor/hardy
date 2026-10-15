@@ -10,11 +10,10 @@
 //! * [`parse_validate_with_provider`] — one-shot keyed validation of a complete
 //!   buffer, no block removal. It returns the list of BCB-protected well-known
 //!   extension blocks that couldn't be decrypted (no key); the caller decides
-//!   what to do with it. `dispatcher::restart` ignores it (re-check stored data
-//!   on startup, tolerating a since-rotated key), while `dispatcher::local` and
-//!   `filter::chain` pass it to [`reject_undecryptable_liveness`], which applies
-//!   the liveness policy (locally originated / re-emitted bytes must be fully
-//!   decryptable).
+//!   what to do with it. Its one remaining caller is `dispatcher::restart`'s
+//!   reconcile walk, which ignores the list (re-check stored data on startup,
+//!   tolerating a since-rotated key). The streamed pass applies the liveness
+//!   policy itself via [`reject_undecryptable_liveness`].
 //! * [`parse_headers`] — the streaming ingress header pass, which the gate can
 //!   early-reject on before the payload is spooled. It classifies and
 //!   *schedules* the removals — the `delete_block_on_failure`-flagged unknowns
@@ -50,11 +49,11 @@ use crate::{HashMap, HashSet, cla::Segment, stream::Receiver};
 /// Extract the well-known extension-block fields from freshly-built `Builder`
 /// output — a structural `Bundle` plus its wire bytes — so any PreviousNode /
 /// BundleAge / HopCount the builder emitted reaches the bundle's metadata. Used
-/// by the locally-originated paths (`dispatcher::local`, `dispatcher::report`)
-/// that build a bundle and immediately wrap it; the keyed parse pipelines
-/// ([`parse_validate_with_provider`], [`parse_headers`]) would do this same
-/// extraction after redundant BPSec validation a freshly-built bundle doesn't
-/// need.
+/// by the locally-originated paths (`dispatcher::originate`,
+/// `dispatcher::report`) that build a bundle and immediately wrap it; the keyed
+/// parse pipelines ([`parse_validate_with_provider`], [`parse_headers`]) would
+/// do this same extraction after redundant BPSec validation a freshly-built
+/// bundle doesn't need.
 pub fn extract_from_built(
     bundle: &Bpv7Bundle,
     data: &[u8],
@@ -179,27 +178,12 @@ fn reported_drop(
 // Validate — one-shot keyed validation of a complete buffer, no rewriting
 // ---------------------------------------------------------------------------
 
-/// Result of [`parse_validate_with_provider`]: the validated structural
-/// bundle, its decoded extension fields, and the §C8 no-key facts — one value,
-/// so a bundle and the fields decoded from its bytes travel together.
-pub struct Validated {
-    pub bundle: Bpv7Bundle,
-    pub extensions: ExtensionFields,
-    /// The §C8 extension blocks that were BCB-encrypted but undecryptable
-    /// (no key) — facts for the call site to adjudicate (see
-    /// [`reject_undecryptable_liveness`]).
-    pub nokey_ext: Vec<(u64, block::Type)>,
-}
-
-/// One-shot keyed validation of a complete in-memory bundle. Returns a
-/// [`Validated`]: the structural [`Bpv7Bundle`], its decoded
-/// [`ExtensionFields`], **and** [`nokey_ext`](Validated::nokey_ext) — the §C8
-/// extension blocks that were BCB-encrypted but undecryptable (no key). It
-/// produces those facts; it does **not** adjudicate them — whether an
-/// undecryptable block is fatal is a call-site policy (see
-/// [`reject_undecryptable_liveness`]). This keeps extension-block policy at
-/// the point of use, matching the eventual decode-on-demand model rather than
-/// baking it into the parse layer.
+/// One-shot keyed validation of a complete in-memory bundle, returning the
+/// re-validated structural [`Bpv7Bundle`]. The §D extension-field decode still
+/// runs — a corrupt well-known block rejects the bundle — but neither the
+/// decoded fields nor the §C8 no-key facts are returned: the sole caller,
+/// restart's stored-data re-check, deliberately ignores both, tolerating a
+/// key that has since rotated away (soft NoKey).
 ///
 /// No block removal, no rewriting — non-canonical CBOR is rejected at parse
 /// (RFC 9171 §4.1), and re-emitting it is a configurable mutating-filter concern
@@ -208,7 +192,7 @@ pub struct Validated {
 pub fn parse_validate_with_provider<F>(
     data: Bytes,
     key_provider: F,
-) -> Result<Validated, hardy_bpv7::Error>
+) -> Result<Bpv7Bundle, hardy_bpv7::Error>
 where
     F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
@@ -218,7 +202,7 @@ where
         bcbs: bcb_ops,
         bibs: mut bib_ops,
     } = parse::parse(data)?;
-    let key_source = key_provider(&bundle, &data);
+    let key_source = keys_for(&bcb_ops, &bib_ops, key_provider, &bundle, &data);
 
     // §A — no removals scheduled, but `?` still catches an Unsupported
     // `delete_bundle_on_failure` block.
@@ -242,32 +226,30 @@ where
         return Err(bpsec::Error::DecryptionFailed.into());
     }
 
-    // §D — extract extension fields; the caller writes them into metadata.
-    let extensions = extract_extension_block_fields(&data, &bundle.blocks, &decrypted)?;
-    Ok(Validated {
-        bundle,
-        extensions,
-        nokey_ext: facts.nokey_ext.into_vec(),
-    })
+    // §D — decode the extension fields purely as validation: a corrupt
+    // well-known block rejects the bundle; the decoded values are discarded.
+    extract_extension_block_fields(&data, &bundle.blocks, &decrypted).map(|_| bundle)
 }
 
 /// A liveness-critical extension block a forwarding node can't process without
-/// its plaintext: `HopCount` (RFC 9171 §4.4.3 — the anti-"ping-pong" loop
-/// defense, so it must stay processable) and, on a node with no clock,
-/// `BundleAge` (its only expiry signal). Such a block is fatal whether it's
-/// undecipherable (no key) or corrupt (failed authentication): either way we
-/// can't enforce it, and forwarding without it risks a routing loop or an
-/// immortal bundle. Contrast a non-liveness block, where the two failure modes
-/// diverge — a corrupt one is stripped (RFC 9172 §5.1.1), an undecipherable one
-/// is forwarded intact for a downstream security acceptor.
+/// its plaintext: on a bundle with no creation clock, `BundleAge`, its only
+/// expiry signal, which every forwarder MUST increase (RFC 9171 §4.4.2,
+/// §5.4). Such a block is fatal whether it's undecipherable (no key) or
+/// corrupt (failed authentication): either way the node can't determine
+/// expiry or write the next age. Contrast a non-liveness block, where the two
+/// failure modes diverge — a corrupt one is stripped (RFC 9172 §5.1.1), an
+/// undecipherable one is forwarded intact for a downstream security acceptor.
+///
+/// `HopCount` is not liveness-critical: its increment is a SHOULD (RFC 9171
+/// §4.4.3), so a node that can't read it neither enforces the hop limit nor
+/// increments the count, and forwards the block unchanged.
 fn is_liveness_critical(block_type: block::Type, is_clocked: bool) -> bool {
-    matches!(block_type, block::Type::HopCount)
-        || (!is_clocked && matches!(block_type, block::Type::BundleAge))
+    !is_clocked && matches!(block_type, block::Type::BundleAge)
 }
 
 /// Call-site NoKey policy: reject a bundle carrying a liveness-critical extension
 /// block that couldn't be decrypted (no key) — see [`is_liveness_critical`].
-/// `nokey` is [`Validated::nokey_ext`] (equivalently `VerifyFacts::nokey_ext`).
+/// `nokey` is `VerifyFacts::nokey_ext`.
 /// A node that accepts/forwards applies this; a restart re-check tolerates a
 /// key that has since rotated away and skips it.
 pub fn reject_undecryptable_liveness(
@@ -342,6 +324,26 @@ impl HeaderVerify {
     }
 }
 
+// The key source for one keyed pass. A bundle with no BCB or BIB consults no
+// keys, so it skips the provider round-trip, as the filter engine's passes
+// do.
+fn keys_for<F>(
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
+    key_provider: F,
+    bundle: &Bpv7Bundle,
+    data: &[u8],
+) -> Box<dyn bpsec::key::KeySource>
+where
+    F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+{
+    if bcb_ops.is_empty() && bib_ops.is_empty() {
+        Box::new(bpsec::key::KeySet::EMPTY)
+    } else {
+        key_provider(bundle, data)
+    }
+}
+
 /// Why [`parse_headers`] failed. The first two are the CLA's business —
 /// the transfer must not be acknowledged ([`Cancelled`](Self::Cancelled)) or
 /// must be refused ([`TooLarge`](Self::TooLarge)) — while
@@ -359,11 +361,17 @@ pub enum HeaderFailure {
     /// known before the payload arrives). `u64` end to end: a declared
     /// size may exceed a 32-bit target's address space.
     TooLarge { size: u64, max: u64 },
-    /// Structural or keyed-validation failure. When the bundle id was
-    /// recoverable the caller reports the drop — the reception facts
-    /// established before the failure, then deletion citing the reason (RFC
-    /// 9171 §5.6/§5.10) — then drops.
-    Invalid(Option<(Bpv7Bundle, ReceptionReport, ReasonCode)>),
+    /// Structural or keyed-validation failure. `error` is the parse or
+    /// verification failure itself (the originate door surfaces it to the
+    /// caller); `report` carries the recoverable bundle, the reception facts
+    /// established before the failure, and the status-report reason when the
+    /// bundle id survived — the CLA ingress door reports the drop with it,
+    /// reception then deletion, the deletion citing the reason (RFC 9171
+    /// §5.6/§5.10).
+    Invalid {
+        error: hardy_bpv7::Error,
+        report: Option<(Bpv7Bundle, ReceptionReport, ReasonCode)>,
+    },
 }
 
 /// Drive the structural parser off the segment stream up to the parsed header
@@ -422,9 +430,12 @@ where
         match parser.push(bytes) {
             // The stream ended inside the header region: with no parsed
             // headers there is no bundle id to report — the §4.1 discard.
-            Ok(parse::ParserProgress::NeedMore(_)) if last => {
+            Ok(parse::ParserProgress::NeedMore(n)) if last => {
                 debug!("Truncated bundle: the stream ended inside its headers");
-                return Err(HeaderFailure::Invalid(None));
+                return Err(HeaderFailure::Invalid {
+                    error: hardy_cbor::decode::Error::NeedMoreData(n).into(),
+                    report: None,
+                });
             }
             Ok(parse::ParserProgress::NeedMore(_)) => {}
             Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
@@ -437,18 +448,25 @@ where
                 }
                 Err(e) => {
                     debug!("Bundle BPSec structural validation failed: {e}");
-                    return Err(HeaderFailure::Invalid(None));
+                    return Err(HeaderFailure::Invalid {
+                        error: e,
+                        report: None,
+                    });
                 }
             },
             // A `Partial` from the stream's last segment is never handed to
             // the payload drain, whose stream is exhausted; its headers
             // parsed, so the drop is reported.
             Ok(parse::ParserProgress::Partial { consumed, tail }) if last => {
-                let Ok(parsed) = parser
-                    .finish(consumed)
-                    .inspect_err(|e| debug!("Bundle BPSec structural validation failed: {e}"))
-                else {
-                    return Err(HeaderFailure::Invalid(None));
+                let parsed = match parser.finish(consumed) {
+                    Ok(parsed) => parsed,
+                    Err(e) => {
+                        debug!("Bundle BPSec structural validation failed: {e}");
+                        return Err(HeaderFailure::Invalid {
+                            error: e,
+                            report: None,
+                        });
+                    }
                 };
                 return Err(tail_rejected_at_final(tail, parsed));
             }
@@ -457,13 +475,19 @@ where
                     Ok(parsed) => break (parsed, consumed, Some(tail)),
                     Err(e) => {
                         debug!("Bundle BPSec structural validation failed: {e}");
-                        return Err(HeaderFailure::Invalid(None));
+                        return Err(HeaderFailure::Invalid {
+                            error: e,
+                            report: None,
+                        });
                     }
                 }
             }
             Err(e) => {
                 debug!("Bundle structural parse failed: {e}");
-                return Err(HeaderFailure::Invalid(None));
+                return Err(HeaderFailure::Invalid {
+                    error: e,
+                    report: None,
+                });
             }
         }
     };
@@ -496,7 +520,7 @@ where
         bibs: mut bib_ops,
         ..
     } = parsed;
-    let key_source = key_provider(&bundle, &headers);
+    let key_source = keys_for(&bcb_ops, &bib_ops, key_provider, &bundle, &headers);
     match verify_headers(&headers, &*key_source, bundle, &bcb_ops, &mut bib_ops) {
         // The header-region BCB OperationSets ride back to the caller for
         // the Ingress gate chain, handed back from this one decode rather
@@ -504,11 +528,11 @@ where
         Ok(hv) => Ok((hv, headers, tail, bcb_ops)),
         Err((bundle, error, reception)) => {
             debug!("Invalid bundle received: {error}");
-            Err(HeaderFailure::Invalid(Some((
-                bundle,
-                reception,
-                status_report_reason_for(&error),
-            ))))
+            let reason = status_report_reason_for(&error);
+            Err(HeaderFailure::Invalid {
+                error,
+                report: Some((bundle, reception, reason)),
+            })
         }
     }
 }
@@ -529,10 +553,9 @@ async fn await_final(
             Ok(Segment::Final(b)) if b.is_empty() => ended = true,
             Ok(_) => {
                 debug!("Bytes follow a complete bundle");
-                return Err(HeaderFailure::Invalid(Some(reported_drop(
-                    parsed,
-                    &hardy_bpv7::Error::AdditionalData,
-                ))));
+                let error = hardy_bpv7::Error::AdditionalData;
+                let report = Some(reported_drop(parsed, &error));
+                return Err(HeaderFailure::Invalid { error, report });
             }
             Err(_) => {
                 debug!("Bundle stream cancelled after a complete bundle");
@@ -585,7 +608,8 @@ fn tail_rejected_at_final(tail: parse::PayloadTail, parsed: parse::Parsed) -> He
         .finish()
         .expect_err("a tail incomplete at `Final` is unfinished or failed");
     debug!("Payload block rejected at the stream's Final: {error}");
-    HeaderFailure::Invalid(Some(reported_drop(parsed, &error)))
+    let report = Some(reported_drop(parsed, &error));
+    HeaderFailure::Invalid { error, report }
 }
 
 /// The payload block, when the bytes resident ahead of its body's end are the
@@ -663,7 +687,8 @@ async fn hold_peek(
             Ok(false) => {}
             Err(error) => {
                 debug!("Payload block rejected while holding the payload peek: {error}");
-                return Err(HeaderFailure::Invalid(Some(reported_drop(parsed, &error))));
+                let report = Some(reported_drop(parsed, &error));
+                return Err(HeaderFailure::Invalid { error, report });
             }
         }
     }
@@ -717,7 +742,7 @@ fn verify_headers(
         }
 
         // §B + §C8 + §C7 — composed keyed verification. NoKey on §C8 is fatal for
-        // HopCount and unclocked BundleAge; a §C8/§B decrypt failure is rejected.
+        // an unclocked BundleAge; a §C8/§B decrypt failure is rejected.
         // `verify` drains the deferred block-1 (payload) op-sets out of `bib_ops`,
         // handing them back owned in `facts.deferred_bibs`; `bcb_ops` is only
         // borrowed.
@@ -865,8 +890,22 @@ fn extract_extension_block_fields<V: AsRef<[u8]>>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "rfc9173")]
+    use core::num::NonZeroU8;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(feature = "rfc9173")]
+    use hardy_bpv7::{
+        bpsec::{
+            encryptor::{Context, Encryptor},
+            key::{EncAlgorithm, Key, KeySet, KeySource, Operation, Type},
+        },
+        hop_info::HopInfo,
+    };
     use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
     use hex_literal::hex;
+    #[cfg(feature = "rfc9173")]
+    use rand::{TryRng, rngs::SysRng};
 
     use super::*;
 
@@ -959,39 +998,22 @@ mod tests {
         assert!(hv.bundle.blocks.contains_key(&1), "payload survives");
     }
 
-    // The NoKey liveness policy through both real keyed pipelines: a
-    // BCB-encrypted Hop Count this node has no key for is fatal at ingress
-    // (the anti-loop defense cannot be enforced, so the bundle must not be
-    // forwarded), while the one-shot validate path returns it as a fact for
-    // the call site to adjudicate — `dispatcher::restart` ignores the list
-    // (tolerating a since-rotated key), and the accept/forward paths reject
-    // through `reject_undecryptable_liveness`.
+    // A peer's bundle whose Hop Count block is BCB-encrypted under a
+    // generated key: (bytes, the Hop Count's block number, the key).
     #[cfg(feature = "rfc9173")]
-    #[tokio::test]
-    async fn nokey_hop_count_fatal_at_ingress_a_fact_at_validate() {
-        use core::num::NonZeroU8;
-
-        use hardy_bpv7::{
-            bpsec::{
-                encryptor::{Context, Encryptor},
-                key::{EncAlgorithm, Key, Operation, Type},
-                no_keys,
-            },
-            builder::Builder,
-            creation_timestamp::CreationTimestamp,
-            hop_info::HopInfo,
-        };
-        use rand::{TryRng, rngs::SysRng};
-
-        // Immaterial key value: the test parses with `no_keys`, so the
-        // key only has to encrypt; generated per the no-literal-keys rule.
-        let mut enc_k_bytes = vec![0u8; 32];
-        SysRng.try_fill_bytes(&mut enc_k_bytes).unwrap();
-        let enc_k = Key {
-            key_type: Type::octet_sequence(enc_k_bytes),
+    fn encrypted_hop_count_bundle() -> (Bytes, u64, Key) {
+        // Immaterial key value: generated per the no-literal-keys rule.
+        let mut key_bytes = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(key_bytes),
             key_algorithm: None,
             enc_algorithm: Some(EncAlgorithm::A256GCM),
-            operations: Some([Operation::Encrypt].into_iter().collect()),
+            operations: Some(
+                [Operation::Encrypt, Operation::Decrypt]
+                    .into_iter()
+                    .collect(),
+            ),
             id: Some("ipn:2.1".into()),
             key_use: None,
         };
@@ -1018,43 +1040,56 @@ mod tests {
                     hop_block,
                     Context::AES_GCM(Default::default()),
                     "ipn:0.2.1".parse().unwrap(),
-                    &enc_k,
+                    &key,
                 )
                 .map_err(|(_, e)| e)
                 .expect("encrypt the Hop Count block")
                 .rebuild()
                 .expect("rebuild the encrypted bundle"),
         );
+        (encrypted, hop_block, key)
+    }
 
-        // Ingress: fatal, with a recoverable bundle for the reception report.
-        // (NoKey has no RFC 9172 reason of its own; it maps to the generic
-        // BlockUnintelligible.)
+    // The NoKey liveness policy through both real keyed pipelines: a
+    // BCB-encrypted Hop Count this node has no key for passes the header
+    // pass unread. Its increment is a SHOULD (RFC 9171 §4.4.3), so the node
+    // enforces no hop limit and forwards the block intact; only an unclocked
+    // Bundle Age is fatal. The one-shot validate path tolerates it too.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn nokey_hop_count_passes_ingress_unread() {
+        let (encrypted, hop_block, _) = encrypted_hop_count_bundle();
+
         let (tx, mut rx) = hardy_async::channel::bounded(1);
         tx.send(Segment::Final(encrypted.clone()))
             .await
             .expect("channel open");
-        match parse_headers(&mut rx, 1 << 20, 0, no_keys).await {
-            Err(HeaderFailure::Invalid(Some((_, _, reason)))) => {
-                assert_eq!(reason, ReasonCode::BlockUnintelligible)
-            }
-            Ok(_) => panic!("an undecryptable Hop Count must be fatal at ingress"),
-            Err(_) => panic!("expected Invalid with a recoverable bundle"),
-        }
+        let Ok((hv, ..)) = parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await else {
+            panic!("an undecryptable Hop Count must pass the header pass");
+        };
+        assert!(hv.extensions.hop_count.is_none(), "the count is unread");
+        assert!(
+            !hv.to_remove.contains(&hop_block),
+            "the block is forwarded intact"
+        );
 
-        // Validate: a fact, not a verdict — the Ok is what lets restart
-        // tolerate the bundle; the accept/forward call sites then reject it.
-        let nokey = parse_validate_with_provider(encrypted, no_keys)
-            .expect("validate returns the facts")
-            .nokey_ext;
-        assert_eq!(nokey, vec![(hop_block, block::Type::HopCount)]);
+        parse_validate_with_provider(encrypted, bpsec::no_keys)
+            .expect("validate tolerates an undecryptable Hop Count");
         assert!(matches!(
-            reject_undecryptable_liveness(&nokey, true),
-            Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
+            reject_undecryptable_liveness(&[(hop_block, block::Type::HopCount)], true),
+            Ok(())
+        ));
+        assert!(matches!(
+            reject_undecryptable_liveness(&[(hop_block, block::Type::HopCount)], false),
+            Ok(())
         ));
 
         // BundleAge is liveness-critical only on an unclocked node.
         let age_fact = [(9, block::Type::BundleAge)];
-        assert!(reject_undecryptable_liveness(&age_fact, true).is_ok());
+        assert!(matches!(
+            reject_undecryptable_liveness(&age_fact, true),
+            Ok(())
+        ));
         assert!(matches!(
             reject_undecryptable_liveness(&age_fact, false),
             Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
@@ -1147,8 +1182,10 @@ mod tests {
         let keys = move |_: &Bpv7Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
             Box::new(KeySet::new(vec![key]))
         };
-        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
-            parse_headers(&mut rx, 1 << 20, 0, keys).await
+        let Err(HeaderFailure::Invalid {
+            report: Some((_, reception, reason)),
+            ..
+        }) = parse_headers(&mut rx, 1 << 20, 0, keys).await
         else {
             panic!("a failed BIB must reject the bundle with a report");
         };
@@ -1157,6 +1194,37 @@ mod tests {
             ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
         );
         assert_eq!(reason, ReasonCode::FailedSecurityOperation);
+    }
+
+    // RFC 9172 §5.1.1 for a Hop Count whose ciphertext fails authentication:
+    // not liveness-critical, so the header pass schedules it for removal with
+    // its security blocks, and the bundle survives, reporting the drop.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn corrupt_hop_count_is_scheduled_for_removal() {
+        fn keys(key: &Key) -> Box<dyn KeySource> {
+            Box::new(KeySet::new(vec![key.clone()]))
+        }
+
+        let (encrypted, hop_block, key) = encrypted_hop_count_bundle();
+        let target = parse::parse(encrypted.clone()).unwrap().bundle.blocks[&hop_block].clone();
+        // Flip the last ciphertext byte: the GCM check fails.
+        let last = usize::try_from(target.payload_range().end).unwrap() - 1;
+        let mut data = encrypted.to_vec();
+        data[last] ^= 0x01;
+
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Final(Bytes::from(data)))
+            .await
+            .expect("channel open");
+        let Ok((hv, ..)) = parse_headers(&mut rx, 1 << 20, 0, |_, _| keys(&key)).await else {
+            panic!("a corrupt Hop Count must not be fatal");
+        };
+        assert!(
+            hv.to_remove.contains(&hop_block),
+            "the corrupt Hop Count is scheduled for the failure-drop"
+        );
+        assert_eq!(hv.report, ReceptionReport::FailureDropped);
     }
 
     #[test]
@@ -1234,6 +1302,23 @@ mod tests {
         rx
     }
 
+    // A bundle with no BCB or BIB never consults the key provider: the
+    // header pass needs no keys for it.
+    #[tokio::test]
+    async fn header_pass_skips_keys_without_bpsec() {
+        let calls = AtomicUsize::new(0);
+        let provider = |_: &Bpv7Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Box::new(bpsec::key::KeySet::EMPTY)
+        };
+        let (_, data) = small_bundle();
+        let mut rx = stream_of(vec![Segment::Final(data)]).await;
+        let Ok(_) = parse_headers(&mut rx, 1 << 20, 0, provider).await else {
+            panic!("a plain bundle passes the header pass");
+        };
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
     // A bundle complete on a non-final segment commits once `Final` follows,
     // past any empty `Next` padding.
     #[tokio::test]
@@ -1280,8 +1365,10 @@ mod tests {
         ])
         .await;
 
-        let Err(HeaderFailure::Invalid(Some((reported, _, reason)))) =
-            parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        let Err(HeaderFailure::Invalid {
+            report: Some((reported, _, reason)),
+            ..
+        }) = parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
         else {
             panic!("trailing bytes must reject the bundle with a report");
         };
@@ -1319,8 +1406,10 @@ mod tests {
         ])
         .await;
 
-        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
-            parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        let Err(HeaderFailure::Invalid {
+            report: Some((_, reception, reason)),
+            ..
+        }) = parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
         else {
             panic!("trailing bytes must reject the bundle with a report");
         };
@@ -1341,8 +1430,10 @@ mod tests {
         // trailer is `44 c0 c1 c2 c3 FF`.
         let mut rx = stream_of(vec![Segment::Final(data.slice(..data.len() - 4))]).await;
 
-        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
-            parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
+        let Err(HeaderFailure::Invalid {
+            report: Some((_, reception, reason)),
+            ..
+        }) = parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await
         else {
             panic!("a short Final must reject the bundle with a report");
         };
@@ -1628,8 +1719,10 @@ mod tests {
         let short = data.slice(..start + 500);
         let mut rx = stream_of(segmented(&short, start, 100)).await;
 
-        let Err(HeaderFailure::Invalid(Some((_, _, reason)))) =
-            parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
+        let Err(HeaderFailure::Invalid {
+            report: Some((_, _, reason)),
+            ..
+        }) = parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
         else {
             panic!("a short Final inside the peek must reject the bundle with a report");
         };
@@ -1647,8 +1740,10 @@ mod tests {
         let bad = Bytes::from(bad);
         let mut rx = stream_of(final_apart(segmented(&bad, start, 300))).await;
 
-        let Err(HeaderFailure::Invalid(Some((_, _, reason)))) =
-            parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
+        let Err(HeaderFailure::Invalid {
+            report: Some((_, _, reason)),
+            ..
+        }) = parse_headers(&mut rx, 1 << 20, 4096, bpsec::no_keys).await
         else {
             panic!("a CRC mismatch inside the peek must reject the bundle with a report");
         };

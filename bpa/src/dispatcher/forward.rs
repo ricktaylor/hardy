@@ -319,7 +319,8 @@ impl Dispatcher {
         // is a SHOULD (RFC 9171 §4.4.3): a Hop Count block the editor refuses
         // (BCB-covered beside an encrypted BIB that may cover it) travels
         // unchanged, with its security operations, rather than holding the
-        // bundle back.
+        // bundle back. One this node could not read at ingress has no cached
+        // value, and travels unchanged too.
         if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
             editor = match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
                 Ok(block) => block
@@ -514,8 +515,7 @@ mod tests {
         let storage_name = data_store.save(data.clone()).await.unwrap();
         let parsed =
             crate::bundle::parse::parse_validate_with_provider(data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
+                .unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -577,8 +577,7 @@ mod tests {
                 data.clone(),
                 hardy_bpv7::bpsec::no_keys,
             )
-            .unwrap()
-            .bundle,
+            .unwrap(),
             metadata: bundle::BundleMetadata::originated(),
             status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
         };

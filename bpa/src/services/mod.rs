@@ -1,6 +1,9 @@
 pub(crate) mod registry;
 
-use core::time::Duration;
+use core::{
+    fmt::{self, Display, Formatter},
+    time::Duration,
+};
 
 use hardy_async::async_trait;
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -40,12 +43,17 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
-    /// The payload exceeds a size limit. Raised at the raw originate
-    /// door when a submitted stream grows past the BPA's
-    /// `max_bundle_size`, and by transport-backed sinks (e.g. gRPC)
-    /// when a pre-flight size check fails, instead of letting the
-    /// oversized message break the underlying stream. The fields are
-    /// wire-size-domain `u64`; today they carry in-memory byte counts.
+    /// The payload exceeds a size limit; `max` is the limit exceeded:
+    ///
+    /// * the BPA's `max_bundle_size`, against a bundle's declared wire size
+    ///   at either originate door or an ADU send's declared `total_len`,
+    ///   before a payload byte is pulled, or against the bytes a drain has
+    ///   taken;
+    /// * an ADU send's declared `total_len`, when its stream delivers more;
+    /// * a transport-backed sink's (e.g. gRPC) pre-flight limit, instead of
+    ///   letting the oversized message break the underlying stream.
+    ///
+    /// The fields are wire-size-domain `u64`.
     #[error("Payload too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: u64, max: u64 },
 
@@ -71,15 +79,22 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
+    /// The bundle is a fragment. Fragmentation is a forwarding-time action
+    /// (RFC 9171 §5.8) — a source never emits fragments — so the raw
+    /// originate door rejects a service-built fragment outright.
+    #[error("Cannot originate a bundle fragment")]
+    FragmentedBundle,
+
     /// The bundle stream was cancelled: the producer dropped its sender
     /// before delivering the final segment, so no complete bundle arrived.
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
-    /// The bundle was dropped before it was stored — by an Originate filter
-    /// or by the origination gate (an expired lifetime or an exhausted hop
-    /// limit) — with an optional reason code.
-    #[error("Bundle dropped: {0:?}")]
+    /// The bundle was dropped before it was stored — by an Originate filter,
+    /// an origination gate check (an expired lifetime, an exhausted hop
+    /// limit, or a failed RFC 9171 validity check), or an explicit Drop
+    /// route — with an optional reason code.
+    #[error("Bundle dropped{}", DroppedReason(.0))]
     Dropped(Option<ReasonCode>),
 
     /// A bundle with the same identity already exists in storage.
@@ -93,6 +108,19 @@ pub enum Error {
     /// An internal error from an underlying subsystem.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
+}
+
+// The `Dropped` message's tail: the reason code when the drop gave one,
+// nothing otherwise.
+struct DroppedReason<'a>(&'a Option<ReasonCode>);
+
+impl Display for DroppedReason<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(reason) => write!(f, " ({reason:?})"),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The kind of bundle status event being reported to a service.
@@ -257,6 +285,37 @@ pub trait ApplicationSink: Send + Sync {
         lifetime: Duration,
         options: Option<SendOptions>,
     ) -> Result<Id>;
+
+    /// Sends a payload supplied as a segment stream, wrapped in a bundle
+    /// by the BPA.
+    ///
+    /// The stream must deliver exactly `total_len` payload bytes — the
+    /// declaration frames the bundle's wire form before the first segment
+    /// is pulled — and the stream is one-shot: an over- or
+    /// under-delivering producer is rejected
+    /// ([`PayloadTooLarge`](Error::PayloadTooLarge) /
+    /// [`PayloadUnderrun`](Error::PayloadUnderrun)), a producer that goes
+    /// away before its final segment cancels the send
+    /// ([`StreamCancelled`](Error::StreamCancelled)), and a
+    /// creation-timestamp collision surfaces as
+    /// [`DuplicateBundle`](Error::DuplicateBundle) (vanishingly rare; the
+    /// caller may resend).
+    ///
+    /// The provided implementation buffers the stream
+    /// ([`buffer_stream`](crate::stream::buffer_stream)) and delegates to
+    /// [`send`](Self::send), with the same error surface; the BPA's own
+    /// sink streams end to end.
+    async fn send_streamed(
+        &self,
+        destination: Eid,
+        total_len: u64,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+        lifetime: Duration,
+        options: Option<SendOptions>,
+    ) -> Result<Id> {
+        let data = crate::stream::buffer_stream(stream, total_len).await?;
+        self.send(destination, data, lifetime, options).await
+    }
 }
 
 /// Low-level service trait with raw bundle access.
