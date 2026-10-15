@@ -435,7 +435,8 @@ impl ClaRegistry {
         }
 
         // Add RIB entry for each known EID.
-        // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
+        // Neighbours (empty node_ids) get no RIB entry; nothing yet supplies
+        // their EIDs later.
         for node_id in node_ids {
             let _ = self.rib.add_forward(node_id.clone(), peer_id).await;
             metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
