@@ -8,17 +8,21 @@ use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use hardy_bpv7::{
     Bundle, block,
-    bpsec::{edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
+    bpsec::{bib, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
     builder, bundle, checks, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
     eid,
     extension_editor::{self, ExtensionEditor},
     hop_info, parse,
+    reader::{Availability, Reader},
 };
 // Aliased: the parser's error, beside the editor's `Error` imported above.
 use hardy_bpv7::Error as Bpv7Error;
 // Aliased: the CBOR codec's error, beside the two above.
-use hardy_cbor::{decode::Error as CborError, encode::emit};
+use hardy_cbor::{
+    decode::{Error as CborError, parse_exact},
+    encode::emit,
+};
 
 mod common;
 use self::common::{insert_after_primary, make_block, make_unknown_context_asb, rand_k};
@@ -1342,7 +1346,8 @@ fn make_signed_extension() -> (Bundle, Box<[u8]>, u64, u64, key::Key) {
 #[test]
 fn extension_editor_refuses_reserved_insert_types() {
     let (bundle, data) = make_bundle();
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     // Each reserved type, named and as the `Unrecognised` alias of its wire
     // code: the alias is refused as the reserved type it encodes.
     for (requested, reserved) in [
@@ -1374,7 +1379,8 @@ fn extension_editor_refuses_reserved_insert_types() {
 #[test]
 fn extension_editor_maps_singleton_duplicates_through() {
     let (bundle, data) = make_bundle_with_hop_count();
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     assert!(matches!(
         editor.insert(
             block::Type::HopCount,
@@ -1388,19 +1394,13 @@ fn extension_editor_maps_singleton_duplicates_through() {
     ));
     // A refusal from the inner editor is not an edit either.
     assert!(!editor.is_modified());
-    assert!(
-        editor
-            .finish()
-            .expect("an untouched editor is not an error")
-            .is_none(),
-        "a refused insert materialises nothing"
-    );
 }
 
 #[test]
 fn extension_editor_reserves_primary_and_payload_targets() {
     let (bundle, data) = make_bundle();
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     for reserved in [0, 1] {
         assert!(matches!(
             editor.replace(reserved, b"x".as_slice().into()),
@@ -1420,7 +1420,8 @@ fn extension_editor_reserves_primary_and_payload_targets() {
 #[test]
 fn extension_editor_reports_missing_targets() {
     let (bundle, data) = make_bundle();
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     assert!(matches!(
         editor.replace(99, b"x".as_slice().into()),
         Err(extension_editor::Error::NoSuchBlock(99))
@@ -1430,7 +1431,8 @@ fn extension_editor_reports_missing_targets() {
 #[test]
 fn extension_editor_refuses_security_blocks_and_covered_targets() {
     let (signed, signed_bytes, ext, bib, _) = make_signed_extension();
-    let mut editor = ExtensionEditor::new(&signed, &signed_bytes);
+    let mut owner = Editor::new(&signed, &signed_bytes);
+    let mut editor = ExtensionEditor::new(&mut owner);
 
     // The BIB itself is out of scope...
     assert!(matches!(
@@ -1489,7 +1491,8 @@ fn extension_editor_refuses_bcb_covered_targets() {
         "BCB-covered with no BIB in sight"
     );
 
-    let mut editor = ExtensionEditor::new(&encrypted, &encrypted_bytes);
+    let mut owner = Editor::new(&encrypted, &encrypted_bytes);
+    let mut editor = ExtensionEditor::new(&mut owner);
     assert!(matches!(
         editor.replace(ext, b"x".as_slice().into()),
         Err(extension_editor::Error::Covered(n)) if n == ext
@@ -1585,7 +1588,8 @@ fn extension_editor_refuses_hidden_targets_not_bystanders() {
         "the sweep must leave a block no BCB covers uncovered"
     );
 
-    let mut editor = ExtensionEditor::new(&encrypted, &encrypted_bytes);
+    let mut owner = Editor::new(&encrypted, &encrypted_bytes);
+    let mut editor = ExtensionEditor::new(&mut owner);
     assert!(matches!(
         editor.replace(ext, b"x".as_slice().into()),
         Err(extension_editor::Error::Covered(n)) if n == ext
@@ -1593,7 +1597,7 @@ fn extension_editor_refuses_hidden_targets_not_bystanders() {
     editor
         .replace(bystander, b"x".as_slice().into())
         .expect("a bystander is editable");
-    let (_, chunks) = editor.finish().expect("materialise").expect("edited");
+    let (_, chunks) = owner.rebuild_bundle().expect("materialise");
     let new_data = Chunk::flatten(chunks, &encrypted_bytes);
     let reparsed = reparse(&new_data);
     assert_eq!(
@@ -1616,7 +1620,8 @@ fn extension_editor_refuses_hidden_targets_not_bystanders() {
 #[test]
 fn extension_editor_targets_its_own_inserts() {
     let (bundle, data) = make_bundle();
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
 
     let n = editor
         .insert(
@@ -1633,13 +1638,10 @@ fn extension_editor_targets_its_own_inserts() {
         .remove(n)
         .expect("a fresh insert is a valid remove target");
 
-    // Everything cancelled out, but edits were applied: the editor
-    // materialises, and the output holds no trace of the block.
+    // Everything cancelled out, but edits were applied: the handle reports
+    // them, and the owner's rebuild holds no trace of the block.
     assert!(editor.is_modified());
-    let (_, chunks) = editor
-        .finish()
-        .expect("materialise")
-        .expect("edits were applied");
+    let (_, chunks) = owner.rebuild_bundle().expect("materialise");
     let reparsed = reparse(&Chunk::flatten(chunks, &data));
     assert!(
         !reparsed
@@ -1650,20 +1652,15 @@ fn extension_editor_targets_its_own_inserts() {
 }
 
 #[test]
-fn extension_editor_materialises_inserts_and_skips_untouched() {
+fn extension_editor_inserts_reach_the_owners_rebuild() {
     let (bundle, data) = make_bundle();
 
-    let untouched = ExtensionEditor::new(&bundle, &data);
-    assert!(!untouched.is_modified());
-    assert!(
-        untouched
-            .finish()
-            .expect("no edits is not an error")
-            .is_none(),
-        "an untouched editor materialises nothing"
-    );
+    let mut owner = Editor::new(&bundle, &data);
+    let untouched = ExtensionEditor::new(&mut owner);
+    assert!(!untouched.is_modified(), "a fresh handle has made no edit");
 
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     let n = editor
         .insert(
             block::Type::Unrecognised(202),
@@ -1672,13 +1669,99 @@ fn extension_editor_materialises_inserts_and_skips_untouched() {
             b"materialised".as_slice().into(),
         )
         .expect("insert");
-    let (new_bundle, chunks) = editor.finish().expect("materialise").expect("edited");
+    let (new_bundle, chunks) = owner.rebuild_bundle().expect("materialise");
     let new_data = Chunk::flatten(chunks, &data);
     let reparsed = reparse(&new_data);
     let block = reparsed.blocks.get(&n).expect("the insert is on the wire");
     assert!(matches!(block.block_type, block::Type::Unrecognised(202)));
     assert_eq!(block.payload(&new_data).expect("resident"), b"materialised");
     assert_eq!(new_bundle.blocks.len(), reparsed.blocks.len());
+}
+
+// The handle gates on the owner's current coverage. Once the owner removes
+// the BIB outright, its target stays a kept block whose parsed stamp still
+// names the BIB, and only the editor's coverage record says it is free: the
+// staged view reports it uncovered, and the handle may replace it.
+#[test]
+fn extension_editor_gates_on_the_owners_current_coverage() {
+    let (signed, signed_bytes, ext, bib, _) = make_signed_extension();
+    assert_eq!(signed.blocks[&ext].bib, block::BibCoverage::Some(bib));
+    let (mut owner, removed) = Editor::new(&signed, &signed_bytes)
+        .remove_blocks(HashSet::from([bib]), &key::KeySet::EMPTY)
+        .map_err(|(_, e)| e)
+        .expect("remove the BIB");
+    assert_eq!(removed, HashSet::from([bib]));
+    assert_eq!(
+        owner.staged_view().expect("a view").bundle().blocks[&ext].bib,
+        block::BibCoverage::None,
+        "the view reports the current coverage"
+    );
+
+    let mut editor = ExtensionEditor::new(&mut owner);
+    editor
+        .replace(ext, b"x".as_slice().into())
+        .expect("the owner released the block from its BIB");
+    let (_, chunks) = owner.rebuild_bundle().expect("materialise");
+    let new_data = Chunk::flatten(chunks, &signed_bytes);
+    let reparsed = reparse(&new_data);
+    assert_eq!(
+        reparsed.blocks[&ext].payload(&new_data),
+        Some(b"x".as_slice())
+    );
+}
+
+// A refused edit, from the handle's gates or from the owner's editor, hands
+// the owner's editor back as it was: the owner's earlier edit and the
+// handle's later one both reach the rebuild.
+#[test]
+fn extension_editor_refusals_keep_the_owners_edits() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let mut owner = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(201)))
+        .with_data(b"owner".as_slice().into())
+        .rebuild();
+
+    let mut editor = ExtensionEditor::new(&mut owner);
+    // Refused by the handle's gates...
+    assert!(matches!(
+        editor.replace(1, b"x".as_slice().into()),
+        Err(extension_editor::Error::ReservedBlock(1))
+    ));
+    // ...and by the owner's editor, through the borrowed edit.
+    assert!(matches!(
+        editor.insert(
+            block::Type::HopCount,
+            block::Flags::default(),
+            crc::CrcType::None,
+            hop_count_body(),
+        ),
+        Err(extension_editor::Error::Editor(Error::IllegalDuplicate(
+            block::Type::HopCount
+        )))
+    ));
+    assert!(!editor.is_modified());
+    editor
+        .insert(
+            block::Type::Unrecognised(202),
+            block::Flags::default(),
+            crc::CrcType::None,
+            b"handle".as_slice().into(),
+        )
+        .expect("insert after the refusals");
+
+    let (_, chunks) = owner.rebuild_bundle().expect("materialise");
+    let new_data = Chunk::flatten(chunks, &data);
+    let reparsed = reparse(&new_data);
+    for (block_type, body) in [
+        (block::Type::Unrecognised(201), b"owner".as_slice()),
+        (block::Type::Unrecognised(202), b"handle".as_slice()),
+    ] {
+        let block = reparsed
+            .blocks
+            .values()
+            .find(|b| b.block_type == block_type)
+            .unwrap_or_else(|| panic!("the {block_type:?} edit reaches the rebuild"));
+        assert_eq!(block.payload(&new_data), Some(body));
+    }
 }
 
 // === ExtensionEditor: the parser's accept-set at call time =============
@@ -1705,7 +1788,7 @@ fn make_bundle_from(source: &str, flags: bundle::Flags) -> (Bundle, Box<[u8]>) {
 }
 
 // Insert an Unrecognised(200) block with `report_on_failure` set.
-fn insert_reporting_block(editor: &mut ExtensionEditor) -> extension_editor::Result<u64> {
+fn insert_reporting_block(editor: &mut ExtensionEditor<'_, '_>) -> extension_editor::Result<u64> {
     editor.insert(
         block::Type::Unrecognised(200),
         block::Flags {
@@ -1740,7 +1823,8 @@ fn extension_editor_refuses_report_on_failure_the_bundle_forbids() {
             bundle.primary.forbids_report_on_failure(),
             "precondition: the fixture forbids report_on_failure"
         );
-        let mut editor = ExtensionEditor::new(bundle, data);
+        let mut owner = Editor::new(bundle, data);
+        let mut editor = ExtensionEditor::new(&mut owner);
         assert!(matches!(
             insert_reporting_block(&mut editor),
             Err(extension_editor::Error::Invalid(Bpv7Error::InvalidFlags))
@@ -1752,9 +1836,10 @@ fn extension_editor_refuses_report_on_failure_the_bundle_forbids() {
     // re-parses.
     let (bundle, data) = make_bundle();
     assert!(!bundle.primary.forbids_report_on_failure());
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     let inserted = insert_reporting_block(&mut editor).expect("the insert is accepted");
-    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let (_, chunks) = owner.rebuild_bundle().expect("an edit materialises");
     let rewritten = reparse(&Chunk::flatten(chunks, &data));
     assert!(rewritten.blocks[&inserted].flags.report_on_failure);
 }
@@ -1779,7 +1864,8 @@ fn extension_editor_canonicalizes_unrecognised_aliases_of_named_flags() {
             ..Default::default()
         },
     );
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     assert!(matches!(
         editor.insert(
             block::Type::Unrecognised(200),
@@ -1792,7 +1878,8 @@ fn extension_editor_canonicalizes_unrecognised_aliases_of_named_flags() {
     assert!(!editor.is_modified(), "a refusal is not an edit");
 
     let (bundle, data) = make_bundle_from("ipn:1.0", bundle::Flags::default());
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     let inserted = editor
         .insert(
             block::Type::Unrecognised(200),
@@ -1801,7 +1888,7 @@ fn extension_editor_canonicalizes_unrecognised_aliases_of_named_flags() {
             b"ext-data".as_slice().into(),
         )
         .expect("an ordinary bundle permits the flag");
-    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let (_, chunks) = owner.rebuild_bundle().expect("an edit materialises");
     let rewritten = reparse(&Chunk::flatten(chunks, &data));
     let flags = &rewritten.blocks[&inserted].flags;
     assert!(flags.report_on_failure);
@@ -1811,7 +1898,8 @@ fn extension_editor_canonicalizes_unrecognised_aliases_of_named_flags() {
 #[test]
 fn extension_editor_refuses_an_unrecognised_crc_type() {
     let (bundle, data) = make_bundle();
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     assert!(matches!(
         editor.insert(
             block::Type::Unrecognised(200),
@@ -1828,7 +1916,8 @@ fn extension_editor_refuses_an_unrecognised_crc_type() {
     // Control: each recognised CRC type is accepted and the inserted block
     // carries it — the re-parse checks the CRC value too.
     for crc_type in [crc::CrcType::CRC16_X25, crc::CrcType::CRC32_CASTAGNOLI] {
-        let mut editor = ExtensionEditor::new(&bundle, &data);
+        let mut owner = Editor::new(&bundle, &data);
+        let mut editor = ExtensionEditor::new(&mut owner);
         let inserted = editor
             .insert(
                 block::Type::Unrecognised(200),
@@ -1837,7 +1926,7 @@ fn extension_editor_refuses_an_unrecognised_crc_type() {
                 b"ext-data".as_slice().into(),
             )
             .expect("a recognised CRC type is accepted");
-        let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+        let (_, chunks) = owner.rebuild_bundle().expect("an edit materialises");
         let rewritten = reparse(&Chunk::flatten(chunks, &data));
         assert_eq!(rewritten.blocks[&inserted].crc_type, crc_type);
     }
@@ -1847,7 +1936,8 @@ fn extension_editor_refuses_an_unrecognised_crc_type() {
 // returns the parser error the refusal carries.
 fn refused_insert(block_type: block::Type, body: &[u8]) -> Bpv7Error {
     let (bundle, data) = make_bundle();
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     let result = editor.insert(
         block_type,
         block::Flags::default(),
@@ -1902,7 +1992,8 @@ fn extension_editor_refuses_undecodable_well_known_insert_bodies() {
     ];
     for (block_type, valid) in valid_bodies {
         let (bundle, data) = make_bundle();
-        let mut editor = ExtensionEditor::new(&bundle, &data);
+        let mut owner = Editor::new(&bundle, &data);
+        let mut editor = ExtensionEditor::new(&mut owner);
         let inserted = editor
             .insert(
                 block_type,
@@ -1911,7 +2002,7 @@ fn extension_editor_refuses_undecodable_well_known_insert_bodies() {
                 valid.clone(),
             )
             .expect("a valid body is accepted");
-        let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+        let (_, chunks) = owner.rebuild_bundle().expect("an edit materialises");
         let rewritten_data = Chunk::flatten(chunks, &data);
         let block = &reparse(&rewritten_data).blocks[&inserted];
         assert_eq!(block.block_type, block_type);
@@ -1928,7 +2019,8 @@ fn extension_editor_refuses_an_undecodable_well_known_replacement() {
         .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
         .map(|(n, _)| *n)
         .expect("the hop count is present");
-    let mut editor = ExtensionEditor::new(&bundle, &data);
+    let mut owner = Editor::new(&bundle, &data);
+    let mut editor = ExtensionEditor::new(&mut owner);
     // Well-formed CBOR, but a hop limit of 0 is outside RFC 9171 §4.4.3's
     // 1..=255: the semantic check refuses it, not just the shape check.
     let Err(extension_editor::Error::UndecodableBody {
@@ -1950,7 +2042,7 @@ fn extension_editor_refuses_an_undecodable_well_known_replacement() {
     editor
         .replace(hop, emit(&replacement).0.into())
         .expect("a valid body is accepted");
-    let (_, chunks) = editor.finish().unwrap().expect("an edit materialises");
+    let (_, chunks) = owner.rebuild_bundle().expect("an edit materialises");
     let rewritten_data = Chunk::flatten(chunks, &data);
     let rewritten = reparse(&rewritten_data);
     let original = &bundle.blocks[&hop];
@@ -2744,4 +2836,155 @@ fn a_removed_bibs_target_reads_its_current_coverage() {
 
     let removed = finish(ok(reused().remove_block(hop)));
     assert!(!removed.blocks.contains_key(&hop), "the hop count is gone");
+}
+
+// === StagedView: reading an editor's staged edits =======================
+
+// The body a reader yields for `block_number`, or the state that says why
+// there is none.
+fn body<'a>(reader: &'a dyn Reader<'a>, block_number: u64) -> Option<Result<Vec<u8>, String>> {
+    let (_, availability) = reader.block(block_number)?;
+    Some(match availability {
+        Availability::Available(payload) => Ok(payload.as_ref().to_vec()),
+        other => Err(format!("{other:?}")),
+    })
+}
+
+// The snapshot reads the edits staged when it was taken — an insert, an
+// update and a removal over kept wire blocks — and none made after it.
+#[test]
+fn staged_view_reads_the_edits_staged_when_taken() {
+    let (bundle, data, ext) = make_bundle_with_extension();
+    let mut owner = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(201)))
+        .with_data(b"inserted".as_slice().into())
+        .rebuild();
+    let inserted = *owner
+        .staged_view()
+        .expect("a view")
+        .bundle()
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::Unrecognised(201))
+        .expect("the insert is in the view")
+        .0;
+    owner = ok(owner.update_block(ext))
+        .with_data(b"updated".as_slice().into())
+        .rebuild();
+    let view = owner.staged_view().expect("a view");
+
+    // A later edit leaves the snapshot alone.
+    owner = ok(owner.remove_block(inserted));
+    owner = ok(owner.remove_block(ext));
+    assert!(
+        !owner
+            .staged_view()
+            .expect("a view")
+            .bundle()
+            .blocks
+            .contains_key(&ext),
+        "the editor has moved on past the snapshot"
+    );
+
+    let keys = key::KeySet::EMPTY;
+    let reader = view.reader(&keys);
+    for reader in [&view as &dyn Reader, &reader as &dyn Reader] {
+        assert_eq!(body(reader, inserted), Some(Ok(b"inserted".to_vec())));
+        assert_eq!(body(reader, ext), Some(Ok(b"updated".to_vec())));
+        assert_eq!(
+            body(reader, 1),
+            Some(Ok(b"Hello".to_vec())),
+            "the kept payload"
+        );
+    }
+
+    // A removal: the block is gone from the view.
+    let view = ok(Editor::new(&bundle, &data).remove_block(ext))
+        .staged_view()
+        .expect("a view");
+    assert!(!view.bundle().blocks.contains_key(&ext));
+    assert_eq!(body(&view, ext), None);
+}
+
+// A kept BCB-covered block decrypts through the view's reader with the key,
+// and reads as no-key without it.
+#[test]
+fn staged_view_decrypts_a_kept_covered_block() {
+    let (bundle, data, ext) = make_bundle_with_extension();
+    let enc_key = aes_key();
+    let (encrypted, encrypted_bytes) = encrypt(&bundle, &data, ext, &enc_key);
+    let editor = Editor::new(&encrypted, &encrypted_bytes);
+    let view = editor.staged_view().expect("a view");
+
+    let keys = key::KeySet::new(vec![enc_key]);
+    assert_eq!(
+        body(&view.reader(&keys), ext),
+        Some(Ok(b"ext-data".to_vec()))
+    );
+    assert_eq!(
+        body(&view.reader(&key::KeySet::EMPTY), ext),
+        Some(Err("NoKey".to_string()))
+    );
+}
+
+// A staged block can be ciphertext: removing a target of a shared encrypted
+// BIB re-encrypts the BIB in the editor. The view's reader decrypts it,
+// under the operation set the BCB carries as staged, rather than serving
+// the staged bytes as plaintext.
+#[test]
+fn staged_view_decrypts_a_staged_reencrypted_bib() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let context = signer::Context::HMAC_SHA2(shared(false));
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(1, context.clone(), "ipn:2.1".parse().unwrap(), &sign_key)
+        .map_err(|(_, e)| e)
+        .expect("sign the payload")
+        .sign_block(hop, context, "ipn:2.1".parse().unwrap(), &sign_key)
+        .map_err(|(_, e)| e)
+        .expect("sign the hop count")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+    let bib = *signed
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::BlockIntegrity))
+        .expect("the shared BIB is present")
+        .0;
+    let enc_key = aes_key();
+    let (encrypted, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
+    let keys = key::KeySet::new(vec![enc_key]);
+
+    let (editor, _) = Editor::new(&encrypted, &encrypted_bytes)
+        .remove_blocks(HashSet::from([hop]), &keys)
+        .map_err(|(_, e)| e)
+        .expect("remove the hop count");
+    let view = editor.staged_view().expect("a view");
+    assert!(
+        view.bundle().blocks[&bib].bcb.is_some(),
+        "the shrunk BIB stays encrypted"
+    );
+
+    let plaintext = body(&view.reader(&keys), bib)
+        .expect("the BIB is in the view")
+        .expect("the staged ciphertext decrypts");
+    let opset = parse_exact::<bib::OperationSet>(&plaintext).expect("an operation set");
+    assert_eq!(
+        opset.operations().keys().copied().collect::<HashSet<_>>(),
+        HashSet::from([1]),
+        "the BIB keeps the payload's operation alone"
+    );
 }
