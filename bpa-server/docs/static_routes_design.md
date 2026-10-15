@@ -90,7 +90,7 @@ Parse errors in the routes file don't crash the server. When `watch` is enabled:
 
 ## Future Work
 
-- **RoutingAgent trait**: When the BPA defines a `RoutingAgent` trait, static routes will be refactored into a standalone package implementing that trait. This will enable cleaner separation and potential for multiple routing agents.
+- **Standalone package**: Static routes implement the BPA's `RoutingAgent` trait (`StaticRoutesAgent`) but are embedded in bpa-server; moving them into a standalone package would give cleaner separation.
 
 - **Include directive**: Support `include /path/to/other/routes` for modular configuration.
 
@@ -100,8 +100,8 @@ Parse errors in the routes file don't crash the server. When `watch` is enabled:
 
 ### With hardy-bpa
 
-Routes are added/removed via `bpa.add_route()` and `bpa.remove_route()`. The BPA's RIB combines these with routes from other sources (CLA peer discovery, future routing protocols).
+The agent registers with the BPA as a `RoutingAgent` under its `protocol_id` and adds and removes routes through the `RoutingSink` it receives on registration. The BPA's RIB combines these with routes from other sources (CLA peer discovery, other routing agents such as hardy-tvr).
 
 ### With hardy-bpa-server
 
-Currently embedded in bpa-server. Configuration is loaded from the server's config file. The file watcher task runs under the server's task tracker.
+Currently embedded in bpa-server. Configuration is loaded from the server's config file. The file watcher task runs on the agent's own task pool, which is shut down when the agent is unregistered.

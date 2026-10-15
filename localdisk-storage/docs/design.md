@@ -50,7 +50,7 @@ Writes follow a careful protocol to ensure crash safety:
 
 This protocol means bundles are either fully present or fully absent. A crash during step 1 leaves a `.tmp` file that recovery will clean up. A crash after step 3 leaves a complete bundle.
 
-The `fsync` operations have performance cost. Configuration allows disabling them for deployments where the underlying storage provides its own durability guarantees (e.g., battery-backed RAID controllers, ZFS with synchronous writes).
+The `fsync` operations have performance cost. Configuration allows disabling them for deployments where the underlying storage provides its own durability guarantees (e.g., battery-backed RAID controllers, ZFS with synchronous writes). With `fsync` disabled, `save` currently skips the temporary file too and writes the final path directly, so a crash can leave a partial file under its final name. Nothing references it, because metadata is inserted only after `save` returns, and recovery discards it as unparseable. The storage leg's streamed write keeps the temporary-file protocol in both modes.
 
 ### Memory-Mapped Loading
 

@@ -18,3 +18,7 @@ The code fix landed on `fix/concurrent-delivery-stalls` (commit `3bfe063d`): dis
 
 - A regression test: deliver a valid BIBE bundle while dispatch is guaranteed to fail (e.g. before the CLA sink registration), then assert the outer bundle is parked rather than deleted, and that it re-delivers once dispatch can succeed. (The generic dispatcher park/re-deliver path is covered by `bpa/tests/pipeline.rs::dispatcher_handles_on_deliver_err`; this test pins the BIBE-specific arm split.)
 - Preserve the permanent-vs-transient split through the back-port: only transient dispatch failures may park the outer bundle; permanent decapsulation failures must not.
+
+## A refused decapsulation is not counted
+
+`DecapService` (`src/service.rs`) answers an inner bundle the BPA refuses with a `warn!` and nothing more, where tcpclv4 counts its own refusals (`tcpclv4.transfers.dispatch_refused`). bibe has no `metrics` dependency yet; adding one brings a `bibe.decap.refused` counter beside the `warn!`.

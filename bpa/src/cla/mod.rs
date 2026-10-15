@@ -27,6 +27,10 @@ pub enum Error {
 
     /// The bundle stream ended before its final segment: the producer went
     /// away mid-bundle and the partial bytes are discarded.
+    ///
+    /// Returned from [`Cla::forward`], it reports a transfer cancelled
+    /// before completion: the bundle was not forwarded, and is valid to
+    /// retry, so the BPA re-enters dispatch for it at once.
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
@@ -225,8 +229,8 @@ pub enum TransferOutcome {
 /// registers with `ClaInit::default()`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClaInit {
-    /// The address type this CLA handles, if any: the BPA registers the
-    /// CLA as the handler for addresses of this type.
+    /// The address type this CLA handles, if any. The BPA records it
+    /// against the CLA, but no lookup consults the record.
     pub address_type: Option<ClaAddressType>,
 
     /// The CLA's lane count: its honest parallelism, the number of
@@ -396,6 +400,13 @@ pub trait Cla: Send + Sync {
     /// An implementation that needs the whole bundle in memory buffers the
     /// stream with [`stream::buffer_stream`],
     /// whose errors convert into this module's [`enum@Error`] via `?`.
+    ///
+    /// An `Err` reports a transfer that did not complete.
+    /// [`Error::StreamCancelled`] re-enters the bundle into dispatch at once,
+    /// so a CLA that cancels every attempt is offered the bundle again until
+    /// it expires. Any other error parks the bundle until the next routing or
+    /// link event: a failure that may be deterministic is never retried
+    /// inline.
     async fn forward(
         &self,
         lane: Option<u32>,
@@ -481,10 +492,10 @@ pub trait Sink: Send + Sync {
     ///
     /// The `node_ids` slice provides the BPA-layer identifiers for the peer:
     /// - An **empty slice** means the CLA has discovered a link-layer adjacency but does not yet
-    ///   know the remote node's EID (a "Neighbour"). The BPA will record the address but will not
-    ///   install a routing entry until the EID is resolved (e.g., via BP-ARP).
-    /// - A **non-empty slice** means the CLA knows one or more EIDs for the peer (a "Peer").
-    ///   Multi-homed nodes may have multiple EIDs at the same CL address.
+    ///   know the remote node's EID (a "Neighbour"). The BPA records the adjacency but installs no
+    ///   routing entry, and no interface yet supplies the EID later, so a neighbour stays unroutable.
+    /// - A **non-empty slice** means the CLA knows one or more EIDs for the peer (a "Peer"). A node
+    ///   known under several EIDs (an `ipn` and a `dtn` one, say) lists them all at its CL address.
     ///
     /// The BPA will update its routing information accordingly.
     async fn add_peer(

@@ -50,11 +50,9 @@ Later sources override earlier ones, so environment variables can override file-
 
 ### Configuration File Location
 
-The server searches for configuration in platform-specific locations:
-- Linux (packaged): `/home/<user>/.config/hardy-bpa-server/hardy-bpa-server.yaml`
-- Linux (non-packaged): `/etc/opt/hardy-bpa-server/hardy-bpa-server.yaml`
-- macOS: `~/Library/Application Support/com.dtn.Hardy.hardy-bpa-server/hardy-bpa-server.yaml`
-- Windows: `%APPDATA%\Hardy\hardy-bpa-server\config\hardy-bpa-server.yaml`
+The server searches for configuration in a platform-specific location:
+- Unix (Linux and macOS): `/etc/hardy/bpa`, with the file extension naming the format (e.g., `/etc/hardy/bpa.yaml`)
+- Windows: `%LOCALAPPDATA%\hardy\bpa`, falling back to the executable's directory
 
 Command line `-c` or `HARDY_BPA_SERVER_CONFIG_FILE` environment variable override the default location.
 
@@ -70,7 +68,7 @@ storage:
     type: localdisk  # the default; or "memory", "s3"
 ```
 
-Each backend type supports its own configuration options. When no storage is configured, the server defaults to SQLite metadata and local-disk bundle storage (falling back to memory only when built without those features). The memory backends must be selected explicitly, are useful for testing, and warn at startup that contents do not survive a restart.
+Each backend type supports its own configuration options. When no storage is configured, the server defaults to SQLite metadata and local-disk bundle storage; a build without those features has no default and refuses to start until the backends are configured explicitly. The memory backends must be selected explicitly, are useful for testing, and warn at startup that contents do not survive a restart.
 
 ## Feature Flags
 
@@ -79,11 +77,12 @@ Cargo features control which components are compiled:
 - **grpc** - Include gRPC server for remote CLA/service connections
 - **sqlite-storage** - SQLite metadata storage backend
 - **localdisk-storage** - Filesystem bundle storage backend
+- **postgres-storage** - PostgreSQL metadata storage backend
+- **s3-storage** - S3 bundle storage backend
 - **tcpclv4** - Inline TCPCLv4 CLA (no separate process needed)
 - **file-cla** - File-based CLA for testing and air-gapped transfers
 - **echo** - Built-in echo service for testing
 - **otel** - OpenTelemetry observability integration
-- **packaged-installation** - Adjusts default configuration paths for system package installations (e.g., `/etc/hardy-bpa-server/` instead of `/etc/opt/hardy-bpa-server/` on Linux)
 
 A minimal deployment might use only in-memory storage. A full deployment might include all features for production operation.
 
@@ -94,6 +93,7 @@ When the `grpc` feature is enabled, the server hosts gRPC services defined in ha
 - **Application** service for user applications
 - **Service** service for system services
 - **Cla** service for convergence layer adaptors
+- **Routing** service for routing agents
 
 Remote CLAs and services connect to these endpoints. The gRPC module translates between protobuf messages and BPA trait calls.
 
@@ -133,12 +133,12 @@ ipn-legacy-nodes:
   - "ipn:200.1"  # Specific endpoint
 ```
 
-This enables interoperability with older BPv6-era implementations that expect the legacy IPN format. A bundle carrying a BPSec operation that covers the primary block, as its target or through its scope (RFC 9173's default scope includes it, and an encrypted BIB counts whatever its scope, since its ciphertext hides it), cannot be re-encoded without breaking that operation, so it is deleted at a matching next hop, not re-routed, with a deletion status report giving "Unexpected security operation" if the bundle requests one and status reports are enabled. That is a misconfiguration of the system as a whole, since such a sender and a route through a legacy peer cannot both hold (RFC 9172 §7.1).
+This enables interoperability with implementations that support only RFC 9171's two-element IPN encoding (RFC 9758 §7.2). A bundle carrying a BPSec operation that covers the primary block, as its target or through its scope (RFC 9173's default scope includes it, and an encrypted BIB counts whatever its scope, since its ciphertext hides it), cannot be re-encoded without breaking that operation, so it is deleted at a matching next hop, not re-routed, with a deletion status report giving "Unexpected security operation" if the bundle requests one and status reports are enabled. That is a misconfiguration of the system as a whole, since such a sender and a route through a legacy peer cannot both hold (RFC 9172 §7.1).
 
 ## Command Line Options
 
 - `-h, --help` - Display help
-- `-v, --version` - Display version
+- `-V, --version` - Display version
 - `-c, --config FILE` - Use specified configuration file
 - `-u, --upgrade-store` - Upgrade storage format on startup
 - `-r, --recover-store` - Attempt recovery of damaged storage records
