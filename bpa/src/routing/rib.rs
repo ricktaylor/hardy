@@ -25,7 +25,7 @@ use super::{
     Error, Result, RoutingAgent, TableId,
     action::{Action, InternalAction, RouteAction},
     agent::sink::Sink,
-    table::{Entry, LookupResult, RouteTable},
+    table::{Entry, LookupResult, RouteTable, Trail},
 };
 use crate::{
     Arc, HashMap, HashSet,
@@ -303,7 +303,7 @@ impl Rib {
         let result = table.find_recurse(
             key.lookup_eid(&bundle.primary().destination),
             true,
-            &mut HashSet::new(),
+            &mut Trail::new(),
         )?;
 
         let previous;
@@ -311,7 +311,7 @@ impl Rib {
             previous = bundle
                 .previous_node()
                 .unwrap_or_else(|| bundle.id().source.clone());
-            table.find_recurse(&previous, false, &mut HashSet::new())?
+            table.find_recurse(&previous, false, &mut Trail::new())?
         } else {
             result
         };

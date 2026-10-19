@@ -2,6 +2,7 @@ use core::cmp::Ordering;
 
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
+use smallvec::SmallVec;
 use tracing::trace;
 
 #[cfg(feature = "instrument")]
@@ -190,11 +191,11 @@ impl RouteTable {
         &'a self,
         to: &'a Eid,
         reflect: bool,
-        trail: &mut HashSet<&'a Eid>,
+        trail: &mut Trail<'a>,
     ) -> Option<LookupResult<'a>> {
         trace!("Looking for route for {to}");
 
-        let mut peers: Vec<(u32, &'a Eid)> = Vec::new();
+        let mut peers: PeerVec<'a> = SmallVec::new();
         for entries in self.routes.values() {
             for (pattern, actions) in entries {
                 if pattern.matches(to) {
@@ -211,13 +212,14 @@ impl RouteTable {
                                 }
                             }
                             Action::Route(RouteAction::Via(via)) => {
-                                if !trail.insert(to) {
+                                if trail.contains(&to) {
                                     trace!("Skipping recursive route for {to}");
                                     continue;
                                 }
+                                trail.push(to);
 
                                 let sub_result = self.find_recurse(via, reflect, trail);
-                                trail.remove(&to);
+                                trail.pop();
 
                                 // Carry each peer's resolved next-hop up unchanged: it is the
                                 // adjacent neighbour EID recorded at the Forward base case, which
@@ -255,7 +257,7 @@ impl RouteTable {
                             let (peer, next_hop) = peers.remove(0);
                             return Some(LookupResult::Forward(peer, next_hop));
                         }
-                        _ => return Some(LookupResult::ForwardEcmp(peers)),
+                        _ => return Some(LookupResult::ForwardEcmp(peers.into_vec())),
                     }
                 }
             }
@@ -264,7 +266,7 @@ impl RouteTable {
     }
 
     pub(super) fn find_peers(&self, to: &Eid) -> Option<HashSet<u32>> {
-        match self.find_recurse(to, false, &mut HashSet::new()) {
+        match self.find_recurse(to, false, &mut Trail::new()) {
             Some(LookupResult::Forward(peer, _)) => Some([peer].into()),
             Some(LookupResult::ForwardEcmp(peers)) => {
                 Some(peers.into_iter().map(|(peer, _)| peer).collect())
@@ -289,7 +291,17 @@ impl RouteTable {
     }
 }
 
-fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
+/// Cycle-detection trail for the recursive via walk. Via chains are short,
+/// so the inline capacity keeps the common lookup allocation-free; it is used
+/// only as a set (membership, push on descent, pop on return).
+pub(super) type Trail<'a> = SmallVec<[&'a Eid; 4]>;
+
+/// Candidate next-hop peers accumulated during a lookup. The non-ECMP case
+/// resolves to zero or one peer, which the inline capacity holds without
+/// allocating.
+type PeerVec<'a> = SmallVec<[(u32, &'a Eid); 2]>;
+
+fn sorted_insert<'a>(peers: &mut PeerVec<'a>, peer: u32, next_hop: &'a Eid) {
     if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
         peers.insert(idx, (peer, next_hop));
     }
@@ -501,14 +513,14 @@ mod tests {
         // ipn:0.2.5 matches both routes; the union's matching member is the
         // most specific pattern in the table and must win.
         let to: Eid = "ipn:0.2.5".parse().unwrap();
-        match table.find_recurse(&to, false, &mut HashSet::new()) {
+        match table.find_recurse(&to, false, &mut Trail::new()) {
             Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),
             other => panic!("unexpected lookup result: {other:?}"),
         }
 
         // The union's broad member routes independently.
         let elsewhere: Eid = "ipn:7.7.7".parse().unwrap();
-        match table.find_recurse(&elsewhere, false, &mut HashSet::new()) {
+        match table.find_recurse(&elsewhere, false, &mut Trail::new()) {
             Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),
             other => panic!("unexpected lookup result: {other:?}"),
         }
@@ -517,10 +529,10 @@ mod tests {
         assert!(table.remove(&union, &union_entry, 10));
         assert!(
             table
-                .find_recurse(&elsewhere, false, &mut HashSet::new())
+                .find_recurse(&elsewhere, false, &mut Trail::new())
                 .is_none()
         );
-        match table.find_recurse(&to, false, &mut HashSet::new()) {
+        match table.find_recurse(&to, false, &mut Trail::new()) {
             Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 2),
             other => panic!("unexpected lookup result: {other:?}"),
         }
