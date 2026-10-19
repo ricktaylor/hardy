@@ -25,7 +25,7 @@ use hardy_bpv7::{
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 pub mod receipt;
@@ -222,14 +222,19 @@ impl Rewriter for CustodyReceipt {
             None => None,
         };
 
-        // The payload block's data exactly as held: an encrypted payload is
-        // hashed as its ciphertext, which this reader would decrypt, so it is
-        // left unsigned rather than hashed as plaintext.
+        // The payload block's data exactly as held. A receipt binds a
+        // BCB-covered payload's ciphertext, but a Rewriter sees block bodies
+        // only through the decrypting reader (plaintext with a key, no bytes
+        // without one), so such a bundle is left unsigned, said at info level
+        // because it is a policy outcome an operator may not expect.
         let Some(payload_block) = bundle.blocks.get(&1) else {
             return;
         };
         if payload_block.bcb.is_some() {
-            debug!("payload is BCB-covered; not signing");
+            info!(
+                bundle = %id.source,
+                "Custody Receipt Block: not signing, the payload is BCB-covered and the filter cannot read its ciphertext"
+            );
             return;
         }
         let payload_hash: [u8; 32] = match reader.block(1) {

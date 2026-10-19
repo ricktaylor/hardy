@@ -32,5 +32,8 @@ serde = { version = "1", features = ["derive"], optional = true }
 [dev-dependencies]
 hardy-bpa = { version = "0.2", path = "../bpa" }
 hardy-bpv7 = { version = "0.6", path = "../bpv7" }
+flume = "0.12"
+hardy-async = { version = "0.2", path = "../async" }
 hex-literal = "1"
 rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
