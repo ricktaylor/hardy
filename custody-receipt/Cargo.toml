@@ -1,0 +1,36 @@
+[package]
+name = "hardy-custody-receipt"
+description = "An Egress Rewriter that appends signed custody receipts to the Custody Receipt Block (experimental block type 224)"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+keywords = ["dtn", "bpv7", "bundle-protocol", "custody", "cose"]
+categories = ["network-programming"]
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+hardy-bpa = { version = "0.2", path = "../bpa", default-features = false, features = ["std"] }
+hardy-bpv7 = { version = "0.6", path = "../bpv7", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+sha2 = { version = "0.10", default-features = false }
+thiserror = "2"
+tracing = { version = "0.1", default-features = false }
+zeroize = "1"
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+hardy-bpa = { version = "0.2", path = "../bpa" }
+hardy-bpv7 = { version = "0.6", path = "../bpv7" }
+hex-literal = "1"
+rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
