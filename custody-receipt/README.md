@@ -7,7 +7,7 @@ A receipt is an untagged COSE_Sign1 (RFC 9052) with EdDSA over Ed25519, whose pa
 ## Scope
 
 - Edits only block 224, through the BPA's scoped `ExtensionEditor`. The payload, the primary block and every other block are never modified.
-- Reads the payload only to hash the bytes held. A BCB-covered payload is left unsigned, since the filter's reader would yield plaintext rather than the bytes on the wire.
+- Reads the payload only to hash the bytes held. A BCB-covered payload is left unsigned, with an info-level log line: a receipt binds the payload bytes as held (the ciphertext), and a Rewriter reads block bodies only through the decrypting reader, which yields plaintext with a key and no bytes without one.
 - Copies earlier receipts byte for byte, and refuses (leaves the bundle as it is) a block holding version 1 receipts, mixed versions, malformed data, or 64 receipts already.
 - The previous hop is the Previous Node block when present, else the CLA's ingress peer, else, for a bundle sourced at this node, its source.
 - Administrative records are not signed. A block under BPSec coverage is not edited (the editor refuses it).

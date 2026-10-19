@@ -2142,6 +2142,8 @@ name = "hardy-custody-receipt"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "flume",
+ "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
  "hex-literal",
@@ -2149,6 +2151,7 @@ dependencies = [
  "serde",
  "sha2 0.10.9",
  "thiserror",
+ "tokio",
  "tracing",
  "zeroize",
 ]
