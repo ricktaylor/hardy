@@ -1,8 +1,9 @@
 //! Scoped extension-block editing: insert/replace/remove of *extension*
 //! blocks only, with every owner privilege either absent or refused.
 //!
-//! [`ExtensionEditor`] wraps an [`Editor`] it never exposes. Some owner
-//! privileges are absent by construction — there are no primary-field
+//! [`ExtensionEditor`] is a handle on an owner's [`Editor`]: it edits
+//! through a borrow it never exposes, and the owner rebuilds the bundle once
+//! the handle is gone. Some owner privileges are absent by construction — there are no primary-field
 //! setters and no way to add or manage a BIB or BCB — and the target gates
 //! refuse the rest at call time with a typed [`Error`](enum@Error): the
 //! primary and payload blocks, the reserved block types, and security
@@ -17,7 +18,7 @@
 //! extension block, so every gate above still holds.
 //!
 //! An edit that would make a malformed bundle is refused at call time
-//! instead of failing at [`finish`](ExtensionEditor::finish) or at the
+//! instead of failing at the owner's rebuild or at the
 //! receiver's decoders. What the structural parser rejects — a
 //! `report_on_failure` flag the bundle forbids, an unrecognised CRC type —
 //! is refused with the parser's own error. Previous Node, Bundle Age, or
@@ -30,10 +31,12 @@
 //! without a clock, hop limits, and how a receiver treats blocks it does
 //! not support.
 //!
-//! Edits accumulate in memory; nothing is materialised until
-//! [`finish`](ExtensionEditor::finish).
+//! Edits accumulate in the owner's editor; nothing is materialised until
+//! the owner rebuilds. Several handles can edit one owner's editor in turn,
+//! each seeing the coverage the edits before it left, and the owner's own
+//! edits can come before and after them.
 
-use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box};
 
 use hardy_cbor::decode::parse_exact;
 use thiserror::Error;
@@ -42,10 +45,9 @@ use thiserror::Error;
 use crate::{
     Error as Bpv7Error,
     block::{BibCoverage, Flags, Type},
-    bundle::Bundle,
     bundle_age::BundleAge,
     crc::{CrcType, Error as CrcError},
-    editor::{Chunk, Editor, Error as EditorError},
+    editor::{Editor, Error as EditorError},
     eid::Eid,
     hop_info::HopInfo,
 };
@@ -100,28 +102,26 @@ pub enum Error {
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// An extension-block editor over a parsed bundle and its wire bytes.
+/// A scoped extension-block editing handle on an owner's [`Editor`].
 ///
-/// See the [module docs](self) for the scope contract. Constructed
-/// directly from the parse products; edits are in-memory until
-/// [`finish`](Self::finish) materialises them.
-pub struct ExtensionEditor<'a> {
-    // Consuming-builder inner editor: taken and replaced around each
-    // operation. `None` only transiently inside an operation.
-    editor: Option<Editor<'a>>,
+/// See the [module docs](self) for the scope contract. The edits go into
+/// the owner's editor, which the owner rebuilds once the handle is gone.
+pub struct ExtensionEditor<'e, 'a> {
+    editor: &'e mut Editor<'a>,
     edited: bool,
     // The primary block is out of scope, so its verdict is fixed at
     // construction.
     report_on_failure_forbidden: bool,
 }
 
-impl<'a> ExtensionEditor<'a> {
-    /// Builds an editor over the bundle and its resident wire bytes.
-    pub fn new(original: &'a Bundle, source_data: &'a [u8]) -> Self {
+impl<'e, 'a> ExtensionEditor<'e, 'a> {
+    /// Builds a handle on `editor`, whose staged edits it starts from.
+    pub fn new(editor: &'e mut Editor<'a>) -> Self {
+        let report_on_failure_forbidden = editor.current_primary().forbids_report_on_failure();
         Self {
-            editor: Some(Editor::new(original, source_data)),
+            editor,
             edited: false,
-            report_on_failure_forbidden: original.primary.forbids_report_on_failure(),
+            report_on_failure_forbidden,
         }
     }
 
@@ -169,28 +169,22 @@ impl<'a> ExtensionEditor<'a> {
         }
         check_body(block_type, &data)?;
 
-        let editor = self
+        let block_number = self
             .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.push_block(block_type) {
-            Ok(builder) => {
-                let block_number = builder.block_number();
-                self.editor = Some(
-                    builder
+            .edit_with(|editor| match editor.push_block(block_type) {
+                Ok(builder) => {
+                    let block_number = builder.block_number();
+                    let editor = builder
                         .with_flags(flags)
                         .with_crc_type(crc_type)
                         .with_data(Cow::Owned(data.into_vec()))
-                        .rebuild(),
-                );
-                self.edited = true;
-                Ok(block_number)
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
-        }
+                        .rebuild();
+                    (editor, Ok(block_number))
+                }
+                Err((editor, e)) => (editor, Err(e)),
+            })?;
+        self.edited = true;
+        Ok(block_number)
     }
 
     /// Replaces an extension block's block-specific data, keeping its flags
@@ -208,21 +202,16 @@ impl<'a> ExtensionEditor<'a> {
         let block_type = self.check_target(block_number)?;
         check_body(block_type, &data)?;
 
-        let editor = self
-            .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.update_block(block_number) {
-            Ok(builder) => {
-                self.editor = Some(builder.with_data(Cow::Owned(data.into_vec())).rebuild());
-                self.edited = true;
-                Ok(())
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
-        }
+        self.editor
+            .edit_with(|editor| match editor.update_block(block_number) {
+                Ok(builder) => (
+                    builder.with_data(Cow::Owned(data.into_vec())).rebuild(),
+                    Ok(()),
+                ),
+                Err((editor, e)) => (editor, Err(e)),
+            })?;
+        self.edited = true;
+        Ok(())
     }
 
     /// Removes an extension block.
@@ -236,65 +225,46 @@ impl<'a> ExtensionEditor<'a> {
     pub fn remove(&mut self, block_number: u64) -> Result<()> {
         self.check_target(block_number)?;
 
-        let editor = self
-            .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.remove_block(block_number) {
-            Ok(editor) => {
-                self.editor = Some(editor);
-                self.edited = true;
-                Ok(())
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
-        }
+        self.editor
+            .edit_with(|editor| match editor.remove_block(block_number) {
+                Ok(editor) => (editor, Ok(())),
+                Err((editor, e)) => (editor, Err(e)),
+            })?;
+        self.edited = true;
+        Ok(())
     }
 
     // The scoped refusals for an edit target, checked against the editor's
-    // current view — so a block inserted by this editor is a valid target,
-    // and a block already removed is not. Returns the target's type.
+    // current view — so a block inserted by an edit before this one is a
+    // valid target, and a block already removed is not — and against its
+    // current coverage, which an owner edit before the handle may have
+    // changed. Returns the target's type.
     fn check_target(&self, block_number: u64) -> Result<Type> {
         if block_number <= 1 {
             return Err(Error::ReservedBlock(block_number));
         }
-        let editor = self
-            .editor
-            .as_ref()
-            .expect("the editor is present between operations");
-        let Some((block, _)) = editor.block(block_number) else {
+        let Some((block, _)) = self.editor.block(block_number) else {
             return Err(Error::NoSuchBlock(block_number));
         };
         if matches!(block.block_type, Type::BlockIntegrity | Type::BlockSecurity) {
             return Err(Error::ReservedType(block.block_type));
         }
+        let (bib, bcb) = self
+            .editor
+            .current_coverage(block_number)
+            .ok_or(Error::NoSuchBlock(block_number))?;
         // `Maybe` (undecryptable BIBs of unknown coverage) refuses
         // conservatively: coverage cannot be proven absent.
-        if !matches!(block.bib, BibCoverage::None) || block.bcb.is_some() {
+        if !matches!(bib, BibCoverage::None) || bcb.is_some() {
             return Err(Error::Covered(block_number));
         }
         Ok(block.block_type)
     }
 
-    /// Whether any operation has been applied since construction.
+    /// Whether this handle has applied any edit. A refused edit is not one.
+    #[must_use]
     pub fn is_modified(&self) -> bool {
         self.edited
-    }
-
-    /// Materialises the accumulated edits: `None` when nothing was edited,
-    /// otherwise the rebuilt structural bundle and the chunks that assemble
-    /// the rewritten wire form.
-    pub fn finish(self) -> Result<Option<(Bundle, Vec<Chunk>)>> {
-        if !self.edited {
-            return Ok(None);
-        }
-        self.editor
-            .expect("the editor is present between operations")
-            .rebuild_bundle()
-            .map(Some)
-            .map_err(Error::Editor)
     }
 }
 
