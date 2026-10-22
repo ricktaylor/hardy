@@ -410,11 +410,106 @@ impl<'a> Editor<'a> {
             .get_or_insert_with(|| self.original.primary.clone())
     }
 
+    /// The primary block as the staged edits leave it.
+    pub(crate) fn current_primary(&self) -> &primary_block::PrimaryBlock {
+        self.primary.as_ref().unwrap_or(&self.original.primary)
+    }
+
+    /// Runs one consuming edit on an editor held by mutable reference, so a
+    /// scoped handle (`ExtensionEditor`) can edit through a borrow of its
+    /// owner's editor. `f` hands the editor back on success and refusal
+    /// alike. Meanwhile `self` holds a placeholder over the same bundle with
+    /// empty maps, which do not allocate; it is observed only if `f` panics
+    /// and the panic unwinds.
+    pub(crate) fn edit_with<R>(&mut self, f: impl FnOnce(Self) -> (Self, R)) -> R {
+        let placeholder = Self {
+            original: self.original,
+            source_data: self.source_data,
+            primary: None,
+            blocks: HashMap::new(),
+            bib_overrides: HashMap::new(),
+            bcb_overrides: HashMap::new(),
+        };
+        let (editor, result) = f(core::mem::replace(self, placeholder));
+        *self = editor;
+        result
+    }
+
+    /// A snapshot of the bundle as the staged edits leave it, for reading
+    /// while the editor goes on editing: later edits do not show in it.
+    ///
+    /// The snapshot copies the block headers, with their current BIB and BCB
+    /// coverage, and the staged blocks' data, and decodes the BCB operation
+    /// sets as staged. The kept blocks' bodies stay in the source bytes, so
+    /// the copy is header-sized.
+    ///
+    /// # Errors
+    ///
+    /// A BCB whose body is not resident, or does not decode as an operation
+    /// set, or a staged primary block that does not encode.
+    pub fn staged_view(&self) -> Result<StagedView<'a>, Error> {
+        let mut blocks = HashMap::with_capacity(self.blocks.len());
+        let mut staged = HashMap::new();
+        for (&block_number, template) in &self.blocks {
+            let header = match template {
+                BlockTemplate::Keep(_) => self
+                    .original
+                    .blocks
+                    .get(&block_number)
+                    .ok_or(Error::from(error::Error::Altered))?,
+                BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
+                    staged.insert(block_number, template.data.clone());
+                    &template.block
+                }
+            };
+            let mut header = header.clone();
+            if let Some((bib, bcb)) = self.current_coverage(block_number) {
+                header.bib = bib;
+                header.bcb = bcb;
+            }
+            blocks.insert(block_number, header);
+        }
+        // A primary staged through the `with_*` setters has no template;
+        // its current bytes are emitted, so a read never sees the original.
+        if let Some(primary) = &self.primary {
+            staged.insert(0, Some(Cow::Owned(primary.emit()?)));
+        }
+
+        let mut bcb_ops = HashMap::new();
+        for (&block_number, header) in &blocks {
+            if header.block_type != block::Type::BlockSecurity {
+                continue;
+            }
+            let body = match staged.get(&block_number) {
+                Some(data) => data.as_deref(),
+                None => header.payload(self.source_data),
+            }
+            .ok_or(Error::from(error::Error::Altered))?;
+            bcb_ops.insert(
+                block_number,
+                parse_exact::<bpsec::bcb::OperationSet>(body).map_err(Error::from)?,
+            );
+        }
+
+        Ok(StagedView {
+            bundle: bundle::Bundle {
+                primary: self.current_primary().clone(),
+                blocks,
+            },
+            staged,
+            bcb_ops,
+            source_data: self.source_data,
+        })
+    }
+
     /// A block's current BIB and BCB coverage, or `None` if the bundle no
     /// longer holds it. An earlier edit's strip records the new coverage in
     /// the overrides and leaves the block's stamps stale: the BIB or BCB they
     /// name may be gone, and its number reused by an unrelated block.
-    fn current_coverage(&self, block_number: u64) -> Option<(block::BibCoverage, Option<u64>)> {
+    pub(crate) fn current_coverage(
+        &self,
+        block_number: u64,
+    ) -> Option<(block::BibCoverage, Option<u64>)> {
         let (block, _) = self.block(block_number)?;
         Some((
             self.bib_overrides
@@ -1453,6 +1548,79 @@ impl<'a> BlockBuilder<'a> {
         );
 
         self.editor
+    }
+}
+
+/// A snapshot of an [`Editor`]'s staged bundle, taken by
+/// [`Editor::staged_view`]: the bundle as the edits staged so far leave it.
+///
+/// [`bundle`](Self::bundle) lends the current primary and block headers,
+/// and [`reader`](Self::reader) a decrypting reader over the current block
+/// bodies. The snapshot's own [`Reader`] impl reads them without
+/// decryption: a staged block's data, or a kept block's wire bytes.
+pub struct StagedView<'a> {
+    bundle: bundle::Bundle,
+    // The staged blocks' data, keyed by block number; `None` for a staged
+    // block given no data yet.
+    staged: HashMap<u64, Option<Cow<'a, [u8]>>>,
+    bcb_ops: HashMap<u64, bpsec::bcb::OperationSet>,
+    source_data: &'a [u8],
+}
+
+impl<'a> StagedView<'a> {
+    /// The staged bundle: the current primary block and block headers,
+    /// with their current BIB and BCB coverage.
+    ///
+    /// A staged block's `extent` and `data` index no bytes: its body is
+    /// staged, not on the wire. Read block bodies through a reader.
+    #[must_use]
+    pub fn bundle(&self) -> &bundle::Bundle {
+        &self.bundle
+    }
+
+    /// A reader over the staged block bodies, decrypting BCB-covered blocks
+    /// with `keys`.
+    #[must_use]
+    pub fn reader<'r>(
+        &'r self,
+        keys: &'r dyn bpsec::key::KeySource,
+    ) -> bpsec::DecryptingReader<'r> {
+        bpsec::DecryptingReader::over_staged(self, keys)
+    }
+
+    /// The decoded BCB operation sets, keyed by BCB block number.
+    pub(crate) fn bcb_ops(&self) -> &HashMap<u64, bpsec::bcb::OperationSet> {
+        &self.bcb_ops
+    }
+
+    /// The source bytes the kept blocks' extents index.
+    pub(crate) fn source_data(&self) -> &'a [u8] {
+        self.source_data
+    }
+
+    /// A block's plain body: its staged data if the editor staged it, else
+    /// its resident wire bytes. `None` when the body is not available.
+    pub(crate) fn plain_body(&self, block_number: u64, block: &block::Block) -> Option<&[u8]> {
+        match self.staged.get(&block_number) {
+            Some(data) => data.as_deref(),
+            None => block.payload(self.source_data),
+        }
+    }
+}
+
+impl<'a> Reader<'a> for StagedView<'a> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
+        let block = self.bundle.blocks.get(&block_number)?;
+        Some((
+            block,
+            self.plain_body(block_number, block)
+                .map(block::Payload::Borrowed)
+                .map_or(Availability::NotResident, Availability::Available),
+        ))
+    }
+
+    fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
+        self.bundle.blocks.get(&block_number)
     }
 }
 
