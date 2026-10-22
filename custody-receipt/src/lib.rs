@@ -28,9 +28,13 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
+pub mod gossip;
 pub mod receipt;
 
-use crate::receipt::{BundleIdentity, Fields};
+use crate::{
+    gossip::KeyGossip,
+    receipt::{BundleIdentity, Fields},
+};
 
 /// Errors from building a [`CustodyReceipt`] from its configuration.
 #[derive(Debug, Error)]
@@ -84,6 +88,10 @@ pub struct Config {
     /// to draft -01.
     #[cfg_attr(feature = "serde", serde(default))]
     pub chain_and_hops: bool,
+    /// Also carry revocation records in the Key Record Block (type 225):
+    /// learn those that arrive, add the known ones to every forwarded bundle.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub gossip_revocations: bool,
 }
 
 /// The custodian Rewriter.
@@ -92,6 +100,7 @@ pub struct CustodyReceipt {
     key: SigningKey,
     policy: Policy,
     chain_and_hops: bool,
+    gossip_revocations: bool,
 }
 
 // The signing key never reaches `Debug`.
@@ -113,7 +122,15 @@ impl CustodyReceipt {
             key,
             policy,
             chain_and_hops: false,
+            gossip_revocations: false,
         }
+    }
+
+    /// Also gossip revocation records in the Key Record Block ([`gossip`]).
+    #[must_use]
+    pub fn with_gossip_revocations(mut self, on: bool) -> Self {
+        self.gossip_revocations = on;
+        self
     }
 
     /// Also sign receipt keys 8 (hop count) and 9 (digest of the earlier receipts).
@@ -143,7 +160,8 @@ impl CustodyReceipt {
             SigningKey::from_bytes(&seed),
             config.policy,
         )
-        .with_chain_and_hops(config.chain_and_hops))
+        .with_chain_and_hops(config.chain_and_hops)
+        .with_gossip_revocations(config.gossip_revocations))
     }
 
     /// The public key verifiers pin for this custodian.
@@ -161,6 +179,9 @@ impl CustodyReceipt {
     /// A filter pack registering this custodian at the Egress hook.
     pub fn filter_pack(self) -> FilterPack {
         let mut pack = FilterPack::new("custody-receipt");
+        if self.gossip_revocations {
+            pack.egress_rewriter("gossip", KeyGossip::default());
+        }
         pack.egress_rewriter("stamp", self);
         pack
     }

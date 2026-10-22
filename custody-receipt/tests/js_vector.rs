@@ -75,7 +75,9 @@ fn receipt_with_hop_count_and_chain_matches_the_js_reference() {
     let key = SigningKey::from_bytes(&SEED);
     let fields = Fields {
         hop_count: Some((3, 4)),
-        chain: Some(hex!("76be8b528d0075f7aae98d6fa57a6d3c83ae480a8469e668d7b0af968995ac71")),
+        chain: Some(hex!(
+            "76be8b528d0075f7aae98d6fa57a6d3c83ae480a8469e668d7b0af968995ac71"
+        )),
         ..fields(None, None)
     };
     assert_eq!(receipt::sign(&key, &fields.encode()), CHAIN_AND_HOPS);

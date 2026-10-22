@@ -103,8 +103,16 @@ impl Fields<'_> {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(160);
-        let optional = [self.subject.is_some(), self.hop_count.is_some(), self.chain.is_some()];
-        head(&mut out, 5, 6 + optional.iter().filter(|x| **x).count() as u64);
+        let optional = [
+            self.subject.is_some(),
+            self.hop_count.is_some(),
+            self.chain.is_some(),
+        ];
+        head(
+            &mut out,
+            5,
+            6 + optional.iter().filter(|x| **x).count() as u64,
+        );
         head(&mut out, 0, 1);
         text(&mut out, self.prev_hop);
         head(&mut out, 0, 2);
@@ -254,6 +262,27 @@ pub fn append(data: &[u8], receipt: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// The payload bytes of one encoded COSE_Sign1, without checking its signature.
+pub(crate) fn payload_of(item: &[u8]) -> Option<&[u8]> {
+    let mut cursor = Cursor::new(item);
+    if cursor.head().ok()? != (4, 4) {
+        return None;
+    }
+    cursor.byte_string().ok()?;
+    if cursor.head().ok()?.0 != 5 {
+        return None;
+    }
+    cursor.backtrack_and_skip().ok()?;
+    let payload = cursor.byte_string().ok()?;
+    cursor.byte_string().ok()?;
+    cursor.is_empty().then_some(payload)
+}
+
+/// Writes a CBOR array head of `len` items.
+pub(crate) fn array_head(out: &mut Vec<u8>, len: u64) {
+    head(out, 4, len);
+}
+
 // The COSE Sig_structure: ["Signature1", protected, external_aad (empty), payload].
 fn to_be_signed(protected: &[u8], payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 24);
@@ -296,14 +325,14 @@ fn text(out: &mut Vec<u8>, s: &str) {
 
 // A reader over definite-length CBOR, enough to find item boundaries and to
 // read the byte strings of a COSE_Sign1.
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     data: &'a [u8],
     offset: usize,
     last_head: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             offset: 0,
@@ -335,7 +364,7 @@ impl<'a> Cursor<'a> {
 
     // Reads one head: (major type, argument). Indefinite lengths and the
     // reserved additional-information values are refused.
-    fn head(&mut self) -> Result<(u8, u64)> {
+    pub(crate) fn head(&mut self) -> Result<(u8, u64)> {
         self.last_head = self.offset;
         let initial = self.take(1)?[0];
         let (major, info) = (initial >> 5, initial & 0x1f);
