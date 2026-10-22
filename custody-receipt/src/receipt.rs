@@ -89,6 +89,12 @@ pub struct Fields<'a> {
     pub forwarded_at: u64,
     /// Key 7: an optional application identifier.
     pub subject: Option<&'a str>,
+    /// Key 8: the RFC 9171 Hop Count as received and as released, so a
+    /// verifier can size an unsigned stretch between two custodians.
+    pub hop_count: Option<(u64, u64)>,
+    /// Key 9: SHA-256 of the CBOR array of the receipts already in the block,
+    /// which commits this receipt to every earlier one.
+    pub chain: Option<[u8; 32]>,
 }
 
 impl Fields<'_> {
@@ -97,7 +103,8 @@ impl Fields<'_> {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(160);
-        head(&mut out, 5, if self.subject.is_some() { 7 } else { 6 });
+        let optional = [self.subject.is_some(), self.hop_count.is_some(), self.chain.is_some()];
+        head(&mut out, 5, 6 + optional.iter().filter(|x| **x).count() as u64);
         head(&mut out, 0, 1);
         text(&mut out, self.prev_hop);
         head(&mut out, 0, 2);
@@ -122,6 +129,16 @@ impl Fields<'_> {
         if let Some(subject) = self.subject {
             head(&mut out, 0, 7);
             text(&mut out, subject);
+        }
+        if let Some((received, released)) = self.hop_count {
+            head(&mut out, 0, 8);
+            head(&mut out, 4, 2);
+            head(&mut out, 0, received);
+            head(&mut out, 0, released);
+        }
+        if let Some(chain) = &self.chain {
+            head(&mut out, 0, 9);
+            bytes(&mut out, chain);
         }
         out
     }
@@ -393,6 +410,8 @@ mod tests {
             received_at: 1,
             forwarded_at: 2,
             subject: None,
+            hop_count: None,
+            chain: None,
         };
         sign(key, &fields.encode())
     }

@@ -192,6 +192,8 @@ fn known_prefix(prev_hop: &str, bundle: BundleIdentity<'_>, payload: &[u8]) -> V
         received_at: 0,
         forwarded_at: 0,
         subject: None,
+        hop_count: None,
+        chain: None,
     }
     .encode();
     assert_eq!(
@@ -330,6 +332,8 @@ async fn block_present_signs_only_bundles_already_carrying_block_224() {
         received_at: 1,
         forwarded_at: 2,
         subject: None,
+        hop_count: None,
+        chain: None,
     };
     let earlier = receipt::sign(&earlier_key, &earlier_fields.encode());
     let (_, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
