@@ -79,6 +79,11 @@ pub struct Config {
     /// Which forwarded bundles to sign for.
     #[cfg_attr(feature = "serde", serde(default))]
     pub policy: Policy,
+    /// Add receipt keys 8 (hop count as received and released) and 9 (digest
+    /// of the earlier receipts). Off by default, for receipts byte-identical
+    /// to draft -01.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub chain_and_hops: bool,
 }
 
 /// The custodian Rewriter.
@@ -86,6 +91,7 @@ pub struct CustodyReceipt {
     this_hop: String,
     key: SigningKey,
     policy: Policy,
+    chain_and_hops: bool,
 }
 
 // The signing key never reaches `Debug`.
@@ -106,7 +112,15 @@ impl CustodyReceipt {
             this_hop,
             key,
             policy,
+            chain_and_hops: false,
         }
+    }
+
+    /// Also sign receipt keys 8 (hop count) and 9 (digest of the earlier receipts).
+    #[must_use]
+    pub fn with_chain_and_hops(mut self, on: bool) -> Self {
+        self.chain_and_hops = on;
+        self
     }
 
     /// A custodian built from its configuration section, reading the
@@ -128,7 +142,8 @@ impl CustodyReceipt {
             config.eid.clone(),
             SigningKey::from_bytes(&seed),
             config.policy,
-        ))
+        )
+        .with_chain_and_hops(config.chain_and_hops))
     }
 
     /// The public key verifiers pin for this custodian.
@@ -268,6 +283,25 @@ impl Rewriter for CustodyReceipt {
             }
         };
 
+        // Keys 8 and 9. The cached Hop Count is the value as received; this BPA
+        // releases it plus one (dispatcher::forward). The earlier receipts'
+        // array is exactly the existing block data, copied unchanged on append;
+        // with no block yet it is the empty array, 0x80.
+        let (hop_count, chain) = if self.chain_and_hops {
+            let hops = metadata
+                .extensions
+                .hop_count
+                .as_ref()
+                .map(|h| (h.count, h.count.saturating_add(1)));
+            let earlier: [u8; 32] = match &current {
+                Some((_, data)) => Sha256::digest(data.as_ref()).into(),
+                None => Sha256::digest([0x80u8]).into(),
+            };
+            (hops, Some(earlier))
+        } else {
+            (None, None)
+        };
+
         let (creation_time, sequence_number) = id.timestamp.clone().into_parts();
         let fields = Fields {
             prev_hop: &prev_hop,
@@ -285,6 +319,8 @@ impl Rewriter for CustodyReceipt {
             received_at: DtnTime::saturating_from(metadata.received_at()).millisecs(),
             forwarded_at: DtnTime::now().millisecs(),
             subject: None,
+            hop_count,
+            chain,
         };
         let signed = receipt::sign(&self.key, &fields.encode());
 

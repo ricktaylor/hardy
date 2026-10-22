@@ -32,6 +32,8 @@ fn fields(fragment: Option<(u64, u64)>, subject: Option<&str>) -> Fields<'_> {
         received_at: 845_000_001_000,
         forwarded_at: 845_000_002_000,
         subject,
+        hop_count: None,
+        chain: None,
     }
 }
 
@@ -60,4 +62,21 @@ fn js_receipts_verify_here() {
     );
     let block = receipt::append(&receipt::new_block(WHOLE), FRAGMENT).unwrap();
     assert_eq!(receipt::items(&block), Ok(vec![WHOLE, FRAGMENT]));
+}
+
+// The same receipt with keys 8 (hop count 3 received, 4 released) and 9 (digest of an
+// empty block, SHA-256 of 0x80), from receipt-v2.mjs (`stampBundleV2` with `chain` and `hops`).
+const CHAIN_AND_HOPS: &[u8] = &hex!(
+    "8443a10127a05887a8016769706e3a312e30026869706e3a32302e3003826769706e3a312e31821b000000c4bdecc27b0704582045c9f080c379add8fdc7034775b3f00ed92101bc6fc7288f9d3fb9eabb8c6ab6051b000000c4bdecc5e8061b000000c4bdecc9d00882030409582076be8b528d0075f7aae98d6fa57a6d3c83ae480a8469e668d7b0af968995ac71584050cc4f1533ba7e2d354a0e93f6a32c0bd5d3338fb63abc9ed9b4bf0e1d184c8f9b7d7b2faf2e31dc2dbd5254499dbd5438618cb09021912861321ae1b7acb80f"
+);
+
+#[test]
+fn receipt_with_hop_count_and_chain_matches_the_js_reference() {
+    let key = SigningKey::from_bytes(&SEED);
+    let fields = Fields {
+        hop_count: Some((3, 4)),
+        chain: Some(hex!("76be8b528d0075f7aae98d6fa57a6d3c83ae480a8469e668d7b0af968995ac71")),
+        ..fields(None, None)
+    };
+    assert_eq!(receipt::sign(&key, &fields.encode()), CHAIN_AND_HOPS);
 }
