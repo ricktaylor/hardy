@@ -17,6 +17,7 @@ members = [
     "cbor",
     "cbor/tools",
     "cbor/fuzz",
+    "custody-receipt",
     "echo-service",
     "eid-patterns",
     "eid-patterns/fuzz",
