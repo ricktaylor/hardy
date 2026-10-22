@@ -500,7 +500,7 @@ impl Dispatcher {
                 .filters
                 .run_originate(bundle, head, bcbs, &*self.key_provider)
             {
-                ChainOutcome::Continue(bundle, _) => bundle,
+                ChainOutcome::Continue(bundle) => bundle,
                 ChainOutcome::Drop(_, reason) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     count_originated_dropped(&label);

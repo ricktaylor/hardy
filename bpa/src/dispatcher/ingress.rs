@@ -466,7 +466,7 @@ impl Dispatcher {
                 .filters
                 .run_ingress(bundle, headers, bcb_ops, &*self.key_provider)
             {
-                ChainOutcome::Continue(bundle, _) => bundle,
+                ChainOutcome::Continue(bundle) => bundle,
                 ChainOutcome::Drop(bundle, reason) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     count_received_dropped(&label);

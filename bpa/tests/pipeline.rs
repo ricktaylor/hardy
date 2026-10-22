@@ -680,7 +680,7 @@ struct ScheduledBlockObserver {
 }
 
 impl Rewriter for ScheduledBlockObserver {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         if ctx
             .bundle()
             .blocks
@@ -1167,7 +1167,6 @@ async fn service_streamed_send_rejects_spoofed_source() {
 
 // Sends `data` through the raw service door and returns the bundle the
 // CLA forwards: origination admitted it.
-#[cfg(feature = "rfc9173")]
 async fn originate_raw_and_forward(
     svc: &EchoService,
     forwarded_rx: &flume::Receiver<Bytes>,
@@ -1191,6 +1190,35 @@ async fn originate_raw_and_forward(
     .expect("timeout waiting for the forwarded bundle")
     .expect("channel closed");
     parse(forwarded).expect("the forwarded bundle parses")
+}
+
+/// Origination is not a hop: a bundle this node originates leaves with the
+/// Hop Count it was built with, and the next node makes the first increment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originated_bundle_leaves_with_its_built_hop_count() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let (_, data) = Builder::new(source_eid, "ipn:0.2.1".parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 0,
+        })
+        .with_payload(b"originated".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    let out = originate_raw_and_forward(&svc, &forwarded_rx, Bytes::from(data)).await;
+    let hop_info = out
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::HopCount)
+        .expect("the Hop Count block travels")
+        .extract::<HopInfo>(&out.data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 0, "the originating node does not increment");
+
+    bpa.shutdown().await;
 }
 
 /// Origination admits a Hop Count block this node cannot decrypt, as
@@ -3560,7 +3588,7 @@ struct ExtentCheckRewriter {
 }
 
 impl Rewriter for ExtentCheckRewriter {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let reader = ctx.reader();
         let mut mismatch = self.mismatch.lock().unwrap();
 
@@ -4353,8 +4381,8 @@ async fn deferred_outcome_ignores_wrong_cla() {
 
 // ---------------------------------------------------------------------------
 // Blocking CLA — holds the first forward open until released, then fails it
-// synchronously; every subsequent offer is answered Sent. All offers are
-// recorded.
+// synchronously with its `failure`; every subsequent offer is answered Sent.
+// All offers are recorded.
 // ---------------------------------------------------------------------------
 
 struct BlockingCla {
@@ -4362,10 +4390,16 @@ struct BlockingCla {
     offered_tx: flume::Sender<Id>,
     release_rx: flume::Receiver<()>,
     first: AtomicBool,
+    failure: fn() -> cla::Error,
+}
+
+// A synchronous failure that parks the bundle: any error but a cancellation.
+fn transfer_failed() -> cla::Error {
+    cla::Error::Internal("the transfer failed".into())
 }
 
 impl BlockingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
+    fn new(failure: fn() -> cla::Error) -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
         let (offered_tx, offered_rx) = flume::bounded(16);
         let (release_tx, release_rx) = flume::bounded(1);
         (
@@ -4374,6 +4408,7 @@ impl BlockingCla {
                 offered_tx,
                 release_rx,
                 first: AtomicBool::new(true),
+                failure,
             }),
             offered_rx,
             release_tx,
@@ -4405,7 +4440,7 @@ impl cla::Cla for BlockingCla {
         let _ = self.offered_tx.send_async(bundle_id.clone()).await;
         if self.first.swap(false, Ordering::SeqCst) {
             let _ = self.release_rx.recv_async().await;
-            return Err(cla::Error::StreamCancelled);
+            return Err((self.failure)());
         }
         Ok(cla::ForwardBundleResult::Sent)
     }
@@ -4421,7 +4456,7 @@ async fn forward_failure_park_recheck_redispatches() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false).await;
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
+    let (cla, offered_rx, release_tx) = BlockingCla::new(transfer_failed);
     bpa.register_cla(
         "blocking".to_string(),
         cla.clone(),
@@ -4500,6 +4535,18 @@ async fn forward_failure_park_recheck_redispatches() {
 /// conditional and loses against the terminal claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_never_resurrects_resolved_bundle() {
+    assert_failure_never_resurrects(transfer_failed).await;
+}
+
+/// A cancelled transfer must not resurrect a bundle that was resolved while
+/// it was in flight: the cancellation's re-dispatch re-claims the bundle
+/// conditionally, and loses against the terminal claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_transfer_never_resurrects_resolved_bundle() {
+    assert_failure_never_resurrects(|| cla::Error::StreamCancelled).await;
+}
+
+async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
     let metadata_store = Arc::new(MetadataMemStorage::new(None));
     let bpa = Bpa::builder()
         .metadata_storage(metadata_store.clone())
@@ -4508,7 +4555,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .unwrap();
     bpa.start(false).await;
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
+    let (cla, offered_rx, release_tx) = BlockingCla::new(failure);
     bpa.register_cla(
         "blocking".to_string(),
         cla.clone(),
@@ -4560,15 +4607,16 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     // claim would leave it (delete wins every race).
     metadata_store.tombstone(&id).await.unwrap();
 
-    // Release: the failure's park must lose against the tombstone.
-    // shutdown() is the barrier — it joins the egress pollers, so the park
+    // Release: the failure's claim (the park, or the cancellation's
+    // re-claim) must lose against the tombstone. shutdown() is the barrier —
+    // it joins the egress pollers and the dispatch pool, so the resolution
     // has fully run by the time it returns; no quiet window is involved.
     release_tx.send(()).expect("CLA gone");
     bpa.shutdown().await;
 
     assert!(
         metadata_store.get(&id).await.unwrap().is_none(),
-        "a resolved bundle was resurrected by a failed transfer's park"
+        "a resolved bundle was resurrected by a failed transfer"
     );
     let (live_tx, live_rx) = hardy_async::channel::bounded(4);
     metadata_store.poll_waiting(&live_tx).await.unwrap();
@@ -4577,6 +4625,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         live_rx.recv().await.is_err(),
         "a resolved bundle re-entered Waiting"
     );
+    assert!(offered_rx.is_empty(), "a resolved bundle was offered again");
 }
 
 // ---------------------------------------------------------------------------

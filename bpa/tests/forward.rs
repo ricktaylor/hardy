@@ -19,10 +19,12 @@ use hardy_bpa::{
     services,
     stream::{Receiver, Segment},
 };
-use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
-#[cfg(feature = "rfc9173")]
 use hardy_bpv7::{
     block,
+    eid::{Eid, IpnNodeId, NodeId},
+};
+#[cfg(feature = "rfc9173")]
+use hardy_bpv7::{
     bpsec::{
         DecryptingReader,
         encryptor::{self, Encryptor},
@@ -35,7 +37,6 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     hop_info::HopInfo,
     parse::Parsed,
-    reader::ReaderExt,
     status_report::{AdministrativeRecord, ReasonCode},
 };
 #[cfg(feature = "rfc9173")]
@@ -106,7 +107,8 @@ impl cla::Cla for StreamingCla {
     ) -> cla::Result<cla::ForwardBundleResult> {
         if self.flaky.swap(false, Ordering::SeqCst) {
             let _ = self.events_tx.send(Event::Failed);
-            return Err(cla::Error::StreamCancelled);
+            // Any failure but a cancellation parks the bundle.
+            return Err(cla::Error::Internal("the transfer failed".into()));
         }
         let mut segments = Vec::new();
         loop {
@@ -286,10 +288,11 @@ async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
 // Full-path tests: dispatcher -> forward
 // ---------------------------------------------------------------------------
 
-/// A streaming CLA receives the whole bundle as a single `Final` segment
-/// with an exact `total_len`.
+/// A streaming CLA receives the rebuilt bundle as segments, one per chunk of
+/// the egress rebuild, ending in a `Final`, with an exact `total_len`; the
+/// bundle carries this node's Previous Node and the payload as stored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streaming_cla_receives_single_final_segment() {
+async fn streaming_cla_receives_the_rebuild_as_segments() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false).await;
 
@@ -321,15 +324,44 @@ async fn streaming_cla_receives_single_final_segment() {
     else {
         panic!("Expected the streamed door, got another event");
     };
-    assert_eq!(segments.len(), 1);
-    let Segment::Final(data) = &segments[0] else {
-        panic!("Expected a single Final segment");
-    };
+    let (last, init) = segments.split_last().expect("at least the Final");
+    assert!(
+        !init.is_empty() && init.iter().all(|s| matches!(s, Segment::Next(_))),
+        "the rebuild travels as its chunks, not one flattened buffer"
+    );
+    assert!(matches!(last, Segment::Final(_)));
+    let data: Vec<u8> = segments
+        .iter()
+        .flat_map(|(Segment::Next(data) | Segment::Final(data))| data.iter().copied())
+        .collect();
     assert_eq!(total_len, data.len() as u64);
 
-    let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse forwarded bundle");
+    let parsed = hardy_bpv7::parse::parse(data.into()).expect("Failed to parse forwarded bundle");
     assert_eq!(parsed.bundle.primary.id.source, source_eid);
     assert_eq!(parsed.bundle.primary.destination, dest);
+    let Eid::Ipn { fqnn, .. } = source_eid else {
+        panic!("an ipn application endpoint");
+    };
+    let previous = parsed
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == block::Type::PreviousNode)
+        .expect("the forwarder writes a Previous Node")
+        .extract::<Eid>(&parsed.data)
+        .expect("the previous node decodes")
+        .expect("the previous node is resident");
+    assert_eq!(
+        previous,
+        Eid::Ipn {
+            fqnn,
+            service_number: 0
+        }
+    );
+    assert_eq!(
+        parsed.bundle.blocks[&1].payload(&parsed.data),
+        Some(&b"Hello remote"[..])
+    );
 
     assert!(events_rx.is_empty());
     bpa.shutdown().await;
@@ -1311,31 +1343,72 @@ async fn keyless_relay_forwards_an_encrypted_hop_count_unchanged() {
     assert_eq!(previous, Eid::from(relay_node(1)), "the relay names itself");
 }
 
-// A relay holding the decryption key reads the encrypted Hop Count at
-// ingress, but the bundle carries an encrypted BIB that may cover it, so
-// the per-hop rewrite cannot safely update the block. The increment is a
-// SHOULD, so the block travels unchanged, still counting one hop, rather
-// than holding the bundle back.
+// A relay holding the decryption key decrypts the encrypted BIB at ingress
+// and learns it covers only the payload, so the encrypted Hop Count is
+// provably outside it. Required to update the block, the relay accepts its
+// confidentiality operation and writes the increment in plaintext
+// (forwarder policy); the payload's protection leaves untouched, and the
+// payload still decrypts downstream.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn key_holding_relay_forwards_a_possibly_signed_hop_count_unchanged() {
+async fn key_holding_relay_updates_an_encrypted_hop_count_outside_the_bib() {
     let enc_key = enc_key();
     let received = protected_bundle(&sign_key(), &enc_key, true);
-
-    let out = relay(&received.data, vec![enc_key.clone()]).await;
-
-    assert_protected_blocks_untouched(&received, &out);
-    let hop_count = out
+    let hop = *received
         .bundle
         .blocks
         .iter()
         .find(|(_, b)| b.block_type == block::Type::HopCount)
-        .map(|(n, _)| *n)
-        .expect("the Hop Count block is present");
-    let keys = KeySet::new(vec![enc_key]);
-    let hop_info = DecryptingReader::new(&out.bundle.blocks, &out.data, &out.bcbs, &keys)
-        .extract::<HopInfo>(hop_count)
+        .expect("the Hop Count block is present")
+        .0;
+    assert!(
+        received.bundle.blocks[&hop].bcb.is_some(),
+        "the Hop Count arrives encrypted"
+    );
+
+    let out = relay(&received.data, vec![enc_key.clone()]).await;
+
+    let hop_count = extension(&out, block::Type::HopCount);
+    assert!(
+        hop_count.bcb.is_none(),
+        "the relay writes the Hop Count in plaintext"
+    );
+    let hop_info = hop_count
+        .extract::<HopInfo>(&out.data)
         .expect("the hop count decodes")
-        .expect("the hop count decrypts downstream");
-    assert_eq!(hop_info.count, 1, "the count is not incremented");
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 2, "the relay increments the count");
+    assert!(
+        out.bcbs
+            .values()
+            .all(|opset| !opset.operations().contains_key(&hop)),
+        "no BCB names the Hop Count any more"
+    );
+    let previous = extension(&out, block::Type::PreviousNode)
+        .extract::<Eid>(&out.data)
+        .expect("the previous node decodes")
+        .expect("the previous node is resident");
+    assert_eq!(previous, Eid::from(relay_node(1)), "the relay names itself");
+
+    // The payload's protection is untouched: every security block that
+    // does not name the Hop Count leaves byte-identical.
+    for (n, before) in received.bundle.blocks.iter().filter(|(n, b)| {
+        b.block_type == block::Type::BlockIntegrity
+            || (b.block_type == block::Type::BlockSecurity
+                && !received.bcbs[n].operations().contains_key(&hop))
+    }) {
+        let after = out.bundle.blocks.get(n).expect("the block survives");
+        assert_eq!(after.block_type, before.block_type);
+        assert_eq!(
+            after.payload(&out.data),
+            before.payload(&received.data),
+            "block {n} must leave the relay untouched"
+        );
+    }
+    let keys = KeySet::new(vec![enc_key]);
+    let payload = DecryptingReader::new(&out.bundle.blocks, &out.data, &out.bcbs, &keys)
+        .block_data(1)
+        .expect("the payload decrypts downstream")
+        .expect("the payload is resident");
+    assert_eq!(payload.as_ref(), b"relay me");
 }
