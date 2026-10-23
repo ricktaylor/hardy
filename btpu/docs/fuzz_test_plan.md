@@ -82,22 +82,23 @@ The input is two configuration bytes followed by a sequence of operations on one
 | 2 | A send queue high watermark of 16 bytes, below one segment, so pushes past the watermark are common |
 | 3 | `SegmentCutStrategy::Half` |
 | 4 | An initial transfer number of `u32::MAX - 1`, so transfer numbers roll over |
+| 5, 6 | How PDUs are taken: `next_pdu_into_with`, `next_pdu_write_with` into a slice of the PDU size, or `next_pdu_vectored_with` into a `PduSlices`, gathered |
 
 The second sets the PDU size, 24 to 279 bytes. The sender and receiver windows are both 4.
 
 1. **Calls:** admission is refused only for a full window, a PDU too small to carry a segment, or a bundle needing too many segments; a push past the bundle's length fails with `Overrun`; `finish` succeeds exactly when every byte was pushed and otherwise fails with `Underrun`; cancelling an enqueued bundle that has not completed succeeds.
 
-2. **PDUs:** every PDU is no longer than the PDU size and no shorter than the floor, and exactly the PDU size under fixed-size framing.
+2. **PDUs:** every PDU is no longer than the PDU size and no shorter than the floor, and exactly the PDU size under fixed-size framing. A slice of the PDU size is never refused, and a `PduSlices` holds no empty slice and is as long as the length returned.
 
 3. **Carried lists:** a PDU names each bundle at most once, names only bundles that are live, and marks every Bundle Message and bare frame as completing.
 
-4. **Push readiness:** whenever an open handle is not push-ready, `next_pdu` returns a PDU.
+4. **Push readiness:** whenever an open handle is not push-ready, `next_pdu` returns a PDU, and `poll_push_ready` agrees with `is_push_ready`; a push parked on a handle is woken before the handle becomes push-ready.
 
 5. **Delivery:** the receiver reports only `Received` and `TransferCancelled`; no bundle arrives twice and no cancelled bundle arrives.
 
-At the end the harness pushes and finishes every open bundle and drains the sender. The sender then has nothing pending, no queued bytes, and a free window slot, and the receiver has delivered exactly the bundles that were neither cancelled nor finished short.
+At the end the harness pushes and finishes every open bundle and drains the sender. The sender then has nothing pending, no queued bytes, and no outstanding transfer number, and the receiver has delivered exactly the bundles that were neither cancelled nor finished short.
 
-**Coverage Scope:** segmentation (Section 4), Transfer Cancel (Section 8.4), the window across the roll-over (Section 5), hints on the first segment (Section 7.2), padding and the floor (Sections 8.5, 8.6), bare frames (Section 12.1), and the sender's own policy: pack-time cuts under both strategies, passing over a transfer that cannot supply, the queue bound, and flush.
+**Coverage Scope:** segmentation (Section 4), Transfer Cancel (Section 8.4), the window across the roll-over (Section 5), hints on the first segment (Section 7.2), padding and the floor (Sections 8.5, 8.6), bare frames (Section 12.1), and the sender's own policy: pack-time cuts under both strategies, passing over a transfer that cannot supply, the queue bound, flush, and each way of taking a PDU.
 
 ## 4. Vulnerability Classes & Mitigation
 
@@ -108,7 +109,7 @@ At the end the harness pushes and finishes every open bundle and drains the send
 | **Encode/Decode Disagreement** | The encoder writes a different length or different bytes than the decoder read. | Invariants 1 to 3 of the `decode` target. |
 | **Unbounded Memory Growth** | Tiny segments, repeated hints, or many concurrent transfers hold more state than configured. | The transfer cap, bookkeeping budget, segment limit, retention limit, and shared budget, reached with the configurations above. |
 | **Window Arithmetic** | Transfer numbers near the 2³² roll-over misclassify or never expire. | Accumulated state across arbitrary transfer numbers. |
-| **Scheduling State** | A cancel, overrun, or flush leaves a transfer half-sent, holds a window slot, or leaks queued bytes. | The end state and delivery checks of the `send` target. |
+| **Scheduling State** | A cancel, overrun, or flush leaves a transfer half-sent, holds its transfer number, or leaks queued bytes. | The end state and delivery checks of the `send` target. |
 | **Hook Misbehaviour** | The bundle-extent hook claims zero bytes or more than remains. | The decoder treats the claim as terminal rather than slicing past the PDU. |
 
 ## 5. Execution & Configuration
