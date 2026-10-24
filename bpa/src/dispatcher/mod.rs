@@ -1,6 +1,5 @@
-use core::num::{NonZeroU64, NonZeroUsize};
+use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 
-use futures::join;
 // Aliased: `Bundle` and `Error` in this module are the BPA's own, and
 // bpsec's `Error` would collide with bpv7's.
 use hardy_bpv7::{
@@ -23,6 +22,7 @@ use crate::{
 
 mod admin;
 mod deliver;
+mod delivery_queue;
 mod dispatch;
 mod forward;
 mod ingress;
@@ -53,6 +53,9 @@ pub struct Config {
     pub status_reports: bool,
     pub poll_channel_depth: NonZeroUsize,
     pub processing_pool_size: NonZeroUsize,
+    /// The delivery seat cap: the most deliveries one service keeps in
+    /// flight, whatever lane count it declares.
+    pub delivery_lane_cap: NonZeroU32,
     pub max_bundle_size: Option<NonZeroU64>,
     /// Pre-drain gate: require primary-block integrity protection
     /// (RFC 9171 §4.3.1).
@@ -111,6 +114,7 @@ pub(crate) struct Dispatcher {
     status_reports: bool,
     node_ids: Arc<node_ids::NodeIds>,
     poll_channel_depth: usize,
+    delivery_lane_cap: NonZeroU32,
     max_bundle_size: Option<NonZeroU64>,
     primary_block_integrity: bool,
     ipn_legacy_peers: Vec<EidPattern>,
@@ -160,6 +164,7 @@ impl Dispatcher {
             status_reports: config.status_reports,
             node_ids,
             poll_channel_depth: poll_channel_depth_usize,
+            delivery_lane_cap: config.delivery_lane_cap,
             // Interim: an unset cap takes the private default while ingress
             // buffers in memory; streaming makes "no policy" the default.
             max_bundle_size: Some(
@@ -397,76 +402,6 @@ impl Dispatcher {
                 self.dispatch_bundle(bundle).await
             }
         }
-    }
-
-    /// Create a per-service delivery channel: the hybrid storage channel
-    /// whose target status is `DeliverPending { service }`. The channel's
-    /// creation-time poll recovers any bundle already persisted in that
-    /// status for this EID. The sender becomes the `Service`'s constructor
-    /// argument; the receiver goes to
-    /// [`start_delivery_queue`](Self::start_delivery_queue) once the
-    /// service is published.
-    pub fn new_delivery_channel(
-        &self,
-        service_eid: &Eid,
-    ) -> (
-        storage::channel::Sender,
-        hardy_async::closeable::Receiver<bundle::Bundle>,
-    ) {
-        self.store.channel(
-            bundle::BundleStatus::DeliverPending {
-                service: service_eid.clone(),
-            },
-            self.poll_channel_depth,
-        )
-    }
-
-    /// Spawn a published service's delivery consumer. Mirrors the per-peer
-    /// egress queues (`cla::peers`), including their serialization: one
-    /// delivery at a time per service, in queue order.
-    pub fn start_delivery_queue(
-        self: &Arc<Self>,
-        service: Arc<services::registry::Service>,
-        rx: hardy_async::closeable::Receiver<bundle::Bundle>,
-    ) {
-        let dispatcher = self.clone();
-        hardy_async::spawn!(self.tasks, "delivery_queue_poller", async move {
-            while let Ok(bundle) = rx.recv().await {
-                dispatcher.deliver_bundle(service.clone(), bundle).await;
-            }
-        });
-    }
-
-    pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {
-        let (stream, rx) = hardy_async::channel::bounded::<bundle::Bundle>(self.poll_channel_depth);
-
-        let dispatcher = self.clone();
-
-        join!(
-            async {
-                self.store
-                    .poll_service_waiting(source.clone(), &stream)
-                    .await;
-                drop(stream);
-            },
-            async {
-                while let Ok(mut bundle) = rx.recv().await {
-                    // Claim the bundle out of WaitingForService: overlapping
-                    // polls (a re-registering service) or a concurrent cancel
-                    // must not dispatch — and potentially deliver — the same
-                    // bundle twice
-                    if !dispatcher
-                        .store
-                        .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                        .await
-                    {
-                        debug!("Service-waiting bundle already claimed, skipping");
-                        continue;
-                    }
-                    dispatcher.dispatch_bundle(bundle).await;
-                }
-            }
-        );
     }
 }
 
@@ -708,13 +643,15 @@ pub mod tests {
         storage::{BundleMemStorage, MetadataMemStorage},
     };
 
-    // The test dispatcher's configuration: no status reports, no size cap, no
-    // primary-integrity requirement and no legacy peers.
+    // The test dispatcher's configuration: no status reports, serial
+    // delivery, no size cap, no primary-integrity requirement and no legacy
+    // peers.
     pub fn config() -> Config {
         Config {
             status_reports: false,
             poll_channel_depth: NonZeroUsize::new(16).unwrap(),
             processing_pool_size: NonZeroUsize::new(4).unwrap(),
+            delivery_lane_cap: NonZeroU32::MIN,
             max_bundle_size: None,
             primary_block_integrity: false,
             ipn_legacy_peers: Vec::new(),

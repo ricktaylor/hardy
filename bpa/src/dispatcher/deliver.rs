@@ -215,6 +215,7 @@ mod tests {
     use crate::{
         bpa::{Bpa, BpaRegistration},
         bundle::Origin,
+        cla::Lanes,
         dispatcher::tests::encrypted_payload_to,
         node_ids::NodeIds,
         storage::{
@@ -358,6 +359,7 @@ mod tests {
                 sink: hardy_async::sync::spin::Once::new(),
                 delivered_tx,
             }),
+            Lanes::Serial,
         )
         .await
         .unwrap();

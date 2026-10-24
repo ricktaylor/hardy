@@ -296,6 +296,7 @@ This separation keeps the BPA library independent of specific observability back
 | `poll_channel_depth` | 16 | Capacity of internal dispatch channels before falling back to storage |
 | `processing_pool_size` | 4 × CPU cores | Maximum concurrent dispatch-queue tasks (re-dispatch, polls, and the admin-endpoint and fragment arms of fresh arrivals) |
 | `egress_lane_cap` | 8 | Egress seat cap: the most forwards one peer keeps in flight, bounding the CLA's declared lane count (a CLA declaring none takes the cap); worst-case memory per peer is the cap × `max_bundle_size` |
+| `delivery_lane_cap` | 8 | Delivery seat cap: the most deliveries one service keeps in flight, bounding the lane count it declares at registration (one by default); worst-case memory per service is its lanes × `max_bundle_size` |
 | `lru_capacity`, `max_cached_bundle_size` | 1024 entries, 16 KiB | Bundle-data LRU cache settings (`no_cache` disables the cache) |
 | `node_ids` | — | Local node identifiers (IPN and/or DTN schemes) |
 

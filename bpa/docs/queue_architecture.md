@@ -44,7 +44,7 @@ graph LR
 
 - **Dispatch** (`DispatchPending`, claimed to `Dispatching` on dequeue) — MPSC. Multiple producers (status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes and cancelled transfers, restart); fresh CLA arrivals, reassembled bundles, and local originations execute their gate routing decision on the arriving task, transiting it only for the admin-endpoint and fragment arms. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
 - **Egress** (`ForwardPending { peer, queue }`) — MPSC per peer per policy queue. Any dispatch worker can produce. A single poller per queue feeds the CLA; the peer's pollers share its effective lanes, keeping at most that many forwards in flight (one for a CLA declaring no lanes; otherwise its declaration bounded by the egress seat cap)
-- **Deliver** (`DeliverPending { service }`) — MPSC per registered service, the local analogue of a peer's egress queue. Any dispatch worker can produce. A single consumer per service claims each bundle to `DeliveryAckPending` and offers it via `on_deliver`
+- **Deliver** (`DeliverPending { service }`) — MPSC per registered service, the local analogue of a peer's egress queue. Any dispatch worker can produce. A single consumer per service claims each bundle to `DeliveryAckPending` and offers it via `on_deliver`, keeping up to the service's effective lanes of deliveries in flight (its registration hint, one by default, bounded by the delivery seat cap)
 
 **Gated queues** are structurally the same as active queues — ordered, storage-backed — but their consumer blocks on a side-channel signal. The consumer only polls when the signal indicates conditions have changed and draining may be productive:
 
@@ -61,7 +61,7 @@ graph LR
 
 CLAs are long-lived server processes — they rarely disappear. CLA *peers* come and go frequently (link outages, scheduled contacts, mobile nodes). When a peer disconnects, its `ForwardPending` (queued) and `ForwardAckPending` (in-flight) bundles reset to `Waiting`. The route removal signals `poll_waiting_notify`, sweeping waiting bundles back through dispatch to find alternative routes. If no route exists, bundles remain in `Waiting` (correct DTN behaviour).
 
-All queues in the standalone BPA are MPSC — multiple producers, single receiver. Dispatch concurrency comes from the `BoundedTaskPool` downstream of the single receiver, and egress concurrency from the lanes each egress poller drains into, not from multiple receivers on the queue. MPMC (multiple consumers on a shared queue) is a distributed deployment concern handled by the distributed queue infrastructure (consumer groups), not by the local queue implementation.
+All queues in the standalone BPA are MPSC — multiple producers, single receiver. Dispatch concurrency comes from the `BoundedTaskPool` downstream of the single receiver, and egress and delivery concurrency from the lanes each egress poller and delivery consumer drains into, not from multiple receivers on the queue. MPMC (multiple consumers on a shared queue) is a distributed deployment concern handled by the distributed queue infrastructure (consumer groups), not by the local queue implementation.
 
 ## Design Principles
 

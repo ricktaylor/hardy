@@ -6,7 +6,7 @@ use tracing::instrument;
 use crate::{
     Arc,
     builder::BpaBuilder,
-    cla::{self, Cla, ClaInit, registry::ClaRegistry},
+    cla::{self, Cla, ClaInit, Lanes, registry::ClaRegistry},
     dispatcher::Dispatcher,
     otel_metrics,
     policy::FlowControllerFactory,
@@ -159,29 +159,40 @@ pub trait BpaRegistration: Send + Sync {
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
+    ///
+    /// `lanes` are how many deliveries the service takes in flight at once,
+    /// fixed at registration and bounded by the BPA's delivery seat cap:
+    /// [`Lanes::Serial`] delivers one bundle at a time in queue order.
     async fn register_service(
         &self,
         service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn Service>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
 
     /// Register a high-level Application with payload-only access.
+    ///
+    /// `lanes` are the application's delivery lanes, as for
+    /// [`register_service`](Self::register_service).
     async fn register_application(
         &self,
         service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn services::Application>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
 
     /// Register a low-level Service with a dynamically assigned service ID.
     async fn register_dynamic_service(
         &self,
         service: Arc<dyn Service>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
 
     /// Register a high-level Application with a dynamically assigned service ID.
     async fn register_dynamic_application(
         &self,
         application: Arc<dyn services::Application>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
 
     /// Register a Routing Agent with the BPA.
@@ -303,11 +314,13 @@ impl BpaRegistration for Bpa {
         &self,
         service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn services::Application>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
             .register_application(
                 service_id,
                 application,
+                lanes,
                 &self.node_ids,
                 &self.rib,
                 &self.dispatcher,
@@ -320,11 +333,13 @@ impl BpaRegistration for Bpa {
         &self,
         service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn services::Service>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
             .register_service(
                 service_id,
                 service,
+                lanes,
                 &self.node_ids,
                 &self.rib,
                 &self.dispatcher,
@@ -349,9 +364,10 @@ impl BpaRegistration for Bpa {
     async fn register_dynamic_service(
         &self,
         service: Arc<dyn services::Service>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
-            .register_dynamic_service(service, &self.node_ids, &self.rib, &self.dispatcher)
+            .register_dynamic_service(service, lanes, &self.node_ids, &self.rib, &self.dispatcher)
             .await
     }
 
@@ -359,9 +375,16 @@ impl BpaRegistration for Bpa {
     async fn register_dynamic_application(
         &self,
         application: Arc<dyn services::Application>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
-            .register_dynamic_application(application, &self.node_ids, &self.rib, &self.dispatcher)
+            .register_dynamic_application(
+                application,
+                lanes,
+                &self.node_ids,
+                &self.rib,
+                &self.dispatcher,
+            )
             .await
     }
 
@@ -513,7 +536,7 @@ mod tests {
             .await
             .unwrap();
         let app = Arc::new(SendOnlyApp { sink: Once::new() });
-        bpa.register_application(ServiceId::Ipn(42), app.clone())
+        bpa.register_application(ServiceId::Ipn(42), app.clone(), Lanes::Serial)
             .await
             .unwrap();
         bpa.rib.poll_waiting_idle().await;

@@ -6,7 +6,7 @@ use hardy_eid_patterns::EidPattern;
 use crate::{
     Arc,
     bpa::Bpa,
-    cla::{Cla, ClaInit, registry::ClaRegistryBuilder},
+    cla::{Cla, ClaInit, Lanes, registry::ClaRegistryBuilder},
     dispatcher::{Config as DispatcherConfig, Dispatcher},
     filter::pack::{FilterPack, chains::FilterChains},
     keys::KeyProvider,
@@ -26,6 +26,11 @@ use crate::{
 // bundles.
 const DEFAULT_EGRESS_LANE_CAP: NonZeroU32 = NonZeroU32::new(8).unwrap();
 
+// The default delivery seat cap. Services deliver serially unless they
+// declare more lanes, so this bounds only those that opt in, at the same
+// in-memory cost per lane as the egress cap.
+const DEFAULT_DELIVERY_LANE_CAP: NonZeroU32 = NonZeroU32::new(8).unwrap();
+
 /// Builder for constructing a [`Bpa`] with custom configuration, obtained
 /// from [`Bpa::builder()`](crate::bpa::Bpa::builder).
 ///
@@ -34,8 +39,8 @@ const DEFAULT_EGRESS_LANE_CAP: NonZeroU32 = NonZeroU32::new(8).unwrap();
 /// Call [`build()`](BpaBuilder::build) to produce the final [`Bpa`].
 ///
 /// Defaults: in-memory storage (never cached), status reports disabled,
-/// processing pool = 4x available parallelism, egress lane cap = 8. A
-/// configured bundle storage is cached unless
+/// processing pool = 4x available parallelism, egress and delivery lane
+/// caps = 8. A configured bundle storage is cached unless
 /// [`no_cache()`](BpaBuilder::no_cache) is called.
 #[must_use = "a builder does nothing until build() is called"]
 pub struct BpaBuilder {
@@ -43,6 +48,7 @@ pub struct BpaBuilder {
     poll_channel_depth: NonZeroUsize,
     processing_pool_size: NonZeroUsize,
     egress_lane_cap: NonZeroU32,
+    delivery_lane_cap: NonZeroU32,
     lru_capacity: Option<NonZeroUsize>,
     max_cached_bundle_size: Option<NonZeroUsize>,
     max_bundle_size: Option<NonZeroU64>,
@@ -73,6 +79,7 @@ impl BpaBuilder {
             poll_channel_depth,
             processing_pool_size,
             egress_lane_cap: DEFAULT_EGRESS_LANE_CAP,
+            delivery_lane_cap: DEFAULT_DELIVERY_LANE_CAP,
             key_provider: Arc::new(crate::keys::NullKeyProvider),
             status_reports: false,
             lru_capacity: None,
@@ -129,6 +136,21 @@ impl BpaBuilder {
     /// serially, one bundle at a time in queue order.
     pub fn egress_lane_cap(mut self, v: NonZeroU32) -> Self {
         self.egress_lane_cap = v;
+        self
+    }
+
+    /// Sets the delivery seat cap: the most deliveries one service keeps in
+    /// flight at once. Default: 8.
+    ///
+    /// A service's delivery queue drains into its effective lanes, from the
+    /// [`Lanes`] it declared at registration: one for `Serial`, the
+    /// default; the declared count bounded by this cap for `Limited`; and
+    /// the whole cap for `Unlimited`. Each in-flight delivery holds its
+    /// loaded bundle until the service returns, so the cap bounds that
+    /// memory per service: up to the cap times the largest bundle. A cap of
+    /// 1 delivers serially to every service, whatever it declared.
+    pub fn delivery_lane_cap(mut self, v: NonZeroU32) -> Self {
+        self.delivery_lane_cap = v;
         self
     }
 
@@ -202,15 +224,19 @@ impl BpaBuilder {
     }
 
     /// Register a service to be initialized when the BPA is built.
+    ///
+    /// `lanes` are the service's delivery lanes, fixed at registration.
     pub fn service(
         mut self,
         service: Arc<dyn Service>,
         service_id: hardy_bpv7::eid::Service,
+        lanes: Lanes,
     ) -> Self {
         self.service_registry_builder
             .insert(
                 service_id,
                 services::registry::ServiceImpl::LowLevel(service),
+                lanes,
             )
             .trace_expect("Failed to register service");
         self
@@ -302,6 +328,7 @@ impl BpaBuilder {
                 status_reports: self.status_reports,
                 poll_channel_depth: self.poll_channel_depth,
                 processing_pool_size: self.processing_pool_size,
+                delivery_lane_cap: self.delivery_lane_cap,
                 max_bundle_size: self.max_bundle_size,
                 primary_block_integrity: self.primary_block_integrity,
                 ipn_legacy_peers: self.ipn_legacy_peers,

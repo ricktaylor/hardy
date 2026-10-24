@@ -682,6 +682,7 @@ mod tests {
 
     use super::*;
     use crate::bundle::{Bundle, tests::test_bundle};
+    use crate::cla::Lanes;
     use crate::filter::slots::MetadataDelta;
     use crate::services::registry::ServiceImpl;
     use crate::services::tests::NullService;
@@ -726,6 +727,7 @@ mod tests {
             EidService::Ipn(42),
             eid,
             tx,
+            Lanes::Serial,
         )
     }
 

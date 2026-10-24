@@ -287,31 +287,6 @@ where
         }
     }
 
-    /// Synchronous receive-then-send for the pre-proxy handshake phase.
-    /// Used before `run()` is called, when the caller owns both halves directly.
-    pub async fn recv<F, Fut>(
-        channel_sender: &mut Sender<S>,
-        channel_receiver: &mut tonic::Streaming<R>,
-        f: F,
-    ) -> Result<(), tonic::Status>
-    where
-        F: FnOnce(R::Msg) -> Fut,
-        Fut: Future<Output = Result<S::Msg, tonic::Status>>,
-    {
-        let msg = channel_receiver
-            .message()
-            .await?
-            .ok_or(tonic::Status::unavailable("Server shut down"))?;
-
-        let msg_id = msg.msg_id();
-        let msg = f(msg.msg()?).await?;
-
-        channel_sender
-            .send(S::compose(msg_id, msg))
-            .await
-            .map_err(|e| tonic::Status::unavailable(format!("Server shut down: {e}")))
-    }
-
     /// Start the proxy.
     ///
     /// `side` selects the request-id parity for this end (see [`Side`]); the
@@ -416,6 +391,52 @@ where
             return;
         }
         self.tasks.shutdown().await;
+    }
+}
+
+impl<T, R> RpcProxy<Result<T, tonic::Status>, R>
+where
+    R: RecvMsg + Send + 'static,
+    R::Msg: Send,
+    T: SendMsg + Send + 'static,
+    T::Msg: Send,
+{
+    /// Synchronous receive-then-send for the server's pre-proxy handshake
+    /// phase. Used before `run()` is called, when the caller owns both
+    /// halves directly.
+    ///
+    /// A handshake `f` rejects is relayed to the client as the stream's
+    /// terminal status before the error is returned, so a rejected
+    /// registration reaches the client as its own status rather than as a
+    /// closed stream.
+    pub async fn recv<F, Fut>(
+        channel_sender: &mut Sender<Result<T, tonic::Status>>,
+        channel_receiver: &mut tonic::Streaming<R>,
+        f: F,
+    ) -> Result<(), tonic::Status>
+    where
+        F: FnOnce(R::Msg) -> Fut,
+        Fut: Future<Output = Result<T::Msg, tonic::Status>>,
+    {
+        let msg = channel_receiver
+            .message()
+            .await?
+            .ok_or(tonic::Status::unavailable("Server shut down"))?;
+
+        let msg_id = msg.msg_id();
+        let msg = match f(msg.msg()?).await {
+            Ok(msg) => msg,
+            Err(status) => {
+                // Best effort: a client already gone has no use for it.
+                let _ = channel_sender.send(Err(status.clone())).await;
+                return Err(status);
+            }
+        };
+
+        channel_sender
+            .send(Ok(T::compose(msg_id, msg)))
+            .await
+            .map_err(|e| tonic::Status::unavailable(format!("Server shut down: {e}")))
     }
 }
 

@@ -9,7 +9,10 @@ pub mod sinks;
 use core::num::NonZeroU64;
 use hardy_async::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{cla, routing, services};
+use hardy_bpa::{
+    cla::{self, Lanes},
+    routing, services,
+};
 use hardy_bpv7::eid::NodeId;
 use sinks::*;
 use std::sync::Arc;
@@ -26,6 +29,9 @@ pub struct MockBpa {
     effective_max_bundle_size: Option<NonZeroU64>,
     /// The declarations the last `register_cla` carried.
     pub declared_init: hardy_async::sync::spin::Mutex<Option<cla::ClaInit>>,
+    /// The declarations the last service or application registration
+    /// carried.
+    pub declared_service_lanes: hardy_async::sync::spin::Mutex<Option<Lanes>>,
     pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
     pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::RoutingAgent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
@@ -40,6 +46,7 @@ impl MockBpa {
             node_ids: vec!["ipn:1.0".parse().unwrap()],
             effective_max_bundle_size: None,
             declared_init: hardy_async::sync::spin::Mutex::new(None),
+            declared_service_lanes: hardy_async::sync::spin::Mutex::new(None),
             last_routing_sink: hardy_async::sync::spin::Mutex::new(None),
             last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
             last_cla: hardy_async::sync::spin::Mutex::new(None),
@@ -95,7 +102,9 @@ impl BpaRegistration for MockBpa {
         &self,
         _service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn services::Service>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
+        *self.declared_service_lanes.lock() = Some(lanes);
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockServiceSink::new());
         *self.last_service.lock() = Some(service.clone());
@@ -109,7 +118,9 @@ impl BpaRegistration for MockBpa {
         &self,
         _service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn services::Application>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
+        *self.declared_service_lanes.lock() = Some(lanes);
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockApplicationSink::new());
         *self.last_application.lock() = Some(application.clone());
@@ -122,16 +133,18 @@ impl BpaRegistration for MockBpa {
     async fn register_dynamic_service(
         &self,
         service: Arc<dyn services::Service>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
-        self.register_service(hardy_bpv7::eid::Service::Ipn(0), service)
+        self.register_service(hardy_bpv7::eid::Service::Ipn(0), service, lanes)
             .await
     }
 
     async fn register_dynamic_application(
         &self,
         application: Arc<dyn services::Application>,
+        lanes: Lanes,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
-        self.register_application(hardy_bpv7::eid::Service::Ipn(0), application)
+        self.register_application(hardy_bpv7::eid::Service::Ipn(0), application, lanes)
             .await
     }
 
@@ -260,6 +273,15 @@ pub async fn start_server(
     bpa: &Arc<MockBpa>,
     service_names: &[&str],
 ) -> (String, hardy_async::TaskPool) {
+    start_server_for(bpa.clone(), service_names).await
+}
+
+/// Start a gRPC server with the specified services over any BPA — a real
+/// `Bpa` for end-to-end tests.
+pub async fn start_server_for(
+    bpa: Arc<dyn BpaRegistration>,
+    service_names: &[&str],
+) -> (String, hardy_async::TaskPool) {
     // Port 0: the kernel assigns a free port, so concurrent test binaries
     // never collide. `GrpcServer::new` binds the socket, so connections are
     // accepted (into the backlog) from here on and no listen-wait is needed.
@@ -272,8 +294,8 @@ pub async fn start_server(
         services: service_names.iter().map(|s| s.to_string()).collect(),
     };
 
-    let server = hardy_proto::server::GrpcServer::new(&config, bpa.clone())
-        .expect("Failed to create gRPC server");
+    let server =
+        hardy_proto::server::GrpcServer::new(&config, bpa).expect("Failed to create gRPC server");
     let grpc_addr = format!("http://{}", server.local_addr());
     let cancel = tasks.cancel_token().clone();
     hardy_async::spawn!(tasks, "grpc_server", async move {

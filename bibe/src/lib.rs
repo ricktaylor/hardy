@@ -17,7 +17,10 @@ extern crate alloc;
 
 use alloc::{sync::Arc, vec::Vec};
 
-use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit};
+use hardy_bpa::{
+    bpa::BpaRegistration,
+    cla::{ClaInit, Lanes},
+};
 use hardy_bpv7::eid::{Eid, NodeId, Service};
 use thiserror::Error as ThisError;
 use tracing::debug;
@@ -88,10 +91,10 @@ impl Bibe {
 
         // Register decapsulation service
         if let Some(service_id) = self.decap_service_id.clone() {
-            bpa.register_service(service_id, self.decap_service.clone())
+            bpa.register_service(service_id, self.decap_service.clone(), Lanes::Serial)
                 .await?;
         } else {
-            bpa.register_dynamic_service(self.decap_service.clone())
+            bpa.register_dynamic_service(self.decap_service.clone(), Lanes::Serial)
                 .await?;
         }
 

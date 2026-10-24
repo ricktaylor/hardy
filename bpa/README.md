@@ -36,7 +36,8 @@ The BPA is constructed via `BpaBuilder` and exposes a `BpaRegistration` trait th
 ## Usage
 
 ```rust
-use hardy_bpa::bpa::Bpa;
+use hardy_bpa::bpa::{Bpa, BpaRegistration};
+use hardy_bpa::cla::{ClaInit, Lanes};
 use hardy_bpa::node_ids::NodeIds;
 
 // Build a BPA with default in-memory storage
@@ -50,9 +51,9 @@ let bpa = Bpa::builder()
 bpa.start(false).await;
 
 // Register components via the BpaRegistration trait
-bpa.register_cla(name, cla, policy).await?;
+bpa.register_cla(name, cla, policy, ClaInit::default()).await?;
 bpa.register_routing_agent(name, agent).await?;
-bpa.register_application(service_id, app).await?;
+bpa.register_application(service_id, app, Lanes::Serial).await?;
 
 // Clean shutdown
 bpa.shutdown().await;

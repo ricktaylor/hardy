@@ -32,6 +32,7 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | `app_cli_03_send_payload` | APP-CLI-03 | Send payload via sink, verify round-trip (mock returns error) |
 | `app_cli_04_receive_payload` | APP-CLI-04 | Receive payload (BPA→App) via server-side push |
 | `app_cli_05_status_notify` | APP-CLI-05 | Status notification (BPA→App) via server-side push |
+| `app_cli_06_lanes_round_trip` | APP-CLI-06 | Limited, unlimited and default (serial) delivery lanes reach the BPA intact |
 
 ### Suite 2: CLA Client (`tests/cla_tests.rs`)
 
@@ -52,6 +53,8 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | `svc_cli_02_send_bundle` | SVC-CLI-02 | Send raw bundle via sink, verify error from mock BPA |
 | `svc_cli_03_receive_bundle` | SVC-CLI-03 | Receive bundle (BPA→Service) via server-side push to client |
 | `svc_cli_04_status_notify` | SVC-CLI-04 | Status notification (BPA→Service) via server-side push to client |
+| `svc_cli_07_lanes_round_trip` | SVC-CLI-07 | Limited, unlimited and default (serial) delivery lanes reach the BPA intact |
+| `svc_cli_08_declared_lanes_deliver_concurrently_end_to_end` | SVC-CLI-08 | More declared lanes than CPUs give that many concurrent deliveries over the wire from a real BPA, never more |
 
 ### Suite 4: Routing Agent Client (`tests/routing_agent_tests.rs`)
 
@@ -91,6 +94,11 @@ These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration ha
 | `srv_02_sink_available_after_register` | SRV-02 | `sink()` returns Ok after on_register stores a sink |
 | `srv_03_sink_unavailable_after_unregister` | SRV-03 | `sink()` returns Err(Unavailable) after sink is taken |
 | `srv_04_spin_lock_not_held_across_await` | SRV-04 | Re-entrant on_unregister during unregister() does not deadlock |
+| `registration_errors_map_to_actionable_codes` | SRV-08 | Taken id → AlreadyExists, invalid id/scheme → InvalidArgument, shutdown → Unavailable |
+| `a_taken_service_id_is_already_exists` | SRV-08 | Raw registration of a taken id ends the stream with AlreadyExists on both endpoints |
+| `a_zero_lane_limit_rejects_the_registration` | SRV-07 | Raw `limited: 0` registrations end the stream with InvalidArgument on both endpoints; nothing registers |
+| `proto::cla::tests::{lanes_round_trip_the_wire, absent_lanes_are_serial, a_zero_lane_limit_is_invalid}` | SRV-07 | CLA lanes: every variant round-trips, absent = serial, `limited` 0 = InvalidArgument |
+| `proto::service::tests::{delivery_lanes_round_trip_the_wire, a_zero_delivery_lane_limit_is_invalid}` | SRV-07 | Delivery lanes: every variant round-trips (serial as absence), `limited` 0 = InvalidArgument |
 
 ## 3. Coverage vs Plan
 

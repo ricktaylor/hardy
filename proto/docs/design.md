@@ -165,7 +165,11 @@ async fn register(&self, request: ...) -> Result<Response<RegisterStream>> {
 }
 ```
 
-Session tasks are spawned on the server's `TaskPool`, tracked for graceful shutdown.
+Session tasks are spawned on the server's `TaskPool`, tracked for graceful shutdown. A registration the handshake rejects — an invalid declaration such as a `limited` lane count of 0, or an error from the BPA's `register_*` — is sent to the client as the stream's terminal status, so the client sees the server's own status code rather than a closed stream.
+
+The registration requests carry their component's set-once declarations: `RegisterClaRequest` the CLA's `ClaInit` (address type, lanes, declared receive limit), and the service and application `RegisterRequest` the registration's delivery `Lanes`. Both carry lanes as a `oneof lanes` (`serial`, `limited`, `unlimited`), and an absent one is serial on both: a CLA or service that declares nothing is forwarded or delivered to one bundle at a time. The service client omits a serial declaration rather than sending `serial`, so its request reads the same to a server that predates the field — which ignores a declared one, delivering serially. A rejected service or application registration carries an actionable code: `AlreadyExists` for a taken id, `InvalidArgument` for an id or scheme the node cannot register or an invalid declaration, `Unavailable` for a BPA shutting down.
+
+Each client proxy bounds how many inbound requests it handles at once. A component declaring `Lanes::Limited(n)` — a CLA's forward lanes, a service's delivery lanes — gets room for that many concurrent forwards or deliveries plus the host's available parallelism for its other requests (`proxy::handlers_for_lanes`); everything else, serial or unlimited, gets the available parallelism alone, which caps an unlimited component's concurrent remote calls at its host's core count.
 
 ### Interfaces Not Exposed via gRPC
 

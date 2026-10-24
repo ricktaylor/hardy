@@ -11,7 +11,7 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla,
+    cla::{self, Lanes},
     node_ids::NodeIds,
     services,
     storage::{self, MetadataMemStorage, MetadataStorage},
@@ -169,7 +169,7 @@ async fn unregister_sweeps_queued_deliveries() {
 
     let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
     let (svc_a, delivered_a_rx, started_rx, release_tx) = HoldService::new();
-    bpa.register_service(Service::Ipn(7), svc_a.clone())
+    bpa.register_service(Service::Ipn(7), svc_a.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -257,7 +257,7 @@ async fn unregister_sweeps_queued_deliveries() {
     // A later registration on the same EID recovers the swept bundle.
     let (svc_b, delivered_b_rx, _started_b_rx, release_b_tx) = HoldService::new();
     drop(release_b_tx); // complete deliveries immediately
-    bpa.register_service(Service::Ipn(7), svc_b.clone())
+    bpa.register_service(Service::Ipn(7), svc_b.clone(), Lanes::Serial)
         .await
         .unwrap();
     let delivered = tokio::time::timeout(
@@ -463,7 +463,7 @@ async fn registration_does_not_await_the_post_registration_poll() {
     drop(svc_release_tx); // complete deliveries immediately
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        bpa.register_service(Service::Ipn(9), svc.clone()),
+        bpa.register_service(Service::Ipn(9), svc.clone(), Lanes::Serial),
     )
     .await
     .expect("registration awaited the parked poll — the spawn regressed")

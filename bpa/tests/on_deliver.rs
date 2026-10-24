@@ -9,7 +9,7 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     builder::BpaBuilder,
-    cla,
+    cla::{self, Lanes},
     filter::{RewriteContext, Rewriter, pack::FilterPack},
     node_ids::NodeIds,
     services,
@@ -410,7 +410,7 @@ async fn stream_to_service(builder: BpaBuilder) -> (Id, Vec<Segment>, u64, Bytes
     bpa.start(false).await;
 
     let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -539,7 +539,7 @@ async fn buffered_service_receives_whole_bundle() {
     let (bpa, _inbound) = bpa_with_inbound(b"pong").await;
 
     let (svc, events_rx) = BufferedService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -563,7 +563,7 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     let (bpa, _inbound) = bpa_with_inbound(b"park me").await;
 
     let (failing_svc, failing_rx) = StreamingService::new(true);
-    bpa.register_service(Service::Ipn(7), failing_svc.clone())
+    bpa.register_service(Service::Ipn(7), failing_svc.clone(), Lanes::Serial)
         .await
         .unwrap();
     assert!(matches!(recv_event(&failing_rx, 5).await, Event::Failed));
@@ -577,7 +577,7 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     // dispatch and reaches the new service. The timeout only bounds a
     // regression.
     let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
     let Event::Streamed { segments, .. } = recv_event(&events_rx, 10).await else {
@@ -647,7 +647,7 @@ async fn expiry_mid_delivery_rig(
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = StreamingService::new(false);
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    bpa.register_service(Service::Ipn(9), reports.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -655,7 +655,7 @@ async fn expiry_mid_delivery_rig(
     // WaitingForService — which is also what places it on the reaper's
     // expiry watch list.
     let (failing_svc, failing_rx) = StreamingService::new(true);
-    bpa.register_service(Service::Ipn(7), failing_svc.clone())
+    bpa.register_service(Service::Ipn(7), failing_svc.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -694,7 +694,7 @@ async fn expiry_mid_delivery_rig(
     // the bundle's expiry.
     failing_svc.sink.get().unwrap().unregister().await;
     let (svc, started_rx, release_tx) = HoldingService::new(holding_fails);
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -1038,7 +1038,7 @@ async fn a_service_receives_an_accepted_payload_in_plaintext() {
         .unwrap();
     bpa.start(false).await;
     let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
     let cla = IngressCla::new();

@@ -210,6 +210,11 @@ pub trait Application: Send + Sync {
 
     /// Called when a bundle payload is delivered to this application as a stream of segments.
     ///
+    /// Deliveries arrive one at a time unless the application declared more
+    /// delivery lanes at registration ([`Lanes`](crate::cla::Lanes)); then
+    /// up to that many calls run concurrently and may complete in any
+    /// order.
+    ///
     /// The implementation pulls
     /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
     /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
@@ -389,6 +394,11 @@ pub trait Service: Send + Sync {
     async fn on_unregister(&self);
 
     /// Called when a bundle is delivered to this service as a stream of segments.
+    ///
+    /// Deliveries arrive one at a time unless the service declared more
+    /// delivery lanes at registration ([`Lanes`](crate::cla::Lanes)); then
+    /// up to that many calls run concurrently and may complete in any
+    /// order.
     ///
     /// The stream carries the raw bundle bytes (the service can parse them
     /// if needed); `bundle_id` is the identity of the delivered bundle and

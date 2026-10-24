@@ -221,6 +221,7 @@ pub async fn register_application_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
     service: Arc<dyn hardy_bpa::services::Application>,
+    lanes: Lanes,
 ) -> hardy_bpa::services::Result<eid::Eid> {
     let mut app_client = application_client::ApplicationClient::connect(grpc_addr.clone())
         .await
@@ -257,6 +258,7 @@ pub async fn register_application_service(
                     register_request::ServiceId::Dtn(service_name.into())
                 }
             }),
+            lanes: proto::service::wire_lanes(lanes),
         }),
     )
     .await
@@ -293,7 +295,7 @@ pub async fn register_application_service(
         channel_receiver,
         handler,
         Side::Client,
-        default_handlers(),
+        delivery_handlers(lanes),
     );
 
     // Call on_register()

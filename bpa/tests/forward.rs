@@ -15,7 +15,7 @@ use hardy_bpa::keys::KeyProvider;
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    cla::{self, Cla, ClaInit},
+    cla::{self, Cla, ClaInit, Lanes},
     services::{self, SendOptions},
     stream::{Receiver, Segment},
 };
@@ -346,7 +346,11 @@ async fn streaming_cla_receives_the_rebuild_as_segments() {
 
     let app = SendOnlyApp::new();
     let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(
+            hardy_bpv7::eid::Service::Ipn(42),
+            app.clone(),
+            Lanes::Serial,
+        )
         .await
         .unwrap();
     let dest = originate(&app, b"Hello remote").await;
@@ -429,7 +433,11 @@ async fn buffered_cla_receives_whole_bundle() {
 
     let app = SendOnlyApp::new();
     let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(
+            hardy_bpv7::eid::Service::Ipn(42),
+            app.clone(),
+            Lanes::Serial,
+        )
         .await
         .unwrap();
     let dest = originate(&app, b"Hello adapter").await;
@@ -466,9 +474,13 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
         .unwrap();
 
     let app = SendOnlyApp::new();
-    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
-        .await
-        .unwrap();
+    bpa.register_application(
+        hardy_bpv7::eid::Service::Ipn(42),
+        app.clone(),
+        Lanes::Serial,
+    )
+    .await
+    .unwrap();
     originate(&app, b"Try again").await;
 
     assert!(matches!(recv_event(&events_rx, 5).await, Event::Failed));
@@ -668,7 +680,11 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Rec
 
     let app = SendOnlyApp::new();
     let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(
+            hardy_bpv7::eid::Service::Ipn(42),
+            app.clone(),
+            Lanes::Serial,
+        )
         .await
         .unwrap();
     (bpa, app, events_rx, source_eid)
@@ -984,7 +1000,7 @@ async fn assert_forwarded_legacy(
         previous_node(&forwarded),
         Eid::LegacyIpn {
             fqnn: relay_node(1),
-            service_number: 0,
+            service_number: 0
         },
         "the relay names itself in the two-element form"
     );

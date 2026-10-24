@@ -165,7 +165,7 @@ mod tests {
     use crate::keys::KeyProvider;
     use crate::{
         bpa::{Bpa, BpaRegistration},
-        cla::ClaInit,
+        cla::{ClaInit, Lanes},
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
@@ -716,7 +716,7 @@ mod tests {
                     .expect("Recovered bundle missing from metadata store")
                     .status,
                 bundle::BundleStatus::WaitingForService {
-                    service: service_eid.clone(),
+                    service: service_eid.clone()
                 },
                 "start(true) resolves only after recovery re-parked the delivery"
             );
@@ -730,6 +730,7 @@ mod tests {
                 sink: hardy_async::sync::spin::Once::new(),
                 delivered_tx,
             }),
+            Lanes::Serial,
         )
         .await
         .unwrap();

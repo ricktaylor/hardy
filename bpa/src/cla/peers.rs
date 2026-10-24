@@ -123,6 +123,8 @@ impl Peer {
     // The queue poller's body: each bundle received takes a lane, and its
     // `controller.forward` runs on `forwards` holding the lane. Returns once
     // the queue has closed and drained and every forward has finished.
+    // `peer` only labels the forwards' spans, which exist with `instrument`.
+    #[cfg_attr(not(feature = "instrument"), allow(unused_variables))]
     async fn drain_queue(
         rx: hardy_async::closeable::Receiver<bundle::Bundle>,
         lanes: Semaphore,

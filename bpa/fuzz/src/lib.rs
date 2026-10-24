@@ -7,7 +7,10 @@ mod test;
 
 use arbitrary::Arbitrary;
 use core::num::NonZeroUsize;
-use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit};
+use hardy_bpa::{
+    bpa::BpaRegistration,
+    cla::{ClaInit, Lanes},
+};
 use std::sync::Arc;
 
 #[derive(Arbitrary)]
@@ -108,10 +111,9 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     let bpa = builder.build().await.expect("Failed to build BPA");
 
     bpa.start(cfg_select! {
-        all(feature = "localdisk-storage", feature = "sqlite-storage") => true,
-        _ => false,
-    })
-    .await;
+    all(feature = "localdisk-storage", feature = "sqlite-storage") => true,
+    _ => false})
+        .await;
 
     #[cfg(feature = "file-cla")]
     {
@@ -176,9 +178,13 @@ impl Msg {
                 .expect("Failed to register routing agent");
 
                 let service = Arc::new(service::PipeService::new());
-                bpa.register_application(hardy_bpv7::eid::Service::Ipn(1), service.clone())
-                    .await
-                    .expect("Failed to register service");
+                bpa.register_application(
+                    hardy_bpv7::eid::Service::Ipn(1),
+                    service.clone(),
+                    Lanes::Serial,
+                )
+                .await
+                .expect("Failed to register service");
 
                 // Now pull from the channel
                 while let Ok(msg) = rx.recv_async().await {

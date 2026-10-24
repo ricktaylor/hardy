@@ -5,7 +5,11 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use hardy_bpa::{async_trait, bpa::BpaRegistration, cla};
+use hardy_bpa::{
+    async_trait,
+    bpa::BpaRegistration,
+    cla::{self, Lanes},
+};
 use hardy_bpv7::eid::NodeId;
 
 // A mock CLA Sink that accepts everything and discards it.
@@ -80,6 +84,7 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
         &self,
         _service_id: hardy_bpv7::eid::Service,
         _service: Arc<dyn hardy_bpa::services::Service>,
+        _lanes: Lanes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }
@@ -88,6 +93,7 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
         &self,
         _service_id: hardy_bpv7::eid::Service,
         _application: Arc<dyn hardy_bpa::services::Application>,
+        _lanes: Lanes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }
@@ -95,6 +101,7 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     async fn register_dynamic_service(
         &self,
         _service: Arc<dyn hardy_bpa::services::Service>,
+        _lanes: Lanes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }
@@ -102,6 +109,7 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     async fn register_dynamic_application(
         &self,
         _application: Arc<dyn hardy_bpa::services::Application>,
+        _lanes: Lanes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }

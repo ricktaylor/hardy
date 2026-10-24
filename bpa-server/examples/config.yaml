@@ -41,6 +41,14 @@ grpc:
 # max-bundle-size. 1 forwards serially.
 # egress-lane-cap: 8
 
+# The delivery seat cap: the most deliveries one service keeps in flight at
+# once. A service is delivered to one bundle at a time unless it declares
+# more delivery lanes at registration; this cap bounds what it declares.
+# Each in-flight delivery holds its loaded bundle, so the worst case per
+# service is this cap times max-bundle-size. 1 delivers serially to every
+# service.
+# delivery-lane-cap: 8
+
 storage:
   # --- BPA Bundle Cache ---
   # The maximum number of bundles to hold in the in-memory LRU cache.

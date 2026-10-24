@@ -1,4 +1,4 @@
-//! Application client proxy tests (APP-CLI-01 through APP-CLI-05).
+//! Application client proxy tests (APP-CLI-01 through APP-CLI-06).
 //!
 //! Verify the Application client correctly maps Rust trait calls
 //! to service.proto messages (Application RPC) via the gRPC proxy.
@@ -6,8 +6,10 @@
 mod common;
 
 use common::MockBpa;
+use core::num::NonZeroU32;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::cla::Lanes;
 use hardy_bpa::services::{Application, ApplicationSink, StatusNotify};
 use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;
@@ -83,7 +85,11 @@ async fn app_cli_01_registration_ipn() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(
+            hardy_bpv7::eid::Service::Ipn(42),
+            app.clone(),
+            Lanes::Serial,
+        )
         .await
         .expect("registration should succeed");
 
@@ -108,7 +114,11 @@ async fn app_cli_02_registration_dtn() {
 
     // MockBpa always returns ipn:1.42 regardless of service_id
     let endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Dtn("sensor".into()), app.clone())
+        .register_application(
+            hardy_bpv7::eid::Service::Dtn("sensor".into()),
+            app.clone(),
+            Lanes::Serial,
+        )
         .await
         .expect("registration should succeed");
 
@@ -131,7 +141,11 @@ async fn app_cli_03_send_payload() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(
+            hardy_bpv7::eid::Service::Ipn(42),
+            app.clone(),
+            Lanes::Serial,
+        )
         .await
         .expect("registration should succeed");
 
@@ -163,7 +177,11 @@ async fn app_cli_04_receive_payload() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(
+            hardy_bpv7::eid::Service::Ipn(42),
+            app.clone(),
+            Lanes::Serial,
+        )
         .await
         .expect("registration should succeed");
 
@@ -216,7 +234,11 @@ async fn app_cli_05_status_notify() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(
+            hardy_bpv7::eid::Service::Ipn(42),
+            app.clone(),
+            Lanes::Serial,
+        )
         .await
         .expect("registration should succeed");
 
@@ -253,5 +275,36 @@ async fn app_cli_05_status_notify() {
     // Clean up
     drop(app.take_sink());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    server_tasks.shutdown().await;
+}
+
+// APP-CLI-06: the delivery lanes round-trip the wire on the Application
+// path too, absent declaring serial.
+#[tokio::test]
+async fn app_cli_06_lanes_round_trip() {
+    let bpa = Arc::new(MockBpa::new());
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["application"]).await;
+    let remote_bpa = RemoteBpa::new(grpc_addr);
+
+    for lanes in [
+        Lanes::Limited(NonZeroU32::new(3).unwrap()),
+        Lanes::Unlimited,
+        Lanes::Serial,
+    ] {
+        let app = Arc::new(MockApplication::new());
+        remote_bpa
+            .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone(), lanes)
+            .await
+            .expect("registration should succeed");
+        assert_eq!(
+            *bpa.declared_service_lanes.lock(),
+            Some(lanes),
+            "the BPA should receive the application's declarations intact"
+        );
+        if let Some(sink) = app.take_sink() {
+            sink.unregister().await;
+        }
+    }
+
     server_tasks.shutdown().await;
 }
