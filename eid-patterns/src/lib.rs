@@ -33,6 +33,9 @@ use thiserror::Error;
 use crate::dtn_pattern::DtnPatternItem;
 use crate::ipn_pattern::IpnPatternItem;
 
+mod cbor;
+pub use cbor::PatternDecodeError;
+
 mod ipn_pattern;
 mod parse;
 
