@@ -43,6 +43,7 @@
 | `invalid_log_level_errors` | CFG-04 | Bad log level → error |
 | `zero_pool_size_errors` | CFG-04 | Zero processing pool → error |
 | `zero_poll_channel_depth_errors` | CFG-04 | Zero poll depth → error |
+| `zero_egress_lane_cap_errors` | CFG-04 | Zero egress lane cap → error |
 | `negative_value_errors` | CFG-04 | Negative unsigned → error |
 | `malformed_yaml_errors` | CFG-04 | Invalid YAML → error |
 | `malformed_toml_errors` | CFG-04 | Invalid TOML → error |

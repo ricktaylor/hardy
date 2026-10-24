@@ -269,6 +269,13 @@ pub struct ClaInit {
 
     /// The CLA's lanes: how many transfers to one peer it can usefully
     /// carry in flight at once. Default: [`Lanes::Serial`].
+    ///
+    /// The BPA keeps at most that many forwards in flight to each peer,
+    /// across all of the peer's policy queues, further bounded by its
+    /// egress seat cap
+    /// ([`BpaBuilder::egress_lane_cap`](crate::builder::BpaBuilder::egress_lane_cap)):
+    /// one for `Serial`, the smaller of `n` and the cap for `Limited(n)`,
+    /// and the cap for `Unlimited`.
     pub lanes: Lanes,
 
     /// The CLA's declared receive limit (`None` = no CLA-side limit).
@@ -394,6 +401,12 @@ pub trait Cla: Send + Sync {
     /// [`Lanes::Limited`]. As a safety net, a CLA that declares explicit
     /// lanes but still receives `None` should pick a lane arbitrarily
     /// (e.g. at random) rather than fail the transfer.
+    ///
+    /// Unless the CLA declares [`Lanes::Serial`], forwards to one peer
+    /// overlap: the BPA keeps up to the peer's effective lanes of calls in
+    /// flight (see [`ClaInit::lanes`]), each holding its lane until it
+    /// returns, and they may complete in any order.
+    ///
     /// Mirroring [`Sink::dispatch`] on the egress side, the
     /// implementation pulls [`Segment::Next`] items from `stream` until
     /// [`Segment::Final`] (which may carry empty bytes) completes the

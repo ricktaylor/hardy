@@ -42,6 +42,7 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | `cla_cli_03_forward_bundle` | CLA-CLI-03 | Forward bundle (BPA→CLA) via server-side push to client |
 | `cla_cli_04_add_peer` | CLA-CLI-04 | Add peer via sink round-trip |
 | `cla_cli_05_remove_peer` | CLA-CLI-05 | Remove peer via sink round-trip |
+| `cla_cli_09_declared_lanes_bound_the_client_not_its_cpus` | CLA-CLI-09 | More declared lanes than CPUs: all forwards in flight at the CLA at once |
 
 ### Suite 3: Service Client (`tests/service_tests.rs`)
 

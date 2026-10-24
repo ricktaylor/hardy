@@ -42,6 +42,7 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 extern crate alloc;
 
 mod dispatcher;
+mod lanes;
 mod otel_metrics;
 mod rebuilt_headers;
 

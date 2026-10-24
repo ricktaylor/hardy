@@ -33,6 +33,14 @@ grpc:
 # Default is 4 * number of CPU cores.
 # processing-pool-size: 16
 
+# The egress seat cap: the most forwards one peer keeps in flight at once.
+# A peer's queues drain into the lanes its CLA declares, bounded by this cap:
+# TCPCLv4 declares max-outstanding-transfers lanes, so takes up to the cap;
+# file-cla and BIBE declare none, so forward serially. Each in-flight forward
+# holds its loaded bundle, so the worst case per peer is this cap times
+# max-bundle-size. 1 forwards serially.
+# egress-lane-cap: 8
+
 storage:
   # --- BPA Bundle Cache ---
   # The maximum number of bundles to hold in the in-memory LRU cache.

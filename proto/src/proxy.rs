@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::{
+    num::{NonZeroU32, NonZeroUsize},
+    sync::atomic::{AtomicU32, Ordering},
+};
 use std::collections::HashMap;
 
 use hardy_async::sync::spin::Mutex;
@@ -43,6 +46,25 @@ pub trait ProxyHandler: Send + Sync {
 /// returns immediately (reader is dead, no one to correlate the response).
 type PendingMap<R> =
     Arc<Mutex<Option<HashMap<u32, tokio::sync::oneshot::Sender<Result<R, tonic::Status>>>>>>;
+
+/// The default bound on the inbound requests one proxy handles at once: the
+/// available parallelism, which suits requests that are short or
+/// CPU-bound. A component whose inbound requests are long round trips it
+/// declares as lanes sizes its proxy with [`handlers_for_lanes`] instead.
+pub fn default_handlers() -> NonZeroUsize {
+    hardy_async::available_parallelism()
+}
+
+/// The bound on the inbound requests one proxy handles at once for a
+/// component declaring `lanes` concurrent ones (a service's delivery
+/// lanes, a CLA's forward lanes): enough handlers for that many to be in
+/// flight together, plus [`default_handlers`] more, so the component's
+/// other requests (status notifications, peer events) never queue behind
+/// its lanes. The sum, rather than the larger of the two, keeps that
+/// headroom whatever the lane count.
+pub fn handlers_for_lanes(lanes: NonZeroU32) -> NonZeroUsize {
+    default_handlers().saturating_add(usize::try_from(lanes.get()).unwrap_or(usize::MAX))
+}
 
 /// Writer half: reads from a channel and sends on the gRPC outbound stream.
 ///
@@ -105,6 +127,7 @@ where
         pending: PendingMap<R::Msg>,
         handler: Arc<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
         tasks: hardy_async::TaskPool,
+        handlers: NonZeroUsize,
     ) -> Self {
         Self {
             stream,
@@ -113,7 +136,7 @@ where
             handler,
             tasks,
             permits: Arc::new(tokio::sync::Semaphore::new(
-                hardy_async::available_parallelism().get(),
+                handlers.get().min(tokio::sync::Semaphore::MAX_PERMITS),
             )),
         }
     }
@@ -292,9 +315,13 @@ where
     /// Start the proxy.
     ///
     /// `side` selects the request-id parity for this end (see [`Side`]); the
-    /// two ends of a connection must pass opposite sides. The reader, writer,
-    /// and per-request handlers all run on one task pool. Call `shutdown()` to
-    /// cancel and drain them, or drop the proxy to cancel them.
+    /// two ends of a connection must pass opposite sides. `handlers` bounds
+    /// how many inbound requests are handled at once ([`default_handlers`],
+    /// or [`handlers_for_lanes`] for a component declaring lanes); further
+    /// requests wait for a handler without stalling the reader. The reader,
+    /// writer, and per-request handlers all run on one task pool. Call
+    /// `shutdown()` to cancel and drain them, or drop the proxy to cancel
+    /// them.
     ///
     /// After this call, use `call()` to send messages and await responses.
     pub fn run(
@@ -302,6 +329,7 @@ where
         channel_receiver: tonic::Streaming<R>,
         handler: Box<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
         side: Side,
+        handlers: NonZeroUsize,
     ) -> Self {
         let tasks = hardy_async::TaskPool::new();
         let (write_tx, write_rx) = tokio::sync::mpsc::channel(16);
@@ -318,6 +346,7 @@ where
             pending.clone(),
             Arc::from(handler),
             tasks.clone(),
+            handlers,
         );
         hardy_async::spawn!(tasks, "rpc_proxy_reader", async move { reader.run().await });
 

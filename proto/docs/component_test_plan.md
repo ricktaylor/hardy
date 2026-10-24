@@ -57,6 +57,7 @@ The tests utilize a **Mock Server** approach:
 | **CLA-CLI-03** | **Forward Bundle** | Await `next_message()` | Server injects `ForwardBundleRequest`.<br>Client yields `ClaMsg::ForwardBundle(...)`. | Implemented |
 | **CLA-CLI-04** | **Add Peer** | Call `add_peer(node_id, address)` | Receives `AddPeerRequest`.<br>Replies `AddPeerResponse`. | Implemented |
 | **CLA-CLI-05** | **Remove Peer** | Call `remove_peer(node_id)` | Receives `RemovePeerRequest`.<br>Replies `RemovePeerResponse`. | Implemented |
+| **CLA-CLI-09** | **Declared lanes bound the client** | Register declaring `available_parallelism + 2` lanes; the server pushes that many forwards to a CLA holding each. | Every forward is in flight at the CLA at once: the client proxy's handler bound grows with the declaration, not the host's core count. | Implemented |
 
 ### Suite 3: Service Client Proxy
 

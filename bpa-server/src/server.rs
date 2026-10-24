@@ -163,6 +163,9 @@ impl BpaServer {
         if let Some(pool_size) = config.processing_pool_size {
             builder = builder.processing_pool_size(pool_size);
         }
+        if let Some(cap) = config.egress_lane_cap {
+            builder = builder.egress_lane_cap(cap);
+        }
         if let Some(service_priority) = config.service_priority {
             builder = builder.service_priority(service_priority);
         }

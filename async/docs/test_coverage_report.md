@@ -46,6 +46,12 @@ The `hardy-async` crate has no formal LLRs -- it is internal infrastructure. The
 | `test_bounded_pool_default_uses_available_parallelism` | Default constructor works, spawns and completes a task |
 | `test_bounded_pool_shutdown` | Spawn 4 cancellation-aware tasks, shutdown, verify all completed |
 
+#### Semaphore (`semaphore.rs`) -- 1 test, `#[tokio::test]`
+
+| Test Function | Scope |
+| :--- | :--- |
+| `permits_are_held_until_dropped` | Once every permit is held an acquire waits, and a dropped permit is handed back |
+
 #### sync::Mutex / sync::RwLock (`sync/mod.rs`) -- 9 tests, `#[test]`
 
 | Test Function | Scope |

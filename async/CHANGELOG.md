@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - `signal` feature: gates the `signal` module and enables tokio's signal handling. Implies `tokio`.
+- `Semaphore` and `OwnedSemaphorePermit`: a runtime-agnostic permit budget shared between tasks (over `tokio::sync::Semaphore`), whose clones share one budget; it is never closed, so acquiring cannot fail. The BPA's egress lanes are such a budget, shared by a peer's queue pollers.
 
 ### Changed
 - **BREAKING:** `signal::listen_for_cancel` now requires the `signal` feature; callers must enable it. The `tokio` feature no longer enables tokio's `signal` feature, so builds without `signal` no longer pull in tokio's signal driver and mio.

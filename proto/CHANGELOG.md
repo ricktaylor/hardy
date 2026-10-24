@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `AppReceiveRequest.bundle_id` and `ServiceReceiveRequest.bundle_id` — the delivered bundle's identifier, in the key encoding documented on `SendResponse.bundle_id`. Required: the client SDK fails the delivery without it.
 
 ### Changed
+- A client's proxy sizes its inbound handler pool for the component's declared lanes: a CLA registering with `Lanes::Limited(n)` handles `n` concurrent forwards plus the available parallelism, instead of the available parallelism alone, so a host's core count no longer caps a CLA's declared lanes. A serial or unlimited CLA keeps the core-count bound, an unlimited CLA's ceiling on concurrent remote forwards.
 - **BREAKING:** `GrpcServer::serve` returns `Result<(), Box<dyn Error + Send + Sync>>` (was `Result<(), tonic::transport::Error>`): serving on the pre-bound listener can also fail on runtime registration, not only in transport.
 - **BREAKING:** `RemoteBpa::register_cla` takes the CLA's set-once declarations as a `hardy_bpa::cla::ClaInit` parameter — address type, lane count, and declared receive limit all travel in the registration request — and the client-side relay delivers the negotiated cap to `Cla::on_register` as `Option<NonZeroU64>` (wire absence ↔ `None`).
 - **BREAKING** (`serde` feature): the server `Config` refuses unknown keys at deserialization, so a typo in a consumer's `grpc` config section fails loudly instead of silently leaving the default in force.

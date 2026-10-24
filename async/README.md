@@ -29,6 +29,7 @@ hardy-async provides runtime-agnostic async primitives used by all Hardy crates 
   - `sync::spin::Mutex` / `sync::spin::RwLock` -- spinlock-based locks for O(1) hot-path operations
   - `sync::spin::Once` -- one-time lazy initialisation cell
   - `Notify` -- task notification primitive
+  - `Semaphore` -- a permit budget shared between tasks
 - **Time utilities** -- runtime-agnostic `sleep()` with edge-case handling (negative durations, overflow)
 - **CancellationToken** / **JoinHandle** -- type aliases abstracting runtime-specific primitives
 

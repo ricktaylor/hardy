@@ -287,8 +287,15 @@ async fn run_application_session(
 
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { app: app.clone() });
-    app.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
+    app.proxy.call_once(|| {
+        RpcProxy::run(
+            channel_sender,
+            channel_receiver,
+            handler,
+            Side::Server,
+            default_handlers(),
+        )
+    });
 }
 
 /// Create a new Application gRPC service.

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- The optional `egress-lane-cap` key (positive integer, default 8) sets the BPA's egress seat cap (`BpaBuilder::egress_lane_cap`): the most forwards one peer keeps in flight, bounding the lane count its CLA declares; worst-case memory per peer is the cap × `max-bundle-size`. CLAs that declare no lane limit — TCPCLv4, file-cla, and BIBE among the built-ins — now get up to the cap of concurrent forwards per peer. `1` forwards serially.
+
 ### Changed
 - The `max-bundle-size` config key is a `u64` byte count (was bounded by the platform's pointer width), so a 32-bit node accepts the same configuration file as a 64-bit one; a value beyond the target's addressable bound is clamped by the library. A configured tcpclv4 CLA's transfer MRU is declared to the BPA at registration, so the effective size cap the CLA advertises to peers folds both limits.
 - The `rfc9171-validity` check `primary-block-integrity` is enforced by the BPA itself at the ingress gate (mapped onto `BpaBuilder::primary_block_integrity`) instead of a registered filter, with its key and default unchanged; a rejected bundle is now dropped before its payload is received or stored.

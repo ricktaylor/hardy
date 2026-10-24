@@ -34,6 +34,10 @@ This provides natural backpressure. A component processing a stream of incoming 
 
 The default concurrency limit matches the available CPU parallelism, which is sensible for CPU-bound work but can be overridden for I/O-bound tasks or resource-constrained environments.
 
+## Semaphore
+
+`Semaphore` is a permit budget shared between tasks, each holding a clone: a task holds an `OwnedSemaphorePermit` while it occupies a slot, and dropping the permit hands the slot back. Where `BoundedTaskPool` bounds the tasks one spawner starts, a `Semaphore` bounds work started by several — the BPA's egress lanes are one budget per peer, shared by all of the peer's queue pollers, each taking a permit before it pulls a bundle and moving it into the forward it spawns. It is never closed, so acquiring cannot fail.
+
 ## Spawn Macro
 
 The `spawn!` macro provides a convenient syntax for spawning tasks with optional tracing instrumentation. When the `instrument` feature is enabled, spawned tasks automatically get a span with a `follows_from` relationship to the spawning context.

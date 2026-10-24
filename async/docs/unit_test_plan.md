@@ -34,6 +34,14 @@ This document details the unit test cases for the `hardy-async` module. This cra
 | **Default Parallelism** | Default constructor uses `available_parallelism`. | `bounded_task_pool.rs` | `BoundedTaskPool::default()`, spawn 1 task | Task completes successfully. |
 | **Shutdown Completion** | Spawn 4 cancellation-aware tasks, shutdown, verify all completed. | `bounded_task_pool.rs` | `BoundedTaskPool::new(2)`, spawn 4, `shutdown().await` | All 4 tasks complete; all cancel tokens triggered. |
 
+### 2.2a Semaphore
+
+*Objective: Verify the shared permit budget.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Permits Held Until Dropped** | Hold every permit; a further acquire waits until one is dropped. | `semaphore.rs` | `Semaphore::new(2)`, acquire 2, acquire a third | Third pending; ready once a held permit is dropped. |
+
 ### 2.3 sync::Mutex
 
 *Objective: Verify async-aware mutex semantics (wraps `tokio::sync::Mutex` or `std::sync::Mutex`).*

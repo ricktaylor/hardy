@@ -1,4 +1,4 @@
-use core::num::{NonZeroU64, NonZeroUsize};
+use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::{collections::HashMap, path::PathBuf};
 
 use hardy_async::watcher::WatchMode;
@@ -189,6 +189,12 @@ pub struct Config {
     #[serde(default)]
     pub processing_pool_size: Option<NonZeroUsize>,
 
+    // Egress seat cap: the most forwards one peer keeps in flight,
+    // whatever lane count its CLA declares; absent defers to the BPA
+    // default.
+    #[serde(default)]
+    pub egress_lane_cap: Option<NonZeroU32>,
+
     // Maximum size in bytes of a single reassembled bundle at ingress or
     // origination; absent defers to the BPA default.
     #[serde(default)]
@@ -316,6 +322,7 @@ mod tests {
         assert!(config.status_reports.is_none());
         assert!(config.poll_channel_depth.is_none());
         assert!(config.processing_pool_size.is_none());
+        assert!(config.egress_lane_cap.is_none());
         #[cfg(feature = "grpc")]
         assert!(config.grpc.is_none());
         assert!(config.static_routes.is_none());
@@ -344,6 +351,7 @@ mod tests {
 log-level: debug
 status-reports: true
 poll-channel-depth: 32
+egress-lane-cap: 4
 admin-endpoints:
   - "ipn:42.0"
 "#,
@@ -351,6 +359,7 @@ admin-endpoints:
         assert_eq!(config.log_level, Level::DEBUG);
         assert_eq!(config.status_reports, Some(true));
         assert_eq!(config.poll_channel_depth.map(|v| v.get()), Some(32));
+        assert_eq!(config.egress_lane_cap.map(|v| v.get()), Some(4));
     }
 
     // The per-hop re-encode's peer patterns and the RFC 9171 check switch
@@ -494,6 +503,17 @@ poll-channel-depth = 64
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.yaml");
         std::fs::write(&path, "poll-channel-depth: 0\n").unwrap();
+        let result = Config::load(Some(path));
+        assert!(result.is_err());
+    }
+
+    // Zero value for egress-lane-cap is rejected: a seat always has a lane.
+    #[test]
+    #[serial]
+    fn zero_egress_lane_cap_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
+        std::fs::write(&path, "egress-lane-cap: 0\n").unwrap();
         let result = Config::load(Some(path));
         assert!(result.is_err());
     }

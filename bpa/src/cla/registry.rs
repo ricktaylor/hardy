@@ -200,6 +200,7 @@ impl ClaRegistryBuilder {
         self,
         node_ids: &Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,
+        egress_lane_cap: NonZeroU32,
         rib: &Arc<routing::Rib>,
         store: &Arc<storage::store::Store>,
     ) -> Arc<ClaRegistry> {
@@ -212,6 +213,7 @@ impl ClaRegistryBuilder {
             store: store.clone(),
             peers,
             poll_channel_depth,
+            egress_lane_cap,
             tasks: hardy_async::TaskPool::new(),
         })
     }
@@ -228,6 +230,9 @@ pub struct ClaRegistry {
     store: Arc<storage::store::Store>,
     peers: Arc<peers::PeerTable>,
     poll_channel_depth: usize,
+    // The egress seat cap: the BPA's bound on any one peer's concurrent
+    // forwards, whatever lane count its CLA declares.
+    egress_lane_cap: NonZeroU32,
     tasks: hardy_async::TaskPool,
 }
 
@@ -412,6 +417,7 @@ impl ClaRegistry {
         // holds working peers.
         let peer = peers::Peer::start(
             self.poll_channel_depth,
+            self.egress_lane_cap,
             cla.clone(),
             peer_id,
             cla_addr.clone(),

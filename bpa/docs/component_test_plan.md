@@ -113,6 +113,14 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 | :--- | :--- | :--- | :--- |
 | **INT-BPA-12** | **Streamed origination and ingress** | 1. Originate through `ServiceSink::send` in several segments; drop the producer before `Final`; unregister the service while a send is parked; send a bundle whose source is not the service's endpoint; send a bundle carrying a Hop Count block, and one whose Hop Count this node cannot decrypt.<br>2. Dispatch through `cla::Sink::dispatch` in several segments; unregister the CLA while a stream is parked; drop the producer before `Final`, including after a whole bundle in `Next` and after every byte of an oversized one. | Multi-segment origination and ingress match their whole-buffer forms (origination returns the built bundle's id and forwards it; ingress delivers locally). A producer dropped before `Final` cancels an origination (`StreamCancelled`, nothing enters custody) and is refused at ingress (`Acceptance::Refused`, nothing delivered), even once every byte of the bundle has arrived. Unregistration wakes a parked consumer with `StreamCancelled` at once. The spoofed source is rejected. An originated bundle leaves with the Hop Count it was built with (origination is not a hop), and an undecryptable Hop Count is accepted and forwarded unchanged. |
 
+### Suite H: Lanes
+
+*Objective: a seat keeps up to its effective lanes of hand-offs in flight — the resource's declared lane count bounded by the BPA's seat cap — and a cap of one is serial (`bpa/tests/egress_lanes.rs`).*
+
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-16** | **Egress lanes** | 1. Register a CLA whose `forward` holds until released, declaring no lanes, unlimited lanes, 2 lanes, 5 lanes, or 16 lanes, under the default cap, caps 3, 8 and 3, and the default.<br>2. Queue more bundles than lanes to its peer; release one forward, then all.<br>3. With a cap of 1, release forwards one at a time.<br>4. Bind a two-queue policy alternating its assignments, with 2 lanes declared.<br>5. With every lane busy, remove the peer, then release. | Exactly the effective lanes are in flight: one for a CLA declaring no lanes, min(lanes, cap) for a declared count (8 under the default cap for 16 lanes), and the cap for an unlimited CLA; the next bundle starts as soon as one lane frees, every bundle is offered once, and the in-flight count never exceeds the bound. A cap of 1 forwards one at a time, in queue order. The two queues share the peer's 2 lanes. Removing the peer lets the in-flight forwards run to completion, and the bundles still queued are swept, never offered. |
+
 ## 5. Performance Benchmarks (REQ-13)
 
 *Objective: Verify throughput requirements (>1000 bundles/sec).*
