@@ -96,6 +96,20 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Missing Head** | Detect missing offset 0 fragment. | `src/storage/adu_reassembly.rs` | 1. Frag 2/2 (End) | Result: `None` (Pending) or Log Warning. |
 | **Length Mismatch** | Detect fragments claiming different total lengths. | `src/storage/adu_reassembly.rs` | 1. Frag A (Total=100)<br>2. Frag B (Total=200) | Result: `None` (Drop/Error). |
 
+### 3.5a Dispatcher Logic (Hand-off Claims)
+
+*Objective: Verify that forwarding and delivery claim a queued bundle before loading its data, and that the load resolves what it refuses, in `src/dispatcher/`.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Duplicate Loses Before Loading** | A duplicate copy of a queued bundle, delivered by the at-least-once channel, loses the claim without loading the bundle's data. | `src/dispatcher/forward.rs`, `src/dispatcher/deliver.rs` | A queued bundle offered (the CLA accepts, holding the claim) or delivered; then its duplicate copy | One load, one offer or delivery; the first copy's claim or resolution stands. |
+| **Expired Before the Claim** | An expired queued bundle is dropped before it is claimed or loaded. | `src/dispatcher/forward.rs`, `src/dispatcher/deliver.rs` | An expired `ForwardPending` or `DeliverPending` bundle | No load, no offer or delivery; dropped as `LifetimeExpired`. |
+| **Missing Data After the Claim** | A claimed bundle whose data has gone is dropped from its claim, so the claim never dangles. | `src/dispatcher/forward.rs`, `src/dispatcher/deliver.rs` | A queued bundle whose data was deleted | No offer or delivery; dropped with a `DepletedStorage` deletion report. |
+| **Expired After the Load** | A claimed bundle found expired once its load returns is dropped, data and all, rather than left to the reaper, which defers the claim — whether or not its data is still there. | `src/dispatcher/mod.rs` | An expired `ForwardAckPending` bundle, with its data, and with its data deleted | Dropped with exactly one `LifetimeExpired` report; data deleted. |
+| **Departing Service's Queued Copies** | A delivery consumer whose service has begun unregistering leaves the copies still buffered in its queue: their bundles are the sweep's, or queued again for the next registration. | `src/dispatcher/deliver.rs` | A queued bundle, its registration cancelled | No claim, no load, no delivery; the bundle stays `DeliverPending`. |
+| **Peer Removed During the Load** | A forward whose claim a peer removal sweeps while its data loads makes no offer. | `src/dispatcher/forward.rs` | A queued bundle; both peer sweeps run while its load is held | No offer; the bundle stays `Waiting` for the sweep's poll. |
+| **Swept Claim** | A claim a sweep moved on during the load is left to the sweep: the drop, conditioned on the claimed status, loses. | `src/dispatcher/mod.rs` | A `ForwardAckPending` bundle reset to `Waiting`, its data deleted | Still `Waiting`; no report. |
+
 ### 3.6 Storage Logic (Quotas & Eviction)
 
 *Objective: Verify storage constraints and garbage collection strategies (REQ-7, REQ-13).*

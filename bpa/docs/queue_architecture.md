@@ -134,20 +134,22 @@ Tombstone entries are reaped by the same mechanism: once `creation_timestamp + l
 
 ### Reaper/processing block race
 
-The reaper and a processing block may act on the same bundle concurrently. This race is benign because `BundleStorage` is the ground truth for bundle existence.
+The reaper and a processing block may act on the same bundle concurrently. This race is benign because both act through writes conditioned on the bundle's status: the processing block claims the bundle out of its queue with a conditional swap, and the reaper's drop is a conditional tombstone from the status it read, so exactly one of them resolves the bundle.
 
-A processing block that has dequeued a bundle's metadata calls `BundleStorage::load()` to retrieve the binary data before processing. Under the streaming-pipeline API (`load(storage_name) -> Option<Box<dyn Receiver<Segment>>>` — see [streaming_pipeline_design.md](streaming_pipeline_design.md) §3.1) the data flows through the returned segment stream; if the reaper has already deleted the data, `load()` returns `None` and no stream is opened. The processing block then checks `has_expired()`:
+A processing block that has dequeued a bundle's metadata claims it first, and only then calls `BundleStorage::load()` to retrieve the binary data; a duplicate copy that loses the claim never touches `BundleStorage`. Under the streaming-pipeline API (`load(storage_name) -> Option<Box<dyn Receiver<Segment>>>` — see [streaming_pipeline_design.md](streaming_pipeline_design.md) §3.1) the data flows through the returned segment stream, and `load()` returns `None` when the data is gone. Once the load returns, the processing block checks `has_expired()` before acting on the bundle:
 
-- **Expired** — the reaper got there first and already sent the status report. The processing block silently cleans up the metadata. No duplicate report
-- **Not expired** — genuine storage failure (`DepletedStorage`). The processing block sends a deletion status report with the appropriate reason code
+- **Expired** — dropped as `LifetimeExpired`, with its data. The reaper defers a claimed hand-off, so the processing block resolves the expiry itself; had the reaper got there first, its tombstone would have failed the claim. No duplicate report
+- **Not expired, data missing** — genuine storage failure (`DepletedStorage`). The processing block sends a deletion status report with the appropriate reason code
+
+Both drops are conditional on the claimed status, so where a sweep moved the claimed bundle on during the load (a peer removal resetting `ForwardAckPending` to `Waiting`), the drop loses and the sweep's resolution stands. The hand-off itself is not a status-conditioned write, so a successful load re-checks before it, once the bundle's headers are resident: forwarding confirms the claim still stands and otherwise leaves the bundle to the sweep, and delivery, whose claim the unregister sweep never moves, checks that the service has not begun unregistering and otherwise parks the bundle as `WaitingForService` (a departing registration's consumer also claims none of the copies still buffered in its queue, leaving their bundles to the sweep or to the next registration). This leaves the window between the claim and the hand-off that the claim has always had; it does not close it.
 
 This pattern works because:
 
-- `BundleStorage` is the coordination point — no locks needed, the data is either there or it isn't
-- The reaper owns the status report for expired bundles — processing blocks defer to it
-- Processing blocks already handle `load() → None` in the current code (`load_or_drop`, used by `forward.rs`, `deliver.rs` and `admin.rs`)
+- The status-conditioned writes are the coordination point — no locks needed, the claim and the reaper's tombstone cannot both succeed
+- Whoever wins reports: the reaper for a bundle still queued or parked, the processing block for a bundle it has claimed
+- Processing blocks handle `load() → None` in one place (`load_or_drop`, used by `forward.rs`, `deliver.rs` and `admin.rs`)
 
-In a distributed architecture, the reaper becomes a storage-level maintenance job per storage shard, independent of processing nodes. The same ground-truth coordination applies.
+In a distributed architecture, the reaper becomes a storage-level maintenance job per storage shard, independent of processing nodes. The same status-conditioned coordination applies.
 
 ### Eliminating `New` status
 

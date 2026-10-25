@@ -224,25 +224,36 @@ impl Dispatcher {
         self.tasks.shutdown().await;
     }
 
-    /// Open bundle data as a segment stream, dropping the bundle with
-    /// `DepletedStorage` if the data is missing and the bundle has not yet
-    /// expired. Expired-and-missing bundles are left for the reaper to handle
-    /// (it will drop them with `LifetimeExpired`).
+    /// Open a bundle's data as a segment stream for the caller to act on,
+    /// resolving the bundle instead if it has expired (`LifetimeExpired`) or
+    /// its data is missing (`DepletedStorage`).
+    ///
+    /// This is the last checkpoint before the bundle is acted on, and it
+    /// resolves whatever it refuses rather than leave it to the reaper: the
+    /// hand-off callers have already claimed the bundle (`ForwardAckPending`,
+    /// `DeliveryAckPending`), and the reaper defers those claims, so a bundle
+    /// left to it would leave the claim dangling. The expiry check follows
+    /// the load, which takes real time, so a hand-off never commences for a
+    /// bundle that expired during it. Like every drop, the resolution is
+    /// conditional on the caller's status snapshot: where another resolver
+    /// got there first — the reaper, or a sweep that moved the claimed
+    /// bundle on — its resolution stands, and this one stays silent.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn load_or_drop(
         &self,
         bundle: bundle::Bundle,
     ) -> Option<(bundle::Bundle, Box<dyn Receiver<Segment>>)> {
-        match self.store.load(stored_name(&bundle)).await {
-            Some(stream) => Some((bundle, stream)),
-            None => {
-                if !bundle.has_expired() {
-                    // Bundle data was deleted while queued - not reaped
-                    self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
-                }
-                None
-            }
+        let stream = self.store.load(stored_name(&bundle)).await;
+        if bundle.has_expired() {
+            self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
+            return None;
         }
+        let Some(stream) = stream else {
+            // Deleted while queued, and not by the reaper.
+            self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
+            return None;
+        };
+        Some((bundle, stream))
     }
 
     // Every drop is a terminal resolution, claimed with a conditional
@@ -620,18 +631,21 @@ fn stored_name(bundle: &bundle::Bundle) -> &str {
 // Fixtures shared by the dispatcher's submodule tests.
 #[cfg(test)]
 pub mod tests {
-    use hardy_bpv7::eid::{IpnNodeId, NodeId};
     #[cfg(feature = "rfc9173")]
+    use hardy_bpv7::bpsec::{
+        encryptor::{Context, Encryptor},
+        key::{EncAlgorithm, Key, Operation, Type},
+    };
     use hardy_bpv7::{
-        bpsec::{
-            encryptor::{Context, Encryptor},
-            key::{EncAlgorithm, Key, Operation, Type},
-        },
         builder::Builder,
         bundle::Flags,
         creation_timestamp::CreationTimestamp,
+        dtn_time::DtnTime,
+        eid::{IpnNodeId, NodeId},
         parse::parse,
+        status_report::AdministrativeRecord,
     };
+    use portable_atomic::{AtomicUsize, Ordering};
     #[cfg(feature = "rfc9173")]
     use rand::{TryRng, rngs::SysRng};
 
@@ -640,7 +654,11 @@ pub mod tests {
         filter::pack::FilterPack,
         keys::{KeyProvider, NullKeyProvider},
         node_ids::NodeIds,
-        storage::{BundleMemStorage, MetadataMemStorage},
+        storage::{
+            BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
+            Result as StorageResult,
+        },
+        stream::Sender,
     };
 
     // The test dispatcher's configuration: no status reports, serial
@@ -662,7 +680,7 @@ pub mod tests {
     // filters and no keys.
     pub async fn dispatcher(
         metadata_store: Arc<MetadataMemStorage>,
-        data_store: Arc<BundleMemStorage>,
+        data_store: Arc<dyn BundleStorage>,
     ) -> Arc<Dispatcher> {
         dispatcher_with(
             metadata_store,
@@ -678,7 +696,7 @@ pub mod tests {
     // filter packs.
     pub async fn dispatcher_with(
         metadata_store: Arc<MetadataMemStorage>,
-        data_store: Arc<BundleMemStorage>,
+        data_store: Arc<dyn BundleStorage>,
         config: Config,
         key_provider: Arc<dyn KeyProvider>,
         packs: Vec<FilterPack>,
@@ -706,6 +724,183 @@ pub mod tests {
         let (dispatcher, _start) =
             Dispatcher::new(config, node_ids, store, rib, key_provider, filters);
         dispatcher
+    }
+
+    // As `dispatcher`, with status reports on: a requested deletion report
+    // stays readable in the stores (see `deletion_reasons`), because nothing
+    // consumes the dispatch queue.
+    pub async fn reporting_dispatcher(
+        metadata_store: Arc<MetadataMemStorage>,
+        data_store: Arc<dyn BundleStorage>,
+    ) -> Arc<Dispatcher> {
+        dispatcher_with(
+            metadata_store,
+            data_store,
+            Config {
+                status_reports: true,
+                ..config()
+            },
+            Arc::new(NullKeyProvider),
+            Vec::new(),
+        )
+        .await
+    }
+
+    // In-memory bundle storage that counts every load, whether or not it
+    // finds the data.
+    pub struct CountingBundleStorage {
+        inner: BundleMemStorage,
+        loads: AtomicUsize,
+    }
+
+    impl CountingBundleStorage {
+        pub fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: BundleMemStorage::new(None, None),
+                loads: AtomicUsize::new(0),
+            })
+        }
+
+        pub fn loads(&self) -> usize {
+            self.loads.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl BundleStorage for CountingBundleStorage {
+        async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> StorageResult<()> {
+            self.inner.recover(stream).await
+        }
+
+        async fn load(&self, storage_name: &str) -> StorageResult<Option<Bytes>> {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            self.inner.load(storage_name).await
+        }
+
+        async fn save(&self, data: Bytes) -> StorageResult<Arc<str>> {
+            self.inner.save(data).await
+        }
+
+        async fn delete(&self, storage_name: &str) -> StorageResult<()> {
+            self.inner.delete(storage_name).await
+        }
+    }
+
+    // In-memory bundle storage whose every load signals its entry, then
+    // parks until the test drops the release sender, so a test can act
+    // while a load is in progress.
+    pub struct GatedBundleStorage {
+        inner: BundleMemStorage,
+        entered_tx: flume::Sender<()>,
+        release_rx: flume::Receiver<()>,
+    }
+
+    impl GatedBundleStorage {
+        // The storage, the receiver each load's entry signals, and the
+        // sender whose drop releases the loads.
+        pub fn new() -> (Arc<Self>, flume::Receiver<()>, flume::Sender<()>) {
+            let (entered_tx, entered_rx) = flume::unbounded();
+            let (release_tx, release_rx) = flume::bounded(1);
+            (
+                Arc::new(Self {
+                    inner: BundleMemStorage::new(None, None),
+                    entered_tx,
+                    release_rx,
+                }),
+                entered_rx,
+                release_tx,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl BundleStorage for GatedBundleStorage {
+        async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> StorageResult<()> {
+            self.inner.recover(stream).await
+        }
+
+        async fn load(&self, storage_name: &str) -> StorageResult<Option<Bytes>> {
+            let _ = self.entered_tx.send(());
+            let _ = self.release_rx.recv_async().await;
+            self.inner.load(storage_name).await
+        }
+
+        async fn save(&self, data: Bytes) -> StorageResult<Arc<str>> {
+            self.inner.save(data).await
+        }
+
+        async fn delete(&self, storage_name: &str) -> StorageResult<()> {
+            self.inner.delete(storage_name).await
+        }
+    }
+
+    // Seeds `data` as a queue holds it: stored, with its metadata in
+    // `status`. Returns the copy the queue delivers.
+    pub async fn seed(
+        metadata_store: &MetadataMemStorage,
+        data_store: &dyn BundleStorage,
+        data: Bytes,
+        status: bundle::BundleStatus,
+    ) -> bundle::Bundle {
+        let storage_name = data_store.save(data.clone()).await.unwrap();
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.storage_name = Some(storage_name);
+        let bundle = bundle::Bundle {
+            bpv7: parse(data).unwrap().bundle,
+            metadata,
+            status,
+        };
+        assert!(metadata_store.insert(&bundle).await.unwrap());
+        bundle
+    }
+
+    // The reasons of the deletion reports a reporting dispatcher has queued
+    // for dispatch, read back from the stores.
+    pub async fn deletion_reasons(
+        metadata_store: &MetadataMemStorage,
+        data_store: &dyn BundleStorage,
+    ) -> Vec<ReasonCode> {
+        let (tx, rx) = hardy_async::channel::bounded(16);
+        metadata_store
+            .poll_pending(&tx, &bundle::BundleStatus::DispatchPending, 16)
+            .await
+            .unwrap();
+        drop(tx);
+        let mut reasons = Vec::new();
+        while let Ok(report) = rx.recv().await {
+            let data = data_store
+                .load(report.metadata.storage_name.as_ref().unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload = report.bpv7.blocks[&1].payload(&data).unwrap();
+            let AdministrativeRecord::BundleStatusReport(status) =
+                hardy_cbor::decode::parse(payload).unwrap();
+            assert!(status.deleted.is_some(), "a deletion report");
+            reasons.push(status.reason);
+        }
+        reasons
+    }
+
+    // A bundle to `destination` requesting a deletion report, built already
+    // expired when `expired`.
+    pub fn bundle_data(destination: &str, expired: bool) -> Bytes {
+        let timestamp = if expired {
+            let past = time::OffsetDateTime::now_utc() - time::Duration::days(2);
+            CreationTimestamp::from_parts(Some(DtnTime::saturating_from(past)), 1)
+        } else {
+            CreationTimestamp::now()
+        };
+        let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), destination.parse().unwrap())
+            .with_flags(Flags {
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_lifetime(core::time::Duration::from_secs(24 * 60 * 60))
+            .with_payload(b"queued".to_vec().into())
+            .build(timestamp)
+            .unwrap();
+        Bytes::from(data)
     }
 
     // A bundle to `destination`, reporting to it, whose payload is under a
@@ -749,5 +944,108 @@ pub mod tests {
         let encrypted = Bytes::from(encryptor.rebuild().expect("rebuild the encrypted bundle"));
         let parsed = parse(encrypted).expect("the encrypted bundle parses");
         (parsed.bundle, parsed.data)
+    }
+
+    const CLAIMED: bundle::BundleStatus = bundle::BundleStatus::ForwardAckPending { peer: 7 };
+
+    // The load is the last checkpoint before a claimed bundle is acted on,
+    // and the reaper defers the claim: a bundle found expired after it is
+    // dropped as LifetimeExpired, data and all, never handed off.
+    #[tokio::test]
+    async fn a_claimed_bundle_that_has_expired_is_dropped() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = reporting_dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data("ipn:0.3.2", true),
+            CLAIMED,
+        )
+        .await;
+        let bundle_id = bundle.id().clone();
+        let storage_name = bundle.metadata.storage_name.clone().unwrap();
+
+        assert!(dispatcher.load_or_drop(bundle).await.is_none());
+        assert!(
+            metadata_store.get(&bundle_id).await.unwrap().is_none(),
+            "the claim is resolved"
+        );
+        assert!(
+            data_store.load(&storage_name).await.unwrap().is_none(),
+            "the data is deleted"
+        );
+        assert_eq!(
+            deletion_reasons(&metadata_store, &*data_store).await,
+            [ReasonCode::LifetimeExpired]
+        );
+    }
+
+    // An expired claimed bundle whose data has gone is the load's to
+    // resolve too: the reaper defers the claim, so the load tombstones it
+    // with exactly one LifetimeExpired report rather than leave it.
+    #[tokio::test]
+    async fn a_claimed_expired_bundle_whose_data_is_missing_is_dropped() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = reporting_dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data("ipn:0.3.2", true),
+            CLAIMED,
+        )
+        .await;
+        let bundle_id = bundle.id().clone();
+        data_store
+            .delete(bundle.metadata.storage_name.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        assert!(dispatcher.load_or_drop(bundle).await.is_none());
+        assert!(
+            metadata_store.get(&bundle_id).await.unwrap().is_none(),
+            "the claim is resolved"
+        );
+        assert_eq!(
+            deletion_reasons(&metadata_store, &*data_store).await,
+            [ReasonCode::LifetimeExpired]
+        );
+    }
+
+    // A sweep may move a claimed bundle on while its data loads (a peer
+    // removal resets ForwardAckPending to Waiting): the drop that follows a
+    // failed load is conditioned on the claimed status, so it loses, and
+    // the sweep's resolution stands, unreported.
+    #[tokio::test]
+    async fn a_swept_claim_is_left_to_the_sweep() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = reporting_dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data("ipn:0.3.2", false),
+            CLAIMED,
+        )
+        .await;
+        let bundle_id = bundle.id().clone();
+        assert!(dispatcher.store.reset_peer_ack_pending(7).await);
+        data_store
+            .delete(bundle.metadata.storage_name.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        assert!(dispatcher.load_or_drop(bundle).await.is_none());
+        assert_eq!(
+            metadata_store
+                .get(&bundle_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            bundle::BundleStatus::Waiting
+        );
+        assert_eq!(deletion_reasons(&metadata_store, &*data_store).await, []);
     }
 }

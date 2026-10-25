@@ -13,13 +13,17 @@ use crate::{
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
-    pub(super) async fn deliver_bundle(&self, service: Arc<Service>, bundle: bundle::Bundle) {
-        // Open the stored bundle and hold it until its headers are resident:
-        // what the service receives streams on from the store.
-        let Some((mut bundle, stream)) = self.load_or_drop(bundle).await else {
+    pub(super) async fn deliver_bundle(&self, service: Arc<Service>, mut bundle: bundle::Bundle) {
+        // A registration's consumer still drains the copies buffered in its
+        // queue once the service has begun unregistering (cancellation is
+        // its first step). The unregister sweep resolves the queued bundles
+        // themselves, and the same endpoint's next registration may already
+        // have queued one again under the same status, so a copy claimed
+        // here would take that bundle from it: act on none of them.
+        if service.cancel.is_cancelled() {
+            debug!("Service unregistering, leaving the queued copy to the sweep");
             return;
-        };
-        let loaded = pull_headers(&bundle.bpv7, stream, self.filters.deliver.peek).await;
+        }
 
         // The claim key and every park in the offer use the canonical
         // registration EID stored at construction — the exact key
@@ -33,42 +37,83 @@ impl Dispatcher {
         // park_bundle).
         let seen = self.rib.table_snapshot();
 
-        // Delivery commits at the claim below — the reaper defers an
-        // in-flight delivery — so never commence one for a bundle that has
-        // already expired: resolve it as the reaper would.
+        // Delivery commits at the claim below — the reaper defers a claimed
+        // delivery — so never claim a bundle that has already expired:
+        // resolve it as the reaper would.
         if bundle.has_expired() {
             return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
 
-        // Claim the bundle out of its delivery queue before offering it.
-        // The claim must be a conditional swap: the delivery channel is
-        // at-least-once, so a duplicate copy recovered by the storage
-        // poller must lose here rather than produce a second delivery. The
-        // new status also marks the point past which the delivery cannot be
-        // recalled: the reaper defers it, and the unregister sweep only
-        // touches the queued status.
-        if !self
-            .store
-            .swap_status(
-                &mut bundle,
-                &bundle::BundleStatus::DeliveryAckPending {
-                    service: service_eid.clone(),
-                },
-            )
-            .await
-        {
+        if !self.claim_delivery(&mut bundle, &service_eid).await {
             debug!("Bundle already claimed for delivery or swept, skipping offer");
             return;
         }
 
-        // Claim-to-resolution is one expression: the offer's outcome is the
-        // claim's resolution.
+        // Every exit from here resolves the claim: a load that finds the
+        // data missing, or the bundle expired meanwhile, drops it, and the
+        // offer's outcome is the claim's resolution.
+        let Some((bundle, loaded)) = self
+            .load_claimed_delivery(&service, &service_eid, bundle, &seen)
+            .await
+        else {
+            return;
+        };
         self.resolve_offer(
             OfferKind::Delivery,
             self.offer_to_service(service, service_eid, bundle, loaded, seen)
                 .await,
         )
         .await
+    }
+
+    // Claim the bundle out of its delivery queue, before loading its data
+    // and offering it. `false` when another copy or a sweep has it.
+    //
+    // The claim must be a conditional swap: the delivery channel is
+    // at-least-once, so a duplicate copy recovered by the storage poller
+    // must lose here rather than produce a second delivery, and it loses
+    // before the load, so a duplicate costs one metadata compare-and-swap,
+    // never a read of the stored bundle. The new status also marks the point
+    // past which the delivery cannot be recalled: the reaper defers it, and
+    // the unregister sweep only touches the queued status.
+    async fn claim_delivery(&self, bundle: &mut bundle::Bundle, service_eid: &Eid) -> bool {
+        let claimed = bundle::BundleStatus::DeliveryAckPending {
+            service: service_eid.clone(),
+        };
+        self.store.swap_status(bundle, &claimed).await
+    }
+
+    // Load a claimed bundle until its headers are resident, what the service
+    // receives streaming on from the store, and confirm the service is still
+    // registered. `None` when the load dropped the bundle or the service is
+    // going, the bundle then parked for its next registration.
+    //
+    // The unregister sweep moves only queued deliveries, never this claim,
+    // so a service that began unregistering while the headers loaded shows
+    // only through its registration's cancellation, checked here. Park the
+    // bundle for the next registration, as a delivery the departing service
+    // refused would be, rather than offer it to a service that is going: an
+    // in-process service could see on_deliver after on_unregister. This
+    // leaves only the window between the claim and on_deliver that the claim
+    // has always had, and does not close it.
+    async fn load_claimed_delivery(
+        &self,
+        service: &Service,
+        service_eid: &Eid,
+        bundle: bundle::Bundle,
+        seen: &routing::RibSnapshot,
+    ) -> Option<(bundle::Bundle, LoadedBundle)> {
+        let (bundle, stream) = self.load_or_drop(bundle).await?;
+        let loaded = pull_headers(&bundle.bpv7, stream, self.filters.deliver.peek).await;
+        if service.cancel.is_cancelled() {
+            debug!("Service unregistered during the load, parking the bundle");
+            let parked = bundle::BundleStatus::WaitingForService {
+                service: service_eid.clone(),
+            };
+            self.park_bundle(bundle, parked, seen).await;
+            return None;
+        }
+        Some((bundle, loaded))
     }
 
     /// Offer a claimed bundle to its service. Runs strictly inside the
@@ -203,9 +248,12 @@ impl Dispatcher {
 
 #[cfg(test)]
 mod tests {
+    // `ServiceId` keeps bpv7's service identifier apart from the registry's
+    // `Service` imported above; `services::Service`, the trait, stays
+    // qualified for the same reason.
+    use hardy_bpv7::{bundle::Id, eid::Service as ServiceId};
     #[cfg(feature = "rfc9173")]
     use hardy_bpv7::{
-        bundle::Id,
         eid::{IpnNodeId, NodeId},
         status_report::AdministrativeRecord,
     };
@@ -215,14 +263,18 @@ mod tests {
     use crate::{
         bpa::{Bpa, BpaRegistration},
         bundle::Origin,
-        cla::Lanes,
         dispatcher::tests::encrypted_payload_to,
         node_ids::NodeIds,
-        storage::{
-            BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
-            Result as StorageResult,
+        storage::{BundleMemStorage, RecoveryResponse, Result as StorageResult},
+        stream::{Sender, buffer_stream},
+    };
+    use crate::{
+        cla::Lanes,
+        dispatcher::tests::{
+            CountingBundleStorage, bundle_data, deletion_reasons, reporting_dispatcher, seed,
         },
-        stream::{Receiver, Segment, Sender, buffer_stream},
+        storage::{BundleStorage, MetadataMemStorage, MetadataStorage},
+        stream::{Receiver, Segment},
     };
 
     // Bundle storage that hands each deleted bundle's bytes to a receiver.
@@ -385,5 +437,198 @@ mod tests {
         assert!(status.deleted.is_some(), "deletion asserted");
         assert_eq!(status.reason, ReasonCode::BlockUnsupported);
         bpa.shutdown().await;
+    }
+
+    const SERVICE: &str = "ipn:0.1.7";
+
+    // Records each delivery, and completes it.
+    struct RecordingService {
+        deliveries_tx: flume::Sender<Id>,
+    }
+
+    #[async_trait]
+    impl services::Service for RecordingService {
+        async fn on_register(&self, _endpoint: &Eid, _sink: Box<dyn services::ServiceSink>) {}
+
+        async fn on_unregister(&self) {}
+
+        async fn on_deliver(
+            &self,
+            bundle_id: &Id,
+            _expiry: time::OffsetDateTime,
+            _total_len: u64,
+            _stream: &mut dyn Receiver<Segment>,
+        ) -> services::Result<()> {
+            let _ = self.deliveries_tx.send(bundle_id.clone());
+            Ok(())
+        }
+
+        async fn on_status_notify(
+            &self,
+            _bundle_id: &Id,
+            _from: &Eid,
+            _kind: services::StatusNotify,
+            _reason: ReasonCode,
+            _timestamp: Option<time::OffsetDateTime>,
+        ) {
+        }
+    }
+
+    // The registration `deliver_bundle` delivers to, with its live delivery
+    // queue, recording each delivery.
+    fn recording_service(dispatcher: &Dispatcher) -> (Arc<Service>, flume::Receiver<Id>) {
+        let (deliveries_tx, deliveries_rx) = flume::bounded(16);
+        let eid: Eid = SERVICE.parse().unwrap();
+        let (tx, _rx) = dispatcher.new_delivery_channel(&eid);
+        let service = Service::new(
+            ServiceImpl::LowLevel(Arc::new(RecordingService { deliveries_tx })),
+            ServiceId::Ipn(7),
+            eid,
+            tx,
+            Lanes::Serial,
+        );
+        (service, deliveries_rx)
+    }
+
+    fn queued() -> bundle::BundleStatus {
+        bundle::BundleStatus::DeliverPending {
+            service: SERVICE.parse().unwrap(),
+        }
+    }
+
+    // deliver_bundle never commences a delivery for an expired bundle: the
+    // pre-claim expiry checkpoint resolves it as LifetimeExpired before its
+    // data is loaded or the service sees it.
+    #[tokio::test]
+    async fn an_expired_queued_bundle_is_never_loaded() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = reporting_dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let (service, deliveries_rx) = recording_service(&dispatcher);
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data(SERVICE, true),
+            queued(),
+        )
+        .await;
+
+        dispatcher.deliver_bundle(service, bundle).await;
+
+        assert!(deliveries_rx.try_recv().is_err(), "nothing is delivered");
+        assert_eq!(data_store.loads(), 0, "an expired bundle is never loaded");
+        assert_eq!(
+            deletion_reasons(&metadata_store, &*data_store).await,
+            [ReasonCode::LifetimeExpired]
+        );
+    }
+
+    // A departing registration's consumer still drains its buffered copies
+    // after the service begins unregistering. The bundle such a copy names
+    // may already be queued again, under the same status, for the
+    // endpoint's next registration: the copy must leave it there, unclaimed
+    // and unloaded, not take it to the departing service.
+    #[tokio::test]
+    async fn a_departing_service_leaves_its_queued_copies() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = reporting_dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let (service, deliveries_rx) = recording_service(&dispatcher);
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data(SERVICE, false),
+            queued(),
+        )
+        .await;
+        let bundle_id = bundle.id().clone();
+        service.cancel.cancel();
+
+        dispatcher.deliver_bundle(service, bundle).await;
+
+        assert!(deliveries_rx.try_recv().is_err(), "nothing is delivered");
+        assert_eq!(data_store.loads(), 0, "the copy is never loaded");
+        assert_eq!(
+            metadata_store
+                .get(&bundle_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            queued(),
+            "the bundle stays queued for the next registration"
+        );
+    }
+
+    // The delivery channel delivers at-least-once, so a duplicate copy of
+    // a queued bundle can reach `deliver_bundle` after the first copy has
+    // been delivered. The duplicate loses the claim before touching bundle
+    // storage: one load, one delivery.
+    #[tokio::test]
+    async fn a_duplicate_copy_loses_the_claim_without_loading() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = reporting_dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let (service, deliveries_rx) = recording_service(&dispatcher);
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data(SERVICE, false),
+            queued(),
+        )
+        .await;
+        let duplicate = bundle.clone();
+        let bundle_id = bundle.id().clone();
+
+        dispatcher.deliver_bundle(service.clone(), bundle).await;
+        assert_eq!(deliveries_rx.try_recv().unwrap(), bundle_id);
+        assert_eq!(data_store.loads(), 1);
+
+        dispatcher.deliver_bundle(service, duplicate).await;
+        assert_eq!(data_store.loads(), 1, "the duplicate never loads");
+        assert!(
+            deliveries_rx.try_recv().is_err(),
+            "the duplicate is not delivered"
+        );
+        assert_eq!(
+            deletion_reasons(&metadata_store, &*data_store).await,
+            [ReasonCode::NoAdditionalInformation],
+            "only the delivery resolves the bundle"
+        );
+    }
+
+    // A queued bundle whose data has gone is claimed, found missing at the
+    // load, and dropped with `DepletedStorage` from its claim, so the
+    // claim — which the reaper defers — never dangles.
+    #[tokio::test]
+    async fn a_claimed_bundle_whose_data_is_missing_is_dropped() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = reporting_dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let (service, deliveries_rx) = recording_service(&dispatcher);
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data(SERVICE, false),
+            queued(),
+        )
+        .await;
+        let bundle_id = bundle.id().clone();
+        data_store
+            .delete(bundle.metadata.storage_name.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        dispatcher.deliver_bundle(service, bundle).await;
+
+        assert!(deliveries_rx.try_recv().is_err(), "nothing is delivered");
+        assert!(
+            metadata_store.get(&bundle_id).await.unwrap().is_none(),
+            "the claim is resolved"
+        );
+        assert_eq!(
+            deletion_reasons(&metadata_store, &*data_store).await,
+            [ReasonCode::DepletedStorage]
+        );
     }
 }

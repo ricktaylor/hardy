@@ -49,10 +49,11 @@ This document describes the BPA's egress policy subsystem: the per-peer queues a
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Dispatcher::forward_bundle                                           │
 │                                                                      │
-│   1. claim ForwardPending → ForwardAckPending                        │
-│   2. update extension blocks (Previous Node, Hop Count, Bundle Age)  │
-│   3. Egress chain (Rewriters, then Verifiers)                        │
-│   4. Cla::forward(lane, cla_addr, bundle_id, total_len, stream)      │
+│   1. claim ForwardPending → ForwardAckPending (duplicates lose)      │
+│   2. load the stored bundle; its headers become resident             │
+│   3. update extension blocks (Previous Node, Hop Count, Bundle Age)  │
+│   4. Egress chain (Rewriters, then Verifiers)                        │
+│   5. Cla::forward(lane, cla_addr, bundle_id, total_len, stream)      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,7 +85,7 @@ The persisted status requires this. A queued bundle's status is `ForwardPending 
 
 The pollers drain their queues into the peer's **effective lanes**, from the CLA's declared `Lanes` and the BPA's egress seat cap (`BpaBuilder::egress_lane_cap`, default 8): one for `Serial`, which a CLA that declares nothing gets (`ClaInit::default()`, or a gRPC CLA sending no `lanes`); the declared count bounded by the cap for `Limited`; and the cap for `Unlimited`. The lanes are a budget of permits shared by all of the peer's queue pollers, so the CLA's declaration holds whatever the policy's queue count. A poller takes a lane before it pulls a bundle, and the bundle's `controller.forward(queue, bundle)` runs as a task of its own on the registry's task pool, holding the lane until `EgressQueue::forward` returns — when the CLA answers `Cla::forward`. While every lane is busy the pollers pull nothing more; a poller whose queue is empty holds no lane while it waits, so an idle queue leaves the peer's lanes to its busy ones. The cap exists whatever the declaration, because each in-flight forward holds its loaded bundle until the CLA answers: a peer's worst case is the cap times the largest bundle in memory. A cap of 1 forwards to each peer serially, one bundle at a time in queue order. The default is above one so that a CLA declaring several lanes, as TCPCLv4 does, has concurrent offers out of the box: an offer streams the whole bundle to the CLA, so one offer at a time caps a peer at one bundle per offer however fast the link. A CLA that declares nothing keeps serial offers, since it may not tolerate overlapping forwards completing out of order.
 
-Offers start in queue order and may complete out of order. Bundles carry no ordering guarantee, and nothing downstream depends on per-peer completion order: each offer claims its own bundle out of `ForwardPending` and resolves only that claim, and the peer sweeps (`reset_peer_queue`, `reset_peer_ack_pending`) are status-conditioned, so an in-flight offer neither blocks nor is undone by them. A peer removed mid-offer resets up to its lanes of claimed bundles from `ForwardAckPending` to `Waiting`, each re-sent at the next routing event — as it reset the one in-flight offer before lanes, and as it resets every accepted transfer.
+Offers start in queue order and may complete out of order. Bundles carry no ordering guarantee, and nothing downstream depends on per-peer completion order: each offer claims its own bundle out of `ForwardPending` and resolves only that claim, and the peer sweeps (`reset_peer_queue`, `reset_peer_ack_pending`) are status-conditioned, so an in-flight offer neither blocks nor is undone by them. A peer removed mid-offer resets up to its lanes of claimed bundles from `ForwardAckPending` to `Waiting`, each re-sent at the next routing event — as it reset the one in-flight offer before lanes, and as it resets every accepted transfer. An offer whose claim is swept while its data is still loading is never made: `forward_bundle` re-checks the claim once the load returns.
 
 Both pacing levers follow, per lane. A controller that rate-limits by awaiting before it transmits holds its lane; once every lane is held, the channel fills and further bundles spill to storage — shaping neither drops bundles nor grows memory. Up to the peer's lanes of such awaits run at once, so a per-call delay paces each lane and the aggregate rate is the per-lane rate times the lanes; a controller enforcing a peer-wide rate shares one budget (a token bucket) across its calls. A CLA paces the BPA by when it answers: answering `Accepted` early frees the lane while the acknowledgement is in flight, and a CLA at capacity withholds its answers, so the pollers stop pulling once every lane awaits one.
 
@@ -105,7 +106,7 @@ Each policy queue is a hybrid memory/storage channel (`bpa/src/storage/channel.r
     Any state ──► Closing (channel closed)
 ```
 
-Memory stays bounded per queue whatever the arrival rate, and a full queue never blocks or fails the sender. Every send pays the status write; the fast path saves the storage re-read. Delivery is at-least-once, so `forward_bundle` claims each bundle with a conditional swap to `ForwardAckPending` before offering it, and a duplicate copy loses the swap.
+Memory stays bounded per queue whatever the arrival rate, and a full queue never blocks or fails the sender. Every send pays the status write; the fast path saves the storage re-read. Delivery is at-least-once, so `forward_bundle` claims each bundle with a conditional swap to `ForwardAckPending` before loading its data and offering it: a duplicate copy loses the swap, at the cost of one metadata compare-and-swap, never a read of the bundle.
 
 #### Hysteresis and congestion signalling
 

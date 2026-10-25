@@ -307,6 +307,8 @@ See also: the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`) for detailed s
 
 6. QUEUE POLLER (forward_bundle)
    Dequeue bundle
+   Claim it: ForwardPending → ForwardAckPending (a duplicate copy loses)
+   Load the stored bundle; its headers become resident
    Run the Egress chain (registered Rewriters)
    Update: Previous Node, Hop Count, Bundle Age
 

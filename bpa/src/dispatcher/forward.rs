@@ -17,7 +17,7 @@ impl Dispatcher {
         peer: u32,
         lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
-        bundle: bundle::Bundle,
+        mut bundle: bundle::Bundle,
     ) {
         // The queue-assignment record carries the resolved adjacency, and
         // the claim below overwrites the status — take it first. The egress
@@ -29,54 +29,88 @@ impl Dispatcher {
         };
         let next_hop = next_hop.clone();
 
-        // Open the stored bundle, now we know we need it, and hold it until
-        // its headers are resident: the payload streams on to the CLA.
-        let Some((mut bundle, stream)) = self.load_or_drop(bundle).await else {
-            return;
-        };
-        let loaded = pull_headers(&bundle.bpv7, stream, 0).await;
-
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).
         let seen = self.rib.table_snapshot();
 
-        // A transfer commits at the claim below — the reaper defers an
-        // in-flight hand-off — so never commence one for a bundle that has
-        // already expired: resolve it as the reaper would.
+        // A transfer commits at the claim below — the reaper defers a
+        // claimed hand-off — so never claim a bundle that has already
+        // expired: resolve it as the reaper would.
         if bundle.has_expired() {
             return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
 
-        // Claim the bundle out of its peer queue before the in-memory rewrite
-        // in the offer and before offering it. The claim must be a conditional
-        // swap: the egress channel delivers at-least-once, so a duplicate copy
-        // recovered by the storage poller must lose here rather than produce
-        // a second offer. It must happen first: a deferred outcome can arrive
-        // on another task the instant the CLA accepts, and transfer_outcome()
-        // only honours bundles already in ForwardAckPending, while the
-        // persist needs the metadata still indexing the stored (un-rewritten)
-        // data. The new status also distinguishes an in-flight transfer from
-        // a queued one, so reset_peer_queue() no longer races the offer.
-        if !self
-            .store
-            .swap_status(
-                &mut bundle,
-                &bundle::BundleStatus::ForwardAckPending { peer },
-            )
-            .await
-        {
+        if !self.claim_forward(&mut bundle, peer).await {
             debug!("Bundle already claimed for forwarding or swept, skipping offer");
             return;
         }
 
-        // Claim-to-resolution is one expression: the offer's outcome is the
-        // claim's resolution.
+        // Every exit from here resolves the claim: a load that finds the
+        // data missing, or the bundle expired meanwhile, drops it, and the
+        // offer's outcome is the claim's resolution.
+        let Some((bundle, loaded)) = self.load_claimed_forward(bundle).await else {
+            return;
+        };
         self.resolve_offer(
             OfferKind::Forward,
             self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, loaded, seen)
                 .await,
         )
         .await
+    }
+
+    // Claim the bundle out of its peer queue: before loading its data,
+    // before the in-memory rewrite in the offer, and before offering it.
+    // `false` when another copy or a sweep has it.
+    //
+    // The claim must be a conditional swap: the egress channel delivers
+    // at-least-once, so a duplicate copy recovered by the storage poller
+    // must lose here rather than produce a second offer, and it loses before
+    // the load, so a duplicate costs one metadata compare-and-swap, never a
+    // read of the stored bundle. It must precede the offer: a deferred
+    // outcome can arrive on another task the instant the CLA accepts, and
+    // transfer_outcome() only honours bundles already in ForwardAckPending,
+    // while the persist needs the metadata still indexing the stored
+    // (un-rewritten) data. The new status also distinguishes an in-flight
+    // transfer from a queued one, so reset_peer_queue() never races the load
+    // or the offer; a peer removal's reset_peer_ack_pending() does sweep the
+    // claim, which the check after the load answers.
+    async fn claim_forward(&self, bundle: &mut bundle::Bundle, peer: u32) -> bool {
+        self.store
+            .swap_status(bundle, &bundle::BundleStatus::ForwardAckPending { peer })
+            .await
+    }
+
+    // Load a claimed bundle until its headers are resident, the payload
+    // streaming on to the CLA, and confirm the claim survived the load.
+    // `None` when the load dropped the bundle or a sweep took the claim.
+    //
+    // A peer removal can sweep the claim while the headers load, moving the
+    // bundle back to Waiting for its poll to re-route. The drops and the
+    // outcomes are status-conditioned, so a late one loses to the sweep, but
+    // the offer is not: made now, it would transmit the bundle to the
+    // departed peer's CLA and again once re-routed. So confirm the claim
+    // still stands, and otherwise leave the bundle to the sweep. A read is
+    // enough, as nothing is held past the check. This leaves only the window
+    // between the claim and cla.forward that the claim has always had, and
+    // does not close it: a sweep landing after the check still finds the
+    // offer made, and only its resolution loses.
+    async fn load_claimed_forward(
+        &self,
+        bundle: bundle::Bundle,
+    ) -> Option<(bundle::Bundle, LoadedBundle)> {
+        let (bundle, stream) = self.load_or_drop(bundle).await?;
+        let loaded = pull_headers(&bundle.bpv7, stream, 0).await;
+        if self
+            .store
+            .get_metadata(bundle.id())
+            .await
+            .is_none_or(|current| current.status != bundle.status)
+        {
+            debug!("Claim swept during the load, leaving the bundle to the sweep");
+            return None;
+        }
+        Some((bundle, loaded))
     }
 
     /// Offer a claimed bundle to its CLA. Runs strictly inside the
@@ -479,6 +513,7 @@ mod tests {
     #[cfg(feature = "rfc9173")]
     use core::sync::atomic::{AtomicUsize, Ordering};
 
+    use futures::join;
     #[cfg(feature = "rfc9173")]
     use hardy_bpv7::bpsec::key::KeySource;
     use hardy_bpv7::{
@@ -494,13 +529,19 @@ mod tests {
         keys::KeyProvider,
     };
     use crate::{
-        dispatcher::tests::{config, dispatcher, dispatcher_with},
+        dispatcher::tests::{
+            CountingBundleStorage, GatedBundleStorage, bundle_data, config, deletion_reasons,
+            dispatcher, dispatcher_with, reporting_dispatcher, seed,
+        },
         keys::NullKeyProvider,
         storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     };
 
+    // Records each offer, and answers it `Accepted` (keeping the claim
+    // held) when `accepts`, else `Sent`.
     struct RecordingCla {
         offers_tx: flume::Sender<Id>,
+        accepts: bool,
     }
 
     #[async_trait]
@@ -524,73 +565,206 @@ mod tests {
             _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {
             let _ = self.offers_tx.send(bundle_id.clone());
-            Ok(cla::ForwardBundleResult::Sent)
+            Ok(if self.accepts {
+                cla::ForwardBundleResult::Accepted
+            } else {
+                cla::ForwardBundleResult::Sent
+            })
         }
     }
 
-    // `forward_bundle` never commences a transfer for an expired bundle:
-    // the pre-claim expiry checkpoint resolves it as `LifetimeExpired`
-    // before the CLA sees an offer. Driven as a direct call because this
-    // is exactly the egress fast path's shape — a bundle that expired
-    // while queued arrives here from the in-memory buffer, bypassing the
-    // storage poller's expiry filter.
-    #[tokio::test]
-    async fn expired_queued_bundle_is_never_offered() {
-        let metadata_store = Arc::new(MetadataMemStorage::new(None));
-        let data_store = Arc::new(BundleMemStorage::new(None, None));
-        let dispatcher = dispatcher(metadata_store.clone(), data_store.clone()).await;
+    fn queued() -> bundle::BundleStatus {
+        bundle::BundleStatus::ForwardPending {
+            peer: 7,
+            queue: 0,
+            next_hop: "ipn:0.3.0".parse().unwrap(),
+        }
+    }
 
-        // Seed the record exactly as the egress queue holds it: data
-        // stored, metadata parked in ForwardPending, expired at build.
-        let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
-        let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
-            Some(hardy_bpv7::dtn_time::DtnTime::saturating_from(past)),
-            1,
-        );
-        let (_, data) = hardy_bpv7::builder::Builder::new(
-            "ipn:0.2.1".parse().unwrap(),
-            "ipn:0.3.2".parse().unwrap(),
-        )
-        .with_lifetime(core::time::Duration::from_secs(60))
-        .with_payload(b"expired in queue".to_vec().into())
-        .build(timestamp)
-        .unwrap();
-        let data = Bytes::from(data);
-        let storage_name = data_store.save(data.clone()).await.unwrap();
-        let parsed = hardy_bpv7::parse::parse(data).unwrap().bundle;
-        let mut metadata = bundle::BundleMetadata::originated();
-        metadata.storage_name = Some(storage_name);
-        let bundle = bundle::Bundle {
-            bpv7: parsed,
-            metadata,
-            status: bundle::BundleStatus::ForwardPending {
-                peer: 7,
-                queue: 0,
-                next_hop: "ipn:0.3.0".parse().unwrap(),
-            },
-        };
-        let bundle_id = bundle.id().clone();
-        assert!(metadata_store.insert(&bundle).await.unwrap());
-
-        let (offers_tx, offers_rx) = flume::bounded(16);
-        let cla = RecordingCla { offers_tx };
+    async fn forward(dispatcher: &Dispatcher, cla: &RecordingCla, bundle: bundle::Bundle) {
         dispatcher
             .forward_bundle(
-                &cla,
+                cla,
                 7,
                 None,
                 &cla::ClaAddress::Private("peer".as_bytes().into()),
                 bundle,
             )
-            .await;
+            .await
+    }
+
+    // `forward_bundle` never commences a transfer for an expired bundle:
+    // the pre-claim expiry checkpoint resolves it as `LifetimeExpired`
+    // before its data is loaded or the CLA sees an offer. Driven as a
+    // direct call because this is exactly the egress fast path's shape — a
+    // bundle that expired while queued arrives here from the in-memory
+    // buffer, bypassing the storage poller's expiry filter.
+    #[tokio::test]
+    async fn expired_queued_bundle_is_never_offered() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data("ipn:0.3.2", true),
+            queued(),
+        )
+        .await;
+        let bundle_id = bundle.id().clone();
+
+        let (offers_tx, offers_rx) = flume::bounded(16);
+        let cla = RecordingCla {
+            offers_tx,
+            accepts: false,
+        };
+        forward(&dispatcher, &cla, bundle).await;
 
         assert!(
             offers_rx.try_recv().is_err(),
             "an expired bundle must never be offered to the CLA"
         );
+        assert_eq!(data_store.loads(), 0, "an expired bundle is never loaded");
         assert!(
             metadata_store.get(&bundle_id).await.unwrap().is_none(),
             "the expired bundle is resolved terminally as LifetimeExpired"
+        );
+    }
+
+    // The egress channel delivers at-least-once, so a duplicate copy of a
+    // queued bundle can reach `forward_bundle` while the first copy's
+    // transfer is in flight. The duplicate loses the claim before touching
+    // bundle storage: one load, one offer.
+    #[tokio::test]
+    async fn a_duplicate_copy_loses_the_claim_without_loading() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data("ipn:0.3.2", false),
+            queued(),
+        )
+        .await;
+        let duplicate = bundle.clone();
+        let bundle_id = bundle.id().clone();
+
+        // The CLA takes ownership of the first copy's transfer, so its claim
+        // stays held while the duplicate arrives.
+        let (offers_tx, offers_rx) = flume::bounded(16);
+        let cla = RecordingCla {
+            offers_tx,
+            accepts: true,
+        };
+        forward(&dispatcher, &cla, bundle).await;
+        assert_eq!(offers_rx.try_recv().unwrap(), bundle_id);
+        assert_eq!(data_store.loads(), 1);
+
+        forward(&dispatcher, &cla, duplicate).await;
+        assert_eq!(data_store.loads(), 1, "the duplicate never loads");
+        assert!(
+            offers_rx.try_recv().is_err(),
+            "the duplicate is not offered"
+        );
+        assert_eq!(
+            metadata_store
+                .get(&bundle_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            bundle::BundleStatus::ForwardAckPending { peer: 7 },
+            "the first copy's claim stands"
+        );
+    }
+
+    // A peer removal sweeps a claimed bundle back to Waiting while its data
+    // loads: the RIB's withdrawal of the peer's forward route runs both
+    // peer sweeps. The forward makes no offer to the departed peer's CLA,
+    // and leaves the bundle to the sweep, whose poll re-routes it.
+    #[tokio::test]
+    async fn a_peer_removal_during_the_load_stops_the_offer() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let (data_store, entered_rx, release_tx) = GatedBundleStorage::new();
+        let dispatcher = dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data("ipn:0.3.2", false),
+            queued(),
+        )
+        .await;
+        let bundle_id = bundle.id().clone();
+
+        let (offers_tx, offers_rx) = flume::bounded(16);
+        let cla = RecordingCla {
+            offers_tx,
+            accepts: false,
+        };
+        let remove_peer = async {
+            entered_rx.recv_async().await.unwrap();
+            dispatcher.store.reset_peer_queue(7).await;
+            assert!(
+                dispatcher.store.reset_peer_ack_pending(7).await,
+                "the sweep moves the claim"
+            );
+            drop(release_tx);
+        };
+        join!(forward(&dispatcher, &cla, bundle), remove_peer);
+
+        assert!(
+            offers_rx.try_recv().is_err(),
+            "nothing is offered to the departed peer"
+        );
+        assert_eq!(
+            metadata_store
+                .get(&bundle_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            bundle::BundleStatus::Waiting,
+            "the bundle is the sweep's"
+        );
+    }
+
+    // A queued bundle whose data has gone is claimed, found missing at the
+    // load, and dropped with `DepletedStorage` from its claim, so the
+    // claim — which the reaper defers — never dangles.
+    #[tokio::test]
+    async fn a_claimed_bundle_whose_data_is_missing_is_dropped() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = CountingBundleStorage::new();
+        let dispatcher = reporting_dispatcher(metadata_store.clone(), data_store.clone()).await;
+        let bundle = seed(
+            &metadata_store,
+            &*data_store,
+            bundle_data("ipn:0.3.2", false),
+            queued(),
+        )
+        .await;
+        let bundle_id = bundle.id().clone();
+        data_store
+            .delete(bundle.metadata.storage_name.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        let (offers_tx, offers_rx) = flume::bounded(16);
+        let cla = RecordingCla {
+            offers_tx,
+            accepts: false,
+        };
+        forward(&dispatcher, &cla, bundle).await;
+
+        assert!(offers_rx.try_recv().is_err(), "nothing is offered");
+        assert!(
+            metadata_store.get(&bundle_id).await.unwrap().is_none(),
+            "the claim is resolved"
+        );
+        assert_eq!(
+            deletion_reasons(&metadata_store, &*data_store).await,
+            [ReasonCode::DepletedStorage]
         );
     }
 
@@ -662,7 +836,10 @@ mod tests {
             let (offers_tx, offers_rx) = flume::bounded(16);
             dispatcher
                 .forward_bundle(
-                    &RecordingCla { offers_tx },
+                    &RecordingCla {
+                        offers_tx,
+                        accepts: false,
+                    },
                     7,
                     None,
                     &cla::ClaAddress::Private("peer".as_bytes().into()),
@@ -721,7 +898,10 @@ mod tests {
             let (offers_tx, offers_rx) = flume::bounded(16);
             dispatcher
                 .forward_bundle(
-                    &RecordingCla { offers_tx },
+                    &RecordingCla {
+                        offers_tx,
+                        accepts: false,
+                    },
                     7,
                     None,
                     &cla::ClaAddress::Private("peer".as_bytes().into()),

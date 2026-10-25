@@ -87,11 +87,12 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 
 ### Suite E: Service Delivery Failure
 
-*Objective: a delivery the service fails leaves the bundle in custody (`bpa/tests/pipeline.rs`).*
+*Objective: a delivery the service fails, or one whose service unregisters before it is handed over, leaves the bundle in custody (`bpa/tests/pipeline.rs`, `bpa/tests/delivery_queue.rs`).*
 
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **INT-BPA-05** | **`on_deliver` returns `Err`** | 1. Register an application whose `on_deliver` fails.<br>2. Originate a bundle to it from a second application.<br>3. Unregister the failing application and register a working one on the same service id. | The failed delivery parks the bundle `WaitingForService` rather than reporting it delivered and deleting it; the working receiver gets it re-delivered, payload intact. |
+| **INT-BPA-18** | **Unregistration during a delivery's load** | 1. Register a service; hold its claimed delivery's data load in storage.<br>2. Unregister the service, then release the load.<br>3. Register a service on the same id. | The departing service is never handed the bundle; it parks as `WaitingForService` and the next registration is delivered it, once (`bpa/tests/delivery_queue.rs`). |
 
 ### Suite F: Deferred CLA Transfer Outcomes
 
