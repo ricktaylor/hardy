@@ -134,7 +134,7 @@ nested beneath them in a `cla` table.
 |-----|-------------|---------|-------------|
 | `bpa-address` | URL string | `http://[::1]:50051` | BPA gRPC endpoint to connect to. |
 | `cla-name` | String | `hardy-tcpclv4-server` | Name to register with the BPA. |
-| `peers` | List of `host:port` strings | *(none)* | Peers to dial at startup; each is resolved by DNS and a TCPCLv4 session is established. |
+| `peers` | List of `host:port` strings | *(none)* | Peers to keep connected. Each is resolved via DNS and dialled at startup, and dialled again whenever no session to it remains (the peer restarted, or the link went away), at most once every 5 seconds. Two nodes may list each other: each forwards over the sessions it dialled. |
 | `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. |
 | `cla` | Table | *(all defaults)* | The TCPCLv4 options above. |
 
