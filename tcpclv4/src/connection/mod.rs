@@ -58,7 +58,8 @@ struct ConnectionPoolInner {
     // design doc).
     node: Option<NodeId>,
     // Whether the BPA holds the pool's adjacency. Changed only under the
-    // registry's membership lock.
+    // registry's membership lock; a pool of accepted sessions withholds its
+    // adjacency while a dialable pool holds one for the same node.
     advertised: bool,
 }
 
@@ -129,6 +130,13 @@ impl ConnectionPool {
             .lock()
             .trace_expect("Failed to lock mutex")
             .advertised
+    }
+
+    // The pool's node, whether its address can be dialled, and whether
+    // the BPA holds its adjacency.
+    fn adjacency(&self) -> (Option<NodeId>, bool, bool) {
+        let inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        (inner.node.clone(), inner.dialable, inner.advertised)
     }
 
     // Report the pool's adjacency for `node` to the BPA. Called under the
@@ -410,10 +418,8 @@ impl ConnectionRegistry {
                 .clone(),
         };
 
-        if let Some(node) = pool.name_node(node_id)
-            && !pool.is_advertised()
-        {
-            pool.advertise(&node).await;
+        if let Some(node) = pool.name_node(node_id) {
+            self.reconcile(&node).await;
         }
     }
 
@@ -443,8 +449,63 @@ impl ConnectionRegistry {
             .trace_expect("Failed to lock mutex")
             .remove(remote_addr);
 
-        if pool.is_advertised() {
+        // Reconcile the node's other pools before withdrawing this one, so
+        // a withheld pool of accepted sessions takes over the node without
+        // a gap when its last dialable pool goes
+        let (node, _, advertised) = pool.adjacency();
+        if let Some(node) = node {
+            self.reconcile(&node).await;
+        }
+        if advertised {
             pool.withdraw().await;
+        }
+    }
+
+    // Bring the BPA's adjacencies for `node` in line with its pools: every
+    // dialable pool naming the node is advertised, and a pool of accepted
+    // sessions is advertised only while no dialable pool's adjacency is
+    // held. An accepted session's pool is keyed by the peer's source port:
+    // it cannot grow, so it carries one transfer at a time, while a
+    // dialled pool grows to `max_idle` sessions; and the BPA's ECMP would
+    // pick between them per flow. The withheld pool's sessions still
+    // deliver what the peer sends, and still carry transfers already
+    // handed to them. Called under the membership lock.
+    async fn reconcile(&self, node: &NodeId) {
+        let pools: Vec<_> = self
+            .pools
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .values()
+            .filter_map(|pool| {
+                let (pool_node, dialable, advertised) = pool.adjacency();
+                (pool_node.as_ref() == Some(node)).then(|| (pool.clone(), dialable, advertised))
+            })
+            .collect();
+
+        // The new adjacency goes in before the old ones come out, so the
+        // node stays routable throughout
+        for (pool, _, _) in pools
+            .iter()
+            .filter(|(_, dialable, advertised)| *dialable && !*advertised)
+        {
+            pool.advertise(node).await;
+        }
+        let preferred = pools
+            .iter()
+            .any(|(pool, dialable, _)| *dialable && pool.is_advertised());
+
+        for (pool, _, advertised) in pools.iter().filter(|(_, dialable, _)| !*dialable) {
+            match (preferred, *advertised) {
+                (false, false) => pool.advertise(node).await,
+                (true, true) => {
+                    debug!(
+                        "Withholding {} for {node}: a dialled pool holds the adjacency",
+                        pool.remote_addr
+                    );
+                    pool.withdraw().await
+                }
+                _ => {}
+            }
         }
     }
 
@@ -544,6 +605,14 @@ mod tests {
     struct ClaimingSink {
         claims: Mutex<HashMap<hardy_bpa::cla::ClaAddress, Vec<NodeId>>>,
         hold_remove: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        calls: Mutex<Vec<Call>>,
+    }
+
+    // A sink call that changed the claims
+    #[derive(Debug, PartialEq, Eq)]
+    enum Call {
+        Add(hardy_bpa::cla::ClaAddress),
+        Remove(hardy_bpa::cla::ClaAddress),
     }
 
     impl ClaimingSink {
@@ -555,6 +624,10 @@ mod tests {
 
         fn claims(&self) -> HashMap<hardy_bpa::cla::ClaAddress, Vec<NodeId>> {
             self.claims.lock().unwrap().clone()
+        }
+
+        fn take_calls(&self) -> Vec<Call> {
+            core::mem::take(&mut *self.calls.lock().unwrap())
         }
     }
 
@@ -576,10 +649,11 @@ mod tests {
             cla_addr: hardy_bpa::cla::ClaAddress,
             node_ids: &[NodeId],
         ) -> hardy_bpa::cla::Result<bool> {
-            Ok(match self.claims.lock().unwrap().entry(cla_addr) {
+            Ok(match self.claims.lock().unwrap().entry(cla_addr.clone()) {
                 std::collections::hash_map::Entry::Occupied(_) => false,
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(node_ids.to_vec());
+                    self.calls.lock().unwrap().push(Call::Add(cla_addr));
                     true
                 }
             })
@@ -593,7 +667,14 @@ mod tests {
             if let Some(held) = held {
                 _ = held.await;
             }
-            Ok(self.claims.lock().unwrap().remove(cla_addr).is_some())
+            let removed = self.claims.lock().unwrap().remove(cla_addr).is_some();
+            if removed {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(Call::Remove(cla_addr.clone()));
+            }
+            Ok(removed)
         }
 
         async fn transfer_outcome(
@@ -830,6 +911,98 @@ mod tests {
         // And the adjacency leaves with the new session
         registry.unregister_session(&addr(2), &addr(50000)).await;
         assert!(sink.claims().is_empty());
+    }
+
+    // Register a session for `node` at `port`, its local address `local`
+    async fn register(
+        registry: &ConnectionRegistry,
+        sink: &Arc<ClaimingSink>,
+        local: u16,
+        port: u16,
+        origin: Origin,
+        node_id: NodeId,
+    ) -> ConnectionRx {
+        let (conn, rx) = conn(local);
+        registry
+            .register_session(sink.clone(), conn, addr(port), origin, Some(node_id))
+            .await;
+        rx
+    }
+
+    // A pool of accepted sessions withholds its adjacency for a node while
+    // a dialled pool holds one, so the BPA forwards to the node over the
+    // pool that can grow, and a forged session claiming the node draws no
+    // traffic. A pool for another node is unaffected.
+    #[tokio::test]
+    async fn accepted_pool_withholds_its_adjacency_while_a_dialled_pool_holds_one() {
+        let sink = Arc::new(ClaimingSink::default());
+        let registry = registry();
+        let _d = register(&registry, &sink, 1, 4556, Origin::Dialled, node(2)).await;
+        let _a = register(&registry, &sink, 2, 50000, Origin::Accepted, node(2)).await;
+        let _o = register(&registry, &sink, 3, 50001, Origin::Accepted, node(3)).await;
+
+        assert_eq!(
+            sink.claims(),
+            HashMap::from([(tcp(4556), vec![node(2)]), (tcp(50001), vec![node(3)])])
+        );
+    }
+
+    // A dialled pool registering a node takes the adjacency from the
+    // node's advertised pool of accepted sessions, adding its own first so
+    // the node stays routable throughout.
+    #[tokio::test]
+    async fn dialled_pool_takes_the_adjacency_from_an_accepted_pool() {
+        let sink = Arc::new(ClaimingSink::default());
+        let registry = registry();
+        let _a = register(&registry, &sink, 2, 50000, Origin::Accepted, node(2)).await;
+        assert_eq!(sink.take_calls(), vec![Call::Add(tcp(50000))]);
+
+        let _d = register(&registry, &sink, 1, 4556, Origin::Dialled, node(2)).await;
+        assert_eq!(
+            sink.take_calls(),
+            vec![Call::Add(tcp(4556)), Call::Remove(tcp(50000))]
+        );
+        assert_eq!(sink.claims(), HashMap::from([(tcp(4556), vec![node(2)])]));
+    }
+
+    // When the node's last dialled pool goes, a withheld pool of accepted
+    // sessions takes the adjacency over before the dialled one is
+    // withdrawn, so the node stays reachable over the sessions it opened.
+    #[tokio::test]
+    async fn accepted_pool_takes_over_when_the_last_dialled_pool_goes() {
+        let sink = Arc::new(ClaimingSink::default());
+        let registry = registry();
+        let _d = register(&registry, &sink, 1, 4556, Origin::Dialled, node(2)).await;
+        let _a = register(&registry, &sink, 2, 50000, Origin::Accepted, node(2)).await;
+        sink.take_calls();
+
+        registry.unregister_session(&addr(1), &addr(4556)).await;
+        assert_eq!(
+            sink.take_calls(),
+            vec![Call::Add(tcp(50000)), Call::Remove(tcp(4556))]
+        );
+        assert_eq!(sink.claims(), HashMap::from([(tcp(50000), vec![node(2)])]));
+    }
+
+    // A withheld pool's sessions still carry transfers: the BPA forwards
+    // to it no more, but a transfer already handed to it, or a forward
+    // racing the withdrawal, completes over its session.
+    #[tokio::test]
+    async fn withheld_pool_still_carries_transfers() {
+        let sink = Arc::new(ClaimingSink::default());
+        let registry = registry();
+        let _d = register(&registry, &sink, 1, 4556, Origin::Dialled, node(2)).await;
+        let rx = register(&registry, &sink, 2, 50000, Origin::Accepted, node(2)).await;
+        serve_completed(rx);
+
+        let r = registry
+            .forward(
+                &addr(50000),
+                hardy_bpa::Bytes::from_static(b"bundle"),
+                OnBusy::Dial,
+            )
+            .await;
+        assert_eq!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed));
     }
 
     #[tokio::test]
