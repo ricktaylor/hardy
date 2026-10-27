@@ -10,7 +10,7 @@ pub mod listen;
 use super::*;
 use rand::seq::IteratorRandom;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::SocketAddr,
     slice,
     sync::{Arc, Mutex},
@@ -49,10 +49,17 @@ pub struct Connection {
 struct ConnectionPoolInner {
     active: HashMap<SocketAddr, ConnectionTx>,
     idle: Vec<Connection>,
-    peers: HashSet<NodeId>,
     // Whether the pool's address accepts connections: true once a dialled
     // session has joined the pool. A pool of accepted sessions never dials.
     dialable: bool,
+    // The node the pool's adjacency names: the first node ID a session in
+    // the pool announced. A later session naming another node joins the
+    // pool without an adjacency of its own (see Peer identity in the
+    // design doc).
+    node: Option<NodeId>,
+    // Whether the BPA holds the pool's adjacency. Changed only under the
+    // registry's membership lock.
+    advertised: bool,
 }
 
 struct ConnectionPool {
@@ -75,8 +82,9 @@ impl ConnectionPool {
             inner: Mutex::new(ConnectionPoolInner {
                 active: HashMap::new(),
                 idle: vec![conn],
-                peers: HashSet::new(),
                 dialable: origin == Origin::Dialled,
+                node: None,
+                advertised: false,
             }),
             sink,
             max_idle,
@@ -99,55 +107,70 @@ impl ConnectionPool {
         metrics::gauge!("tcpclv4.pool.idle").increment(1.0);
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn add_peer(&self, node_id: NodeId) {
-        if self
-            .inner
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .peers
-            .insert(node_id.clone())
-            && !self
-                .sink
-                .add_peer(self.remote_addr.clone(), slice::from_ref(&node_id))
-                .await
-                .unwrap_or_else(|e| {
-                    warn!("add_peer failed: {e:?}");
-                    false
-                })
-        {
-            self.inner
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .peers
-                .remove(&node_id);
+    // The node a session announced becomes the pool's, unless the pool
+    // already names one. Returns the pool's node.
+    fn name_node(&self, node_id: Option<NodeId>) -> Option<NodeId> {
+        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        match (&inner.node, node_id) {
+            (None, node_id) => inner.node = node_id,
+            (Some(node), Some(node_id)) if *node != node_id => {
+                debug!(
+                    "A session at {} names {node_id}, but its pool's adjacency names {node}",
+                    self.remote_addr
+                );
+            }
+            _ => {}
         }
+        inner.node.clone()
     }
 
-    async fn remove(&self, local_addr: &SocketAddr) -> bool {
-        let remove_addr = {
-            let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
-            inner.active.remove(local_addr);
-            let before = inner.idle.len();
-            inner.idle.retain(|c| &c.local_addr != local_addr);
-            let removed = before - inner.idle.len();
-            if removed > 0 {
-                metrics::gauge!("tcpclv4.pool.idle").decrement(removed as f64);
-            }
+    fn is_advertised(&self) -> bool {
+        self.inner
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .advertised
+    }
 
-            let empty = inner.active.is_empty() && inner.idle.is_empty();
-            if empty {
-                inner.peers.clear();
-            }
-            empty
-        };
+    // Report the pool's adjacency for `node` to the BPA. Called under the
+    // registry's membership lock.
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn advertise(&self, node: &NodeId) {
+        let added = self
+            .sink
+            .add_peer(self.remote_addr.clone(), slice::from_ref(node))
+            .await
+            .unwrap_or_else(|e| {
+                warn!("add_peer failed: {e:?}");
+                false
+            });
+        self.inner
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .advertised = added;
+    }
 
-        if remove_addr {
-            _ = self.sink.remove_peer(&self.remote_addr).await;
-            true
-        } else {
-            false
+    // Withdraw the pool's adjacency from the BPA. Called under the
+    // registry's membership lock.
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn withdraw(&self) {
+        self.inner
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .advertised = false;
+        _ = self.sink.remove_peer(&self.remote_addr).await;
+    }
+
+    // Remove a session from the pool; returns whether the pool is now empty.
+    fn remove(&self, local_addr: &SocketAddr) -> bool {
+        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        inner.active.remove(local_addr);
+        let before = inner.idle.len();
+        inner.idle.retain(|c| &c.local_addr != local_addr);
+        let removed = before - inner.idle.len();
+        if removed > 0 {
+            metrics::gauge!("tcpclv4.pool.idle").decrement(removed as f64);
         }
+        inner.active.is_empty() && inner.idle.is_empty()
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
@@ -249,6 +272,15 @@ impl ConnectionPool {
 
 pub struct ConnectionRegistry {
     pools: Mutex<HashMap<SocketAddr, Arc<connection::ConnectionPool>>>,
+    // Serializes membership: session registration and unregistration take
+    // it first and hold it across the pool decision, the change to `pools`
+    // and the BPA's add_peer/remove_peer, so a session registering at an
+    // address whose pool is being torn down waits for the teardown and
+    // starts a fresh pool, and an adjacency is never withdrawn while it is
+    // still being added. One lock for the whole registry: membership
+    // changes are rare (a session coming or going), and forwarding never
+    // takes it.
+    membership: tokio::sync::Mutex<()>,
     // One dial at a time per remote address: concurrent forwards that find
     // the pool busy coalesce on this lock instead of racing parallel dials
     // past the capacity bound. An entry is created when the first dialled
@@ -273,6 +305,7 @@ impl ConnectionRegistry {
     pub fn new(max_idle: usize, max_outstanding_transfers: core::num::NonZeroUsize) -> Self {
         Self {
             pools: Mutex::new(HashMap::new()),
+            membership: tokio::sync::Mutex::new(()),
             dial_locks: Mutex::new(HashMap::new()),
             transfer_permits: Mutex::new(HashMap::new()),
             max_idle,
@@ -345,6 +378,8 @@ impl ConnectionRegistry {
         origin: Origin,
         node_id: Option<NodeId>,
     ) {
+        let _membership = self.membership.lock().await;
+
         if origin == Origin::Dialled {
             self.dial_locks
                 .lock()
@@ -375,39 +410,41 @@ impl ConnectionRegistry {
                 .clone(),
         };
 
-        if let Some(node_id) = node_id {
-            pool.add_peer(node_id).await
+        if let Some(node) = pool.name_node(node_id)
+            && !pool.is_advertised()
+        {
+            pool.advertise(&node).await;
         }
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn unregister_session(&self, local_addr: &SocketAddr, remote_addr: &SocketAddr) {
-        let pool = self
-            .pools
+        let _membership = self.membership.lock().await;
+
+        let pool = {
+            let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
+            let Some(pool) = pools.get(remote_addr).cloned() else {
+                return;
+            };
+            if !pool.remove(local_addr) {
+                return;
+            }
+            pools.remove(remote_addr);
+            pool
+        };
+
+        // The peer's session pool is gone: evict its permit semaphore so
+        // the map tracks peer churn instead of growing monotonically.
+        // In-flight transfers keep the semaphore alive through their own
+        // `Arc`s, and their bundles are swept back to Waiting by the peer
+        // removal anyway.
+        self.transfer_permits
             .lock()
             .trace_expect("Failed to lock mutex")
-            .get(remote_addr)
-            .cloned();
+            .remove(remote_addr);
 
-        if let Some(pool) = pool
-            && pool.remove(local_addr).await
-        {
-            let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
-            if let Some(current) = pools.get(remote_addr)
-                && Arc::ptr_eq(current, &pool)
-            {
-                pools.remove(remote_addr);
-
-                // The peer's session pool is gone: evict its permit
-                // semaphore so the map tracks peer churn instead of growing
-                // monotonically. In-flight transfers keep the semaphore
-                // alive through their own `Arc`s, and their bundles are
-                // swept back to Waiting by the peer removal anyway.
-                self.transfer_permits
-                    .lock()
-                    .trace_expect("Failed to lock mutex")
-                    .remove(remote_addr);
-            }
+        if pool.is_advertised() {
+            pool.withdraw().await;
         }
     }
 
@@ -446,6 +483,9 @@ impl ConnectionRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::pin;
+
+    use futures::{future::maybe_done, poll};
     use hardy_bpa::async_trait;
 
     use super::*;
@@ -494,8 +534,94 @@ mod tests {
         }
     }
 
+    // A sink that keeps the BPA's adjacency claims: one adjacency per
+    // address, so add_peer on a claimed address is refused (as
+    // `ClaRegistry::add_peer` does), and remove_peer releases the claim.
+    // Arming `hold_remove` parks the next remove_peer before it releases
+    // the claim, until `release_remove` fires: a BPA that has not yet
+    // processed the removal, as over gRPC.
+    #[derive(Default)]
+    struct ClaimingSink {
+        claims: Mutex<HashMap<hardy_bpa::cla::ClaAddress, Vec<NodeId>>>,
+        hold_remove: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    impl ClaimingSink {
+        fn hold_next_remove(&self) -> tokio::sync::oneshot::Sender<()> {
+            let (release_remove, held) = tokio::sync::oneshot::channel();
+            *self.hold_remove.lock().unwrap() = Some(held);
+            release_remove
+        }
+
+        fn claims(&self) -> HashMap<hardy_bpa::cla::ClaAddress, Vec<NodeId>> {
+            self.claims.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl hardy_bpa::cla::Sink for ClaimingSink {
+        async fn unregister(&self) {}
+
+        async fn dispatch(
+            &self,
+            _peer_node: Option<&NodeId>,
+            _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+            _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+        ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
+            Ok(hardy_bpa::cla::Acceptance::Accepted)
+        }
+
+        async fn add_peer(
+            &self,
+            cla_addr: hardy_bpa::cla::ClaAddress,
+            node_ids: &[NodeId],
+        ) -> hardy_bpa::cla::Result<bool> {
+            Ok(match self.claims.lock().unwrap().entry(cla_addr) {
+                std::collections::hash_map::Entry::Occupied(_) => false,
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(node_ids.to_vec());
+                    true
+                }
+            })
+        }
+
+        async fn remove_peer(
+            &self,
+            cla_addr: &hardy_bpa::cla::ClaAddress,
+        ) -> hardy_bpa::cla::Result<bool> {
+            let held = self.hold_remove.lock().unwrap().take();
+            if let Some(held) = held {
+                _ = held.await;
+            }
+            Ok(self.claims.lock().unwrap().remove(cla_addr).is_some())
+        }
+
+        async fn transfer_outcome(
+            &self,
+            _bundle_id: &hardy_bpv7::bundle::Id,
+            _outcome: hardy_bpa::cla::TransferOutcome,
+        ) -> hardy_bpa::cla::Result<()> {
+            Ok(())
+        }
+    }
+
     fn addr(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn node(n: u32) -> NodeId {
+        NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+            allocator_id: 0,
+            node_number: n,
+        })
+    }
+
+    fn tcp(port: u16) -> hardy_bpa::cla::ClaAddress {
+        hardy_bpa::cla::ClaAddress::Tcp(addr(port))
+    }
+
+    fn registry() -> ConnectionRegistry {
+        ConnectionRegistry::new(6, core::num::NonZeroUsize::new(16).unwrap())
     }
 
     fn conn(port: u16) -> (Connection, ConnectionRx) {
@@ -651,6 +777,59 @@ mod tests {
 
         assert!(registry.dial_lock(&addr(50000)).is_none());
         assert!(registry.dial_lock(&addr(4556)).is_some());
+    }
+
+    // A session that registers at an address while the address's last
+    // session is tearing its pool down, the BPA's remove_peer still in
+    // flight, waits for the teardown: it starts a fresh pool, which then
+    // gets the adjacency. Joining the departing pool instead would strand
+    // the session in a pool about to leave the registry, its add_peer
+    // refused against the claim still held, or accepted after the removal
+    // with nothing left to withdraw it.
+    #[tokio::test]
+    async fn registration_waits_for_a_teardown_in_flight_at_its_address() {
+        let sink = Arc::new(ClaimingSink::default());
+        let registry = registry();
+        let (first, _rx1) = conn(1);
+        let (second, _rx2) = conn(2);
+
+        registry
+            .register_session(
+                sink.clone(),
+                first,
+                addr(50000),
+                Origin::Accepted,
+                Some(node(2)),
+            )
+            .await;
+        assert_eq!(sink.claims(), HashMap::from([(tcp(50000), vec![node(2)])]));
+
+        // The last session ends; teardown parks inside the BPA's remove_peer
+        let release_remove = sink.hold_next_remove();
+        let (local, remote) = (addr(1), addr(50000));
+        let mut teardown = pin!(registry.unregister_session(&local, &remote));
+        assert!(poll!(teardown.as_mut()).is_pending());
+
+        // A new session from the same address registers meanwhile
+        let mut registration = pin!(maybe_done(registry.register_session(
+            sink.clone(),
+            second,
+            addr(50000),
+            Origin::Accepted,
+            Some(node(2)),
+        )));
+        _ = poll!(registration.as_mut());
+
+        _ = release_remove.send(());
+        teardown.await;
+        registration.await;
+
+        assert!(registry.has_sessions(&addr(50000)));
+        assert_eq!(sink.claims(), HashMap::from([(tcp(50000), vec![node(2)])]));
+
+        // And the adjacency leaves with the new session
+        registry.unregister_session(&addr(2), &addr(50000)).await;
+        assert!(sink.claims().is_empty());
     }
 
     #[tokio::test]
