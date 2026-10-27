@@ -41,6 +41,13 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | **Multi-Format Parsing (CFG-02)** | Verify that TOML, YAML, and JSON config files all override defaults correctly. | `src/config.rs` | Valid config in each format. | Config struct matches file values. |
 | **Env Override (CFG-03)** | Verify environment variables take precedence over config file values, including nested TCPCLv4 fields via `__` separator. | `src/config.rs` | File + env `HARDY_TCPCLV4_BPA_ADDRESS`. | Env var wins. |
 
+### 3.2 Static Peers
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Keep-up (PEER-01)** | Verify a static peer is dialled again when its session ends. | `src/server.rs` | A peer behind a TCP relay; the relayed connection is cut after the session is up. | A second session is dialled and registered at both ends; cancellation stops the loop. |
+| **Unregistered (PEER-02)** | Verify dialling stops once the entity has unregistered. | `src/server.rs` | An unregistered entity. | `connect_peer` returns after the refused dial. |
+
 Additional validation tests cover: missing config file → error, invalid log level, negative or zero MRU, invalid listener address, an empty listener list (dial-only), keepalive zero (disabled) and `null` refused, the TLS section (full parse, key-file alias, lone identity half, contradictions named at build, insecure-skip-verify precedence), malformed TOML/YAML, unknown fields ignored, and large MRU values.
 
 ## 4. System Test Cases (Black-Box Execution)

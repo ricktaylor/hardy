@@ -55,6 +55,13 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 | `unknown_fields_ignored` | Extra fields accepted |
 | `large_segment_mru` | Large MRU value accepted |
 
+### Unit Tests (2 tests in `server.rs`)
+
+| Test Function | Scope |
+| :--- | :--- |
+| `static_peer_is_redialled_when_its_session_ends` | PEER-01: a cut session to a static peer is dialled again, and cancellation stops the loop |
+| `static_peer_dialling_stops_once_unregistered` | PEER-02: an unregistered entity stops dialling |
+
 ### Cross-Coverage from Other Test Suites
 
 Lifecycle scenarios (startup, registration, shutdown) are exercised by:
@@ -68,6 +75,7 @@ Lifecycle scenarios (startup, registration, shutdown) are exercised by:
 | :--- | :--- | :--- | :--- | :--- |
 | Configuration (CFG-01..03) | Defaults, multi-format parsing, env overrides, validation | 3 | 3 | Complete (24 tests) |
 | Server lifecycle (SYS-01..03) | Startup, registration, shutdown | 3 | 3 | Exercised by interop + CI (implicit) |
+| Static peers (PEER-01..02) | Keep-up redial, stop on unregistration | 2 | 2 | Complete (2 tests) |
 | Performance (PERF-SRV-01) | Throughput | 1 | 0 | Full Activity scope |
 | Packaging (PKG-OCI-01, PKG-HELM-01) | OCI image, Helm chart | 2 | 0 | Full Activity scope |
 

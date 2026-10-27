@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- Static `peers` are kept connected: the server dials each again whenever no session to it remains, at most once every 5 seconds, instead of dialling only until the first session is up. After a peer restarted, or a link went away and came back, nothing redialled it, so a node that relied on its own dial (both ends listing each other, or a link that alternates between peers) stopped forwarding to that peer until this server was restarted. Dialling stops when the server is cancelled or unregisters from the BPA.
+
 ### Changed
 - The configured transfer MRU is declared to the BPA at registration, so the effective size cap reported back (and advertised to peers in `SESS_INIT`) folds the BPA's own limit with the MRU.
 - **BREAKING**: the TCPCLv4 config-file schema is owned by this crate (previously deserialized through `hardy-tcpclv4`'s serde types) and mapped onto the library's `Tcpclv4::builder()`; the library's example configuration files (`example_config.toml`/`.yaml`) now live here, and the `HARDY_TCPCLV4_*` environment overrides continue to apply per key (a `listeners` override is not expressible through the environment, as the removed `address` override was). Absent keys defer to the library's defaults instead of restating them. The `address` key is replaced by `listeners`, a list with one entry per listening element: absent listens on the IANA-registered `[::]:4556`, and an empty list is the dial-only spelling that `address: null` used to be. An explicit `keepalive-interval: null` is refused at parse with the replacement named (`0` disables keepalives). Out-of-range values are startup errors instead of warnings: `contact-timeout` must be 1 to 60 seconds (RFC 9174 Section 4.2), and `segment-mru`, `transfer-mru`, and `connection-rate-limit` must be greater than zero.

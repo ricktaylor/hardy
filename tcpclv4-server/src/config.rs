@@ -197,8 +197,9 @@ pub struct Config {
     #[serde(default = "default_cla_name")]
     pub cla_name: String,
 
-    // Peer addresses to connect to on startup (e.g. ["bpa2:4556"]).
-    // Each entry is resolved via DNS and a TCPCLv4 session is established.
+    // Peer addresses to keep connected (e.g. ["bpa2:4556"]). Each entry is
+    // resolved via DNS and dialled at startup, and dialled again whenever
+    // no session to it remains, at most once every 5 seconds.
     #[serde(default)]
     pub peers: Vec<String>,
 

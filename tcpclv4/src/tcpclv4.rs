@@ -119,12 +119,15 @@ impl Tcpclv4 {
 
     /// Initiates a TCP connection to a remote peer (RFC 9174 Section 3).
     ///
-    /// Retries up to 5 times on timeout before returning an error.
+    /// Retries up to 5 times on timeout before returning an error. Returns [`cla::Error::Disconnected`] before registration and once the entity has unregistered.
     pub async fn connect(&self, remote_addr: &SocketAddr) -> cla::Result<()> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("connect called before on_register!");
             cla::Error::Disconnected
         })?;
+        if self.session_cancel_token.is_cancelled() {
+            return Err(cla::Error::Disconnected);
+        }
 
         for _ in 0..5 {
             let conn = connection::connect::Connector {
@@ -142,6 +145,13 @@ impl Tcpclv4 {
         Err(cla::Error::Internal(
             Error::from(session::Error::PeerTimeout).into(),
         ))
+    }
+
+    /// Waits until this entity holds no session to `remote_addr`, dialled or accepted.
+    ///
+    /// Returns at once when there is none. An embedder that keeps a peer connected waits on this after [`connect`](Self::connect) succeeds, then dials again.
+    pub async fn disconnected(&self, remote_addr: &SocketAddr) {
+        self.registry.sessions_closed(remote_addr).await
     }
 
     /// Creates a ConnectionContext for use in connect/forward operations.
