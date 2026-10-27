@@ -307,8 +307,9 @@ impl Cla for Tcpclv4 {
 const DIAL_ATTEMPTS: usize = 5;
 
 // Transmit a bundle to `remote_addr` over a pooled session, dialing new
-// connections as the pool allows, and return the terminal outcome of the
-// transfer: `Completed` only once the peer has fully acknowledged it.
+// connections as the pool allows (only to an address a dialled session has
+// reached), and return the terminal outcome of the transfer: `Completed`
+// only once the peer has fully acknowledged it.
 async fn transmit(
     tasks: Arc<hardy_async::TaskPool>,
     ctx: &connection::context::ConnectionContext,
@@ -333,11 +334,21 @@ async fn transmit(
             }
         };
 
+        // An address no dialled session has reached belongs to a pool of
+        // accepted sessions, the peer's source address: there is nothing to
+        // dial, so queue on whatever session remains
+        let Some(dial_lock) = ctx.registry.dial_lock(&remote_addr) else {
+            return ctx
+                .registry
+                .forward(&remote_addr, bundle, connection::OnBusy::Queue)
+                .await
+                .unwrap_or(TransferOutcome::Failed);
+        };
+
         // One dial at a time per peer: concurrent forwards coalesce here
         // rather than racing parallel dials, and the pool is re-checked
         // under the lock — the previous holder's session may already be
         // registered
-        let dial_lock = ctx.registry.dial_lock(remote_addr);
         let _dialing = dial_lock.lock().await;
         bundle = match ctx
             .registry
@@ -472,6 +483,40 @@ mod tests {
             .unwrap();
         cla.on_register(Box::new(MockSink), &[], None).await;
         assert_eq!(cla.inner.get().unwrap().segment_mru, segment);
+    }
+
+    // A forward whose pool has gone dials only an address a dialled
+    // session has reached: the address of a pool of accepted sessions is
+    // the peer's source port, so the transfer fails back to the BPA rather
+    // than dialling it. A listener stands in for that port, and
+    // `transmit` returning is the barrier after which a dial would be
+    // sitting in its accept queue.
+    #[tokio::test]
+    async fn transmit_never_dials_an_address_no_dialled_session_reached() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let cla = Tcpclv4::builder()
+            .contact_timeout(ContactTimeout::new(1).unwrap())
+            .build()
+            .unwrap();
+        cla.on_register(Box::new(MockSink), &[], None).await;
+        let ctx = cla.connection_context().unwrap();
+
+        let outcome = transmit(
+            cla.tasks.clone(),
+            &ctx,
+            address,
+            hardy_bpa::Bytes::from_static(b"bundle"),
+        )
+        .await;
+        assert_eq!(outcome, TransferOutcome::Failed);
+        assert_eq!(
+            listener.accept().map_err(|e| e.kind()).err(),
+            Some(std::io::ErrorKind::WouldBlock),
+            "transmit dialled an address no dialled session had reached"
+        );
     }
 
     // RFC 9174 Section 2.1: an entity may support zero or more passive

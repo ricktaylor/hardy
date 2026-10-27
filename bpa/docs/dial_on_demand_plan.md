@@ -19,7 +19,7 @@ The fourth job conflates two kinds of address: one a CLA can resolve and dial (a
 
 ### Dialling happens in the wrong places
 
-- **Inside `forward`.** `tcpclv4` dials any TCP address it holds no session for: to grow a busy pool, and for an in-flight transfer whose pool has died. A pool of inbound sessions is keyed by the peer's ephemeral source port, so both cases can dial an address that accepts nothing ([tcpclv4 Peer identity](../../tcpclv4/docs/design.md#peer-identity)). Reachability is probed per bundle: the deferred-`Failed` loop in [`design.md`](design.md#deferred-cla-transfer-outcomes) is, by design, the only probe a plan-less static route has, and it runs un-damped.
+- **Inside `forward`.** `tcpclv4` dials a TCP address it has dialled before: to grow a busy pool, and for an in-flight transfer whose pool has died. A pool of inbound sessions, keyed by the peer's ephemeral source port, is never dialled ([tcpclv4 Peer identity](../../tcpclv4/docs/design.md#peer-identity)). Reachability is probed per bundle: the deferred-`Failed` loop in [`design.md`](design.md#deferred-cla-transfer-outcomes) is, by design, the only probe a plan-less static route has, and it runs un-damped.
 - **In an application, once.** `tcpclv4-server` resolves its configured `peers` by DNS at startup, dials the first address only, and does not redial after the session ends. `bpa-server` has no dial targets: its TCPCLv4 sessions are all inbound. `bp ping` calls `Tcpclv4::connect` directly and then sleeps, because nothing reports when the session's adjacency exists.
 - **Nowhere, for EID resolution.** Requirement 6.1.4 ([`requirements.md`](../../docs/requirements.md)) asks for an API that resolves EIDs to available CLA addresses, for example by DNS for TCPCLv4. None exists.
 

@@ -56,11 +56,11 @@ This approach was chosen because the state transitions are linear during setup, 
 Each `ConnectionPool` maintains separate sets of idle and active connections. When forwarding a bundle:
 
 1. Try an idle connection first, moving it to the active set
-2. If no idle connections exist and the pool isn't at capacity, signal the caller to dial the pool's address (for a pool of inbound sessions that address is the peer's source port: see [Peer identity](#peer-identity))
-3. If at capacity, queue to a random active connection
+2. If no idle connections exist, the pool's address can be dialled and the pool isn't at capacity, signal the caller to dial the pool's address (a pool of inbound sessions is never dialled: see [Peer identity](#peer-identity))
+3. Otherwise, queue to a random active connection
 4. If establishing a new connection fails while sessions remain open, queue to a busy session anyway — a peer with asymmetric reachability (RFC 9174 Section 3.3) can hold a session open without being able to accept another
 
-This balances connection reuse against parallelism. The `max_idle_connections` configuration (default: 6) limits memory usage from idle connections while allowing burst capacity. Concurrent forwards may each signal a dial before the first new session registers, briefly overshooting the bound; excess connections are shed after use when they fail the idle-return check.
+This balances connection reuse against parallelism. The `max_idle_connections` configuration (default: 6) is a soft cap on a pool's sessions, active plus idle: a busy pool under it dials, and a session that finishes a transfer over it is closed rather than returned to the idle set. Concurrent forwards may each signal a dial before the first new session registers, briefly overshooting the bound; excess connections are shed after use when they fail the idle-return check.
 
 ### Peer identity
 
@@ -72,7 +72,7 @@ This balances connection reuse against parallelism. The `max_idle_connections` c
 - A multi-homed node appears once per address, with independent failover.
 - Every adjacency has its own egress queues, flow controller and `max_outstanding_transfers` budget, so a node's budget scales with its adjacency count.
 
-**Inbound pools are dialled today.** An inbound pool's address is the peer's source address, normally an ephemeral port that accepts no connections. A busy inbound pool with spare capacity dials it like any other (step 2 of the pooling strategy): against a firewalled peer each such forward waits out the contact timeout before falling back to the busy session, and every inbound address that has overflowed leaves a permanent entry in the registry's dial-lock map. The target: an inbound pool is never dialled. A pool records whether its address can be dialled (it can when an outbound connect created the pool), and a busy inbound pool queues.
+**An inbound pool is never dialled.** An inbound pool's address is the peer's source address, normally an ephemeral port that accepts no connections. A pool records whether its address can be dialled: it can once a session this entity dialled has joined it. A busy inbound pool queues on one of its sessions (step 3 of the pooling strategy) rather than waiting out a dial against an address that accepts nothing, and a forward whose pool has gone redials only an address a dialled session has reached, so the registry's dial-lock map holds dialled addresses only.
 
 **A pool can hold two nodes today.** A session whose node ID differs from its pool's (an address reused by another node, or a peer that changed identity) joins the pool, but the BPA refuses a second adjacency on a claimed address. The second node is then unroutable, while bundles for the first can leave over the second node's session, although RFC 9174 Section 4.6 associates a session with the node ID in its own SESS_INIT. The target: such a session is not pooled with the other node's sessions.
 
@@ -193,7 +193,7 @@ The library parses no configuration files: `Tcpclv4::builder()` is the construct
 | `listen(SocketAddr)` / `listen_default()` | no listeners | Adds a passive listening element, zero or more per RFC 9174 Section 2.1, bound eagerly by `build()`; `listen_default()` is the IANA-registered `[::]:4556` (Section 8.1) |
 | `segment_mru(NonZeroU64)` | 16384 | Maximum segment payload size to receive, advertised in SESS_INIT; a received XFER_SEGMENT is not yet checked against it |
 | `transfer_mru(NonZeroU64)` | 1 GiB | Maximum total bundle size to receive (assembled in memory) |
-| `max_idle_connections(usize)` | 6 | Maximum idle connections per peer address; 0 disables pooling |
+| `max_idle_connections(usize)` | 6 | Soft cap on a pool's sessions, active plus idle, per remote socket address: a busy dialable pool under it dials another session; 0 disables pooling |
 | `connection_rate_limit(NonZeroU32)` | 64 | Maximum incoming connections per second |
 | `contact_timeout(ContactTimeout)` | 15 s | Wait for the contact header; the type bounds it to 1..=60 seconds (Section 4.2) |
 | `keepalive_interval(KeepaliveInterval)` / `no_keepalive()` | 60 s | Keepalive proposal; disabled is the wire zero (Section 4.7) |
@@ -232,7 +232,7 @@ A standalone application linking this library with hardy-proto for gRPC connecti
 - **Outbound transfer pipelining**: A session completes each outbound transfer (fully acknowledged) before accepting the next, so per-peer goodput is bounded by one bundle per round trip. RFC 9174 Section 3.7 explicitly permits pipelining transfers without waiting for acknowledgments. A transfer window is blocked on the BPA egress-policy work supplying more than one in-flight forward per peer; the strict-FIFO ack matcher and ingest ordering already generalise across concurrent transfers
 - **Priority queues**: Exposing `Cla::queue_count()` priority queues, most likely mapped to parallel sessions per peer — RFC 9174 Section 3.2 names multiple sessions as the interleaving mechanism, and strict priority on a single session would conflict with the no-interleaving rule
 - **The refusal cause under native ingress streaming**: The session reassembles a transfer before dispatching it, so a BPA refusal can only mean a bundle over the cap, which it answers with XFER_REFUSE `NotAcceptable`. Once segments dispatch as they arrive, a transfer cut short is refused too, and RFC 9174 Section 5.2.3 gives that case its own code, `Retransmit` (0x03). `cla::Acceptance::Refused` carries no cause, so the session cannot choose between them; the native-streaming leg settles how a cause reaches the CLA
-- **Peer identity**: never dialling inbound pools, one node per pool, the teardown lock, and RFC 9174 Section 4.4.4.3 node ID authentication once NODE-ID certificates can be issued; see [Peer identity](#peer-identity)
+- **Peer identity**: one node per pool, the teardown lock, and RFC 9174 Section 4.4.4.3 node ID authentication once NODE-ID certificates can be issued; see [Peer identity](#peer-identity)
 - **Dialling moves to the BPA's dial subsystem**: `Tcpclv4::connect` becomes the CLA's registered dial capability and `forward` stops dialling an address with no session ([`dial_on_demand_plan.md`](../../bpa/docs/dial_on_demand_plan.md))
 - **Uniform writer-task tracking**: The active-side writer task is spawned on the CLA task pool while the passive-side writer is not, so unregistration does not wait for passive writers to finish their final flush
 

@@ -16,6 +16,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+// How a session came to be: dialled by this entity or accepted from the
+// peer. A pool's address can be dialled only once a dialled session has
+// reached it; the address of an accepted session is the peer's source
+// address, normally an ephemeral port that accepts nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    Dialled,
+    Accepted,
+}
+
 // What a forward should do when every pooled session is busy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnBusy {
@@ -40,6 +50,9 @@ struct ConnectionPoolInner {
     active: HashMap<SocketAddr, ConnectionTx>,
     idle: Vec<Connection>,
     peers: HashSet<NodeId>,
+    // Whether the pool's address accepts connections: true once a dialled
+    // session has joined the pool. A pool of accepted sessions never dials.
+    dialable: bool,
 }
 
 struct ConnectionPool {
@@ -52,6 +65,7 @@ struct ConnectionPool {
 impl ConnectionPool {
     fn new(
         conn: Connection,
+        origin: Origin,
         sink: Arc<dyn hardy_bpa::cla::Sink>,
         remote_addr: SocketAddr,
         max_idle: usize,
@@ -62,6 +76,7 @@ impl ConnectionPool {
                 active: HashMap::new(),
                 idle: vec![conn],
                 peers: HashSet::new(),
+                dialable: origin == Origin::Dialled,
             }),
             sink,
             max_idle,
@@ -77,12 +92,10 @@ impl ConnectionPool {
             .len()
     }
 
-    fn add(&self, conn: Connection) {
-        self.inner
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .idle
-            .push(conn);
+    fn add(&self, conn: Connection, origin: Origin) {
+        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        inner.idle.push(conn);
+        inner.dialable |= origin == Origin::Dialled;
         metrics::gauge!("tcpclv4.pool.idle").increment(1.0);
     }
 
@@ -184,16 +197,15 @@ impl ConnectionPool {
             }
 
             // No idle sessions: prefer dialing a new connection over queueing
-            // behind a busy session while the pool has capacity. Concurrent
-            // forwards may each signal a dial, briefly overshooting the bound;
-            // excess connections are shed after use by the idle-return check
-            // above.
-            if on_busy == OnBusy::Dial
-                && (self.max_idle == 0 || {
-                    let inner = self.inner.lock().trace_expect("Failed to lock mutex");
-                    inner.active.len() + inner.idle.len()
-                } < self.max_idle)
-            {
+            // behind a busy session while the pool has capacity and its
+            // address can be dialled. Concurrent forwards may each signal a
+            // dial, briefly overshooting the bound; excess connections are
+            // shed after use by the idle-return check above.
+            if on_busy == OnBusy::Dial && {
+                let inner = self.inner.lock().trace_expect("Failed to lock mutex");
+                inner.dialable
+                    && (self.max_idle == 0 || inner.active.len() + inner.idle.len() < self.max_idle)
+            } {
                 return Err(bundle);
             }
 
@@ -239,8 +251,10 @@ pub struct ConnectionRegistry {
     pools: Mutex<HashMap<SocketAddr, Arc<connection::ConnectionPool>>>,
     // One dial at a time per remote address: concurrent forwards that find
     // the pool busy coalesce on this lock instead of racing parallel dials
-    // past the capacity bound. Entries are never removed; the map is bounded
-    // by the deployment's peer-address cardinality.
+    // past the capacity bound. An entry is created when the first dialled
+    // session registers and is never removed, so the map is bounded by the
+    // addresses this entity has dialled, and a forward never dials an
+    // address without one: a pool of accepted sessions, live or gone.
     dial_locks: Mutex<HashMap<SocketAddr, Arc<tokio::sync::Mutex<()>>>>,
     // Bounds transfers accepted but not yet resolved with an outcome, per
     // peer: a forward holds a permit from acceptance until its outcome is
@@ -278,15 +292,15 @@ impl ConnectionRegistry {
             })
     }
 
-    // The per-address dial lock. Callers re-check the pool after acquisition:
-    // the previous holder's session may already be registered.
-    pub fn dial_lock(&self, remote_addr: SocketAddr) -> Arc<tokio::sync::Mutex<()>> {
+    // The per-address dial lock, `None` for an address no dialled session
+    // has reached. Callers re-check the pool after acquisition: the previous
+    // holder's session may already be registered.
+    pub fn dial_lock(&self, remote_addr: &SocketAddr) -> Option<Arc<tokio::sync::Mutex<()>>> {
         self.dial_locks
             .lock()
             .trace_expect("Failed to lock mutex")
-            .entry(remote_addr)
-            .or_default()
-            .clone()
+            .get(remote_addr)
+            .cloned()
     }
 
     // The per-address transfer-permit semaphore, created on first use.
@@ -328,8 +342,17 @@ impl ConnectionRegistry {
         sink: Arc<dyn hardy_bpa::cla::Sink>,
         conn: Connection,
         remote_addr: SocketAddr,
+        origin: Origin,
         node_id: Option<NodeId>,
     ) {
+        if origin == Origin::Dialled {
+            self.dial_locks
+                .lock()
+                .trace_expect("Failed to lock mutex")
+                .entry(remote_addr)
+                .or_default();
+        }
+
         let pool = match self
             .pools
             .lock()
@@ -338,12 +361,13 @@ impl ConnectionRegistry {
         {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let pool = e.get_mut();
-                pool.add(conn);
+                pool.add(conn, origin);
                 pool.clone()
             }
             std::collections::hash_map::Entry::Vacant(e) => e
                 .insert(Arc::new(connection::ConnectionPool::new(
                     conn,
+                    origin,
                     sink,
                     remote_addr,
                     self.max_idle,
@@ -390,7 +414,8 @@ impl ConnectionRegistry {
     // Forward a bundle over a pooled session for `remote_addr`.
     //
     // With `OnBusy::Dial`, Err(bundle) signals the caller to establish a new
-    // connection (the pool has capacity and no session is free). With
+    // connection (the pool's address can be dialled, the pool has capacity
+    // and no session is free); a busy pool of accepted sessions queues. With
     // `OnBusy::Queue`, busy sessions are queued on instead — the fallback for
     // peers that hold a session open but cannot accept new connections.
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
@@ -503,7 +528,7 @@ mod tests {
     #[tokio::test]
     async fn dials_when_under_capacity_and_all_sessions_busy() {
         let (conn, _rx) = conn(1);
-        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        let pool = ConnectionPool::new(conn, Origin::Dialled, Arc::new(MockSink), addr(4556), 6);
         make_busy(&pool);
 
         // Must signal a dial without blocking on the busy session
@@ -513,7 +538,7 @@ mod tests {
         )
         .await
         .expect("try_send queued on a busy session instead of signalling a dial");
-        assert!(r.is_err());
+        assert_eq!(r, Err(hardy_bpa::Bytes::from_static(b"bundle")));
     }
 
     #[tokio::test]
@@ -525,7 +550,7 @@ mod tests {
 
         // A max_idle of 1 with two busy connections puts the pool over
         // capacity, so the forward queues rather than dialling
-        let pool = ConnectionPool::new(conn1, Arc::new(MockSink), addr(4556), 1);
+        let pool = ConnectionPool::new(conn1, Origin::Dialled, Arc::new(MockSink), addr(4556), 1);
         make_busy(&pool);
         pool.inner
             .lock()
@@ -544,7 +569,7 @@ mod tests {
         let (conn, rx) = conn(1);
         serve_completed(rx);
 
-        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        let pool = ConnectionPool::new(conn, Origin::Dialled, Arc::new(MockSink), addr(4556), 6);
         make_busy(&pool);
 
         // With dialling ruled out, the forward queues despite spare capacity
@@ -554,12 +579,86 @@ mod tests {
         assert!(matches!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed)));
     }
 
+    // A pool of accepted sessions is keyed by the peer's source address,
+    // which accepts no connections: busy, it queues on a session rather
+    // than signalling a dial, whatever its spare capacity.
+    #[tokio::test]
+    async fn busy_pool_of_accepted_sessions_queues_instead_of_dialling() {
+        let (conn, rx) = conn(1);
+        serve_completed(rx);
+
+        let pool = ConnectionPool::new(conn, Origin::Accepted, Arc::new(MockSink), addr(50000), 6);
+        make_busy(&pool);
+
+        let r = pool
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
+            .await;
+        assert!(matches!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed)));
+    }
+
+    // A dialled session joining a pool of accepted sessions at the same
+    // address proves the address accepts connections, so the pool grows by
+    // dialling from then on.
+    #[tokio::test]
+    async fn dialled_session_makes_its_pool_dialable() {
+        let (conn1, _rx1) = conn(1);
+        let (conn2, _rx2) = conn(2);
+        let pool = ConnectionPool::new(conn1, Origin::Accepted, Arc::new(MockSink), addr(4556), 6);
+        pool.add(conn2, Origin::Dialled);
+        make_busy(&pool);
+        make_busy(&pool);
+
+        // the timeout only bounds a regression: a dial signal returns at once
+        let r = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            pool.try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial),
+        )
+        .await
+        .expect("try_send queued on a busy session instead of signalling a dial");
+        assert_eq!(r, Err(hardy_bpa::Bytes::from_static(b"bundle")));
+    }
+
+    // Only an address a dialled session has reached gets a dial lock, so a
+    // forward can never dial a peer's source address, even once the pool of
+    // its accepted sessions has gone, and the lock map stays bounded by the
+    // dialled addresses.
+    #[tokio::test]
+    async fn only_dialled_addresses_get_a_dial_lock() {
+        let registry = ConnectionRegistry::new(6, core::num::NonZeroUsize::new(16).unwrap());
+        let (accepted, _rx1) = conn(1);
+        let (dialled, _rx2) = conn(2);
+
+        registry
+            .register_session(
+                Arc::new(MockSink),
+                accepted,
+                addr(50000),
+                Origin::Accepted,
+                None,
+            )
+            .await;
+        registry
+            .register_session(
+                Arc::new(MockSink),
+                dialled,
+                addr(4556),
+                Origin::Dialled,
+                None,
+            )
+            .await;
+        registry.unregister_session(&addr(1), &addr(50000)).await;
+        registry.unregister_session(&addr(2), &addr(4556)).await;
+
+        assert!(registry.dial_lock(&addr(50000)).is_none());
+        assert!(registry.dial_lock(&addr(4556)).is_some());
+    }
+
     #[tokio::test]
     async fn idle_session_is_used_and_returned() {
         let (conn, rx) = conn(1);
         serve_completed(rx);
 
-        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        let pool = ConnectionPool::new(conn, Origin::Dialled, Arc::new(MockSink), addr(4556), 6);
         let r = pool
             .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
             .await;
