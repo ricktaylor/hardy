@@ -289,6 +289,9 @@ pub struct ConnectionRegistry {
     // changes are rare (a session coming or going), and forwarding never
     // takes it.
     membership: tokio::sync::Mutex<()>,
+    // Woken whenever a pool leaves the registry, for waiters on an
+    // address losing its last session.
+    pool_closed: tokio::sync::Notify,
     // One dial at a time per remote address: concurrent forwards that find
     // the pool busy coalesce on this lock instead of racing parallel dials
     // past the capacity bound. An entry is created when the first dialled
@@ -314,6 +317,7 @@ impl ConnectionRegistry {
         Self {
             pools: Mutex::new(HashMap::new()),
             membership: tokio::sync::Mutex::new(()),
+            pool_closed: tokio::sync::Notify::new(),
             dial_locks: Mutex::new(HashMap::new()),
             transfer_permits: Mutex::new(HashMap::new()),
             max_idle,
@@ -331,6 +335,21 @@ impl ConnectionRegistry {
                 let inner = pool.inner.lock().trace_expect("Failed to lock mutex");
                 !inner.active.is_empty() || !inner.idle.is_empty()
             })
+    }
+
+    // Waits until no session exists for `remote_addr`.
+    pub async fn sessions_closed(&self, remote_addr: &SocketAddr) {
+        loop {
+            // Enabled before the check, so a pool closing in between still
+            // wakes this waiter
+            let closed = self.pool_closed.notified();
+            let mut closed = core::pin::pin!(closed);
+            closed.as_mut().enable();
+            if !self.has_sessions(remote_addr) {
+                return;
+            }
+            closed.await;
+        }
     }
 
     // The per-address dial lock, `None` for an address no dialled session
@@ -370,6 +389,7 @@ impl ConnectionRegistry {
 
         // Closing tx channels causes session::run tasks to exit
         pools.clear();
+        self.pool_closed.notify_waiters();
 
         self.transfer_permits
             .lock()
@@ -438,6 +458,7 @@ impl ConnectionRegistry {
             pools.remove(remote_addr);
             pool
         };
+        self.pool_closed.notify_waiters();
 
         // The peer's session pool is gone: evict its permit semaphore so
         // the map tracks peer churn instead of growing monotonically.
@@ -1003,6 +1024,28 @@ mod tests {
             )
             .await;
         assert_eq!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed));
+    }
+
+    // A wait for an address's sessions to close returns once the last one
+    // has gone, and at once when there is none.
+    #[tokio::test]
+    async fn sessions_closed_waits_for_the_last_session() {
+        let sink = Arc::new(ClaimingSink::default());
+        let registry = registry();
+        let _a = register(&registry, &sink, 1, 4556, Origin::Dialled, node(2)).await;
+        let _b = register(&registry, &sink, 2, 4556, Origin::Dialled, node(2)).await;
+
+        let remote = addr(4556);
+        let mut closed = pin!(registry.sessions_closed(&remote));
+        assert!(poll!(closed.as_mut()).is_pending());
+
+        registry.unregister_session(&addr(1), &remote).await;
+        assert!(poll!(closed.as_mut()).is_pending());
+
+        registry.unregister_session(&addr(2), &remote).await;
+        assert!(poll!(closed.as_mut()).is_ready());
+
+        assert!(poll!(pin!(registry.sessions_closed(&remote))).is_ready());
     }
 
     #[tokio::test]
