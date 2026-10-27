@@ -135,6 +135,7 @@ above. The TCPCLv4 options are flattened to the top level (not nested).
 | `bpa-address` | URL string | *Required* | BPA gRPC endpoint to connect to. |
 | `cla-name` | String | *Required* | Name to register with the BPA. |
 | `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. |
+| `peers` | List of `host:port` strings | `[]` | Peers to keep connected. Each is resolved via DNS and dialled at startup, and dialled again whenever no session to it remains (the peer restarted, or the link went away), at most once every 5 seconds. Two nodes may list each other: each forwards over the sessions it dialled. |
 
 The default configuration file is `hardy-tcpclv4.yaml` in the current
 directory. Environment variable prefix is `HARDY_TCPCLV4_`.
