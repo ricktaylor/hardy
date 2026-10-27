@@ -45,7 +45,7 @@ The gRPC client implements the `Sink` trait, providing the same interface that i
 
 ### Static Peers Are Kept Connected
 
-Each entry in `peers` is resolved and dialled at startup, then dialled again whenever the entity holds no session to the dialled address: a peer that restarts, or a link that goes away and comes back, is reconnected without restarting this server. The server waits on `Tcpclv4::disconnected` rather than polling, and starts dials of one peer at least 5 seconds apart, so a peer that refuses or drops every session is retried at that pace. Dialling stops when the server is cancelled or the entity unregisters from the BPA.
+Each entry in `peers` is resolved and dialled at startup, then dialled again whenever the entity holds no session to the dialled address: a peer that restarts, or a link that goes away and comes back, is reconnected without restarting this server. The server waits on `Tcpclv4::disconnected` rather than polling, and starts dials of one peer at least 5 seconds apart, so a peer that refuses or drops every session is retried at that pace. Dialling stops when the server is cancelled, a dial in progress included, or when the entity unregisters from the BPA.
 
 Both ends may list each other. Each then forwards over the pool it dialled, which grows to `max-idle-connections` sessions, rather than over the session the other end dialled in (see the library's [Peer identity](../../tcpclv4/docs/design.md#peer-identity)), and keeping its own dial up after a peer restart keeps it that way.
 

@@ -177,7 +177,13 @@ impl Tcpclv4Server {
                 Ok(mut addrs) => {
                     if let Some(addr) = addrs.next() {
                         info!("Connecting to peer {peer} ({addr})");
-                        match cla.connect(&addr).await {
+                        // A dial to an unreachable peer can retry for several
+                        // contact timeouts; shutdown does not wait for it
+                        let connected = tokio::select! {
+                            r = cla.connect(&addr) => r,
+                            _ = cancel.cancelled() => return,
+                        };
+                        match connected {
                             Ok(()) => {
                                 info!("Connected to peer {peer}");
                                 tokio::select! {
@@ -354,6 +360,52 @@ mod tests {
 
         cla.on_unregister().await;
         peer.on_unregister().await;
+    }
+
+    // Cancellation stops a dial in progress: a peer that accepts the TCP
+    // connection but never answers holds `connect` for up to five contact
+    // timeouts, and shutdown must not wait for that.
+    #[tokio::test]
+    async fn static_peer_dialling_stops_when_cancelled_mid_dial() {
+        let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = silent.local_addr().unwrap();
+        let cla = Arc::new(
+            Tcpclv4::builder()
+                .contact_timeout(hardy_tcpclv4::ContactTimeout::MAX)
+                .build()
+                .unwrap(),
+        );
+        let (tx, _rx) = mpsc::unbounded_channel();
+        cla.on_register(Box::new(AddPeerSink(tx)), &[ipn(1)], None)
+            .await;
+
+        let cancel = CancellationToken::new();
+        let keep_up = tokio::spawn({
+            let (cla, cancel) = (cla.clone(), cancel.clone());
+            async move {
+                Tcpclv4Server::connect_peer(&cla, &address.to_string(), Duration::ZERO, cancel)
+                    .await
+            }
+        });
+
+        // The dial is in progress: its contact header has arrived, and the
+        // peer will never answer it
+        let (mut dialled, _) = silent.accept().await.unwrap();
+        let mut header = [0u8; 6];
+        tokio::io::AsyncReadExt::read_exact(&mut dialled, &mut header)
+            .await
+            .unwrap();
+        assert_eq!(&header[..4], b"dtn!");
+
+        cancel.cancel();
+        // the timeout only bounds a regression: correct code returns at
+        // once, the regression waits out five 60-second contact timeouts
+        tokio::time::timeout(Duration::from_secs(10), keep_up)
+            .await
+            .expect("connect_peer waited out a dial after cancellation")
+            .unwrap();
+
+        cla.on_unregister().await;
     }
 
     // An entity that has unregistered from the BPA cannot carry sessions,

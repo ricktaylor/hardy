@@ -46,6 +46,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
 | **Keep-up (PEER-01)** | Verify a static peer is dialled again when its session ends. | `src/server.rs` | A peer behind a TCP relay; the relayed connection is cut after the session is up. | A second session is dialled and registered at both ends; cancellation stops the loop. |
+| **Cancelled mid-dial (PEER-03)** | Verify cancellation stops a dial in progress. | `src/server.rs` | A peer that accepts the TCP connection and never answers. | `connect_peer` returns at once on cancellation. |
 | **Unregistered (PEER-02)** | Verify dialling stops once the entity has unregistered. | `src/server.rs` | An unregistered entity. | `connect_peer` returns after the refused dial. |
 
 Additional validation tests cover: missing config file → error, invalid log level, negative or zero MRU, invalid listener address, an empty listener list (dial-only), keepalive zero (disabled) and `null` refused, the TLS section (full parse, key-file alias, lone identity half, contradictions named at build, insecure-skip-verify precedence), malformed TOML/YAML, unknown fields ignored, and large MRU values.

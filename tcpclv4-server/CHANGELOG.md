@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Fixed
-- Static `peers` are kept connected: the server dials each again whenever no session to it remains, at most once every 5 seconds, instead of dialling only until the first session is up. After a peer restarted, or a link went away and came back, nothing redialled it, so a node that relied on its own dial (both ends listing each other, or a link that alternates between peers) stopped forwarding to that peer until this server was restarted. Dialling stops when the server is cancelled or unregisters from the BPA.
+- Static `peers` are kept connected: the server dials each again whenever no session to it remains, at most once every 5 seconds, instead of dialling only until the first session is up. After a peer restarted, or a link went away and came back, nothing redialled it, so a node that relied on its own dial (both ends listing each other, or a link that alternates between peers) stopped forwarding to that peer until this server was restarted. Dialling stops when the server is cancelled, including mid-dial (shutdown no longer waits out a dial to an unreachable peer, up to five contact timeouts), or unregisters from the BPA.
 
 ### Changed
 - The configured transfer MRU is declared to the BPA at registration, so the effective size cap reported back (and advertised to peers in `SESS_INIT`) folds the BPA's own limit with the MRU.
