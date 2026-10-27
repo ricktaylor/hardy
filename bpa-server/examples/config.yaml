@@ -129,7 +129,10 @@ clas:
     # bundle that can be received over this CLA.
     # transfer-mru: 1073741824 # 1 GiB (the default)
 
-    # The maximum number of idle incoming connections to keep open per remote IP address.
+    # A soft cap on the sessions pooled per peer socket address (IP address
+    # and port), active plus idle. A busy pool below it dials another session,
+    # but only to an address this node has dialled before; a session that
+    # finishes a transfer above it is closed. 0 disables pooling.
     # max-idle-connections: 6
 
     # The maximum number of transfers accepted but not yet resolved with an outcome, per peer (zero is rejected).

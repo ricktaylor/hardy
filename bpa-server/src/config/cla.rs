@@ -200,7 +200,8 @@ pub struct Tcpclv4Config {
     // rejected at parse.
     pub transfer_mru: Option<NonZeroU64>,
 
-    // Idle connections retained per remote address; 0 disables pooling.
+    // Soft cap on the sessions pooled per remote socket address, active
+    // plus idle; 0 disables pooling.
     pub max_idle_connections: Option<usize>,
 
     // Transfers accepted but not yet resolved with an outcome, per peer;

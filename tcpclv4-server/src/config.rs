@@ -218,7 +218,8 @@ pub struct Config {
     #[serde(default)]
     pub transfer_mru: Option<NonZeroU64>,
 
-    // Idle connections retained per remote address; 0 disables pooling.
+    // Soft cap on the sessions pooled per remote socket address, active
+    // plus idle; 0 disables pooling.
     #[serde(default)]
     pub max_idle_connections: Option<usize>,
 
