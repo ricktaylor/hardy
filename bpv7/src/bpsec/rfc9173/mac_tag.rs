@@ -18,7 +18,7 @@ impl MacTag {
 
     /// Finalizes a freshly computed MAC into its tag.
     pub(crate) fn from_mac<D: EagerHash>(mac: Hmac<D>) -> Self {
-        Self(Box::from(mac.finalize().into_bytes().as_ref()))
+        Self(Box::from(mac.finalize().into_bytes().as_slice()))
     }
 
     /// Constant-time check of a freshly computed MAC against this tag.

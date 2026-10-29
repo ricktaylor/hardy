@@ -43,7 +43,10 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config = config::Config::load(args.config)?;
 
+    #[cfg(feature = "otel")]
     let _guard = configure_tracing(config.log_level);
+    #[cfg(not(feature = "otel"))]
+    configure_tracing(config.log_level);
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
 
