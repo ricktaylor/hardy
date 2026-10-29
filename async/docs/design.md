@@ -77,6 +77,12 @@ All Hardy services that spawn long-running tasks use `TaskPool` for lifecycle ma
 
 The consistent pattern means shutdown signals propagate uniformly through the system. When the BPA receives SIGTERM, its task pool cascades cancellation to all subsystems.
 
+### Process Termination Signals
+
+Each server binary calls `signal::listen_for_cancel` once from its composition root, wiring SIGINT and SIGTERM (Ctrl-C on Windows) to its top-level pool's cancellation token. SIGHUP is left alone, so a server started under `nohup` keeps running when its terminal hangs up. The `ctrlc` crate was rejected: its `termination` option handles SIGTERM only together with SIGHUP, and either overrides an inherited ignored disposition (defeating `nohup`) or refuses to install at all.
+
+Signal handling is a full-OS concern, so it sits behind its own `signal` feature rather than the `tokio` feature. tokio's signal driver needs its I/O reactor (mio), which builds wanting only the task pool should not carry.
+
 ### With Observability
 
 When the `instrument` feature is enabled, the `spawn!` macro integrates with the distributed tracing infrastructure. This provides visibility into task relationships and helps diagnose concurrency issues in production.
@@ -88,6 +94,7 @@ Feature flags control runtime backend and optional capabilities:
 - **`tokio`** (default): Tokio runtime backend. Implies `std`.
 - **`std`**: Enables std-based synchronization primitives and system thread count queries.
 - **`instrument`**: Enables span instrumentation in the `spawn!` macro.
+- **`signal`**: Enables `signal::listen_for_cancel`. Implies `tokio` and enables tokio's signal handling.
 
 Key external dependencies:
 

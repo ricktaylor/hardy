@@ -46,7 +46,7 @@ pub mod sync;
 pub mod task_pool;
 pub mod time;
 
-#[cfg(feature = "tokio")]
+#[cfg(feature = "signal")]
 pub mod signal;
 
 #[cfg(feature = "watcher")]

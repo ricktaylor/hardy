@@ -21,7 +21,7 @@ instrument = ["hardy-async/instrument"]
 hardy-bpa = { version = "0.2", path = "../bpa" }
 hardy-bpv7 = { version = "0.6", path = "../bpv7" }
 hardy-proto = { version = "0.2", path = "../proto" }
-hardy-async = { version = "0.2", path = "../async", features = ["watcher"] }
+hardy-async = { version = "0.2", path = "../async", features = ["signal", "watcher"] }
 hardy-eid-patterns = { version = "0.4", path = "../eid-patterns" }
 hardy-otel = { version = "0.2", path = "../otel", optional = true }
 tokio = { version = "1", features = ["full"] }

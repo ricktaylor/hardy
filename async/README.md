@@ -22,7 +22,7 @@ hardy-async provides runtime-agnostic async primitives used by all Hardy crates 
 - **TaskPool** -- manages cancellable tasks with three-phase graceful shutdown (signal, close, wait). Derives `Clone` for shared ownership across components
 - **BoundedTaskPool** -- extends TaskPool with semaphore-based concurrency limiting and backpressure. Default limit matches available CPU parallelism
 - **`spawn!` macro** -- tracing-instrumented task spawning with `follows_from` span relationships
-- **Signal handling** -- `signal::listen_for_cancel(&TaskPool)` registers SIGTERM and Ctrl+C handlers
+- **Signal handling** (`signal` feature) -- `signal::listen_for_cancel(&TaskPool)` registers SIGTERM and Ctrl+C handlers
 - **Hierarchical cancellation** -- `child_token()` creates tokens that cancel independently but cascade from parent shutdown
 - **Synchronisation primitives**:
   - `sync::Mutex` / `sync::RwLock` -- general-purpose locks for O(n) or blocking operations
@@ -37,6 +37,7 @@ hardy-async provides runtime-agnostic async primitives used by all Hardy crates 
 - **`tokio`** (default) -- Tokio runtime backend. Implies `std`
 - **`std`** -- Enables std-based sync primitives and OS thread count queries
 - **`instrument`** -- Enables span instrumentation in the `spawn!` macro via `tracing/attributes`
+- **`signal`** -- Enables the `signal` module for full-OS binaries. Implies `tokio` and enables tokio's signal handling, which `tokio` alone does not
 
 ## Usage
 

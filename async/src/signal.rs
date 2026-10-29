@@ -4,6 +4,9 @@
 //! SIGTERM and Ctrl+C, cancelling the provided [`TaskPool`] when received.
 //! This is the standard Hardy shutdown pattern used by all server binaries.
 //!
+//! Requires the `signal` feature, which enables tokio's signal handling.
+//! Process signals are a full-OS concern, so `tokio` alone does not enable it.
+//!
 //! # Example
 //!
 //! ```no_run
