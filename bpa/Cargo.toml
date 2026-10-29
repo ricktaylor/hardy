@@ -51,7 +51,7 @@ rand = { version = "0.10", default-features = false, features = ["alloc", "sys_r
 hashbrown = "0.17"
 foldhash = { version = "0.2", default-features = false }
 smallvec = "1"
-lru = { version = "0.18", default-features = false }
+lru = { version = "0.19", default-features = false }
 portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
 thiserror = { version = "2", default-features = false }
 arc-swap = "1"
