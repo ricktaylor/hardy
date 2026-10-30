@@ -10,7 +10,7 @@ use hardy_bpv7::{
 };
 
 use super::{
-    output::{ChunkReceiver, Resident, pull_headers, pull_whole},
+    output::{ChunkReceiver, PayloadReceiver, Resident, pull_headers, pull_whole},
     *,
 };
 use crate::services::registry::{Service, ServiceImpl};
@@ -119,54 +119,81 @@ impl Dispatcher {
                     .await
             }
             ServiceImpl::Application(app) => {
-                // An Application receives the payload alone, decrypted by
-                // this node as the payload's security acceptor (RFC 9172
-                // §5.1.1), so the whole stored bundle is pulled. The stages
-                // run for their verdict: the removals and the Rewriters
-                // touch neither the payload nor its protection, so the
-                // payload is extracted from the stored bundle. With no key,
-                // park for the next registration, which may bring usable
-                // keys; a payload that fails to decrypt discards the bundle.
-                let data = pull_whole(resident).await;
-                let mut payload = {
-                    let keys =
-                        self.delivery_keys(&bundle, &data, payload_is_encrypted(&bundle.bpv7));
-                    let no_keys = KeySet::EMPTY;
-                    let keys = keys.as_deref().unwrap_or(&no_keys);
-                    if let Err(reason) = self.run_deliver_stages(&bundle, &data, keys, false) {
-                        return OfferOutcome::Dropped(bundle, reason);
-                    }
-                    match payload_bytes(&bundle.bpv7, &data, keys) {
-                        Ok(payload) => payload,
-                        Err(Bpv7Error::InvalidBPSec(bpsec::Error::NoKey)) => {
-                            debug!("Failed to decrypt payload: No valid keys");
-                            return OfferOutcome::Parked(
-                                bundle,
-                                bundle::BundleStatus::WaitingForService {
-                                    service: service_eid,
-                                },
-                                seen,
-                            );
+                // An Application receives the payload alone, announced at the
+                // length it will receive. The stages run for their verdict:
+                // the removals and the Rewriters touch neither the payload
+                // nor its protection, so the payload comes from the stored
+                // bundle.
+                let (total_len, mut stream): (u64, Box<dyn Receiver<Segment>>) =
+                    if payload_is_encrypted(&bundle.bpv7) {
+                        // Decrypted whole by this node as the payload's
+                        // security acceptor (RFC 9172 §5.1.1), so the whole
+                        // stored bundle is pulled, and the payload is
+                        // announced at its decrypted length: a ciphertext that
+                        // carries its authentication tag (RFC 9173 §4.4) is 16
+                        // bytes longer than the plaintext. With no key, park
+                        // for the next registration, which may bring usable
+                        // keys; a payload that fails to decrypt discards the
+                        // bundle.
+                        let data = pull_whole(resident).await;
+                        let payload = {
+                            let keys = self.delivery_keys(&bundle, &data, true);
+                            let no_keys = KeySet::EMPTY;
+                            let keys = keys.as_deref().unwrap_or(&no_keys);
+                            if let Err(reason) =
+                                self.run_deliver_stages(&bundle, &data, keys, false)
+                            {
+                                return OfferOutcome::Dropped(bundle, reason);
+                            }
+                            match payload_bytes(&bundle.bpv7, &data, keys) {
+                                Ok(payload) => payload,
+                                Err(Bpv7Error::InvalidBPSec(bpsec::Error::NoKey)) => {
+                                    debug!("Failed to decrypt payload: No valid keys");
+                                    return OfferOutcome::Parked(
+                                        bundle,
+                                        bundle::BundleStatus::WaitingForService {
+                                            service: service_eid,
+                                        },
+                                        seen,
+                                    );
+                                }
+                                Err(e) => {
+                                    debug!("Failed to decrypt payload: {e}");
+
+                                    // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
+
+                                    return OfferOutcome::Dropped(
+                                        bundle,
+                                        Some(payload_failure_reason(&e)),
+                                    );
+                                }
+                            }
+                        };
+                        (payload.len() as u64, Box::new(payload))
+                    } else {
+                        // A plaintext payload streams from the store as it is
+                        // read, announced at its stored data length, the
+                        // ADU's, known before the first byte: the stages run
+                        // on the held headers and peek.
+                        {
+                            let keys = self.delivery_keys(&bundle, &resident.bytes, false);
+                            let no_keys = KeySet::EMPTY;
+                            let keys = keys.as_deref().unwrap_or(&no_keys);
+                            if let Err(reason) =
+                                self.run_deliver_stages(&bundle, &resident.bytes, keys, false)
+                            {
+                                return OfferOutcome::Dropped(bundle, reason);
+                            }
                         }
-                        Err(e) => {
-                            debug!("Failed to decrypt payload: {e}");
-
-                            // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
-
-                            return OfferOutcome::Dropped(bundle, Some(payload_failure_reason(&e)));
-                        }
-                    }
-                };
-
-                // The whole payload is in hand, so it travels as a single
-                // Final segment.
-                let total_len = payload.len() as u64;
+                        let stream = PayloadReceiver::new(&bundle.bpv7, resident);
+                        (stream.total_len(), Box::new(stream))
+                    };
                 app.on_deliver(
                     bundle.id(),
                     bundle.expiry(),
                     bundle.primary().flags.app_ack_requested,
                     total_len,
-                    &mut payload,
+                    &mut *stream,
                 )
                 .await
             }

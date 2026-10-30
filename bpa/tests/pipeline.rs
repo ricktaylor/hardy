@@ -1512,6 +1512,108 @@ async fn delivery_drops_a_payload_that_fails_to_decrypt() {
     );
 }
 
+/// An Application on a node holding the payload's key receives the
+/// decrypted payload, announced at its decrypted length: this node's own
+/// ciphertext carries the AES-GCM tag (RFC 9173 §4.4), so the stored payload
+/// is 16 bytes longer, and the Application's exact-length buffering accepts
+/// only the decrypted length.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_application_receives_a_decrypted_payload_at_its_decrypted_length() {
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+    let plaintext = b"decrypted at delivery";
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (built, data) = Builder::new(remote_source.clone(), "ipn:0.1.42".parse().unwrap())
+        .with_payload(Cow::Borrowed(plaintext))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let encrypted = parse(Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                1,
+                EncryptContext::AES_GCM(Default::default()),
+                remote_source.clone(),
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+    let stored = encrypted.bundle.blocks[&1].payload_range();
+    assert_eq!(
+        stored.end - stored.start,
+        plaintext.len() as u64 + 16,
+        "the stored ciphertext carries its 16-byte tag"
+    );
+
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .key_provider(Arc::new(FixedKeys(vec![key])))
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let mut inbound = encrypted.data.clone();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let (source, payload) =
+        // Event-driven wait; the timeout only bounds a regression.
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for the decrypted delivery")
+            .expect("Channel closed");
+    assert_eq!(source, remote_source);
+    assert_eq!(payload.as_ref(), plaintext, "the payload arrives decrypted");
+
+    bpa.shutdown().await;
+}
+
 /// The payload's security acceptor cannot process a BCB in a security
 /// context it does not recognise: the bundle is discarded, reported as
 /// `UnknownSecurityOperation` (RFC 9172 §7.1).

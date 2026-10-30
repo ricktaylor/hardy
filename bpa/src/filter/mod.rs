@@ -48,8 +48,9 @@
 //! bundle's resident bytes: the headers always, and the payload while it is
 //! in hand. A payload still streaming from the store reads as
 //! `NotResident`; until a storage backend streams its load, the whole
-//! bundle is resident. At an Application's delivery the whole bundle is
-//! resident, since the payload is decrypted whole.
+//! bundle is resident. At an Application's delivery of a BCB-covered
+//! payload the whole bundle is resident, since the payload is decrypted
+//! whole.
 //!
 //! # Failure and Drop contract
 //!

@@ -13,6 +13,7 @@
 //! untouched.
 
 use alloc::collections::VecDeque;
+use core::ops::Range;
 
 use hardy_bpv7::{bundle::Bundle as Bpv7Bundle, editor::Chunk};
 
@@ -35,6 +36,16 @@ pub struct Resident {
     pub rest: Option<Box<dyn Receiver<Segment>>>,
 }
 
+/// The stored payload block's data range, in the stored bytes. Its length is
+/// the ADU's.
+pub fn payload_data(bundle: &Bpv7Bundle) -> Range<u64> {
+    bundle
+        .blocks
+        .get(&1)
+        .trace_expect("A stored bundle has a payload block")
+        .payload_range()
+}
+
 /// Pulls `stream` until the bytes held reach `bundle`'s payload data and the
 /// payload's first min(`peek`, payload length) bytes after it, or the
 /// stream's `Final`. A payload with no peekable prefix (`peekable_payload`:
@@ -52,11 +63,7 @@ pub async fn pull_headers(
     mut stream: Box<dyn Receiver<Segment>>,
     peek: usize,
 ) -> Resident {
-    let payload = bundle
-        .blocks
-        .get(&1)
-        .trace_expect("A stored bundle has a payload block")
-        .payload_range();
+    let payload = payload_data(bundle);
     // The peek in u64, capped at the payload's length: both are wire-derived.
     let held_peek =
         peekable_payload(bundle).map_or(0, |_| (peek as u64).min(payload.end - payload.start));
@@ -237,8 +244,94 @@ impl Receiver<Segment> for ChunkReceiver {
     }
 }
 
+/// A stored payload's data as a segment stream, for an Application: the
+/// resident part of the payload block's data, then the rest of the load
+/// stream, cut at the data's end. The block's CRC and the outer array's
+/// break that follow are not the ADU, and the stream past them is never
+/// read.
+pub struct PayloadReceiver {
+    // The resident part, until it is yielded.
+    first: Option<Bytes>,
+    rest: Option<Box<dyn Receiver<Segment>>>,
+    // The data bytes still to come from `rest`.
+    remaining: u64,
+    total_len: u64,
+}
+
+impl PayloadReceiver {
+    /// The stream of `bundle`'s payload data out of `resident`, which holds
+    /// at least the bytes up to the data's start ([`pull_headers`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `resident` ends before the data's start.
+    pub fn new(bundle: &Bpv7Bundle, resident: Resident) -> Self {
+        let data = payload_data(bundle);
+        let Resident { bytes, rest } = resident;
+        // Compared in u64, then indexed: the data range is wire-derived, and
+        // both bounds lie within the resident bytes.
+        let held_end = data.end.min(bytes.len() as u64);
+        let index = |offset: u64| {
+            usize::try_from(offset)
+                .trace_expect("The payload's data lies within the resident bytes")
+        };
+        let first = bytes.slice(index(data.start)..index(held_end));
+        let remaining = data.end - held_end;
+        Self {
+            first: Some(first),
+            rest: rest.filter(|_| remaining > 0),
+            remaining,
+            total_len: data.end - data.start,
+        }
+    }
+
+    /// The payload's stored data length, which the stream delivers: the
+    /// ADU's length.
+    pub fn total_len(&self) -> u64 {
+        self.total_len
+    }
+}
+
+#[async_trait]
+impl Receiver<Segment> for PayloadReceiver {
+    async fn recv(&mut self) -> Result<Segment, RecvError> {
+        if let Some(first) = self.first.take() {
+            match &self.rest {
+                None => return Ok(Segment::Final(first)),
+                Some(_) if !first.is_empty() => return Ok(Segment::Next(first)),
+                // Nothing of the data is resident: start with the stream.
+                Some(_) => {}
+            }
+        }
+        let Some(rest) = self.rest.as_mut() else {
+            // Drained past the Final, like a whole buffer: consumers stop at
+            // the first Final.
+            return Ok(Segment::Final(Bytes::new()));
+        };
+        let (data, last) = match rest.recv().await? {
+            Segment::Next(data) => (data, false),
+            Segment::Final(data) => (data, true),
+        };
+        // Compared in u64, then cut: `take` is at most the segment's length.
+        let take = self.remaining.min(data.len() as u64);
+        self.remaining -= take;
+        let data = data.slice(..usize::try_from(take).trace_expect("a cut within the segment"));
+        if self.remaining > 0 && !last {
+            return Ok(Segment::Next(data));
+        }
+        debug_assert_eq!(
+            self.remaining, 0,
+            "the stored payload's data totals its length"
+        );
+        self.rest = None;
+        Ok(Segment::Final(data))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use hardy_bpv7::{
         block::Type,
         builder::Builder,
@@ -457,6 +550,89 @@ mod tests {
             assert_eq!(&resident.bytes[..], &data[..held]);
             assert!(resident.rest.is_some(), "the rest still streams");
         }
+    }
+
+    // A load stream that counts the segments pulled from it.
+    struct Counted {
+        segments: VecDeque<Segment>,
+        pulled: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Receiver<Segment> for Counted {
+        async fn recv(&mut self) -> Result<Segment, RecvError> {
+            self.pulled.fetch_add(1, Ordering::Relaxed);
+            self.segments.pop_front().ok_or(RecvError)
+        }
+    }
+
+    // The stored bundle's segments, cut at `splits`, ending in its Final.
+    fn cut(data: &Bytes, splits: &[usize]) -> VecDeque<Segment> {
+        let mut segments = VecDeque::new();
+        let mut start = 0;
+        for &split in splits {
+            segments.push_back(Segment::Next(data.slice(start..split)));
+            start = split;
+        }
+        segments.push_back(Segment::Final(data.slice(start..)));
+        segments
+    }
+
+    // An Application's stream carries the payload's stored data, and only
+    // it, wherever the load is cut: inside the headers, at the data's start,
+    // inside the data, at its end and inside the CRC after it.
+    #[tokio::test]
+    async fn a_payload_streams_as_its_stored_data() {
+        let (bundle, data) = stored(&[0x7C; 64]);
+        let start = payload_start(&bundle);
+        let end = start + 64;
+        let expected = bundle.blocks[&1].payload(&data).unwrap();
+        for splits in [
+            vec![],
+            vec![10, start + 10],
+            vec![start],
+            vec![start + 3, end - 2],
+            vec![end],
+            vec![start, end + 2],
+        ] {
+            let resident = pull_headers(&bundle, load(&data, &splits).await, 0).await;
+            let mut stream = PayloadReceiver::new(&bundle, resident);
+            assert_eq!(stream.total_len(), 64, "cut at {splits:?}");
+            let segments = drain(&mut stream).await;
+            assert_eq!(concat(&segments), expected, "cut at {splits:?}");
+        }
+    }
+
+    // The stream ends at the data's end: the load's CRC, break and Final
+    // after it are never pulled.
+    #[tokio::test]
+    async fn a_payload_stream_reads_nothing_past_the_data() {
+        let (bundle, data) = stored(&[0x19; 64]);
+        let start = payload_start(&bundle);
+        let end = start + 64;
+        let pulled = Arc::new(AtomicUsize::new(0));
+        let load = Counted {
+            segments: cut(&data, &[start + 3, end, end + 2]),
+            pulled: pulled.clone(),
+        };
+        let resident = pull_headers(&bundle, Box::new(load), 0).await;
+        let mut stream = PayloadReceiver::new(&bundle, resident);
+        let segments = drain(&mut stream).await;
+        assert_eq!(concat(&segments), bundle.blocks[&1].payload(&data).unwrap());
+        assert_eq!(
+            pulled.load(Ordering::Relaxed),
+            2,
+            "the headers' segment and the data's rest, nothing after"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_payload_streams_empty() {
+        let (bundle, data) = stored(b"");
+        let resident = pull_headers(&bundle, Box::new(data.clone()), 0).await;
+        let mut stream = PayloadReceiver::new(&bundle, resident);
+        assert_eq!(stream.total_len(), 0);
+        assert!(matches!(stream.recv().await, Ok(Segment::Final(data)) if data.is_empty()));
     }
 
     // A door that needs the payload whole pulls the load on to its Final,
