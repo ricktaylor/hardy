@@ -6,15 +6,19 @@ use core::{num::NonZeroU64, time::Duration};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
+    builder::BpaBuilder,
     cla,
+    filter::{RewriteContext, Rewriter, pack::FilterPack},
     node_ids::NodeIds,
     services,
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
+    block::{self, Type},
     builder::Builder,
     bundle::{Flags, Id},
+    crc::CrcType,
     creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId, Service},
     parse::parse,
@@ -375,10 +379,11 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
 // Full-path tests: deliver_bundle -> on_deliver
 // ---------------------------------------------------------------------------
 
-/// A streaming service receives the whole bundle as a single `Final`
-/// segment with an exact `total_len`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streaming_service_receives_single_final_segment() {
+// Delivers an inbound bundle from ipn:0.2.1 to a streaming service at
+// ipn:0.1.7 on a BPA built from `builder` as node ipn:0.1, and returns what
+// the service pulled: the bundle id, the segments through the `Final`, and
+// the declared `total_len`, with the bundle as it arrived.
+async fn stream_to_service(builder: BpaBuilder) -> (Id, Vec<Segment>, u64, Bytes) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
@@ -387,7 +392,7 @@ async fn streaming_service_receives_single_final_segment() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = builder.node_ids(node_ids).build().await.unwrap();
     bpa.start(false).await;
 
     let (svc, events_rx) = StreamingService::new(false);
@@ -404,19 +409,16 @@ async fn streaming_service_receives_single_final_segment() {
     )
     .await
     .unwrap();
+    let inbound = build_bundle(
+        &"ipn:0.2.1".parse().unwrap(),
+        &"ipn:0.1.7".parse().unwrap(),
+        b"ping",
+    );
     assert_eq!(
         cla.sink
             .get()
             .unwrap()
-            .dispatch(
-                None,
-                None,
-                &mut build_bundle(
-                    &"ipn:0.2.1".parse().unwrap(),
-                    &"ipn:0.1.7".parse().unwrap(),
-                    b"ping",
-                ),
-            )
+            .dispatch(None, None, &mut inbound.clone())
             .await
             .unwrap(),
         cla::Acceptance::Accepted
@@ -430,25 +432,89 @@ async fn streaming_service_receives_single_final_segment() {
     else {
         panic!("Expected the streamed door, got another event");
     };
-    assert_eq!(segments.len(), 1);
-    let Segment::Final(data) = &segments[0] else {
-        panic!("Expected a single Final segment");
-    };
+
+    // A completed shutdown is the barrier: nothing else reaches the service.
+    bpa.shutdown().await;
+    assert!(events_rx.is_empty());
+    (bundle_id, segments, total_len, inbound)
+}
+
+// The segments' bytes, checked to end in exactly one `Final`.
+fn assemble(segments: &[Segment]) -> Bytes {
+    let (last, init) = segments.split_last().expect("at least the Final");
+    assert!(
+        matches!(last, Segment::Final(_)),
+        "the stream ends in a Final"
+    );
+    assert!(
+        init.iter().all(|s| matches!(s, Segment::Next(_))),
+        "only the last segment is a Final"
+    );
+    segments
+        .iter()
+        .flat_map(|(Segment::Next(data) | Segment::Final(data))| data.iter().copied())
+        .collect::<Vec<u8>>()
+        .into()
+}
+
+/// A streaming service receives the stored bundle, unedited, as segments
+/// ending in a `Final`, with an exact `total_len`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streaming_service_receives_the_stored_bundle() {
+    let (bundle_id, segments, total_len, inbound) = stream_to_service(Bpa::builder()).await;
+    let data = assemble(&segments);
+    assert_eq!(total_len, data.len() as u64);
+    assert_eq!(
+        data, inbound,
+        "an unedited delivery is the bundle as stored"
+    );
+    assert_eq!(bundle_id, parse(data).unwrap().bundle.primary.id);
+}
+
+// A Deliver Rewriter inserting an extension block.
+struct Inserter;
+
+const INSERTED: Type = Type::Unrecognised(200);
+
+impl Rewriter for Inserter {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
+        ctx.editor()
+            .insert(
+                INSERTED,
+                block::Flags::default(),
+                CrcType::None,
+                b"inserted".as_slice().into(),
+            )
+            .expect("an unprotected bundle accepts the insert");
+    }
+}
+
+/// A Deliver Rewriter's edit reaches a raw service as the rebuild's chunks:
+/// several segments ending in a `Final`, with an exact `total_len`, the
+/// insert among the blocks and the payload intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streaming_service_receives_a_rewritten_bundle_as_segments() {
+    let mut pack = FilterPack::new("test");
+    pack.deliver_rewriter("inserter", Inserter);
+    let (bundle_id, segments, total_len, _) =
+        stream_to_service(Bpa::builder().add_filters(pack)).await;
+    assert!(segments.len() > 1, "the rebuild travels as its chunks");
+    let data = assemble(&segments);
     assert_eq!(total_len, data.len() as u64);
 
-    let parsed = parse(data.clone()).expect("Failed to parse delivered bundle");
-    assert_eq!(bundle_id, parsed.bundle.primary.id);
+    let parsed = parse(data).expect("the delivered bundle parses");
+    assert_eq!(parsed.bundle.primary.id, bundle_id);
+    let inserted = parsed
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == INSERTED)
+        .expect("the Rewriter's insert is delivered");
+    assert_eq!(inserted.payload(&parsed.data), Some(&b"inserted"[..]));
     assert_eq!(
-        parsed.bundle.primary.id.source,
-        "ipn:0.2.1".parse().unwrap()
+        parsed.bundle.blocks[&1].payload(&parsed.data),
+        Some(&b"ping"[..])
     );
-    assert_eq!(
-        parsed.bundle.primary.destination,
-        "ipn:0.1.7".parse().unwrap()
-    );
-
-    assert!(events_rx.is_empty());
-    bpa.shutdown().await;
 }
 
 /// A service that buffers via `stream::buffer_stream` still receives the

@@ -214,7 +214,9 @@ pub trait Application: Send + Sync {
     /// `total_len` is the exact number of payload bytes the stream will
     /// deliver — the sum of all segment payload lengths — carried as `u64`
     /// so it remains valid on 32-bit targets. An implementation may size
-    /// buffers from it before pulling the first segment.
+    /// buffers from it before pulling the first segment. It is the payload
+    /// block's stored data length for a payload stored in plaintext, and the
+    /// decrypted length for one this node decrypts as its security acceptor.
     ///
     /// An implementation that needs the whole payload in memory buffers the
     /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),

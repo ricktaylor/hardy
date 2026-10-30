@@ -1,11 +1,21 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
 use futures::join;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::{
+    block::Payload,
+    bpsec::{DecryptingReader, bcb, edit::BPSecEditor, key::KeySource},
+    editor::Editor,
+    eid::Eid,
+    status_report::ReasonCode,
+};
+use hardy_cbor::decode::parse_exact;
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
-use crate::filter::pack::chains::FilterChains;
+use crate::{
+    filter::pack::chains::FilterChains,
+    stream::{Receiver, Segment},
+};
 
 mod admin;
 mod deliver;
@@ -13,6 +23,7 @@ mod dispatch;
 mod forward;
 mod ingress;
 mod originate;
+mod output;
 mod reassemble;
 mod report;
 mod restart;
@@ -70,7 +81,9 @@ enum OfferOutcome {
     /// Deliberate detach: the CLA owns the transfer (`Accepted`) and
     /// resolves the claim later via `transfer_outcome`.
     Detached(bundle::Bundle),
-    /// Re-enter dispatch for a fresh routing decision.
+    /// Re-enter dispatch for a fresh routing decision: `resolve_offer`
+    /// re-claims the bundle out of its hand-off status and reloads it from
+    /// storage first.
     Redispatch(bundle::Bundle),
 }
 
@@ -213,14 +226,29 @@ impl Dispatcher {
     /// `LifetimeExpired`).
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn load_data_or_drop(&self, bundle: bundle::Bundle) -> Option<(bundle::Bundle, Bytes)> {
-        let storage_name = bundle
-            .metadata
-            .storage_name
-            .as_ref()
-            .trace_expect("Bundle without storage_name reached load_data_or_drop");
+        let data = self.store.load_data(stored_name(&bundle)).await;
+        self.loaded_or_drop(bundle, data).await
+    }
 
-        match self.store.load_data(storage_name).await {
-            Some(data) => Some((bundle, data)),
+    /// Open bundle data as a segment stream, dropping the bundle as
+    /// [`load_data_or_drop`](Self::load_data_or_drop) does when the data is
+    /// missing.
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    async fn load_stream_or_drop(
+        &self,
+        bundle: bundle::Bundle,
+    ) -> Option<(bundle::Bundle, Box<dyn Receiver<Segment>>)> {
+        let stream = self.store.load_stream(stored_name(&bundle)).await;
+        self.loaded_or_drop(bundle, stream).await
+    }
+
+    async fn loaded_or_drop<T>(
+        &self,
+        bundle: bundle::Bundle,
+        loaded: Option<T>,
+    ) -> Option<(bundle::Bundle, T)> {
+        match loaded {
+            Some(loaded) => Some((bundle, loaded)),
             None => {
                 if !bundle.has_expired() {
                     // Bundle data was deleted while queued - not reaped
@@ -266,11 +294,7 @@ impl Dispatcher {
     /// arbitrates through the claim-back CAS, so exactly one side proceeds.
     ///
     /// A re-dispatch discards the in-hand copy and re-enters from the
-    /// persisted representation: parks persist status only, and a failure
-    /// exit may hand in a bundle carrying in-memory rewrites (hop count,
-    /// filter mutations) whose block extents no longer index the stored
-    /// bytes. Reloading here keeps that invariant in one place instead of
-    /// at every caller's exit.
+    /// persisted representation ([`reenter_dispatch`](Self::reenter_dispatch)).
     pub async fn park_bundle(
         &self,
         mut bundle: bundle::Bundle,
@@ -288,17 +312,29 @@ impl Dispatcher {
                 .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
                 .await
         {
-            let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
-                // Someone resolved the bundle after the swap (e.g. the
-                // reaper dropped it as expired); their resolution stands.
-                debug!("Re-dispatch lost the bundle to a concurrent resolution");
-                return;
-            };
             debug!("Routing changed mid-flight, re-dispatching parked bundle");
-            return self.dispatch_bundle(bundle).await;
+            return self.reenter_dispatch(&bundle).await;
         }
 
         self.store.watch_bundle(bundle).await
+    }
+
+    /// Re-enters dispatch for a bundle the caller has just re-claimed into
+    /// `Dispatching`, from its persisted record rather than the copy in
+    /// hand: parks persist status only, and the delivery door's failure
+    /// exit hands in a bundle whose block index is the attempt's rebuild
+    /// (the scheduled removals, the Deliver Rewriters), whose extents no
+    /// longer index the stored bytes. The egress door leaves the record as
+    /// stored. Reloading here keeps that invariant in one place instead of
+    /// at every caller's exit.
+    async fn reenter_dispatch(&self, bundle: &bundle::Bundle) {
+        let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
+            // Someone resolved the bundle after the swap (e.g. the reaper
+            // dropped it as expired); their resolution stands.
+            debug!("Re-dispatch lost the bundle to a concurrent resolution");
+            return;
+        };
+        self.dispatch_bundle(bundle).await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
@@ -358,7 +394,27 @@ impl Dispatcher {
                 // still reaps it promptly.
                 self.store.watch_bundle(bundle).await
             }
-            OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
+            OfferOutcome::Redispatch(mut bundle) => {
+                // The re-claim is a conditional swap from the in-hand status:
+                // a concurrent resolver (the reaper, a peer sweep, a
+                // duplicate outcome) may have got there first, and its
+                // resolution stands.
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!(
+                        "Re-dispatch of {} lost the resolution race, ignored",
+                        bundle.id()
+                    );
+                    return;
+                }
+                if matches!(kind, OfferKind::Forward) {
+                    metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
+                }
+                self.reenter_dispatch(&bundle).await
+            }
         }
     }
 
@@ -439,50 +495,125 @@ impl Dispatcher {
         |bundle, data| self.key_provider.key_source(bundle, data)
     }
 
-    fn key_source(
-        &self,
-        bundle: &hardy_bpv7::Bundle,
-        data: &[u8],
-    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
-        self.key_provider.key_source(bundle, data)
-    }
-
     // Applies the §E block removals the ingress gate deferred (RFC 9172
     // §5.1.1 failure-drops and honoured `delete_block_on_failure` unknowns)
-    // to a bundle's wire form for one output attempt, ahead of the door's
-    // filter chain; the stored bundle keeps the blocks. The rebuilt block map
-    // replaces the record's, so the pair stays consistent (the primary is
-    // never replaced). Nothing scheduled costs one branch. bpv7's cascade
-    // retains, rather than fails on, a removal it cannot complete for want of
-    // a key; the bytes were validated at ingress, so any failure here is a
-    // BPA bug or storage corruption, and fatal.
-    fn strip_removed_blocks(&self, bundle: &mut bundle::Bundle, data: Bytes) -> Bytes {
-        use hardy_bpv7::bpsec::edit::BPSecEditor;
-
+    // to the attempt's editor, ahead of the door's filter chain; the stored
+    // bundle keeps the blocks. The editor works over the record's block
+    // index, the parse ingress verified, and its coverage stamps (keyed for a
+    // key holder), so nothing is re-parsed. Nothing scheduled costs one
+    // branch. bpv7's cascade retains, rather than fails on, a removal it
+    // cannot complete for want of a key; the bytes were validated at ingress,
+    // so any failure here is a BPA bug or storage corruption, and fatal.
+    // Returns whether a block was removed.
+    fn strip_removed_blocks<'a>(
+        &self,
+        bundle: &bundle::Bundle,
+        editor: Editor<'a>,
+        keys: &dyn KeySource,
+    ) -> (Editor<'a>, bool) {
         if bundle.metadata.to_remove.is_empty() {
-            return data;
+            return (editor, false);
         }
-        let hardy_bpv7::parse::Parsed {
-            data, bundle: raw, ..
-        } = hardy_bpv7::parse::parse(data).trace_expect("The stored bundle's bytes do not decode");
-        let key_source = self.key_source(&raw, &data);
         let to_remove = bundle.metadata.to_remove.iter().copied().collect();
-        let (editor, _) = hardy_bpv7::editor::Editor::new(&raw, &data)
-            .remove_blocks(to_remove, key_source.as_ref())
+        let (editor, removed) = editor
+            .remove_blocks(to_remove, keys)
             .map_err(|(_, e)| e)
             .trace_expect("The scheduled block removals failed");
-        let (stripped, chunks) = editor
-            .rebuild_bundle()
-            .trace_expect("The scheduled block removals failed to rebuild the bundle");
-        bundle.bpv7.blocks = stripped.blocks;
-        hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data)
+        (editor, !removed.is_empty())
     }
+}
+
+// Whether the payload a local consumer receives must be decrypted: a BCB
+// covers it. The delivery doors derive the attempt's keys for it.
+fn payload_is_encrypted(bundle: &hardy_bpv7::Bundle) -> bool {
+    bundle
+        .blocks
+        .get(&1)
+        .is_some_and(|payload| payload.bcb.is_some())
+}
+
+// The payload a local consumer — an Application, or the administrative
+// endpoint — receives: the wire body, or the plaintext when a BCB covers it,
+// decrypted with `keys` by this node as the payload's security acceptor. It
+// works over `bundle`, the record's block index (the parse ingress verified,
+// or the delivery door's rebuild of it), and decodes only the BCB that covers
+// the payload, so nothing re-parses the stored bytes. Those bytes were
+// validated at ingress and the whole bundle is in hand, so a payload or BCB
+// that is not resident, or a BCB that does not decode, is a BPA bug or
+// storage corruption, and fatal; only the decryption can fail.
+fn payload_bytes(
+    bundle: &hardy_bpv7::Bundle,
+    data: &Bytes,
+    keys: &dyn KeySource,
+) -> Result<Bytes, hardy_bpv7::Error> {
+    let bcb_ops: HashMap<u64, bcb::OperationSet> = bundle
+        .blocks
+        .get(&1)
+        .trace_expect("The delivered bundle has no payload block")
+        .bcb
+        .map(|bcb_number| {
+            let body = bundle
+                .blocks
+                .get(&bcb_number)
+                .and_then(|block| block.payload(data))
+                .trace_expect("The delivered payload's BCB is not resident");
+            let opset = parse_exact::<bcb::OperationSet>(body)
+                .trace_expect("The delivered payload's BCB does not decode");
+            (bcb_number, opset)
+        })
+        .into_iter()
+        .collect();
+    let payload = DecryptingReader::new(&bundle.blocks, data, &bcb_ops, keys)
+        .into_block_data(1)?
+        .trace_expect("The delivered bundle has no resident payload");
+    Ok(match payload {
+        Payload::Borrowed(s) => data.slice_ref(s),
+        Payload::Decrypted(d) => Bytes::from_owner(d),
+    })
+}
+
+// The reason a payload that fails to decrypt, other than for want of a key,
+// is dropped with: a security context this node does not recognise is an
+// unknown operation (RFC 9172 §7.1), anything else a failed one (§5.1.1).
+fn payload_failure_reason(e: &hardy_bpv7::Error) -> ReasonCode {
+    match e {
+        hardy_bpv7::Error::InvalidBPSec(
+            hardy_bpv7::bpsec::Error::UnrecognisedContext(_)
+            | hardy_bpv7::bpsec::Error::UnsupportedOperation,
+        ) => ReasonCode::UnknownSecurityOperation,
+        _ => ReasonCode::FailedSecurityOperation,
+    }
+}
+
+// The storage name of a bundle an output door loads: every record in the
+// pipeline has its data stored.
+fn stored_name(bundle: &bundle::Bundle) -> &str {
+    bundle
+        .metadata
+        .storage_name
+        .as_ref()
+        .trace_expect("Bundle without storage_name reached an output door")
 }
 
 // Fixtures shared by the dispatcher's submodule tests.
 #[cfg(test)]
 pub mod tests {
-    use hardy_bpv7::eid::{IpnNodeId, NodeId};
+    use hardy_bpv7::{
+        bpsec::key::KeySet,
+        builder::Builder,
+        creation_timestamp::CreationTimestamp,
+        eid::{IpnNodeId, NodeId},
+    };
+    #[cfg(feature = "rfc9173")]
+    use hardy_bpv7::{
+        bpsec::{
+            encryptor::{Context, Encryptor},
+            key::{EncAlgorithm, Key, Operation, Type},
+        },
+        parse::{Parsed, parse},
+    };
+    #[cfg(feature = "rfc9173")]
+    use rand::{TryRng, rngs::SysRng};
 
     use super::*;
     use crate::{
@@ -533,5 +664,76 @@ pub mod tests {
             filters,
         );
         dispatcher
+    }
+
+    // A stored bundle carrying `payload`, with its block index.
+    fn stored(payload: &[u8]) -> (hardy_bpv7::Bundle, Bytes) {
+        let (bundle, data) =
+            Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+                .with_payload(payload.to_vec().into())
+                .build(CreationTimestamp::now())
+                .unwrap();
+        (bundle, Bytes::from(data))
+    }
+
+    #[test]
+    fn a_plaintext_payload_is_a_slice_of_the_stored_bytes() {
+        let (bundle, data) = stored(b"delivered as stored");
+        let payload = payload_bytes(&bundle, &data, &KeySet::EMPTY).unwrap();
+        assert_eq!(&payload[..], b"delivered as stored");
+        assert!(
+            data.as_ptr_range().contains(&payload.as_ptr()),
+            "a plaintext payload shares the stored allocation"
+        );
+    }
+
+    /// A delivered bundle's bytes were validated at ingress and come back
+    /// from storage, so a payload the record's index locates past the bytes
+    /// in hand is a BPA bug or storage corruption: fatal, never a park.
+    #[test]
+    #[should_panic(expected = "The delivered bundle has no resident payload")]
+    fn a_delivered_payload_past_the_stored_bytes_is_fatal() {
+        let (bundle, data) = stored(b"cut short in storage");
+        let start = usize::try_from(bundle.blocks[&1].payload_range().start).unwrap();
+        let _ = payload_bytes(&bundle, &data.slice(..start + 2), &KeySet::EMPTY);
+    }
+
+    /// The payload's BCB is decoded from the bytes the record's index
+    /// locates, which were validated at ingress: one that does not decode is
+    /// storage corruption, and fatal.
+    #[cfg(feature = "rfc9173")]
+    #[test]
+    #[should_panic(expected = "The delivered payload's BCB does not decode")]
+    fn an_undecodable_payload_bcb_is_fatal() {
+        // Immaterial key value: nothing decrypts, the payload only has to
+        // carry a BCB; generated per the no-literal-keys rule.
+        let mut k = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut k).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(k),
+            key_algorithm: None,
+            enc_algorithm: Some(EncAlgorithm::A256GCM),
+            operations: Some([Operation::Encrypt].into_iter().collect()),
+            id: Some("ipn:0.2.1".into()),
+            key_use: None,
+        };
+        let (built, data) = stored(b"encrypted in storage");
+        let encrypted = Encryptor::new(&built, &data)
+            .encrypt_block(
+                1,
+                Context::AES_GCM(Default::default()),
+                "ipn:0.2.1".parse().unwrap(),
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .rebuild()
+            .unwrap();
+        let Parsed { bundle, data, .. } = parse(Bytes::from(encrypted)).unwrap();
+        let bcb = bundle.blocks[&1].bcb.expect("the payload is BCB-covered");
+        let mut corrupt = data.to_vec();
+        corrupt[usize::try_from(bundle.blocks[&bcb].payload_range().start).unwrap()] = 0x00;
+
+        let _ = payload_bytes(&bundle, &Bytes::from(corrupt), &KeySet::EMPTY);
     }
 }

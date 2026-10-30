@@ -1,5 +1,6 @@
+use hardy_bpv7::{bpsec::key::KeySet, status_report::AdministrativeRecord};
+
 use super::*;
-use hardy_bpv7::status_report::AdministrativeRecord;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
@@ -21,45 +22,23 @@ impl Dispatcher {
             return;
         };
 
-        // KeyProvider needs a &Bundle; do the structural
-        // re-parse + key lookup + block_data inline. Scope it as a match
-        // expression so the parse OperationSets (which contain
-        // `Rc<…>` and are therefore `!Send`) are dropped at the arm
-        // boundary, before any `.await` in this async fn. Consume `data`
-        // into the parse and work from the authoritative buffer it
-        // returns (the streaming path concatenates pushes), converting
-        // the payload to an owned `Bytes` before the arm ends.
-        let payload_result = match hardy_bpv7::parse::parse(data) {
-            Ok(hardy_bpv7::parse::Parsed {
-                data: buf,
-                bundle: raw,
-                bcbs: bcb_ops,
-                ..
-            }) => {
-                let key_source = self.key_source(&raw, &buf);
-                match hardy_bpv7::bpsec::DecryptingReader::new(
-                    &raw.blocks,
-                    &buf,
-                    &bcb_ops,
-                    &*key_source,
-                )
-                .into_block_data(1)
-                .and_then(|p| p.ok_or(hardy_bpv7::Error::Altered))
-                {
-                    Ok(hardy_bpv7::block::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
-                    Ok(hardy_bpv7::block::Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
-                    Err(e) => Err(e),
-                }
-            }
-            Err(e) => Err(e),
+        // The administrative endpoint decrypts the payload as its security
+        // acceptor, with keys derived over the stored bundle only when a BCB
+        // covers it; the key source is `!Send`, so it stays inside this
+        // block, ahead of the awaits below. With no key, park in Waiting so
+        // each routing event retries the decrypt (keys can arrive later); the
+        // reaper still expires it. A payload that fails to decrypt discards
+        // the bundle.
+        let payload = {
+            let keys = payload_is_encrypted(&bundle.bpv7)
+                .then(|| filter::output_keys(&bundle.bpv7, &data, &*self.key_provider));
+            let no_keys = KeySet::EMPTY;
+            payload_bytes(&bundle.bpv7, &data, keys.as_deref().unwrap_or(&no_keys))
         };
-
-        let data = match payload_result {
+        let data = match payload {
+            Ok(data) => data,
             Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
-                // TODO: We are unable to decrypt the payload, what do we do?
-                // Park in Waiting so each routing event retries the decrypt
-                // (keys can arrive later); the reaper still expires it. A
-                // lost swap means another resolver got there first.
+                // A lost swap means another resolver got there first.
                 if self
                     .store
                     .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
@@ -70,12 +49,9 @@ impl Dispatcher {
                 return;
             }
             Err(e) => {
-                debug!("Received an invalid administrative record: {e}");
-                return self
-                    .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
-                    .await;
+                debug!("Failed to decrypt an administrative record: {e}");
+                return self.drop_bundle(bundle, payload_failure_reason(&e)).await;
             }
-            Ok(data) => data,
         };
 
         // The administrative record is the whole payload — reject any trailing
