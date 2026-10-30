@@ -377,7 +377,11 @@ impl BpaRegistration for Bpa {
 
 #[cfg(test)]
 mod tests {
-    use core::{num::NonZeroU64, time::Duration};
+    use core::{
+        num::NonZeroU64,
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
     use hardy_async::sync::spin::Once;
     use hardy_bpv7::{
@@ -392,14 +396,27 @@ mod tests {
     use super::*;
     use crate::{
         Bytes,
-        stream::{Receiver, Segment},
+        stream::{Receiver, Segment, buffer_stream},
     };
 
-    /// Fails every `forward` call synchronously, without pulling, recording
-    /// the bundle each attempt was for.
+    /// How a [`FailingCla`] answers `forward`.
+    enum Failing {
+        /// Every attempt fails with an internal error.
+        Always,
+        /// The first attempt is cancelled; every later one is buffered whole,
+        /// handed to `sent_tx`, and answered `Sent`.
+        CancelFirst {
+            cancelled: AtomicBool,
+            sent_tx: flume::Sender<Bytes>,
+        },
+    }
+
+    /// Answers every `forward` call synchronously, without pulling, as its
+    /// [`Failing`] mode says, recording the bundle each attempt was for.
     struct FailingCla {
         sink: Once<Box<dyn cla::Sink>>,
         attempts_tx: flume::Sender<Id>,
+        failing: Failing,
     }
 
     #[async_trait]
@@ -420,11 +437,20 @@ mod tests {
             _lane: Option<u32>,
             _cla_addr: &cla::ClaAddress,
             bundle_id: &Id,
-            _total_len: u64,
-            _stream: &mut dyn Receiver<Segment>,
+            total_len: u64,
+            stream: &mut dyn Receiver<Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {
             let _ = self.attempts_tx.send(bundle_id.clone());
-            Err(cla::Error::StreamCancelled)
+            match &self.failing {
+                Failing::Always => Err(cla::Error::Internal("the transfer failed".into())),
+                Failing::CancelFirst { cancelled, sent_tx } => {
+                    if !cancelled.swap(true, Ordering::SeqCst) {
+                        return Err(cla::Error::StreamCancelled);
+                    }
+                    let _ = sent_tx.send(buffer_stream(stream, total_len).await?);
+                    Ok(cla::ForwardBundleResult::Sent)
+                }
+            }
         }
     }
 
@@ -476,6 +502,7 @@ mod tests {
         let cla = Arc::new(FailingCla {
             sink: Once::new(),
             attempts_tx,
+            failing: Failing::Always,
         });
         bpa.register_cla("failing".to_string(), cla.clone(), None, ClaInit::default())
             .await
@@ -532,6 +559,101 @@ mod tests {
         assert!(
             attempts_rx.is_empty(),
             "A synchronous failure must not re-attempt without a routing event"
+        );
+    }
+
+    /// A cancelled transfer is a failed acceptance the bundle can retry: it
+    /// re-enters dispatch at once, with no routing or link event, and the
+    /// second offer sends it intact.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_forward_redispatches_at_once() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        bpa.start(false).await;
+
+        let (attempts_tx, attempts_rx) = flume::unbounded();
+        let (sent_tx, sent_rx) = flume::unbounded();
+        let cla = Arc::new(FailingCla {
+            sink: Once::new(),
+            attempts_tx,
+            failing: Failing::CancelFirst {
+                cancelled: AtomicBool::new(false),
+                sent_tx,
+            },
+        });
+        bpa.register_cla(
+            "cancelling".to_string(),
+            cla.clone(),
+            None,
+            ClaInit::default(),
+        )
+        .await
+        .unwrap();
+        cla.sink
+            .get()
+            .unwrap()
+            .add_peer(
+                cla::ClaAddress::Private("peer-a".as_bytes().into()),
+                &[NodeId::Ipn(IpnNodeId {
+                    allocator_id: 0,
+                    node_number: 2,
+                })],
+            )
+            .await
+            .unwrap();
+
+        let app = Arc::new(SendOnlyApp { sink: Once::new() });
+        bpa.register_application(ServiceId::Ipn(42), app.clone())
+            .await
+            .unwrap();
+
+        // The registrations are routing changes that wake the Waiting
+        // poller. Let those polls finish, so no routing event can drive the
+        // second offer: only the cancellation's re-dispatch can.
+        bpa.rib.poll_waiting_idle().await;
+
+        let sent = app
+            .sink
+            .get()
+            .unwrap()
+            .send(
+                "ipn:0.2.99".parse().unwrap(),
+                Bytes::from_static(b"Again"),
+                Duration::from_secs(3600),
+                None,
+            )
+            .await
+            .unwrap();
+
+        for attempt in ["cancelled", "retried"] {
+            // the timeout only bounds a regression
+            let offered = timeout(Duration::from_secs(5), attempts_rx.recv_async())
+                .await
+                .unwrap_or_else(|_| panic!("Timed out waiting for the {attempt} attempt"))
+                .expect("Attempt channel closed");
+            assert_eq!(offered, sent, "the {attempt} attempt");
+        }
+
+        // The retry re-entered from the stored record, not the cancelled
+        // attempt's in-memory rewrite: it sends the bundle intact.
+        // (the timeout only bounds a regression)
+        let data = timeout(Duration::from_secs(5), sent_rx.recv_async())
+            .await
+            .expect("Timed out waiting for the sent bytes")
+            .expect("Sent channel closed");
+        let parsed = hardy_bpv7::parse::parse(data).expect("the retried bundle parses");
+        assert_eq!(parsed.bundle.primary.id, sent);
+        assert_eq!(
+            parsed.bundle.blocks[&1].payload(&parsed.data),
+            Some(&b"Again"[..])
+        );
+
+        // The second attempt sent the bundle, so no third may occur.
+        // shutdown() is the barrier: it joins the pools, and the CLA records
+        // every attempt synchronously inside forward().
+        bpa.shutdown().await;
+        assert!(
+            attempts_rx.is_empty(),
+            "a sent bundle must not be offered again"
         );
     }
 }

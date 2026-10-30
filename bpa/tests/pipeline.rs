@@ -15,6 +15,7 @@ use hardy_bpa::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, pack::FilterPack,
         slots::MetadataDelta,
     },
+    keys::KeyProvider,
     node_ids::NodeIds,
     routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
     services,
@@ -41,7 +42,7 @@ use hardy_bpv7::{
 #[cfg(feature = "rfc9173")]
 use hardy_bpv7::bpsec::{
     encryptor::{Context as EncryptContext, Encryptor},
-    key::{EncAlgorithm, Key, Operation, Type as KeyType},
+    key::{EncAlgorithm, Key, KeySet, KeySource, Operation, Type as KeyType},
 };
 use hardy_cbor::{
     decode::skip_value,
@@ -680,7 +681,7 @@ struct ScheduledBlockObserver {
 }
 
 impl Rewriter for ScheduledBlockObserver {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         if ctx
             .bundle()
             .blocks
@@ -1167,7 +1168,6 @@ async fn service_streamed_send_rejects_spoofed_source() {
 
 // Sends `data` through the raw service door and returns the bundle the
 // CLA forwards: origination admitted it.
-#[cfg(feature = "rfc9173")]
 async fn originate_raw_and_forward(
     svc: &EchoService,
     forwarded_rx: &flume::Receiver<Bytes>,
@@ -1191,6 +1191,35 @@ async fn originate_raw_and_forward(
     .expect("timeout waiting for the forwarded bundle")
     .expect("channel closed");
     parse(forwarded).expect("the forwarded bundle parses")
+}
+
+/// Origination is not a hop: a bundle this node originates leaves with the
+/// Hop Count it was built with, and the next node makes the first increment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originated_bundle_leaves_with_its_built_hop_count() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let (_, data) = Builder::new(source_eid, "ipn:0.2.1".parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 0,
+        })
+        .with_payload(b"originated".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    let out = originate_raw_and_forward(&svc, &forwarded_rx, Bytes::from(data)).await;
+    let hop_info = out
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::HopCount)
+        .expect("the Hop Count block travels")
+        .extract::<HopInfo>(&out.data)
+        .expect("the hop count decodes")
+        .expect("the hop count is resident");
+    assert_eq!(hop_info.count, 0, "the originating node does not increment");
+
+    bpa.shutdown().await;
 }
 
 /// Origination admits a Hop Count block this node cannot decrypt, as
@@ -1325,6 +1354,293 @@ async fn local_delivery() {
     );
 
     bpa.shutdown().await;
+}
+
+// A key provider lending the same keys for every bundle.
+#[cfg(feature = "rfc9173")]
+struct FixedKeys(Vec<Key>);
+
+#[cfg(feature = "rfc9173")]
+impl KeyProvider for FixedKeys {
+    fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+        Box::new(KeySet::new(self.0.clone()))
+    }
+}
+
+// Delivers `inbound` — from ipn:0.2.1, requesting deletion reports — to an
+// Application at ipn:0.1.42 on a node using `keys`, and returns the
+// deletion report's reason once the completed shutdown proves nothing was
+// delivered. The report travels to its report-to, ipn:0.2.1, over the CLA.
+async fn undeliverable_payload_reason(
+    mut inbound: Bytes,
+    keys: Option<Arc<dyn KeyProvider>>,
+) -> ReasonCode {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let mut builder = Bpa::builder().node_ids(node_ids).status_reports(true);
+    if let Some(keys) = keys {
+        builder = builder.key_provider(keys);
+    }
+    let bpa = builder.build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            from_ref(&remote_node),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let reason = loop {
+        // Event-driven wait; the timeout only bounds a regression.
+        let bundle = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for the deletion report")
+        .expect("Channel closed");
+        let parsed = parse(bundle).expect("the report parses");
+        assert!(
+            parsed.bundle.primary.flags.is_admin_record,
+            "only status reports leave the node"
+        );
+        let AdministrativeRecord::BundleStatusReport(report) = parsed.bundle.blocks[&1]
+            .extract::<AdministrativeRecord>(&parsed.data)
+            .expect("the payload is an administrative record")
+            .expect("the report payload is resident");
+        if report.deleted.is_some() {
+            break report.reason;
+        }
+    };
+
+    // The completed shutdown is the barrier proving nothing was delivered.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "nothing is delivered");
+    reason
+}
+
+/// RFC 9172 §5.1.1 at the payload's security acceptor: an Application's
+/// payload whose ciphertext fails to decrypt discards the bundle, reported
+/// as `FailedSecurityOperation`.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delivery_drops_a_payload_that_fails_to_decrypt() {
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (built, data) = Builder::new(remote_source.clone(), "ipn:0.1.42".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Borrowed(b"tampered in transit"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let encrypted = parse(Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                1,
+                EncryptContext::AES_GCM(Default::default()),
+                remote_source,
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+    // Flip the last ciphertext byte: the GCM check fails.
+    let last = usize::try_from(encrypted.bundle.blocks[&1].payload_range().end).unwrap() - 1;
+    let mut tampered = encrypted.data.to_vec();
+    tampered[last] ^= 0x01;
+
+    assert_eq!(
+        undeliverable_payload_reason(Bytes::from(tampered), Some(Arc::new(FixedKeys(vec![key]))))
+            .await,
+        ReasonCode::FailedSecurityOperation
+    );
+}
+
+/// An Application on a node holding the payload's key receives the
+/// decrypted payload, announced at its decrypted length: this node's own
+/// ciphertext carries the AES-GCM tag (RFC 9173 §4.4), so the stored payload
+/// is 16 bytes longer, and the Application's exact-length buffering accepts
+/// only the decrypted length.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_application_receives_a_decrypted_payload_at_its_decrypted_length() {
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut key_bytes = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+    let key = Key {
+        key_type: KeyType::octet_sequence(key_bytes),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+    let plaintext = b"decrypted at delivery";
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (built, data) = Builder::new(remote_source.clone(), "ipn:0.1.42".parse().unwrap())
+        .with_payload(Cow::Borrowed(plaintext))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let encrypted = parse(Bytes::from(
+        Encryptor::new(&built, &data)
+            .encrypt_block(
+                1,
+                EncryptContext::AES_GCM(Default::default()),
+                remote_source.clone(),
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload")
+            .rebuild()
+            .expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap();
+    let stored = encrypted.bundle.blocks[&1].payload_range();
+    assert_eq!(
+        stored.end - stored.start,
+        plaintext.len() as u64 + 16,
+        "the stored ciphertext carries its 16-byte tag"
+    );
+
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .key_provider(Arc::new(FixedKeys(vec![key])))
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let mut inbound = encrypted.data.clone();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let (source, payload) =
+        // Event-driven wait; the timeout only bounds a regression.
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for the decrypted delivery")
+            .expect("Channel closed");
+    assert_eq!(source, remote_source);
+    assert_eq!(payload.as_ref(), plaintext, "the payload arrives decrypted");
+
+    bpa.shutdown().await;
+}
+
+/// The payload's security acceptor cannot process a BCB in a security
+/// context it does not recognise: the bundle is discarded, reported as
+/// `UnknownSecurityOperation` (RFC 9172 §7.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delivery_drops_a_payload_in_an_unknown_security_context() {
+    // RFC 9173 has the encryptor strip a target's CRC, and a BCB target
+    // still carrying one fails before its context is consulted.
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(Type::Payload)
+        .unwrap()
+        .with_flags(BlockFlags {
+            delete_bundle_on_failure: true,
+            ..Default::default()
+        })
+        .with_crc_type(CrcType::None)
+        .build(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    assert_eq!(
+        undeliverable_payload_reason(splice_unrecognised_bcb(&data), None).await,
+        ReasonCode::UnknownSecurityOperation
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3560,7 +3876,7 @@ struct ExtentCheckRewriter {
 }
 
 impl Rewriter for ExtentCheckRewriter {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let reader = ctx.reader();
         let mut mismatch = self.mismatch.lock().unwrap();
 
@@ -4353,8 +4669,8 @@ async fn deferred_outcome_ignores_wrong_cla() {
 
 // ---------------------------------------------------------------------------
 // Blocking CLA — holds the first forward open until released, then fails it
-// synchronously; every subsequent offer is answered Sent. All offers are
-// recorded.
+// synchronously with its `failure`; every subsequent offer is answered Sent.
+// All offers are recorded.
 // ---------------------------------------------------------------------------
 
 struct BlockingCla {
@@ -4362,10 +4678,16 @@ struct BlockingCla {
     offered_tx: flume::Sender<Id>,
     release_rx: flume::Receiver<()>,
     first: AtomicBool,
+    failure: fn() -> cla::Error,
+}
+
+// A synchronous failure that parks the bundle: any error but a cancellation.
+fn transfer_failed() -> cla::Error {
+    cla::Error::Internal("the transfer failed".into())
 }
 
 impl BlockingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
+    fn new(failure: fn() -> cla::Error) -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
         let (offered_tx, offered_rx) = flume::bounded(16);
         let (release_tx, release_rx) = flume::bounded(1);
         (
@@ -4374,6 +4696,7 @@ impl BlockingCla {
                 offered_tx,
                 release_rx,
                 first: AtomicBool::new(true),
+                failure,
             }),
             offered_rx,
             release_tx,
@@ -4405,7 +4728,7 @@ impl cla::Cla for BlockingCla {
         let _ = self.offered_tx.send_async(bundle_id.clone()).await;
         if self.first.swap(false, Ordering::SeqCst) {
             let _ = self.release_rx.recv_async().await;
-            return Err(cla::Error::StreamCancelled);
+            return Err((self.failure)());
         }
         Ok(cla::ForwardBundleResult::Sent)
     }
@@ -4421,7 +4744,7 @@ async fn forward_failure_park_recheck_redispatches() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false).await;
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
+    let (cla, offered_rx, release_tx) = BlockingCla::new(transfer_failed);
     bpa.register_cla(
         "blocking".to_string(),
         cla.clone(),
@@ -4500,6 +4823,18 @@ async fn forward_failure_park_recheck_redispatches() {
 /// conditional and loses against the terminal claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_never_resurrects_resolved_bundle() {
+    assert_failure_never_resurrects(transfer_failed).await;
+}
+
+/// A cancelled transfer must not resurrect a bundle that was resolved while
+/// it was in flight: the cancellation's re-dispatch re-claims the bundle
+/// conditionally, and loses against the terminal claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_transfer_never_resurrects_resolved_bundle() {
+    assert_failure_never_resurrects(|| cla::Error::StreamCancelled).await;
+}
+
+async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
     let metadata_store = Arc::new(MetadataMemStorage::new(None));
     let bpa = Bpa::builder()
         .metadata_storage(metadata_store.clone())
@@ -4508,7 +4843,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .unwrap();
     bpa.start(false).await;
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
+    let (cla, offered_rx, release_tx) = BlockingCla::new(failure);
     bpa.register_cla(
         "blocking".to_string(),
         cla.clone(),
@@ -4560,15 +4895,16 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     // claim would leave it (delete wins every race).
     metadata_store.tombstone(&id).await.unwrap();
 
-    // Release: the failure's park must lose against the tombstone.
-    // shutdown() is the barrier — it joins the egress pollers, so the park
+    // Release: the failure's claim (the park, or the cancellation's
+    // re-claim) must lose against the tombstone. shutdown() is the barrier —
+    // it joins the egress pollers and the dispatch pool, so the resolution
     // has fully run by the time it returns; no quiet window is involved.
     release_tx.send(()).expect("CLA gone");
     bpa.shutdown().await;
 
     assert!(
         metadata_store.get(&id).await.unwrap().is_none(),
-        "a resolved bundle was resurrected by a failed transfer's park"
+        "a resolved bundle was resurrected by a failed transfer"
     );
     let (live_tx, live_rx) = hardy_async::channel::bounded(4);
     metadata_store.poll_waiting(&live_tx).await.unwrap();
@@ -4577,6 +4913,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         live_rx.recv().await.is_err(),
         "a resolved bundle re-entered Waiting"
     );
+    assert!(offered_rx.is_empty(), "a resolved bundle was offered again");
 }
 
 // ---------------------------------------------------------------------------

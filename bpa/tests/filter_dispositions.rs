@@ -92,7 +92,7 @@ fn report_on_failure() -> BlockFlags {
 }
 
 impl Rewriter for FlaggedInserter {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let outcome = match ctx.editor().insert(
             INSERTED,
             self.flags.clone(),
@@ -289,7 +289,7 @@ struct SlotReader {
 }
 
 impl Rewriter for SlotReader {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let _ = self.seen_tx.send(ctx.metadata().slot(&MARK));
     }
 }
@@ -686,7 +686,7 @@ struct PerHopRemover {
 }
 
 impl Rewriter for PerHopRemover {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let targets: Vec<(u64, Type)> = ctx
             .bundle()
             .blocks
@@ -988,6 +988,42 @@ async fn deliver_rewriter_meets_a_refusal_on_the_raw_report_bit() {
         *outcomes.lock().unwrap(),
         [InsertOutcome::RefusedInvalidFlags]
     );
+}
+
+// What a Verifier finds in its payload peek.
+struct PeekRecorder {
+    peek_tx: flume::Sender<Option<Vec<u8>>>,
+}
+
+impl Verifier for PeekRecorder {
+    fn verify(&self, ctx: &VerifyContext<'_>) -> Verdict {
+        let _ = self.peek_tx.send(ctx.payload_peek().map(<[u8]>::to_vec));
+        Verdict::Continue(())
+    }
+}
+
+/// A Deliver Verifier that declares a peek reads at least that much of the
+/// payload, held from the store before it runs, and the bundle then reaches
+/// its service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deliver_verifier_reads_its_declared_peek() {
+    let (peek_tx, peek_rx) = flume::unbounded();
+    let mut pack = FilterPack::new("test");
+    pack.deliver_verifier_with_peek("peeker", PeekRecorder { peek_tx }, 4);
+    let (bpa, cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+    let (_service, delivered_rx) = register_service(&bpa).await;
+
+    arrive(&cla, SOURCE, BundleFlags::default(), LOCAL).await;
+    let peek = next(&peek_rx)
+        .await
+        .expect("a plaintext payload has a peek");
+    assert!(
+        peek.len() >= 4 && b"payload".starts_with(&peek),
+        "the peek is the payload's prefix, at least the declared 4 bytes: {peek:?}"
+    );
+    next(&delivered_rx).await;
+
+    bpa.shutdown().await;
 }
 
 // What an Ingress Verifier finds of the payload: available or not.
