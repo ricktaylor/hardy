@@ -96,6 +96,37 @@ pub async fn pull_headers(bundle: &Bpv7Bundle, mut stream: Box<dyn Receiver<Segm
     }
 }
 
+/// Pulls `resident`'s load stream on to its `Final`, so the whole stored
+/// bundle is in hand, for a door that needs the payload whole: an
+/// Application's, which decrypts it. A load already held whole, as a
+/// whole-buffer load's one `Final` is, comes back as-is.
+///
+/// # Panics
+///
+/// Panics if the stream ends before its `Final`: the store holds only
+/// bundles validated at a door or built by the BPA, so a short load is
+/// storage corruption.
+pub async fn pull_whole(resident: Resident) -> Bytes {
+    let Resident { bytes, rest } = resident;
+    let Some(mut rest) = rest else {
+        return bytes;
+    };
+    let mut whole = BytesMut::from(&bytes[..]);
+    loop {
+        match rest
+            .recv()
+            .await
+            .trace_expect("The bundle's load stream ended before its Final")
+        {
+            Segment::Next(data) => whole.extend_from_slice(&data),
+            Segment::Final(data) => {
+                whole.extend_from_slice(&data);
+                return whole.freeze();
+            }
+        }
+    }
+}
+
 /// A rebuilt bundle as a segment stream: the outer array's head, then each of
 /// the rebuild's chunks as a segment, then the stored bytes after the payload.
 ///
@@ -143,6 +174,20 @@ impl ChunkReceiver {
         }
         Self {
             pieces,
+            rest,
+            yielded: 0,
+            total_len,
+        }
+    }
+
+    /// The segment stream of the stored bundle itself, for an output attempt
+    /// that edited nothing: `resident`'s bytes, then the rest of its load
+    /// stream. `total_len` is the stored bundle's encoded length, which debug
+    /// builds check the yielded bytes against.
+    pub fn stored(resident: Resident, total_len: u64) -> Self {
+        let Resident { bytes, rest } = resident;
+        Self {
+            pieces: VecDeque::from([bytes]),
             rest,
             yielded: 0,
             total_len,
@@ -365,6 +410,57 @@ mod tests {
         let (total_len, segments) = output(&bundle, resident).await;
         assert_eq!(concat(&segments), &*expected);
         assert_eq!(total_len, expected.len() as u64);
+    }
+
+    // An attempt that edited nothing hands on the stored bundle as it was
+    // loaded, wherever the load is cut, ending in its Final.
+    #[tokio::test]
+    async fn an_unedited_bundle_streams_as_stored() {
+        let (bundle, data) = stored(&[0x6B; 64]);
+        let start = payload_start(&bundle);
+        for splits in [vec![], vec![10, start + 10], vec![start], vec![start + 3]] {
+            let resident = pull_headers(&bundle, load(&data, &splits).await).await;
+            let mut stream = ChunkReceiver::stored(resident, bundle.encoded_len());
+            let segments = drain(&mut stream).await;
+            assert_eq!(concat(&segments), &*data, "cut at {splits:?}");
+        }
+    }
+
+    // A door that needs the payload whole pulls the load on to its Final,
+    // wherever it is cut; a load held whole comes back zero-copy.
+    #[tokio::test]
+    async fn pull_whole_holds_the_whole_stored_bundle() {
+        let (bundle, data) = stored(&[0x2D; 64]);
+        let start = payload_start(&bundle);
+        for (splits, shared) in [
+            (vec![], true),
+            (vec![10, start + 10], false),
+            (vec![start], false),
+            (vec![start + 3], false),
+        ] {
+            let resident = pull_headers(&bundle, load(&data, &splits).await).await;
+            let whole = pull_whole(resident).await;
+            assert_eq!(whole, data, "cut at {splits:?}");
+            assert_eq!(
+                whole.as_ptr() == data.as_ptr(),
+                shared,
+                "cut at {splits:?}: only a load held whole is returned as-is"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "ended before its Final")]
+    async fn a_load_lost_before_its_final_is_fatal() {
+        let (bundle, data) = stored(b"lost after the headers");
+        let start = payload_start(&bundle);
+        let (tx, rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Next(data.slice(..start + 2)))
+            .await
+            .unwrap();
+        drop(tx);
+        let resident = pull_headers(&bundle, Box::new(rx)).await;
+        pull_whole(resident).await;
     }
 
     // A rebuilt last chunk is wholly in hand: the receiver closes the array

@@ -38,7 +38,6 @@ use hardy_bpv7::{
 };
 // Aliased: the wire bundle, beside the record `Bundle` from `crate::bundle`.
 use hardy_bpv7::Bundle as Bpv7Bundle;
-use hardy_cbor::decode::parse_exact;
 use tracing::{debug, error};
 
 use super::{
@@ -103,8 +102,8 @@ pub fn output_keys(
 // The payload's resident prefix, for the contexts' `payload_peek`: none for a
 // payload with no peekable prefix (`peekable_payload`). Compared in u64 first:
 // the payload's range is wire-derived.
-fn resident_payload_prefix<'a>(bundle: &Bundle, buf: &'a [u8]) -> Option<&'a [u8]> {
-    let block = peekable_payload(&bundle.bpv7)?;
+fn resident_payload_prefix<'a>(bundle: &Bpv7Bundle, buf: &'a [u8]) -> Option<&'a [u8]> {
+    let block = peekable_payload(bundle)?;
     let body = block.payload_range();
     let resident = buf.len() as u64;
     if body.start > resident {
@@ -139,24 +138,6 @@ fn check_verifiers(
 fn output_undecodable(hook: &str, e: impl Debug) -> ! {
     error!("The {hook} chain's bytes do not decode: {e:?}");
     panic!("The {hook} chain's bytes do not decode: {e:?}")
-}
-
-// The BCB operation sets of a materialised bundle, decoded from the BCB
-// blocks its block index locates: the output chains parse nothing else.
-fn decode_bcbs(hook: &str, bundle: &Bpv7Bundle, data: &[u8]) -> HashMap<u64, bcb::OperationSet> {
-    bundle
-        .blocks
-        .iter()
-        .filter(|(_, block)| block.block_type == Type::BlockSecurity)
-        .map(|(&number, block)| {
-            let body = block
-                .payload(data)
-                .unwrap_or_else(|| output_undecodable(hook, "a BCB body is not resident"));
-            let opset = parse_exact::<bcb::OperationSet>(body)
-                .unwrap_or_else(|e| output_undecodable(hook, e));
-            (number, opset)
-        })
-        .collect()
 }
 
 impl FilterChains {
@@ -277,28 +258,34 @@ impl FilterChains {
         !self.deliver.verifiers.is_empty()
     }
 
-    /// Runs the Deliver Verifiers over the bundle the Deliver Rewriters
-    /// left, materialised: `Some` carries the dropping Verifier's reason,
-    /// `None` means every Verifier passed.
+    /// Runs the Deliver Verifiers over a snapshot of the edits the
+    /// attempt's `editor` staged (the scheduled removals, the Deliver
+    /// Rewriters), with the payload's resident prefix in `data` as their
+    /// peek: `Some` carries the dropping Verifier's reason, `None` means every
+    /// Verifier passed. Nothing is materialised. A snapshot whose BCB
+    /// operation sets do not decode is a BPA bug or storage corruption.
     pub fn verify_deliver(
         &self,
-        bundle: &Bundle,
+        editor: &Editor<'_>,
         data: &[u8],
+        metadata: &BundleMetadata,
         keys: &dyn KeySource,
     ) -> Option<Option<ReasonCode>> {
         if self.deliver.verifiers.is_empty() {
             return None;
         }
-        let bcbs = decode_bcbs(DELIVER, &bundle.bpv7, data);
-        let reader = DecryptingReader::new(&bundle.bpv7.blocks, data, &bcbs, keys);
+        let view = editor
+            .staged_view()
+            .unwrap_or_else(|e| output_undecodable(DELIVER, e));
+        let reader = view.reader(keys);
         check_verifiers(
             &self.deliver.verifiers,
             DELIVER,
             &VerifyContext::new(
-                &bundle.bpv7,
+                view.bundle(),
                 &reader,
-                &bundle.metadata,
-                resident_payload_prefix(bundle, data),
+                metadata,
+                resident_payload_prefix(view.bundle(), data),
             ),
         )
     }
@@ -322,7 +309,7 @@ impl FilterChains {
         // decrypt memo — serves the whole pass: the delta applications
         // below touch `bundle.metadata`, a disjoint borrow.
         let reader = DecryptingReader::new(&bundle.bpv7.blocks, &buf, bcbs, &*keys);
-        let peek = resident_payload_prefix(&bundle, &buf);
+        let peek = resident_payload_prefix(&bundle.bpv7, &buf);
 
         if let Some(reason) = check_verifiers(
             &chain.verifiers,
@@ -627,7 +614,12 @@ mod tests {
             panic!("the shared Verifier passes at Ingress");
         };
         assert_eq!(
-            chains.verify_deliver(&bundle, &data, &KeySet::EMPTY),
+            chains.verify_deliver(
+                &Editor::new(&bundle.bpv7, &data),
+                &data,
+                &bundle.metadata,
+                &KeySet::EMPTY
+            ),
             None,
             "the shared Verifier passes at Deliver"
         );
@@ -691,8 +683,8 @@ mod tests {
     }
 
     // The Deliver Rewriters on an editor over the record's block index, the
-    // one rebuild when a link edited, then the Deliver Verifiers: the
-    // sequence the delivery door runs.
+    // Deliver Verifiers over its staged edits, then the one rebuild when a
+    // link edited: the sequence the delivery door runs for a raw service.
     fn deliver(
         chains: &FilterChains,
         mut bundle: Bundle,
@@ -700,6 +692,7 @@ mod tests {
     ) -> (Bundle, Bytes, Option<Option<ReasonCode>>) {
         let mut editor = Editor::new(&bundle.bpv7, &data);
         let edited = chains.run_deliver(&mut editor, &bundle.metadata, &KeySet::EMPTY);
+        let verdict = chains.verify_deliver(&editor, &data, &bundle.metadata, &KeySet::EMPTY);
         let rebuilt = edited.then(|| editor.rebuild_bundle().unwrap());
         let data = match rebuilt {
             Some((rebuilt, chunks)) => {
@@ -708,7 +701,6 @@ mod tests {
             }
             None => data,
         };
-        let verdict = chains.verify_deliver(&bundle, &data, &KeySet::EMPTY);
         (bundle, data, verdict)
     }
 
@@ -1016,7 +1008,12 @@ mod tests {
         let chains = freeze(pack);
 
         let (bundle, data) = corrupt_bcb_bundle();
-        chains.verify_deliver(&bundle, &data, &KeySet::EMPTY);
+        chains.verify_deliver(
+            &Editor::new(&bundle.bpv7, &data),
+            &data,
+            &bundle.metadata,
+            &KeySet::EMPTY,
+        );
     }
 
     #[test]

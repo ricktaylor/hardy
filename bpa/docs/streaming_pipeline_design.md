@@ -102,7 +102,7 @@ The 1GB memory ceiling (§1.2) is the most concrete demonstration of the archite
 | 3 | Storage write | `BundleStorage::save(Bytes)` — bundle in RAM through the write | 1GB I/O | remains — §3 / Phase A |
 | 4 | Reject timing | cannot reject until fully received and stored | wasted | resolved — pre-drain gate (§5.4) |
 | 5 | Storage read | `BundleStorage::load()` reads the whole bundle back | 1GB alloc | remains in the backends — §3 / Phase B; the egress door already pulls only its header region through `Store::load_stream` |
-| 6 | Editor flatten | `flatten`/`flatten_inplace()` may need a second buffer | 1-2GB | resolved at egress — the rebuild's chunks travel as segments (§6.3); delivery still flattens once |
+| 6 | Editor flatten | `flatten`/`flatten_inplace()` may need a second buffer | 1-2GB | resolved at the output doors — the rebuild's chunks travel as segments to a CLA (§6.3) and to a raw service; an Application's payload is extracted from the stored bundle, never a rebuild |
 | 7 | CLA forward | `Cla::forward` receives the loaded bundle as one whole-buffer segment, and buffering CLAs hold it while transmitting | 1GB resident | partly resolved — the bundle arrives as segments with a plan-derived `total_len` (§6.2); buffering CLAs still hold it (`INTERIM BUFFERING`, Phase B) |
 
 #### 2.5.2. With This Design

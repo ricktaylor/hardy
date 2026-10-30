@@ -18,10 +18,12 @@ pub trait KeyProvider: Send + Sync {
     /// (primary block + blocks map), and `data` its resident bytes. At an
     /// input door `data` may be only a prefix — the header blocks and
     /// whatever of the payload has arrived — so a block's extent can run
-    /// past its end. At the egress door it is the header region — every
-    /// block before the payload's data, which is all the output stages edit
-    /// or read — and at delivery the whole bundle; until a storage backend
-    /// streams its load, egress holds the whole bundle too. The decoded
+    /// past its end. At the egress door and a raw service's delivery it is
+    /// the header region — every block before the payload's data, which is
+    /// all the output stages edit or read — and at an Application's delivery
+    /// and the administrative endpoint the whole bundle; until a storage
+    /// backend streams its load, every output door holds the whole bundle.
+    /// The decoded
     /// extension fields (`previous_node`, `age`, `hop_count`) are *not*
     /// available here — keyed BPSec hasn't run yet — so an implementation
     /// that needs them must decode the relevant extension blocks itself.

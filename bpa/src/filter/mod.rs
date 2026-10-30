@@ -31,7 +31,9 @@
 //! not (not resident, no key, not decryptable). It memoises, decrypting a
 //! covered block at most once for the filters that share it: one reader
 //! serves a whole input pass and the Verifiers that close the Deliver
-//! chain. [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
+//! chain, which read a snapshot of the edits the scheduled removals and the
+//! Deliver Rewriters staged, never a materialised bundle.
+//! [`ReaderExt::extract`](hardy_bpv7::reader::ReaderExt::extract)
 //! CBOR-decodes a block body. A Verifier's and a Classifier's context also
 //! lends the payload's resident prefix, the declared peek among it, through
 //! [`VerifyContext::payload_peek`].
@@ -42,10 +44,12 @@
 //! never its own: the bundle as the preceding links left it, through a
 //! reader over that snapshot. Links that leave the editor as it was share a
 //! snapshot and its reader; a link that edits starts a fresh one. At Egress
-//! the editor works over the stored bundle's resident bytes: the headers
-//! always, and the payload while it is in hand. A payload still streaming
-//! from the store reads as `NotResident`; until a storage backend streams
-//! its load, the whole bundle is resident.
+//! and at a raw service's delivery the editor works over the stored
+//! bundle's resident bytes: the headers always, and the payload while it is
+//! in hand. A payload still streaming from the store reads as
+//! `NotResident`; until a storage backend streams its load, the whole
+//! bundle is resident. At an Application's delivery the whole bundle is
+//! resident, since the payload is decrypted whole.
 //!
 //! # Failure and Drop contract
 //!
