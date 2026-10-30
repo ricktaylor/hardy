@@ -82,12 +82,17 @@ impl Dispatcher {
         // once, only if either edited; with nothing scheduled and no
         // Rewriters, none is built. The keys are derived once, over the stored
         // bundle, and only when a stage reads through them: the removals, the
-        // Rewriters and the Verifiers do. The key source is `!Send`, so it
-        // stays inside this block, ahead of the service's await.
+        // Rewriters, the Verifiers, and an Application's payload decryption
+        // do. The key source is `!Send`, so it stays inside this block, ahead
+        // of the service's await, and the block yields what the service
+        // receives: the bundle for a raw service, the payload alone for an
+        // Application.
         let mut data = {
             let editing =
                 !bundle.metadata.to_remove.is_empty() || self.filters.has_deliver_rewriters();
-            let keys = (editing || self.filters.has_deliver_verifiers())
+            let decrypting = matches!(service.service, ServiceImpl::Application(_))
+                && payload_is_encrypted(&bundle.bpv7);
+            let keys = (editing || decrypting || self.filters.has_deliver_verifiers())
                 .then(|| filter::output_keys(&bundle.bpv7, &data, &*self.key_provider));
             let no_keys = KeySet::EMPTY;
             let keys = keys.as_deref().unwrap_or(&no_keys);
@@ -129,24 +134,16 @@ impl Dispatcher {
             if let Some(reason) = self.filters.verify_deliver(&bundle, &data, keys) {
                 return OfferOutcome::Dropped(bundle, reason);
             }
-            data
-        };
 
-        let delivery_result = match &service.service {
-            ServiceImpl::LowLevel(svc) => {
-                // Pass raw bundle bytes to low-level services: the whole
-                // bundle is in hand, so it travels as a single Final segment.
-                let total_len = data.len() as u64;
-                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
-                    .await
-            }
-            ServiceImpl::Application(app) => {
+            match &service.service {
+                // A raw service receives the bundle.
+                ServiceImpl::LowLevel(_) => data,
                 // An Application receives the payload alone, decrypted by
                 // this node as the payload's security acceptor (RFC 9172
                 // §5.1.1). With no key, park for the next registration,
                 // which may bring usable keys; a payload that fails to
                 // decrypt discards the bundle.
-                let mut payload = match self.payload_bytes(data) {
+                ServiceImpl::Application(_) => match payload_bytes(&bundle.bpv7, &data, keys) {
                     Ok(payload) => payload,
                     Err(Bpv7Error::InvalidBPSec(bpsec::Error::NoKey)) => {
                         debug!("Failed to decrypt payload: No valid keys");
@@ -165,17 +162,25 @@ impl Dispatcher {
 
                         return OfferOutcome::Dropped(bundle, Some(payload_failure_reason(&e)));
                     }
-                };
+                },
+            }
+        };
 
-                // As for low-level services, the whole payload is in hand,
-                // so it travels as a single Final segment.
-                let total_len = payload.len() as u64;
+        // The whole bundle, or the whole payload, is in hand, so it travels
+        // as a single Final segment.
+        let total_len = data.len() as u64;
+        let delivery_result = match &service.service {
+            ServiceImpl::LowLevel(svc) => {
+                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
+                    .await
+            }
+            ServiceImpl::Application(app) => {
                 app.on_deliver(
                     bundle.id(),
                     bundle.expiry(),
                     bundle.primary().flags.app_ack_requested,
                     total_len,
-                    &mut payload,
+                    &mut data,
                 )
                 .await
             }

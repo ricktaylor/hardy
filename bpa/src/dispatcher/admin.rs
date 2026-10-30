@@ -1,5 +1,6 @@
+use hardy_bpv7::{bpsec::key::KeySet, status_report::AdministrativeRecord};
+
 use super::*;
-use hardy_bpv7::status_report::AdministrativeRecord;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
@@ -22,10 +23,19 @@ impl Dispatcher {
         };
 
         // The administrative endpoint decrypts the payload as its security
-        // acceptor. With no key, park in Waiting so each routing event
-        // retries the decrypt (keys can arrive later); the reaper still
-        // expires it. A payload that fails to decrypt discards the bundle.
-        let data = match self.payload_bytes(data) {
+        // acceptor, with keys derived over the stored bundle only when a BCB
+        // covers it; the key source is `!Send`, so it stays inside this
+        // block, ahead of the awaits below. With no key, park in Waiting so
+        // each routing event retries the decrypt (keys can arrive later); the
+        // reaper still expires it. A payload that fails to decrypt discards
+        // the bundle.
+        let payload = {
+            let keys = payload_is_encrypted(&bundle.bpv7)
+                .then(|| filter::output_keys(&bundle.bpv7, &data, &*self.key_provider));
+            let no_keys = KeySet::EMPTY;
+            payload_bytes(&bundle.bpv7, &data, keys.as_deref().unwrap_or(&no_keys))
+        };
+        let data = match payload {
             Ok(data) => data,
             Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
                 // A lost swap means another resolver got there first.
