@@ -35,7 +35,7 @@ impl Dispatcher {
         let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
             return;
         };
-        let resident = pull_headers(&bundle.bpv7, stream).await;
+        let resident = pull_headers(&bundle.bpv7, stream, 0).await;
 
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).

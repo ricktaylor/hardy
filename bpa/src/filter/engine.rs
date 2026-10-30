@@ -823,6 +823,21 @@ mod tests {
         );
     }
 
+    // The Deliver peek P is the largest declared across packs, and a
+    // Verifier registered without one declares 0.
+    #[test]
+    fn the_deliver_peek_is_the_largest_declared() {
+        let mut first = FilterPack::new("first");
+        first.deliver_verifier_with_peek("small", PassVerifier, 16);
+        first.deliver_verifier("none", PassVerifier);
+        let mut second = FilterPack::new("second");
+        second.deliver_verifier_with_peek("large", PassVerifier, 64);
+        let chains = FilterChains::freeze(vec![first, second]);
+        assert_eq!(chains.deliver.peek, 64);
+        assert_eq!(chains.deliver.verifiers.len(), 3);
+        assert_eq!(chains.ingress.peek, 0);
+    }
+
     struct PayloadAttacker;
 
     impl Rewriter for PayloadAttacker {

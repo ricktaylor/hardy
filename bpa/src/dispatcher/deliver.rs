@@ -23,7 +23,7 @@ impl Dispatcher {
         let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
             return;
         };
-        let resident = pull_headers(&bundle.bpv7, stream).await;
+        let resident = pull_headers(&bundle.bpv7, stream, self.filters.deliver.peek).await;
 
         // The claim key and every park in the offer use the canonical
         // registration EID stored at construction — the exact key

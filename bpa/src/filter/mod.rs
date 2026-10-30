@@ -170,14 +170,16 @@ impl<'a> VerifyContext<'a> {
     /// that has arrived, whether or not the payload is all resident. Where
     /// the payload is resident, it is all of it.
     ///
-    /// At the input hooks the door holds at least the first min(P, payload
-    /// length) bytes before the chain runs, P being the largest payload peek
-    /// declared at that hook (see [`FilterPack`](pack::FilterPack)); an empty
-    /// slice means no payload byte has arrived, or the payload is empty, which
-    /// a filter that declared a peek can tell apart. There the bytes may
+    /// At the input hooks and at Deliver the door holds at least the first
+    /// min(P, payload length) bytes before the chain runs, P being the
+    /// largest payload peek declared at that hook (see
+    /// [`FilterPack`](pack::FilterPack)); an empty slice means no payload
+    /// byte has arrived, or the payload is empty, which a filter that
+    /// declared a peek can tell apart. At the input hooks the bytes may
     /// precede the payload's CRC and BIB checks, as may block 1 read through
     /// [`reader`](Self::reader); both settle before the bundle commits or its
-    /// route executes. Treat the peek as unauthenticated input: classify or
+    /// route executes. At Deliver they are read from the store, checked at
+    /// ingress. Treat the peek as unauthenticated input: classify or
     /// drop on it, but do not let it drive durable or attributable effects,
     /// which a forged prefix on a genuinely signed bundle would drive under
     /// its source's name.
