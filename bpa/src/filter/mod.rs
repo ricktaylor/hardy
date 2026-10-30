@@ -450,6 +450,10 @@ pub trait Classifier: Send + Sync {
 /// Rewriter adds or edits where the BPA writes none travels as the Rewriter
 /// left it.
 ///
+/// At Deliver the BPA makes no per-hop writes and strips no per-hop block:
+/// a raw service receives Previous Node, Hop Count and Bundle Age as they
+/// arrived, or as a Deliver Rewriter left them.
+///
 /// A Rewriter has no verdict: it edits the bundle or leaves it as it is,
 /// and never drops it. An [`ExtensionEditor`] refusal is the Rewriter's
 /// no-match path. A block the Rewriter inserted is a valid target for its
