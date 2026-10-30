@@ -4,6 +4,7 @@
 mod common;
 
 use std::{
+    array::from_fn,
     hash::{DefaultHasher, Hash, Hasher},
     num::NonZeroUsize,
     slice::from_ref,
@@ -19,8 +20,8 @@ use hardy_btpu::{
         message::{Message, TransferSegmentMessage},
     },
     sender::{
-        BundleFraming, Carried, CarriedList, Error, LinkFraming, PduSize, SendId, SendKind,
-        SendOptions, SendQueueHighWatermark, Sender, SenderConfig,
+        BundleFraming, Carried, CarriedList, Error, LinkFraming, NextPduOptions, PduSize,
+        PduSlices, SendId, SendKind, SendOptions, SendQueueHighWatermark, Sender, SenderConfig,
     },
 };
 
@@ -511,6 +512,33 @@ fn window_slot_is_released_when_the_transfer_end_is_packed() {
     assert!(s.is_outstanding(ids[1]));
     segmented(enqueue(&mut s, bundle(200)).unwrap());
     assert_eq!(wire_transfer_numbers(&drain(&mut s)), [1, 2, 3, 4]);
+}
+
+// A producer may call `enqueue` or `begin` first and park only on a
+// `WindowFull`, so the refusal must leave the sender as it was, and a bundle
+// that fits one PDU must still be taken while the window is full.
+#[test]
+fn window_full_changes_nothing_and_a_fitting_bundle_is_still_taken() {
+    let mut s = sender(64, 4);
+    for _ in 0..4 {
+        segmented(enqueue(&mut s, bundle(200)).unwrap());
+    }
+    let before = format!("{s:?}");
+    let full = Error::WindowFull {
+        window_size: window_size(4),
+    };
+    assert_eq!(enqueue(&mut s, bundle(200)), Err(full.clone()));
+    assert_eq!(s.begin(200, SendOptions::default()).err(), Some(full));
+    assert_eq!(format!("{s:?}"), before);
+
+    let fitting = enqueue(&mut s, bundle(20)).unwrap();
+    assert_eq!(fitting.kind(), SendKind::Message);
+    assert!(
+        drain_carried(&mut s)
+            .concat()
+            .iter()
+            .any(|c| c.id == fitting && c.completes)
+    );
 }
 
 #[test]
@@ -1177,33 +1205,40 @@ fn next_pdu_into_replaces_the_callers_list() {
     assert!(bundles.is_empty());
 }
 
-// Two identical senders under each link framing, loaded with bundles that
-// pack as Bundle Messages, segments, a Transfer Cancel, and (where the
-// framing allows) bare frames, each with its bundles' IDs in enqueue order.
-// The senders' IDs differ, since each sender tags its own.
-fn identical_loaded_senders() -> Vec<[(Sender, Vec<SendId>); 2]> {
-    let make: [fn() -> Sender; 4] = [
-        || sender(64, 4),
-        || variable_sender(64, BundleFraming::Message),
-        || variable_sender(64, BundleFraming::Bare),
-        || floored_sender(64, BundleFraming::Message, 46),
+// `N` identical senders under each link framing, at a PDU size small
+// enough that every bundle is copied into a PDU and one large enough that
+// most are not, loaded with bundles that pack as Bundle Messages, segments,
+// a Transfer Cancel, (where the framing allows) bare frames, and a transfer
+// whose producer has pushed only part of it, each with its bundles' IDs in
+// enqueue order.  The senders' IDs differ, since each sender tags its own.
+fn identical_loaded_senders<const N: usize>() -> Vec<[(Sender, Vec<SendId>); N]> {
+    let make: [fn(usize) -> Sender; 4] = [
+        |pdu| sender(pdu, 4),
+        |pdu| variable_sender(pdu, BundleFraming::Message),
+        |pdu| variable_sender(pdu, BundleFraming::Bare),
+        |pdu| floored_sender(pdu, BundleFraming::Message, pdu * 46 / 64),
     ];
-    let load = |make: fn() -> Sender| {
-        let mut s = make();
+    let load = |make: fn(usize) -> Sender, pdu: usize| {
+        let mut s = make(pdu);
         let mut ids = vec![
-            enqueue(&mut s, patterned(10)).unwrap(),
-            enqueue(&mut s, bpv7_like(40)).unwrap(),
-            enqueue(&mut s, patterned(150)).unwrap(),
-            enqueue(&mut s, patterned(200)).unwrap(),
+            enqueue(&mut s, patterned(pdu / 6)).unwrap(),
+            enqueue(&mut s, bpv7_like(pdu * 2 / 3)).unwrap(),
+            enqueue(&mut s, patterned(pdu * 2)).unwrap(),
+            enqueue(&mut s, patterned(pdu * 3)).unwrap(),
         ];
         s.next_pdu().unwrap();
         s.next_pdu().unwrap();
         assert!(s.cancel(ids[2]));
-        ids.push(enqueue(&mut s, bpv7_like(20)).unwrap());
+        ids.push(enqueue(&mut s, bpv7_like(pdu / 3)).unwrap());
+        // A dropped handle leaves its transfer queued.
+        let mut h = s.begin(pdu * 4, SendOptions::default()).unwrap();
+        s.push(&mut h, patterned(pdu * 3 / 2)).unwrap();
+        ids.push(h.id());
         (s, ids)
     };
-    make.into_iter()
-        .map(|make| [load(make), load(make)])
+    [64, 1500]
+        .into_iter()
+        .flat_map(|pdu| make.map(|make| from_fn(|_| load(make, pdu))))
         .collect()
 }
 
@@ -1220,24 +1255,93 @@ fn positions(carried: &CarriedList, ids: &[SendId]) -> Vec<(usize, bool)> {
 const UNTOUCHED: u8 = 0xEE;
 
 #[test]
-fn next_pdu_write_packs_what_next_pdu_into_packs() {
-    for [(mut a, a_ids), (mut b, b_ids)] in identical_loaded_senders() {
-        let (mut into, mut written) = (CarriedList::new(), CarriedList::new());
-        // Longer than the PDU, to show that only the PDU's bytes are written.
-        let mut out = [UNTOUCHED; 100];
-        loop {
-            out.fill(UNTOUCHED);
-            let expected = a.next_pdu_into(&mut into);
-            let len = b.next_pdu_write(&mut written, &mut out).unwrap();
-            assert_eq!(len, expected.as_ref().map(Bytes::len));
-            assert_eq!(positions(&written, &b_ids), positions(&into, &a_ids));
-            let Some(expected) = expected else {
-                break;
-            };
-            assert_eq!(out[..expected.len()], expected[..]);
-            assert!(out[expected.len()..].iter().all(|&b| b == UNTOUCHED));
+fn every_way_of_packing_packs_the_same_pdus_and_lists_the_same_bundles() {
+    for options in [NextPduOptions::default(), NextPduOptions { flush: true }] {
+        for [(mut a, a_ids), (mut b, b_ids), (mut c, c_ids)] in identical_loaded_senders() {
+            let mut into = CarriedList::new();
+            let mut written = CarriedList::new();
+            let mut gathered = CarriedList::new();
+            // Longer than the PDU, to show that only the PDU's bytes are
+            // written.
+            let mut out = [UNTOUCHED; 2000];
+            let mut slices = PduSlices::new();
+            loop {
+                out.fill(UNTOUCHED);
+                let expected = a.next_pdu_into_with(&mut into, options);
+                let len = b.next_pdu_write_with(&mut written, &mut out, options);
+                let gathered_len = c.next_pdu_vectored_with(&mut gathered, &mut slices, options);
+                let expected_len = expected.as_ref().map(Bytes::len);
+                assert_eq!(len, Ok(expected_len));
+                assert_eq!(gathered_len, expected_len);
+                assert_eq!(positions(&written, &b_ids), positions(&into, &a_ids));
+                assert_eq!(positions(&gathered, &c_ids), positions(&into, &a_ids));
+                let Some(expected) = expected else {
+                    assert!(slices.is_empty());
+                    break;
+                };
+                assert_eq!(out[..expected.len()], expected[..]);
+                assert!(out[expected.len()..].iter().all(|&b| b == UNTOUCHED));
+                assert_eq!(slices.len(), expected.len());
+                assert!(slices.iter().all(|slice| !slice.is_empty()));
+                assert_eq!(slices.iter().collect::<Vec<_>>().concat(), expected[..]);
+            }
         }
     }
+}
+
+#[test]
+fn pdu_slices_copy_to_slice_refuses_a_short_buffer_and_writes_only_the_pdu() {
+    let mut s = variable_sender(1500, BundleFraming::Message);
+    let bundle = patterned(1000);
+    enqueue(&mut s, bundle.clone()).unwrap();
+    let mut slices = PduSlices::new();
+    let len = s
+        .next_pdu_vectored(&mut CarriedList::new(), &mut slices)
+        .unwrap();
+    let pdu = slices.iter().collect::<Vec<_>>().concat();
+    assert_eq!(len, pdu.len());
+    assert_eq!(
+        decode_all(Bytes::from(pdu.clone())),
+        [bundle_with(vec![], bundle)]
+    );
+
+    let mut short = vec![UNTOUCHED; len - 1];
+    assert_eq!(
+        slices.copy_to_slice(&mut short),
+        Err(Error::BufferTooShort {
+            needed: len,
+            len: len - 1
+        })
+    );
+    assert!(short.iter().all(|&b| b == UNTOUCHED));
+
+    let mut out = vec![UNTOUCHED; len + 10];
+    assert_eq!(slices.copy_to_slice(&mut out), Ok(len));
+    assert_eq!(out[..len], pdu[..]);
+    assert!(out[len..].iter().all(|&b| b == UNTOUCHED));
+}
+
+#[test]
+fn pdu_slices_clear_releases_the_enqueued_buffers() {
+    let mut s = variable_sender(1500, BundleFraming::Message);
+    let bundles = [patterned(1000), patterned(4000)];
+    for bundle in &bundles {
+        enqueue(&mut s, bundle.clone()).unwrap();
+    }
+    let mut slices = PduSlices::new();
+    let mut carried = CarriedList::new();
+    while s.next_pdu_vectored(&mut carried, &mut slices).is_some() {}
+    // The last call packed nothing, emptying `slices`.
+    assert!(slices.is_empty());
+    assert!(bundles.iter().all(Bytes::is_unique));
+
+    let bundle = patterned(1000);
+    enqueue(&mut s, bundle.clone()).unwrap();
+    s.next_pdu_vectored(&mut carried, &mut slices).unwrap();
+    slices.clear();
+    assert!(slices.is_empty());
+    assert_eq!(slices.iter().next(), None);
+    assert!(bundle.is_unique());
 }
 
 #[test]
@@ -1598,13 +1702,10 @@ fn debug_summarises_the_queue_instead_of_printing_it() {
         "Sender {{ pdu_size: PduSize(64), send_queue_high_watermark: SendQueueHighWatermark({bound}), \
          link_framing: FixedSize, segment_cut_strategy: Full, window_size: WindowSize(4), \
          transfers_outstanding: 1, window_available: true, queued: 2, parked: 0, cancels: 0, \
-         queued_bytes: 1005, assembling: 0, next_bundle_id: 1"
+         queued_bytes: 1005, assembling: 0, next_bundle_id: 1, enqueue_wakers: 0, \
+         push_wakers: 0, drain_waker: false }}"
     );
-    #[cfg(not(feature = "tower"))]
-    let expected = format!("{summary} }}");
-    #[cfg(feature = "tower")]
-    let expected = format!("{summary}, enqueue_wakers: 0, drain_waker: false }}");
-    assert_eq!(format!("{s:?}"), expected);
+    assert_eq!(format!("{s:?}"), summary);
 }
 
 #[test]

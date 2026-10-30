@@ -512,6 +512,18 @@ pub(crate) fn put_message(message: &Message, dst: &mut impl BufMut) -> Result<()
     Ok(())
 }
 
+/// [`put_message`] up to the message's body, which the caller appends:
+/// exactly the body's bytes, so that the header's length is true.  Lets
+/// the sender share a queued body rather than copy it.
+pub(crate) fn put_message_head(
+    message: &Message,
+    dst: &mut impl BufMut,
+) -> Result<(), EncodeError> {
+    let (content, flags, length) = prepare(message)?;
+    content.put_head(message.type_byte(), flags, length, dst);
+    Ok(())
+}
+
 /// `message` checked for encoding: its content, the flags it is encoded
 /// with, and its declared length.  Refuses a [`Message::Unknown`] that may
 /// not be relayed, and content the length field cannot declare.

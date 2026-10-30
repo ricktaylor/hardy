@@ -8,6 +8,11 @@ use crate::owner::Owner;
 
 /// A validated transfer window size (Section 5: 4..=4095).
 ///
+/// The window bounds the span of outstanding transfer numbers, from the
+/// oldest to the next to be taken, not how many are outstanding.  It is
+/// not a pool of W slots: while one transfer is slow to finish, at most
+/// W - 1 more can begin after it, however many of those have finished.
+///
 /// Construct via [`WindowSize::new`] or [`TryFrom<u16>`], which enforce the
 /// range invariant at the edge; every consumer of a `WindowSize` can then
 /// rely on it.
@@ -302,7 +307,7 @@ impl TransferWindow {
 /// minus the window size.  Since numbers are allocated sequentially, this is
 /// a bound on the *span* of outstanding numbers, not their count: the next
 /// number is refused while it would push the oldest outstanding transfer out
-/// of the window, even if slots have been released out of order.  Keeping
+/// of the window, even if newer numbers have been released out of order.  Keeping
 /// every outstanding transfer in-window is what lets a late or reordered
 /// message for it still land inside the receiver's window.
 #[derive(Debug, Clone)]

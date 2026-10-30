@@ -221,7 +221,7 @@ fn sender_drain_wakes_pending_enqueue_task_when_window_full() {
     assert_eq!(poll_ready(&mut sender, &mut cx), Poll::Pending);
     assert!(!woke.raised());
 
-    // Draining the End of the oldest transfer frees a window slot, so it
+    // Draining the End of the oldest transfer opens the window, so it
     // wakes the parked task, which then finds the service ready.  No
     // earlier PDU frees anything, so none of them wakes it.
     drain_until_window_opens(&mut sender, oldest, &[&woke]);
@@ -255,7 +255,7 @@ fn sender_cancel_wakes_pending_enqueue_task() {
     assert_eq!(poll_ready(&mut sender, &mut cx), Poll::Pending);
     assert!(!woke.raised());
 
-    // Cancelling the oldest transfer frees the window and must wake the
+    // Cancelling the oldest transfer opens the window and must wake the
     // parked task, which then finds the service ready.
     assert!(sender.cancel(oldest));
     assert!(woke.raised(), "cancel() should wake the enqueue waker");
@@ -329,7 +329,7 @@ fn producers_admitted_under_one_lock_hold_never_see_window_full() {
         Poll::Pending
     );
 
-    // Drain until exactly one slot frees (the first transfer's End is
+    // Drain until the window opens by one number (the first transfer's End is
     // packed).  The drain task takes the lock per PDU, which the parked
     // producers are not holding.
     while !shared.lock().unwrap().is_window_available() {
