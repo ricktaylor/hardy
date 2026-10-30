@@ -23,7 +23,7 @@ instrument = ["hardy-bpa/instrument","hardy-tcpclv4/instrument"]
 [dependencies]
 anyhow = "1"
 bytes = "1"
-hardy-async = { version = "0.2", path = "../async" }
+hardy-async = { version = "0.2", path = "../async", features = ["signal"] }
 hardy-bpa = { version = "0.2", path = "../bpa" }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", features = ["std"] }
 hardy-cbor = { version = "2", path = "../cbor" }
@@ -31,7 +31,7 @@ hardy-proto = { version = "0.2", path = "../proto" }
 hardy-tcpclv4 = { version = "0.4", path = "../tcpclv4" }
 clap = { version = "4", features = ["derive"] }
 humantime = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "time", "signal", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "process"] }
 tokio-util = "0.7"
 time = { version = "0.3", features = ["parsing"] }
 rand = "0.10"

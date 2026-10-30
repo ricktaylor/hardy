@@ -24,8 +24,8 @@ hardy-proto = { path = "../../../proto" }
 hardy-bpa = { path = "../../../bpa" }
 hardy-bpv7 = { path = "../../../bpv7" }
 hardy-cbor = { path = "../../../cbor" }
-hardy-async = { path = "../../../async" }
-tokio = { version = "1", features = ["macros", "time", "net", "io-util", "rt-multi-thread", "signal"] }
+hardy-async = { path = "../../../async", features = ["signal"] }
+tokio = { version = "1", features = ["macros", "time", "net", "io-util", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 clap = { version = "4", features = ["derive"] }

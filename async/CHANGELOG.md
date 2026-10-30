@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `signal` feature: gates the `signal` module and enables tokio's signal handling. Implies `tokio`.
+
+### Changed
+- **BREAKING:** `signal::listen_for_cancel` now requires the `signal` feature; callers must enable it. The `tokio` feature no longer enables tokio's `signal` feature, so builds without `signal` no longer pull in tokio's signal driver and mio.
+
 ## [0.2.0]
 
 ### Added
