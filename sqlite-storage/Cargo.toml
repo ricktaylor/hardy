@@ -23,7 +23,7 @@ instrument = ["tracing/attributes"]
 hardy-bpa = { version = "0.2", path = "../bpa", features = ["serde"] }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", features = ["std","serde"] }
 hardy-cbor = { version = "2", path = "../cbor" }
-rusqlite = { version = "0.40", features = ["array", "bundled", "time"] }
+rusqlite = { version = "0.41", features = ["array", "bundled", "time"] }
 tokio = "1"
 thiserror = "2"
 directories = "6"
