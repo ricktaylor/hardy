@@ -55,6 +55,7 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 | [**`hardy-cbor`**](./cbor/) | RFC 8949 compliant Canonical CBOR encoder/decoder with streaming API. `no_std` compatible. |
 | [**`hardy-bpv7`**](./bpv7/) | RFC 9171 BPv7 implementation with bundle creation, parsing, and manipulation. Includes BPSec support for integrity (BIB) and confidentiality (BCB) blocks. `no_std` compatible. |
 | [**`hardy-bpa`**](./bpa/) | Complete Bundle Processing Agent library implementing DTN routing, dispatching, filter pipeline, RIB management, and CLA/service interfaces. |
+| [**`hardy-frame`**](./frame/) | Stackable transmit and receive halves for the frame services (AOS, Space Packets, Ethernet, UDP, QUIC datagrams) below frame-based convergence layers. `no_std` compatible. |
 | [**`hardy-eid-patterns`**](./eid-patterns/) | EID pattern parsing and matching for IPN and DTN URI schemes with glob support. |
 | [**`hardy-async`**](./async/) | Runtime-agnostic async primitives including TaskPool, sync wrappers (Mutex, RwLock, Once), and cancellation tokens. |
 | [**`hardy-proto`**](./proto/) | Protobuf v3 and gRPC API definitions for BPA-to-application and BPA-to-CLA communication. |

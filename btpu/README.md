@@ -23,6 +23,7 @@ Two layers are exposed, the lower usable without the upper: the `codec` module f
 - Feature flag: `serde` -- `Serialize`/`Deserialize` for `SenderConfig`, `ReceiverConfig`, and the validated newtypes they hold, which re-validate on deserialize.
 - Feature flag: `rand` -- `try_from_rng` and `from_rng` constructors that seed the initial transfer number from an RNG, such as the operating system's `rand::rngs::SysRng`.
 - Feature flag: `tower` -- `tower::Service` implementations for `Sender` and `Receiver` and a `futures_core::Stream` PDU drain, with waker-based backpressure. Requires `std` at the consumer level.
+- Feature flag: `frame` -- BTP-U over any frame service in the sense of `hardy-frame`: `frame::Sender<Tx>` binds a sender to a transmit half and `frame::Receiver<Rx>` a receiver to a receive half, one type per stack, so the same CLA runs over an AOS virtual channel, Ethernet, UDP or a shared-memory ring by naming a different type. The sender takes its PDU size and framing from the half's size and packs each PDU straight into the frame memory the half lends, once it holds it.
 - Feature flag: `critical-section` -- builds on targets without native atomic compare-and-swap (such as `thumbv6m`, Cortex-M0) by switching `bytes` to `portable-atomic`'s critical-section fallback. Requires a `critical-section` implementation from the HAL or runtime.
 
 ## Usage

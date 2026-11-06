@@ -1,7 +1,10 @@
 //! Packing the queue into PDUs.
 
 use alloc::vec::Vec;
-use core::ops::RangeInclusive;
+use core::{
+    ops::RangeInclusive,
+    task::{Context, Poll},
+};
 
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -179,6 +182,30 @@ impl Sender {
         // As in `next_pdu_into_with`.
         self.wake_enqueue();
         Ok(Some(written))
+    }
+
+    /// Wait until [`Self::next_pdu`] or [`Self::next_pdu_write`] would pack
+    /// a PDU, for a drain that must hold the room a PDU goes into before it
+    /// packs one (a ring slot, a frame service's permit).
+    ///
+    /// Ready when a PDU can be packed with the default [`NextPduOptions`];
+    /// otherwise the task is parked, and woken when a bundle is queued, a
+    /// Transfer Cancel is queued, or a push lets a waiting transfer open a
+    /// PDU.  Being ready says nothing about what packs afterwards: a cancel
+    /// in between can leave the drain nothing, so a drain still treats
+    /// `Ok(None)` from the pack as "nothing to send".  A flush
+    /// ([`NextPduOptions::flush`]) can pack what this does not wait for,
+    /// so a drain with a clock flushes without asking.
+    ///
+    /// Single-slot: the sender has one drain, and the last waker registered
+    /// is the one woken.
+    pub fn poll_pdu_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.ready(NextPduOptions::default()) {
+            Poll::Ready(())
+        } else {
+            self.register_drain_waker(cx.waker().clone());
+            Poll::Pending
+        }
     }
 
     /// Whether [`Self::pack`] has anything to pack.

@@ -15,9 +15,11 @@ use alloc::{
     collections::{BTreeMap, VecDeque},
     vec::Vec,
 };
-#[cfg(feature = "tower")]
-use core::task::Waker;
-use core::{fmt, iter::from_fn};
+use core::{
+    fmt,
+    iter::from_fn,
+    task::{Context, Poll, Waker},
+};
 
 use bytes::Bytes;
 #[cfg(feature = "rand")]
@@ -195,18 +197,17 @@ pub struct Sender {
     /// The counter value for the next [`SendKind::Message`] or
     /// [`SendKind::Bare`]; wraps.
     next_bundle_id: u32,
-    /// Every task parked in the `tower` `Service::poll_ready`, woken when a
-    /// window slot frees or the send queue drains below its high watermark.  A list
+    /// Every task parked in [`Self::poll_ready`], woken when a window slot
+    /// frees or the send queue drains below its high watermark.  A list
     /// rather than a slot so that several producers sharing the sender
     /// through a mutex are all woken; re-registration by a task already
     /// present is deduplicated with `Waker::will_wake`.
-    #[cfg(feature = "tower")]
     enqueue_wakers: Vec<Waker>,
-    /// The task parked in `Stream::poll_next`, woken when a bundle joins
-    /// `order` (through [`Self::queue`]), a Transfer Cancel is queued, or a
-    /// push lets a queued transfer open a PDU.  Single-slot: the drain has
-    /// one consumer.
-    #[cfg(feature = "tower")]
+    /// The task parked in [`Self::poll_pdu_ready`] or the `tower`
+    /// `Stream::poll_next`, woken when a bundle joins `order` (through
+    /// [`Self::queue`]), a Transfer Cancel is queued, or a push lets a
+    /// queued transfer open a PDU.  Single-slot: the drain has one
+    /// consumer.
     drain_waker: Option<Waker>,
     /// The queue entries examined by packing, summed over every PDU.
     #[cfg(test)]
@@ -230,11 +231,10 @@ impl fmt::Debug for Sender {
             .field("cancels", &self.cancels.len())
             .field("queued_bytes", &self.queued_bytes)
             .field("assembling", &self.assembling.len())
-            .field("next_bundle_id", &self.next_bundle_id);
-        #[cfg(feature = "tower")]
-        d.field("enqueue_wakers", &self.enqueue_wakers.len())
-            .field("drain_waker", &self.drain_waker.is_some());
-        d.finish()
+            .field("next_bundle_id", &self.next_bundle_id)
+            .field("enqueue_wakers", &self.enqueue_wakers.len())
+            .field("drain_waker", &self.drain_waker.is_some())
+            .finish()
     }
 }
 
@@ -263,9 +263,7 @@ impl Sender {
             cancels: VecDeque::new(),
             assembling: BTreeMap::new(),
             next_bundle_id: 0,
-            #[cfg(feature = "tower")]
             enqueue_wakers: Vec::new(),
-            #[cfg(feature = "tower")]
             drain_waker: None,
             #[cfg(test)]
             probes: 0,
@@ -404,12 +402,10 @@ impl Sender {
         })
     }
 
-    /// Wake every task parked on a `Service::poll_ready` that returned
-    /// `Pending` because the window was full or the send queue was at its
-    /// high watermark, once both have room: the same predicate `poll_ready` gates
-    /// on, so a woken task finds the service ready.  No-op without the
-    /// `tower` feature.
-    #[cfg(feature = "tower")]
+    /// Wake every task parked in [`Self::poll_ready`] because the window
+    /// was full or the send queue was at its high watermark, once both have
+    /// room: the same predicate `poll_ready` gates on, so a woken task finds
+    /// the sender ready.
     fn wake_enqueue(&mut self) {
         if self.is_window_available() && !self.is_send_queue_high() {
             for w in self.enqueue_wakers.drain(..) {
@@ -417,19 +413,29 @@ impl Sender {
             }
         }
     }
-    #[cfg(not(feature = "tower"))]
-    fn wake_enqueue(&mut self) {}
 
-    /// Wake any task parked on a `Stream::poll_next` that returned `Pending`
-    /// because nothing was ready. No-op without the `tower` feature.
-    #[cfg(feature = "tower")]
+    /// Wake the task parked in [`Self::poll_pdu_ready`] or the `tower`
+    /// `Stream::poll_next` because nothing was ready.
     fn wake_drain(&mut self) {
         if let Some(w) = self.drain_waker.take() {
             w.wake();
         }
     }
-    #[cfg(not(feature = "tower"))]
-    fn wake_drain(&mut self) {}
+
+    /// Wait until a bundle can be queued: the transfer window has room and
+    /// the send queue is below its high watermark, the two gates
+    /// [`Self::enqueue`] and [`Self::begin`] apply.  Otherwise the task is
+    /// parked, and woken once both have room; several producers sharing the
+    /// sender may be parked at once, and all are woken.  The watermark is
+    /// what holds back unsegmented bundles, which never take a window slot.
+    pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.is_window_available() && !self.is_send_queue_high() {
+            Poll::Ready(())
+        } else {
+            self.register_enqueue_waker(cx.waker());
+            Poll::Pending
+        }
+    }
 
     /// Whether a segmented bundle could currently be admitted without
     /// violating the transfer window: whether its transfer number would keep
@@ -512,8 +518,8 @@ impl Sender {
     }
 
     /// Register a task to be woken when a window slot frees or the send
-    /// queue drains.  Used by the `tower` Service impl from `poll_ready`.
-    /// Costs a scan of the tasks already parked, to skip one that is.
+    /// queue drains.  Used by [`Self::poll_ready`].  Costs a scan of the
+    /// tasks already parked, to skip one that is.
     ///
     /// Deduplication relies on `Waker::will_wake`.  An executor that polls
     /// a pending task again without waking it, with a waker that is not
@@ -521,16 +527,15 @@ impl Sender {
     /// until the next wake clears the list; polling without a wake breaks
     /// the executor contract, and one task's wakers compare equal in the
     /// common executors, so the list stays one entry per producer.
-    #[cfg(feature = "tower")]
-    pub(crate) fn register_enqueue_waker(&mut self, waker: &Waker) {
+    fn register_enqueue_waker(&mut self, waker: &Waker) {
         if !self.enqueue_wakers.iter().any(|w| w.will_wake(waker)) {
             self.enqueue_wakers.push(waker.clone());
         }
     }
 
     /// Register a waker to be notified when a new PDU becomes available.
-    /// Used by the `tower` Stream impl from `poll_next`.
-    #[cfg(feature = "tower")]
+    /// Used by [`Self::poll_pdu_ready`] and the `tower` Stream impl from
+    /// `poll_next`.
     pub(crate) fn register_drain_waker(&mut self, waker: Waker) {
         self.drain_waker = Some(waker);
     }

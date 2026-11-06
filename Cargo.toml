@@ -21,6 +21,7 @@ members = [
     "eid-patterns",
     "eid-patterns/fuzz",
     "file-cla",
+    "frame",
     "localdisk-storage",
     "otel",
     "s3-storage",

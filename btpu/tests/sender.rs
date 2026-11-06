@@ -1598,13 +1598,10 @@ fn debug_summarises_the_queue_instead_of_printing_it() {
         "Sender {{ pdu_size: PduSize(64), send_queue_high_watermark: SendQueueHighWatermark({bound}), \
          link_framing: FixedSize, segment_cut_strategy: Full, window_size: WindowSize(4), \
          transfers_outstanding: 1, window_available: true, queued: 2, parked: 0, cancels: 0, \
-         queued_bytes: 1005, assembling: 0, next_bundle_id: 1"
+         queued_bytes: 1005, assembling: 0, next_bundle_id: 1, enqueue_wakers: 0, \
+         drain_waker: false }}"
     );
-    #[cfg(not(feature = "tower"))]
-    let expected = format!("{summary} }}");
-    #[cfg(feature = "tower")]
-    let expected = format!("{summary}, enqueue_wakers: 0, drain_waker: false }}");
-    assert_eq!(format!("{s:?}"), expected);
+    assert_eq!(format!("{s:?}"), summary);
 }
 
 #[test]
