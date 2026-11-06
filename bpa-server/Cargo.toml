@@ -19,6 +19,7 @@ grpc = ["dep:hardy-proto"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 echo = ["dep:hardy-echo-service"]
+custody-receipt = ["dep:hardy-custody-receipt"]
 instrument = [
     "tracing/attributes",
     "hardy-async/instrument",
@@ -47,6 +48,7 @@ hardy-tcpclv4 = { version = "0.4", path = "../tcpclv4", features = ["serde"], op
 hardy-file-cla = { version = "0.2", path = "../file-cla", features = ["serde"], optional = true }
 hardy-otel = { version = "0.2", path = "../otel", optional = true }
 hardy-echo-service = { version = "0.2", path = "../echo-service", optional = true }
+hardy-custody-receipt = { version = "0.1", path = "../custody-receipt", features = ["serde"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
 humantime = { version = "2", optional = true }

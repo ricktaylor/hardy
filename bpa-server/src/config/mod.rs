@@ -241,6 +241,12 @@ pub struct Config {
     #[serde(default)]
     pub bpsec: Option<bpsec::BPSecConfig>,
 
+    // Custody Receipt Block custodian: signs a receipt into block 224 for
+    // forwarded bundles. Absent = this node forwards the block unchanged.
+    #[serde(default)]
+    #[cfg(feature = "custody-receipt")]
+    pub custody_receipt: Option<hardy_custody_receipt::Config>,
+
     /// Named egress policies, referenced by CLAs
     #[serde(default)]
     pub policies: HashMap<String, FlowControllerFactoryConfig>,

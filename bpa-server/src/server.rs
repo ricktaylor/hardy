@@ -17,6 +17,8 @@ use hardy_bpa::{
     routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
+#[cfg(feature = "custody-receipt")]
+use hardy_custody_receipt::CustodyReceipt;
 #[cfg(feature = "echo")]
 use hardy_echo_service::EchoService;
 #[cfg(feature = "file-cla")]
@@ -176,6 +178,17 @@ impl BpaServer {
             let provider = Arc::new(PatternKeyProvider::new(source));
             builder = builder.key_provider(provider.clone());
             bpsec::watch_keys(&tasks, bpsec_config, provider);
+        }
+
+        #[cfg(feature = "custody-receipt")]
+        if let Some(custody_config) = &config.custody_receipt {
+            let custodian = CustodyReceipt::from_config(custody_config)
+                .context("Failed to load the custody-receipt configuration")?;
+            info!(
+                "Custody Receipt Block custodian: signing as {}",
+                custodian.this_hop()
+            );
+            builder = builder.add_filters(custodian.filter_pack());
         }
 
         if config.storage.uses_cache() {
