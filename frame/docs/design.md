@@ -78,7 +78,7 @@ A send fails in one of two ways: `Dropped`, a transient refusal of one frame by 
 
 ### What is deliberately left out
 
-Demultiplexing is concrete, not a trait: a layer that carries several channels hands out per-channel halves from constructors keyed as that layer's protocol keys them, because the keys differ in kind across layers and stack assembly is concrete code that knows them. Layers never spawn: a layer that needs a task returns it as a future from its constructor and the deployment profile runs it, on whichever runtime it has. Link state is not published: while the link is down reservations wait, and a half that has closed never grants again, so there is nothing to subscribe to. The transmit half is `Send + Sync`, since stacks share it between tasks, and is implemented for `&T` and `Arc<T>`; the receive half has no bound of its own and is implemented for `&mut R`, as `Stream` is.
+Demultiplexing is concrete, not a trait: a layer that carries several channels hands out per-channel halves from constructors keyed as that layer's protocol keys them, because the keys differ in kind across layers and stack assembly is concrete code that knows them. Layers never spawn: a layer that needs a task returns it as a future from its constructor and the deployment profile runs it, on whichever runtime it has. Link state is not published: while the link is down reservations wait, and a half that has closed never grants again, so there is nothing to subscribe to. The transmit half is `Send + Sync`, since stacks share it between tasks, and is implemented for `&T` and, on targets with pointer-width atomics, `Arc<T>`; the receive half has no bound of its own and is implemented for `&mut R`, as `Stream` is.
 
 ## Integration
 

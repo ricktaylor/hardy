@@ -36,6 +36,7 @@ It is `#![no_std]` and depends only on `core`, `alloc` (through [`bytes`]),
 
 extern crate alloc;
 
+#[cfg(target_has_atomic = "ptr")]
 use alloc::sync::Arc;
 use core::{
     fmt::{self, Display, Formatter},
@@ -271,8 +272,9 @@ pub trait Permit: AsMut<[u8]> {
 /// never grants again.
 ///
 /// Stacks share a transmit half between tasks, so it is `Send + Sync` and
-/// is also implemented for `&T` and `Arc<T>`; the futures it returns are
-/// `Send`, and its permits deliberately are not (see [`Permit`]).
+/// is also implemented for `&T` and, on targets with pointer-width
+/// atomics, `Arc<T>`; the futures it returns are `Send`, and its permits
+/// deliberately are not (see [`Permit`]).
 pub trait FrameTx: Send + Sync {
     /// The room a reservation lends.
     type Permit<'a>: Permit
@@ -337,6 +339,8 @@ impl<T: FrameTx + ?Sized> FrameTx for &T {
     }
 }
 
+// `Arc` needs pointer-width atomics, which some targets lack (Cortex-M0).
+#[cfg(target_has_atomic = "ptr")]
 impl<T: FrameTx + ?Sized> FrameTx for Arc<T> {
     type Permit<'a>
         = T::Permit<'a>
