@@ -23,6 +23,7 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
     - [Convergence Layer Adapters](#convergence-layer-adapters)
     - [Services](#services)
     - [Servers \& Tools](#servers--tools)
+  - [Extensions](#extensions)
   - [Getting Started](#getting-started)
     - [Prerequisites](#prerequisites)
     - [Building](#building)
@@ -93,6 +94,15 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 | [**`hardy-cbor-tools`**](./cbor/tools/) | CLI (`cbor`) for CBOR inspection and conversion between binary, CDN, and JSON formats. |
 | [**`hardy-tvr`**](./tvr/) | Time-Variant Routing agent — installs and withdraws routes based on contact schedules (cron, file, gRPC). |
 | [**`hardy-tools`**](./tools/) | General DTN utilities including the `bp` command for ping and bundle operations. |
+
+## Extensions
+
+Hardy is extended without changes to this workspace:
+
+- **Over gRPC:** convergence layer adapters, routing agents, services and applications run as separate processes and attach to a stock `hardy-bpa-server` through the APIs in [`hardy-proto`](./proto/).
+- **In process:** anything, including filter packs and storage backends, builds against the public traits of the unmodified `hardy-bpa` crate.
+
+Extensions maintained outside the workspace are listed in [Extensions](./docs/extensions.md); an entry there is a pointer, not an endorsement.
 
 ## Getting Started
 
@@ -217,6 +227,7 @@ See [tests/interop/README.md](./tests/interop/README.md) for details.
 | [**Test Coverage**](./docs/test_coverage_report.md) | Project-wide test plan inventory and coverage metrics. |
 | [**Requirements Coverage**](./docs/requirements_coverage_report.md) | Requirements traceability matrix and LLR verification status. |
 | [**Interop Tests**](./tests/interop/README.md) | Interoperability test suite for 7 BPv7 implementations. |
+| [**Extensions**](./docs/extensions.md) | Registry of extensions maintained outside the workspace. |
 
 ## Contributing
 
