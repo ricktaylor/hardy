@@ -41,21 +41,22 @@ Test names are listed per scenario in [`UTP-BTPU-01`](unit_test_plan.md) Section
 | `tests/codec.rs` | 35 | 3.3, 3.4, 3.5 | PDU decoding, fault containment, bare frames, extent hook, encoding into a caller's slice, padding |
 | `tests/transfer.rs` | 3 | 3.19 | `WindowSize` |
 | `transfer.rs` (inline) | 21 | 3.6, 3.19 | Window classification, allocator, transfer ids and expiry across the roll-over and across a reset |
-| `tests/sender.rs` | 74 | 3.7, 3.8, 3.9, 3.19 | Admission, the window-full error, segmentation, hints, packing, carried list, caller's PDU buffer, cancellation, foreign IDs, sender configuration |
+| `tests/sender.rs` | 77 | 3.7, 3.8, 3.9, 3.19 | Admission, the window-full error, segmentation, hints, packing, carried list, caller's PDU buffer, PDU as slices, cancellation, foreign IDs, sender configuration |
 | `tests/send_handle.rs` | 31 | 3.7, 3.8, 3.9 | Bundles pushed through a `SendHandle`, push errors, foreign handles, segment cut strategy, push readiness, passing over waiting transfers, flush, cancellation, dropped handles and `outstanding`, the high watermark |
 | `sender/mod.rs` (inline) | 2 | 3.7, 3.8 | Unsegmented ID wrap, queued-byte overflow |
 | `sender/segmenter.rs` (inline) | 5 | 3.7, 3.8 | Segment cutting from pushed chunks, the flush index check, the starved and retry-room predicates |
-| `sender/pack.rs` (inline) | 4 | 3.8 | Packing progress, packing cost behind starved transfers and at a full PDU, an oversized message refused by a caller's slice |
-| `tests/receiver.rs` | 105 | 3.10 to 3.16, 3.19, 3.21 | Reassembly, window, cancel, FEC rules, events, hints, limits, receiver configuration, round trips |
+| `sender/pack.rs` (inline) | 5 | 3.8 | Packing progress, packing cost behind starved transfers and at a full PDU, an oversized message refused by a caller's slice, sharing bundle data into PDU slices |
+| `tests/receiver.rs` | 105 | 3.10 to 3.16, 3.19, 3.22 | Reassembly, window, cancel, FEC rules, events, hints, limits, receiver configuration, round trips |
 | `receiver/mod.rs` (inline) | 11 | 3.11, 3.15, 3.16, 3.18 | Closed-map pruning, reset, overhead and retention accounting, budget accounting |
 | `tests/streaming.rs` | 25 | 3.17 | Streamed delivery, its ending events and hints, refusal, foreign ids |
 | `tests/budget.rs` | 9 | 3.18 | Shared retention budget and CLA charges |
 | `tests/config.rs` | 4 | 3.19 | serde form (`serde` feature) |
-| `tests/tower.rs` | 21 | 3.20 | `Service`/`Stream` adapters (`tower` feature) |
-| `tests/tunnel.rs` | 3 | 3.21 | Packet tunnel over lossless, lossy, and UDP loopback links |
-| Doctests | 3 | 3.21 | README example (`rand` feature), `codec::BundleExtent`, `receiver::ReceiverConfig` |
+| `tests/wake.rs` | 16 | 3.20 | Producer, push, and drain wake-ups through the core API, an OS-thread drain |
+| `tests/tower.rs` | 21 | 3.21 | `Service`/`Stream` adapters (`tower` feature) |
+| `tests/tunnel.rs` | 3 | 3.22 | Packet tunnel over lossless, lossy, and UDP loopback links |
+| Doctests | 4 | 3.22 | README example (`rand` feature), `codec::BundleExtent`, `receiver::ReceiverConfig`, `sender::Sender` event loop |
 
-**Total: 396 tests (74 inline, 319 integration, 3 doctests) with all features; 367 with default features.** The 29 feature-gated tests are 21 `tower`, 4 `serde`, 3 `rand` seeding tests, and the README doctest.
+**Total: 417 tests (75 inline, 338 integration, 4 doctests) with all features; 388 with default features.** The 29 feature-gated tests are 21 `tower`, 4 `serde`, 3 `rand` seeding tests, and the README doctest.
 
 ### Fuzz Tests
 
@@ -80,7 +81,7 @@ Cross-reference against [`UTP-BTPU-01`](unit_test_plan.md):
 | 3.5 Encoding and Padding | Pad, encode into a slice, encode failure | 3 | 3 | Complete |
 | 3.6 Transfer Window and Number Allocation | Classification, roll-over, expiry, allocator | 4 | 4 | Complete |
 | 3.7 Sender: Admission, Segmentation, and Hints | Admission, segmentation, pack-time cutting, send handle, segment cut strategy, push errors, high watermark, push readiness, hints, identifiers | 10 | 10 | Complete |
-| 3.8 Sender: Packing and Link Framing | Framing, padding floor, passing over transfers, flush, progress, packing cost, carried list, caller's PDU buffer, debug output | 11 | 11 | Complete |
+| 3.8 Sender: Packing and Link Framing | Framing, padding floor, passing over transfers, flush, progress, packing cost, carried list, caller's PDU buffer, PDU as slices, debug output | 12 | 12 | Complete |
 | 3.9 Sender: Window Release and Cancellation | Release, cancel transfer, cancel bundle, cancel pushed bundle, ID matching | 5 | 5 | Complete |
 | 3.10 Receiver: Reassembly and Repeats | Delivery, conflicts, repeats, empty bundles, copy policy, always copy | 6 | 6 | Complete |
 | 3.11 Receiver: Window, Cancellation, and Reset | Cancel, expiry, pruning, reset | 4 | 4 | Complete |
@@ -92,9 +93,10 @@ Cross-reference against [`UTP-BTPU-01`](unit_test_plan.md):
 | 3.17 Receiver: Streamed Delivery and Refusal | In-order release, reordering, empty segments, ending, released segments, hints, FEC, drop ids, refusal | 9 | 9 | Complete |
 | 3.18 Receiver: Shared Retention Budget | Charges, sharing, reason order, joining and leaving, accounting | 5 | 5 | Complete |
 | 3.19 Configuration Types | Sender, receiver, window size, serde | 4 | 4 | Complete |
-| 3.20 Tower Adapters | Services, backpressure, wakeups, stream | 4 | 4 | Complete |
-| 3.21 End to End | Round trip, tunnel, doc examples | 3 | 3 | Complete |
-| **Total** | | **107** | **107** | **100%** |
+| 3.20 Sender Wake-ups | Admission, push, drain, OS-thread drain | 4 | 4 | Complete |
+| 3.21 Tower Adapters | Services, backpressure, wakeups, stream | 4 | 4 | Complete |
+| 3.22 End to End | Round trip, tunnel, doc examples | 3 | 3 | Complete |
+| **Total** | | **112** | **112** | **100%** |
 
 ## 4. Line Coverage
 
@@ -138,4 +140,4 @@ The two layers check different things. The unit tests pin specified behaviour to
 
 ## 7. Conclusion
 
-The BTP-U crate has 396 tests (319 integration, 74 inline, 3 doctests) and 3 fuzz targets, covering 107 of 107 planned scenarios (100%). No LLRs are assigned; every implemented section of `draft-ietf-dtn-btpu-04` and the framing and transfer rules of `draft-ietf-dtn-btpu-fec-02` trace to passing tests. Line coverage is generated into the [coverage summary](../../docs/coverage_summary.md). The strongest coverage is fault containment in the codec and the receiver's bounded-memory limits, which are also the fuzz targets' focus. The remaining gaps are the optional sender behaviours (interleaving and repetition), FEC schemes, and the lack of an interoperability peer.
+The BTP-U crate has 417 tests (338 integration, 75 inline, 4 doctests) and 3 fuzz targets, covering 112 of 112 planned scenarios (100%). No LLRs are assigned; every implemented section of `draft-ietf-dtn-btpu-04` and the framing and transfer rules of `draft-ietf-dtn-btpu-fec-02` trace to passing tests. Line coverage is generated into the [coverage summary](../../docs/coverage_summary.md). The strongest coverage is fault containment in the codec and the receiver's bounded-memory limits, which are also the fuzz targets' focus. The remaining gaps are the optional sender behaviours (interleaving and repetition), FEC schemes, and the lack of an interoperability peer.

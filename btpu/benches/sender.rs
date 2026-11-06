@@ -1,16 +1,17 @@
 //! Criterion benchmarks for the send path.
 //!
 //! Measures packing throughput for small bundles and for one segmented
-//! bundle, into a new buffer per PDU and into a slice the caller keeps, the
-//! cost of draining messages queued behind transfers that are waiting on
-//! their producers, and of full PDUs with ready transfers queued behind.
+//! bundle, into a new buffer per PDU, into a slice the caller keeps, and as
+//! slices for the caller to gather, the cost of draining messages queued
+//! behind transfers that are waiting on their producers, and of full PDUs
+//! with ready transfers queued behind, packed each way.
 
 use std::hint::black_box;
 
 use bytes::Bytes;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use hardy_btpu::{
-    sender::{CarriedList, SendOptions, Sender, SenderConfig},
+    sender::{CarriedList, PduSlices, SendOptions, Sender, SenderConfig},
     transfer::WindowSize,
 };
 
@@ -49,6 +50,14 @@ fn drain_write(s: &mut Sender) {
     }
 }
 
+fn drain_vectored(s: &mut Sender) {
+    let mut carried = CarriedList::new();
+    let mut out = PduSlices::new();
+    while s.next_pdu_vectored(&mut carried, &mut out).is_some() {
+        black_box((&out, &carried));
+    }
+}
+
 /// Pack fitting bundles, many to a PDU.
 fn bench_small_bundles(c: &mut Criterion) {
     let mut group = c.benchmark_group("sender/small_bundles");
@@ -72,6 +81,17 @@ fn bench_small_bundles(c: &mut Criterion) {
                 s
             },
             |mut s| drain_write(&mut s),
+            BatchSize::LargeInput,
+        )
+    });
+    group.bench_function("drain_vectored", |b| {
+        b.iter_batched(
+            || {
+                let mut s = sender(WindowSize::DEFAULT);
+                enqueue_small(&mut s, SMALL_BUNDLES);
+                s
+            },
+            |mut s| drain_vectored(&mut s),
             BatchSize::LargeInput,
         )
     });
@@ -102,6 +122,17 @@ fn bench_segmented_bundle(c: &mut Criterion) {
                 s
             },
             |mut s| drain_write(&mut s),
+            BatchSize::LargeInput,
+        )
+    });
+    group.bench_function("drain_vectored", |b| {
+        b.iter_batched(
+            || {
+                let mut s = sender(WindowSize::DEFAULT);
+                s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+                s
+            },
+            |mut s| drain_vectored(&mut s),
             BatchSize::LargeInput,
         )
     });
@@ -145,21 +176,44 @@ fn bench_full_pdus_behind_ready_transfers(c: &mut Criterion) {
     const BUNDLE_LEN: usize = 64 * 1024;
     let mut group = c.benchmark_group("sender/full_pdus_behind_ready_transfers");
     let bundle = Bytes::from(vec![0xA5; BUNDLE_LEN]);
+    let queued = |ready| {
+        let mut s = sender(WindowSize::DEFAULT);
+        for _ in 0..ready {
+            s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+        }
+        s
+    };
     for ready in [1usize, 16] {
         group.throughput(Throughput::Bytes((BUNDLE_LEN * ready) as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(ready), &ready, |b, &ready| {
+        group.bench_with_input(BenchmarkId::new("drain", ready), &ready, |b, &ready| {
             b.iter_batched(
-                || {
-                    let mut s = sender(WindowSize::DEFAULT);
-                    for _ in 0..ready {
-                        s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
-                    }
-                    s
-                },
+                || queued(ready),
                 |mut s| drain(&mut s),
                 BatchSize::LargeInput,
             )
         });
+        group.bench_with_input(
+            BenchmarkId::new("drain_write", ready),
+            &ready,
+            |b, &ready| {
+                b.iter_batched(
+                    || queued(ready),
+                    |mut s| drain_write(&mut s),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("drain_vectored", ready),
+            &ready,
+            |b, &ready| {
+                b.iter_batched(
+                    || queued(ready),
+                    |mut s| drain_vectored(&mut s),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
     }
     group.finish();
 }

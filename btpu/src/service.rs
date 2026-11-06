@@ -42,16 +42,7 @@ impl Service<SendRequest> for Sender {
     type Future = Ready<Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // Two admission gates: transfer-window capacity (segmented bundles
-        // allocate a number in `call`) and the send queue's high
-        // watermark.  The watermark is what holds back unsegmented
-        // bundles, which never take a window slot.
-        if self.is_window_available() && !self.is_send_queue_high() {
-            Poll::Ready(Ok(()))
-        } else {
-            self.register_enqueue_waker(cx.waker());
-            Poll::Pending
-        }
+        self.poll_admit(cx).map(Ok)
     }
 
     fn call(&mut self, request: SendRequest) -> Self::Future {
@@ -69,7 +60,7 @@ impl Stream for Sender {
                 // The sender is a perpetual source: yielding Ready(None)
                 // would mean "stream finished forever," which it isn't.
                 // Park until enqueue or push supplies more.
-                self.register_drain_waker(cx.waker().clone());
+                self.register_drain_waker(cx);
                 Poll::Pending
             }
         }

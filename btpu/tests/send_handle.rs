@@ -367,7 +367,7 @@ fn begin_refuses_what_enqueue_refuses() {
             window_size: window_size(4)
         })
     );
-    // A fitting bundle takes no window slot.
+    // A fitting bundle takes no transfer number.
     let fitting = begin(&mut s, 10);
     assert!(s.cancel(fitting));
     for handle in handles {

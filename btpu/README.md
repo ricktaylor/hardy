@@ -13,7 +13,7 @@ Two layers are exposed, the lower usable without the upper: the `codec` module f
 ## Features
 
 - **Segmentation and reassembly**: bundles that fit a PDU travel as a single message; larger ones are cut into segments as PDUs are packed, filling the tail of a PDU another message started, and reassembled at the receiver, with out-of-order and repeated messages handled.
-- **Streamed sending**: a CLA can push a bundle into the sender in chunks as it arrives, through `Sender::begin`, `push`, and `finish`, rather than buffering it whole; each segment goes out once its bytes have arrived (or, under `SegmentCutStrategy::Half`, once half a segment's have), a transfer still waiting on its producer is passed over rather than holding up the queue, and `SendQueueHighWatermark` applies backpressure on the bytes held, with `is_push_ready` telling a producer when to push rather than drain without ever waiting on itself. A CLA with a timer can ask `next_pdu` to flush, sending what waiting transfers have buffered.
+- **Streamed sending**: a CLA can push a bundle into the sender in chunks as it arrives, through `Sender::begin`, `push`, and `finish`, rather than buffering it whole; each segment goes out once its bytes have arrived (or, under `SegmentCutStrategy::Half`, once half a segment's have), a transfer still waiting on its producer is passed over rather than holding up the queue, and `SendQueueHighWatermark` applies backpressure on the bytes held, with `is_push_ready` telling a producer when to push (and `poll_push_ready` parking it until then) rather than drain without ever waiting on itself. A CLA with a timer can ask `next_pdu` to flush, sending what waiting transfers have buffered.
 - **Streamed delivery**: optionally, the receiver releases a segmented bundle's bytes in order as they arrive, as `TransferStarted`, `TransferData`, and `TransferFinished` events, rather than holding the bundle until it is complete; `Receiver::refuse` lets a CLA give up on a transfer its consumer will not take.
 - **Transfer window**: the Section 5 sliding window, enforced on the span of outstanding transfer numbers at the sender and with roll-over at the receiver; the sender releases a transfer's slot itself when its last segment is packed.
 - **Fault containment**: receiving is infallible, every fault and policy disposition is a `ReceiverEvent`, and a malformed message is skipped via its header length without discarding the rest of the PDU.
@@ -48,7 +48,7 @@ let bundle = Bytes::from(vec![0x9F; 4000]); // stands in for an encoded bundle
 let id = sender.enqueue(bundle.clone(), SendOptions::default())?;
 
 // Drain PDUs to the link; here the link is the receiver.  A segmented
-// transfer's window slot is released when its last PDU is packed, so the
+// transfer's number is released when its last PDU is packed, so the
 // caller has nothing to acknowledge.  Each PDU lists the bundles it
 // carries; the one flagged `completes` holds the bundle's last bytes.
 let mut delivered = Vec::new();

@@ -83,9 +83,13 @@ The [`transfer`] module holds the Section 5 types both layers above share:
   limiting, metrics, etc. Requires `std` at the consumer level (the `tower`
   crate itself is std-only).
 
-  The sender's `Service::poll_ready` applies backpressure from the
-  transfer window and the [`sender::SendQueueHighWatermark`]; the receiver's
-  service is always ready and never fails.  How to run the `Stream` drain
+  The sender's `Service::poll_ready` is [`sender::Sender::poll_admit`],
+  backpressure from the transfer window and the
+  [`sender::SendQueueHighWatermark`]; the receiver's service is always
+  ready and never fails.  Wake-ups need no feature: `poll_admit`,
+  `poll_push_ready`, `poll_next_pdu_write`, and `poll_next_pdu_vectored`
+  serve a caller that
+  does not use `tower`.  How to run the `Stream` drain
   alongside producers, and how several producers may share one sender, is
   set out under Concurrency in [`sender::Sender`].
 - **`critical-section`**: For targets without native atomic
