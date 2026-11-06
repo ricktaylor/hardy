@@ -169,10 +169,11 @@ jobs:
       # critical-section impl — only final binaries need one.
       # TODO: extend to hardy-bpa once its --no-default-features build is
       # confirmed clean on this target.
-      - name: Build cbor + btpu (no_std, 32-bit)
+      - name: Build cbor + frame + btpu (no_std, 32-bit)
         run: >
           cargo build --locked --no-default-features
           -p hardy-cbor
+          -p hardy-frame
           -p hardy-btpu
           --target thumbv7em-none-eabihf
 
@@ -187,10 +188,11 @@ jobs:
       # thumbv6m-none-eabi (Cortex-M0) has no atomic compare-and-swap at all,
       # so alloc::sync::Arc does not exist there and `bytes` needs
       # portable-atomic, which btpu's `critical-section` feature enables.
-      - name: Build btpu (no_std, no atomic CAS)
+      - name: Build frame + btpu (no_std, no atomic CAS)
         run: >
           cargo build --locked --no-default-features
-          --features hardy-btpu/critical-section
+          --features hardy-frame/critical-section,hardy-btpu/critical-section
+          -p hardy-frame
           -p hardy-btpu
           --target thumbv6m-none-eabi
 

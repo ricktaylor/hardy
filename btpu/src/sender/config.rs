@@ -4,9 +4,13 @@ use core::num::NonZeroUsize;
 
 #[cfg(doc)]
 use bytes::Bytes;
+#[cfg(feature = "frame")]
+use hardy_frame::FrameSize;
 
 #[cfg(doc)]
 use super::{Error, Sender};
+#[cfg(feature = "frame")]
+use crate::OutOfRange;
 use crate::{
     codec::header::{HEADER_SIZE, MAX_CONTENT_LENGTH},
     transfer::WindowSize,
@@ -295,4 +299,43 @@ pub struct SenderConfig {
     /// When a segment of a bundle still being pushed is cut.  Default:
     /// once all of its bytes are pushed.
     pub segment_cut_strategy: SegmentCutStrategy,
+}
+
+#[cfg(feature = "frame")]
+impl SenderConfig {
+    /// This configuration for a link that is a frame service carrying
+    /// frames of `size` (the `frame` feature): the PDU size becomes the
+    /// longest frame, and the link framing becomes
+    /// [`LinkFraming::FixedSize`] for a fixed service, or otherwise
+    /// [`LinkFraming::Variable`] with this configuration's
+    /// [`BundleFraming`] and its `min_pdu_len` floor raised to the
+    /// service's minimum, so that every PDU is a frame the service
+    /// accepts.  The other fields are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`OutOfRange`] if the longest frame is not a valid [`PduSize`].
+    pub fn with_frame_size(self, size: FrameSize) -> Result<Self, OutOfRange> {
+        let pdu_size = PduSize::try_from(size.max())?;
+        let link_framing = if size.is_fixed() {
+            LinkFraming::FixedSize
+        } else {
+            let (bundle_framing, floor) = match self.link_framing {
+                LinkFraming::Variable {
+                    bundle_framing,
+                    min_pdu_len,
+                } => (bundle_framing, min_pdu_len),
+                LinkFraming::FixedSize => (BundleFraming::Message, 0),
+            };
+            LinkFraming::Variable {
+                bundle_framing,
+                min_pdu_len: floor.max(size.min()),
+            }
+        };
+        Ok(Self {
+            pdu_size,
+            link_framing,
+            ..self
+        })
+    }
 }
