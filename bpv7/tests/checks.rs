@@ -10,8 +10,10 @@ use hardy_bpv7::{
         self, Decrypted, Role, Roles, SecurityService, SecurityServices,
         checks::{self, Checked},
     },
-    builder, crc, creation_timestamp,
-    editor::{self, Editor},
+    builder,
+    bundle::FragmentInfo,
+    crc, creation_timestamp,
+    editor::{self, Chunk, Editor},
     eid, parse,
     reader::PlainReader,
     rewrite,
@@ -2794,6 +2796,217 @@ fn a_hop_count_under_an_encrypted_bib_passes() {
     verify_with(&mut parsed, vec![]).expect("a keyless node passes it");
     let mut parsed = signed_then_encrypted_again(&parsed);
     verify_with(&mut parsed, vec![enc_key]).expect("a key-holding node passes it");
+}
+
+// `parsed` as fragment 0 of a bundle of 1 MiB, every block as it is: a fresh
+// parse.
+fn as_fragment(parsed: &Parsed) -> Parsed {
+    let chunks = Editor::new(&parsed.bundle, &parsed.data)
+        .with_fragment_info(Some(FragmentInfo {
+            offset: 0,
+            total_adu_length: 1 << 20,
+        }))
+        .map_err(|(_, e)| e)
+        .expect("set the fragment info")
+        .rebuild()
+        .expect("rebuild the fragment");
+    parse::parse(Chunk::flatten_bytes(chunks, parsed.data.clone())).unwrap()
+}
+
+// A bundle from ipn:1.3.1 with a per-hop block of `block_type`, which its
+// source signed where `signed` and encrypted otherwise, under a scope that
+// leaves the primary block out where `primary_excluded`, and a payload its
+// source signed in plaintext, made a fragment: the fresh parse, the per-hop
+// block's number and the keys.
+fn fragment_with_protected_per_hop_block(
+    block_type: block::Type,
+    signed: bool,
+    primary_excluded: bool,
+) -> (Parsed, u64, Vec<bpsec::key::Key>) {
+    use bpsec::{encryptor, rfc9173::ScopeFlags, signer};
+    use core::num::NonZeroU8;
+    use hardy_bpv7::hop_info::HopInfo;
+    use hardy_cbor::encode::emit;
+
+    let scope = ScopeFlags {
+        include_primary_block: !primary_excluded,
+        ..ScopeFlags::default()
+    };
+
+    let source: eid::Eid = "ipn:1.3.1".parse().unwrap();
+    let body = if block_type == block::Type::PreviousNode {
+        emit(&"ipn:1.3.0".parse::<eid::Eid>().unwrap()).0
+    } else if block_type == block::Type::BundleAge {
+        emit(&5_000u64).0
+    } else {
+        emit(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .0
+    };
+    let (_, data) = builder::Builder::new(source.clone(), "ipn:1.2.99".parse().unwrap())
+        .add_extension_block(block_type)
+        .expect("add the per-hop block")
+        .build(body.into())
+        .with_payload(b"per-hop".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let built = parse::parse(Bytes::from(data)).unwrap();
+    let target = block_number(&built, block_type);
+    let (sign_key, enc_key) = generated_keys();
+    let signed_payload = parse::parse(Bytes::from(
+        signer::Signer::new(&built.bundle, &built.data)
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                source.clone(),
+                &sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the payload")
+            .rebuild()
+            .expect("rebuild signed"),
+    ))
+    .unwrap();
+    let protected = if signed {
+        signer::Signer::new(&signed_payload.bundle, &signed_payload.data)
+            .sign_block(target, signer::Context::HMAC_SHA2(scope), source, &sign_key)
+            .map_err(|(_, e)| e)
+            .expect("sign the per-hop block")
+            .rebuild()
+            .expect("rebuild signed")
+    } else {
+        encryptor::Encryptor::new(&signed_payload.bundle, &signed_payload.data)
+            .encrypt_block(target, encryptor::Context::AES_GCM(scope), source, &enc_key)
+            .map_err(|(_, e)| e)
+            .expect("encrypt the per-hop block")
+            .rebuild()
+            .expect("rebuild encrypted")
+    };
+    let protected = parse::parse(Bytes::from(protected)).unwrap();
+    (as_fragment(&protected), target, vec![sign_key, enc_key])
+}
+
+// On a fragment the per-hop blocks are processed as on any bundle, being
+// the forwarder's writes to the fragment (RFC 9171 §5.4), and nothing else
+// is checkable before reassembly (RFC 9172 §5.2): the operation over the
+// per-hop block is checked, verified where it was computed over the
+// fragment, as one whose scope leaves the primary block out is, and failed
+// where it covers the primary block as it was before fragmentation; the
+// one over the payload is deferred.
+#[test]
+fn a_fragments_per_hop_blocks_are_checked_and_the_rest_deferred() {
+    for (block_type, signed) in [
+        (block::Type::PreviousNode, true),
+        (block::Type::PreviousNode, false),
+        (block::Type::BundleAge, true),
+        (block::Type::BundleAge, false),
+        (block::Type::HopCount, true),
+        (block::Type::HopCount, false),
+    ] {
+        for (primary_excluded, checked) in [(true, Checked::Verified), (false, Checked::Failed)] {
+            let case = format!("{block_type:?} signed {signed}, expecting {checked:?}");
+            let (mut fragment, target, keys) =
+                fragment_with_protected_per_hop_block(block_type, signed, primary_excluded);
+            let roles: HashMap<u64, Roles> =
+                [(target, Roles::each(Role::Acceptor, SecurityServices::BOTH))]
+                    .into_iter()
+                    .collect();
+            let facts = fragment
+                .check(
+                    &bpsec::key::KeySet::new(keys),
+                    &roles,
+                    Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+                )
+                .expect("the check reports");
+            assert_eq!(
+                found_targets(&facts, checked),
+                vec![target],
+                "{case}: {:?}",
+                facts.outcomes
+            );
+            assert_eq!(
+                found_targets(&facts, Checked::Deferred),
+                vec![1],
+                "{case}: {:?}",
+                facts.outcomes
+            );
+            assert_eq!(facts.outcomes.len(), 2, "{case}: {:?}", facts.outcomes);
+        }
+    }
+}
+
+// Nothing on a fragment is checkable before reassembly (RFC 9172 §5.2):
+// every operation in this node's roles is deferred, and no key is looked
+// up, so a keyless check reports no missing key and decrypts nothing.
+#[test]
+fn a_fragments_operations_are_deferred_without_a_key() {
+    use bpsec::{encryptor, rfc9173::ScopeFlags, signer};
+
+    // Block 199 signed in plaintext, and the payload encrypted.
+    let source: eid::Eid = "ipn:1.3.1".parse().unwrap();
+    let (_, data) = builder::Builder::new(source.clone(), "ipn:1.2.99".parse().unwrap())
+        .add_extension_block(block::Type::Unrecognised(199))
+        .unwrap()
+        .build(b"one".as_slice().into())
+        .with_payload(b"payload".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let built = parse::parse(Bytes::from(data)).unwrap();
+    let signed_block = block_number(&built, block::Type::Unrecognised(199));
+    let (sign_key, enc_key) = generated_keys();
+    let signed = parse::parse(Bytes::from(
+        signer::Signer::new(&built.bundle, &built.data)
+            .sign_block(
+                signed_block,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                source.clone(),
+                &sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the block")
+            .rebuild()
+            .expect("rebuild signed"),
+    ))
+    .unwrap();
+    let protected = parse::parse(Bytes::from(
+        encryptor::Encryptor::new(&signed.bundle, &signed.data)
+            .encrypt_block(
+                1,
+                encryptor::Context::AES_GCM(ScopeFlags::default()),
+                source,
+                &enc_key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("encrypt the payload")
+            .rebuild()
+            .expect("rebuild encrypted"),
+    ))
+    .unwrap();
+    let mut fragment = as_fragment(&protected);
+    let bib = the_bib(&fragment);
+    let bcb = block_number(&fragment, block::Type::BlockSecurity);
+
+    let roles: HashMap<u64, Roles> = [(1, Roles::each(Role::Acceptor, SecurityServices::BOTH))]
+        .into_iter()
+        .collect();
+    let facts = fragment
+        .check(
+            &empty_keys(),
+            &roles,
+            Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+        )
+        .expect("the check reports");
+    let mut deferred = vec![(bcb, 1), (bib, signed_block)];
+    deferred.sort_unstable();
+    assert_eq!(found(&facts, Checked::Deferred), deferred);
+    assert_eq!(facts.outcomes.len(), 2, "{:?}", facts.outcomes);
+    assert!(facts.incomplete.is_empty());
+    assert!(
+        fragment.decrypted.plaintext.is_empty() && fragment.decrypted.failed.is_empty(),
+        "nothing on a fragment is decrypted"
+    );
 }
 
 // The RFC 9173 Appendix A.4 wire vector: one BCB (block 2) covers both the

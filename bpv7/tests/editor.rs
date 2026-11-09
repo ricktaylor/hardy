@@ -1330,6 +1330,51 @@ fn update_block_refuses_the_primary_and_security_blocks() {
     assert!(matches!(result, Err((_, Error::SecurityBlock))));
 }
 
+// `restore_block` writes a block's data under the security operations over
+// it: the rebuilt bundle keeps the block in the BIB's targets, its coverage
+// stamped, and the operation, computed over the data restored, still
+// verifies.
+#[test]
+fn restore_block_keeps_the_coverage() {
+    let (signed, signed_bytes, ext, bib, kek) = make_signed_extension();
+    let restored = ok(Editor::new(&signed, &signed_bytes).restore_block(ext))
+        .with_data(b"ext-data".as_slice().into())
+        .rebuild()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &signed_bytes))
+        .expect("rebuild the restored bundle");
+    let parsed = parse::parse(Bytes::from(restored)).expect("the restored bundle parses");
+    assert_eq!(
+        parsed.bundle.blocks[&ext].bib,
+        block::BibCoverage::Some(bib)
+    );
+    assert!(parsed.bibs[&bib].operations().contains_key(&ext));
+    let facts = common::verify_as_receiver(
+        &mut parse::parse(parsed.data.clone()).unwrap(),
+        &key::KeySet::new(vec![kek]),
+        &HashSet::new(),
+    )
+    .expect("the check reports");
+    assert!(
+        facts.any(Checked::Verified) && !facts.any(Checked::Failed),
+        "the operation verifies over the restored data: {:?}",
+        facts.outcomes
+    );
+}
+
+// `restore_block` refuses the primary block and the security blocks by
+// type, as `update_block` does.
+#[test]
+fn restore_block_refuses_the_primary_and_security_blocks() {
+    let (signed, signed_bytes, _, bib, _) = make_signed_extension();
+    let result = Editor::new(&signed, &signed_bytes).restore_block(0);
+    assert!(matches!(result, Err((_, Error::PrimaryBlock))));
+    let result = Editor::new(&signed, &signed_bytes).restore_block(bib);
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+    let result = Editor::new(&signed, &signed_bytes).restore_block(99);
+    assert!(matches!(result, Err((_, Error::NoSuchBlock(99)))));
+}
+
 #[test]
 fn insert_block_replaces_via_alias_not_duplicates() {
     let (bundle, data) = make_bundle_with_hop_count();

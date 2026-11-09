@@ -118,7 +118,9 @@ pub enum Checked {
     Unsupported,
     /// The payload's operation, not checked here, its key held: the
     /// payload's acceptor checks it as the payload streams, or, under a
-    /// BCB, once it has decrypted it (RFC 9172 §3.9).
+    /// BCB, once it has decrypted it (RFC 9172 §3.9). Or an operation on a
+    /// fragment, other than a per-hop block's, checked once the bundle is
+    /// reassembled (RFC 9172 §5.2), no key looked up.
     Deferred,
     /// An integrity operation on a Previous Node or Bundle Age block inside
     /// an encrypted BIB [`Parsed::check`] read: a combination no valid bundle
@@ -265,6 +267,15 @@ impl Parsed {
     /// already in the cache is not decrypted again, and one it records as
     /// failed counts as failed.
     ///
+    /// On a fragment, every operation but a per-hop block's is deferred: a
+    /// Previous Node, Bundle Age or Hop Count block is the forwarder's
+    /// write to the fragment itself (RFC 9171 §5.4), while every other
+    /// operation covers the primary block as it was before fragmentation,
+    /// or a part of the payload, and is checkable only once the bundle is
+    /// reassembled (RFC 9172 §5.2): each in this node's roles is recorded
+    /// `Deferred`, nothing of it is decrypted, and no key is looked up for
+    /// it.
+    ///
     /// Returns [`Facts`], to which the caller applies its failure policy,
     /// before removing the operations it accepted
     /// ([`remove_encryption`](crate::bpsec::edit::BPSecEditor::remove_encryption)
@@ -287,7 +298,52 @@ impl Parsed {
         let data: &[u8] = data;
         let blocks = &mut bundle.blocks;
         let mut facts = Facts::default();
-        let roles_on = |n: u64| roles.get(&n).copied().unwrap_or(others);
+        let named = |n: u64| roles.get(&n).copied().unwrap_or(others);
+
+        // On a fragment, every operation but a per-hop block's is checked
+        // after reassembly: each in this node's roles is deferred, no key
+        // touched, and plays no part below, where the roles name only the
+        // per-hop blocks.
+        let fragment = bundle.primary.id.fragment_info.is_some();
+        let per_hop: HashSet<u64> = blocks
+            .iter()
+            .filter(|(_, b)| {
+                // Compared by encoding, so an alias of a type counts.
+                b.block_type == block::Type::PreviousNode
+                    || b.block_type == block::Type::BundleAge
+                    || b.block_type == block::Type::HopCount
+            })
+            .map(|(&n, _)| n)
+            .collect();
+        if fragment {
+            for (&bcb, ops) in bcb_ops.iter() {
+                for &target in ops.operations().keys() {
+                    if !per_hop.contains(&target) && named(target).confidentiality.is_some() {
+                        facts.record(
+                            bcb,
+                            target,
+                            SecurityService::Confidentiality,
+                            Checked::Deferred,
+                        );
+                    }
+                }
+            }
+            for (&bib, ops) in bib_ops.iter() {
+                for &target in ops.operations().keys() {
+                    if !per_hop.contains(&target) && named(target).integrity.is_some() {
+                        facts.record(bib, target, SecurityService::Integrity, Checked::Deferred);
+                    }
+                }
+            }
+        }
+        let roles_on = |n: u64| {
+            if fragment && !per_hop.contains(&n) {
+                Roles::default()
+            } else {
+                named(n)
+            }
+        };
+
         let mut acceptors: HashSet<u64> = HashSet::new();
         let mut verifiers: HashSet<u64> = HashSet::new();
         for &n in blocks.keys() {

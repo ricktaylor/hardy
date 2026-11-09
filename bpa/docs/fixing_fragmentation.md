@@ -6,7 +6,7 @@ Fragmentation and ADU reassembly work today, but an examination of the reassembl
 
 ## What holds today (verified)
 
-The re-entry design is sound and worth keeping: a reassembled ADU re-runs the full ingress pipeline (`dispatcher/reassemble.rs` → `process_received_bundle`) — re-parse, keyed BPSec, expiry/hop gate, dedup, store — so ingress semantics are inherited by construction, and BPSec over the reassembled whole verifies correctly without any special-casing.
+The re-entry design is sound and worth keeping: a reassembled ADU re-runs the full ingress pipeline (`dispatcher/reassemble.rs` → `process_received_bundle`) — re-parse, keyed BPSec, expiry/hop gate, dedup, store — so ingress semantics are inherited by construction, and BPSec over the reassembled whole verifies correctly without any special-casing. Item 6 records the half of that re-run reception should not repeat.
 
 Expiry accounting composes with the expired-at-ingress silence policy: buffered fragments (`BundleStatus::AduFragment`) are reaper-watched, so in-custody fragment expiry produces RFC 9171 §5.10 deletion reports, while the per-fragment ingress gate remains a true arrival refusal. Consumed fragments are tombstoned (replays refuse as duplicates), the reassembled ADU dedups under its defragmented id, and the tiling arithmetic is u64-first and 32-bit safe.
 
@@ -51,6 +51,8 @@ RFC 9172 §5.2 forbids *adding* security blocks to a fragment ("a BCB or BIB MUS
 
 Hardy's keyed ingress has no fragment exemption: payload-target BIBs verify over the fragment's partial payload — inline at the header parse when the payload is resident, through the deferred verifiers the ingress drain feeds when it streams — so verification fails, and the fragment is dropped at ingress. Signed-then-fragmented traffic from other implementations (ION fragments readily) therefore never reaches reassembly. This is shared with main — the streaming refactor did not cause it — but the streaming refactor built the natural fix point: the `deferred_bibs` machinery should defer payload-BIB verification *past reassembly* when `primary.flags.is_fragment` is set, since the re-entry pipeline already verifies the reassembled whole correctly. Payload BCBs are unaffected: ingress does not decrypt the payload, so encrypted fragments already pass.
 
+**Resolved.** Ingress checks nothing of a fragment's own: `Parsed::check` defers every operation on a fragment but a per-hop block's and looks up no key for it, and the gate passes over every role announced on it and the destination's acceptance. Reassembly restores the payload under the security blocks fragment 0 carries (`Editor::restore_block`, where `Editor::update_block` stripped them), and the whole re-enters the door, where its destination accepts the payload's operations over the whole.
+
 ## 4. Reassembly is the remaining full-materialisation island
 
 The streaming pipeline's memory goal (`streaming_pipeline_design.md` §2.5: peak per-bundle resident memory ≈ header size) does not survive fragmented traffic. The current path loads every fragment payload fully, assembles into `vec![0; adu_len]`, editor-rebuilds, `save_data`s the whole ADU, then re-enters ingress with the entire ADU as one `Bytes` stream — where `process_received_bundle` re-parses it and spools the same bytes afresh through `Store::save_stream`, deleting the pre-stored copy afterwards. Peak RAM is roughly twice the ADU, and the payload bytes are written to storage three times across the path (fragments, reassembled save, re-entry spool). The seam is the whole-buffer `process_received_bundle` call in `dispatcher/reassemble.rs` (restart orphan re-admission in `dispatcher/restart.rs` has the same shape).
@@ -63,6 +65,23 @@ Note `streaming_pipeline_design.md` §12 lists Reassemble among the blocks that 
 
 Each delivered fragment triggers `poll_adu_fragments`, a full metadata scan of the sibling set — O(n²) metadata reads across an n-fragment ADU. Harmless at today's fragment counts; worth folding into whatever shape item 4 takes (e.g. an incremental extent tracker keyed by (source, timestamp) rather than a re-scan per arrival, which item 1's insert-time trimming wants anyway).
 
+## 6. Reassembly re-enters the door as a second arrival
+
+The reassembled whole crosses the door as any received bundle does (`dispatcher/reassemble.rs` → `process_received_bundle`, from a fresh `BundleMetadata`): the keyed header pass, the gates, the Ingress chain, the store and dispatch. That is right for the whole's own security operations, which only the whole can carry to its destination's acceptance (item 3), and wrong for everything else reception does: RFC 9171 §5.7 Step 1 has the reassembled bundle proceed from delivery Step 2, so the RFC never receives it again.
+
+The whole is not short of per-hop blocks. Ingress removes an accepted security *operation* from a Previous Node, Bundle Age or Hop Count block, never the block, and discards only a block whose check failed or that it could not accept; the forwarder's writes are egress's (RFC 9171 §5.4), where the per-hop rewrite replaces the blocks by type on whatever block set the bundle carries. So fragment 0 is stored with its per-hop blocks in plaintext, the stitched whole carries them, and the second arrival parses: a clocked bundle needs no per-hop block, and an unclocked one always has its Bundle Age, since a fragment 0 that lost its Bundle Age is deleted rather than stored. What the second arrival gets wrong is reception itself:
+
+- **A second reception report.** The door reports every admitted arrival, so a source that asked for reception reports gets one per fragment, each a bundle (RFC 9171 §5.6), and then one for the reassembled id, which was never on the wire.
+- **The gate's expectation on a per-hop block.** A Classifier announcing acceptance on a Previous Node or Bundle Age is met at fragment 0's arrival, where the operation is accepted and removed; at re-entry the same announcement finds the block bare, and the block meets its fate: discarded, or the bundle deleted where the source set "delete bundle if block can't be processed" on it.
+- **Fresh metadata.** The whole starts from `BundleMetadata::new`, so the `add_bundle_age` mark set when fragment 0's Bundle Age was discarded is lost, and the whole can leave without an age the source put on.
+- **Fragment 0's per-hop values stand for the set.** RFC 9171 §5.9 prescribes it: the whole's Previous Node is fragment 0's sender, its Bundle Age fragment 0's at its forwarding, its Hop Count fragment 0's count, and its siblings' values go with their blocks. The `received_at` anchor above pairs with the first of these.
+
+The shape to take is the completion run's, and the candidates are:
+
+- **A reassembly pass beside `Pass::Receiver` and `Pass::Source`.** The whole crosses the door with no reception report, no per-hop acceptance and no gate expectation on a per-hop block: the destination's acceptance of the operations over the whole, the chain for the decision of record, dedup, store and dispatch, which is RFC 9171 §5.7 from Step 2. The redesign's completion re-run is this pass.
+- **Fragment 0's record carried forward.** The whole inherits fragment 0's metadata (the per-hop cache, `add_bundle_age`, the classification) instead of a fresh one. Cheap, but reception is still reported twice and the gate's expectation still fires.
+- **A second arrival, documented**, until BIBE supersedes fragmentation.
+
 ## Decision
 
-Items 1 and 2 are conformance bugs with a data-loss edge and are fixable now, independent of streaming. Item 3 is an interop gap whose clean fix (fragment-aware BIB deferral) is small once agreed. Items 4 and 5 are architecture and should wait for the streaming storage primitives. The decision is taken in [`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md): one fragmentation rework after the streaming bulk, resolving all five items (see its resolution table).
+Items 1 and 2 are conformance bugs with a data-loss edge and are fixable now, independent of streaming. Item 3 is resolved (the ingress divert and the stitcher's `Editor::restore_block`). Items 4 and 5 are architecture and should wait for the streaming storage primitives. Item 6 is open: its shape is the completion run's, taken with item 4, and the redesign's completion re-run inherits it. The decision is taken in [`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md): one fragmentation rework after the streaming bulk, resolving items 1–5 (see its resolution table, where item 6 is listed open).

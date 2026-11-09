@@ -41,11 +41,14 @@ impl Dispatcher {
         let metadata = BundleMetadata::new(received_at, origin);
 
         // Box::pin breaks the async cycle: process_received_bundle reaches
-        // execute_dispatch_action, whose Deliver-fragment arm is this
-        // function. The cycle is never taken: the input doors queue a
-        // fragment for the pool, and a reassembled whole cannot be a
-        // fragment again. The reassembled bytes are handed as the bundle
-        // stream and the pipeline's spool saves an admitted bundle fresh;
+        // execute_dispatch_action, whose fragment arm is this function. The
+        // cycle is never taken: the input doors queue a fragment for the
+        // pool, and a reassembled whole cannot be a fragment again. The
+        // whole crosses the door as any received bundle does, its security
+        // operations, fragment 0's over the restored payload among them,
+        // processed there (RFC 9172 §5.2). The reassembled bytes are handed
+        // as the bundle stream and the pipeline's spool saves an admitted
+        // bundle fresh;
         // the pre-stored safety copy (which bridges the crash window between
         // fragment deletion and admission) is stranded in every outcome and
         // deleted below — a crash before the delete re-admits it as a

@@ -21,7 +21,9 @@
 //! is first stored, with the BPSec cascade for a BCB-covered BIB whose target
 //! list shrinks; the bundle is otherwise stored as received. As a source,
 //! for the raw service door, it schedules none: an originated bundle leaves
-//! as its service built it, or is refused.
+//! as its service built it, or is refused. A fragment's own operations are
+//! the reassembled bundle's to process (RFC 9172 §5.2), so the pass checks
+//! none of them.
 //! Used by `dispatcher::ingress`; on a keyed failure returns the recoverable
 //! bundle so the caller can emit a status report.
 
@@ -776,16 +778,19 @@ fn verify_headers(
         // whose acceptance cannot be completed here, coupled through an
         // encrypted BIB to a block this node does not accept, the check
         // reads all the same, as a verifier reads it, so the hop limit
-        // holds; the gate may accept it with the rest.
+        // holds; the gate may accept it with the rest. A fragment's own
+        // operations are the reassembled bundle's to check (RFC 9172 §5.2):
+        // none is verified by opportunity on one.
         let roles: HashMap<u64, Roles> = acceptors
             .iter()
             .map(|&n| (n, Roles::each(Role::Acceptor, SecurityServices::BOTH)))
             .collect();
-        let facts = hv.parsed.check(
-            &*hv.keys,
-            &roles,
-            Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
-        )?;
+        let others = if hv.parsed.bundle.primary.id.fragment_info.is_some() {
+            Roles::default()
+        } else {
+            Roles::each(Role::Verifier, SecurityServices::INTEGRITY)
+        };
+        let facts = hv.parsed.check(&*hv.keys, &roles, others)?;
 
         // A failure's fate (RFC 9172 §5.1.1, §5.1.2). A security operation
         // that fails leaves its target unprocessable: a BCB target whose

@@ -910,6 +910,33 @@ impl<'a> Editor<'a> {
         self.update_block_inner(block_number)
     }
 
+    /// Update an existing block, keeping the security operations over it.
+    ///
+    /// [`update_block`](Self::update_block) removes the edited block from
+    /// every BIB and BCB target list, since an edit invalidates the
+    /// operations computed over its data. This door keeps them, for a caller
+    /// restoring the data they were computed over: reassembly, which
+    /// restores the payload a fragmenter split (RFC 9171 §5.8), fragment 0
+    /// carrying the operations over the whole (RFC 9172 §5.2), for the
+    /// reassembled bundle's receiver to check. The caller answers for the
+    /// data: an operation checked against anything else fails. Refuses the
+    /// primary block and the security blocks, as `update_block` does, and
+    /// resolves no [`Maybe`](block::BibCoverage::Maybe) coverage, there
+    /// being nothing to remove.
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn restore_block(self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
+        match self.block(block_number).map(|(block, _)| block.block_type) {
+            None => Err((self, Error::NoSuchBlock(block_number))),
+            Some(block::Type::Primary) => Err((self, Error::PrimaryBlock)),
+            Some(block::Type::BlockIntegrity | block::Type::BlockSecurity) => {
+                Err((self, Error::SecurityBlock))
+            }
+            Some(_) => self.update_block_inner(block_number),
+        }
+    }
+
     /// Update an existing block without automatic security target removal.
     ///
     /// This is for internal use by encryptor/signer which need to update blocks

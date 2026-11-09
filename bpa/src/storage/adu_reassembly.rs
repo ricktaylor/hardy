@@ -353,8 +353,10 @@ impl Store {
             }
         };
 
-        // Now rebuild
-        let chunks = match editor.update_block(1) {
+        // Now rebuild: the payload restored to the whole the fragmenter
+        // split, under the security operations fragment 0 carries over it
+        // (RFC 9172 §5.2), which the reassembled bundle's receiver checks.
+        let chunks = match editor.restore_block(1) {
             Err((_, e)) => {
                 debug!("Missing payload block?: {e}");
                 return None;
