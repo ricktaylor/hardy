@@ -6848,15 +6848,25 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     assert_failure_never_resurrects(transfer_failed).await;
 }
 
-/// A cancelled transfer must not resurrect a bundle that was resolved while
-/// it was in flight: the cancellation's re-dispatch re-claims the bundle
-/// conditionally, and loses against the terminal claim.
+/// A cancelled transfer does not resurrect a bundle that was resolved while
+/// it was in flight.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_transfer_never_resurrects_resolved_bundle() {
     assert_failure_never_resurrects(|| cla::Error::StreamCancelled).await;
 }
 
-async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
+// A started BPA whose blocking CLA holds its first transfer in flight: the
+// bundle `id` has been offered, and `release_tx` lets the transfer fail with
+// the CLA's failure.
+struct InFlight {
+    bpa: Bpa,
+    metadata_store: Arc<MetadataMemStorage>,
+    offered_rx: flume::Receiver<Id>,
+    release_tx: flume::Sender<()>,
+    id: Id,
+}
+
+async fn transfer_in_flight(failure: fn() -> cla::Error) -> InFlight {
     let metadata_store = Arc::new(MetadataMemStorage::new(None));
     let bpa = Bpa::builder()
         .metadata_storage(metadata_store.clone())
@@ -6905,16 +6915,33 @@ async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
         .await
         .unwrap();
 
-    // The transfer is in flight (the timeout only bounds a regression)...
+    // the timeout only bounds a regression
     let offered =
         tokio::time::timeout(tokio::time::Duration::from_secs(5), offered_rx.recv_async())
             .await
             .expect("Timeout waiting for the offer")
             .unwrap();
     assert_eq!(offered, id);
+    InFlight {
+        bpa,
+        metadata_store,
+        offered_rx,
+        release_tx,
+        id,
+    }
+}
 
-    // ...when the bundle is resolved, exactly as the reaper's terminal
-    // claim would leave it (delete wins every race).
+async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
+    let InFlight {
+        bpa,
+        metadata_store,
+        offered_rx,
+        release_tx,
+        id,
+    } = transfer_in_flight(failure).await;
+
+    // The transfer is in flight when the bundle is resolved, exactly as the
+    // reaper's terminal claim would leave it (delete wins every race).
     metadata_store.tombstone(&id).await.unwrap();
 
     // Release: the failure's claim (the park, or the cancellation's
@@ -6936,6 +6963,42 @@ async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
         live_rx.recv().await.is_err(),
         "a resolved bundle re-entered Waiting"
     );
+}
+
+/// A cancellation's re-dispatch yields to a live status another resolver
+/// set while the transfer was in flight: with the peer's in-flight transfers
+/// reset to Waiting, the re-claim from the status in hand loses, and the
+/// bundle stays Waiting rather than being offered again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_transfer_yields_to_a_live_status_change() {
+    let InFlight {
+        bpa,
+        metadata_store,
+        offered_rx,
+        release_tx,
+        id,
+    } = transfer_in_flight(|| cla::Error::StreamCancelled).await;
+
+    let BundleStatus::ForwardAckPending { peer } =
+        metadata_store.get(&id).await.unwrap().unwrap().status
+    else {
+        panic!("the offered bundle is awaiting its transfer");
+    };
+    assert_eq!(
+        metadata_store.reset_peer_ack_pending(peer).await.unwrap(),
+        1
+    );
+
+    // shutdown() is the barrier: it joins the egress pollers and the
+    // dispatch pool, so the cancellation's resolution has fully run.
+    release_tx.send(()).expect("CLA gone");
+    bpa.shutdown().await;
+
+    assert_eq!(
+        metadata_store.get(&id).await.unwrap().unwrap().status,
+        BundleStatus::Waiting
+    );
+    assert!(offered_rx.is_empty(), "the bundle was offered again");
 }
 
 // ---------------------------------------------------------------------------

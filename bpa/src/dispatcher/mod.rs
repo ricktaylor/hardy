@@ -7,6 +7,7 @@ use hardy_bpv7::{
     Bundle as Bpv7Bundle, Error as Bpv7Error, block,
     bpsec::{SecurityServices, edit::BPSecEditor, key::KeySource},
     builder,
+    bundle::Id,
     editor::{self, Chunk, Editor},
     eid::Eid,
     parse::Parsed,
@@ -82,8 +83,8 @@ enum OfferOutcome {
     /// resolves the claim later via `transfer_outcome`.
     Detached(bundle::Bundle),
     /// Re-enter dispatch for a fresh routing decision: `resolve_offer`
-    /// re-claims the bundle out of its hand-off status and reloads it from
-    /// storage first.
+    /// re-claims the bundle out of its hand-off status and dispatches the
+    /// record in hand, which must still index the stored bytes.
     Redispatch(bundle::Bundle),
 }
 
@@ -311,22 +312,20 @@ impl Dispatcher {
                 .await
         {
             debug!("Routing changed mid-flight, re-dispatching parked bundle");
-            return self.reenter_dispatch(&bundle).await;
+            return self.reenter_dispatch(bundle.id()).await;
         }
 
         self.store.watch_bundle(bundle).await
     }
 
-    /// Re-enters dispatch for a bundle the caller has just re-claimed into
-    /// `Dispatching`, from its persisted record rather than the copy in
-    /// hand: parks persist status only, and the delivery door's failure
-    /// exit hands in a bundle whose block index is the attempt's rebuild
-    /// (the Deliver Rewriters' edits), whose extents no longer index the
-    /// stored bytes. The egress door leaves the record as stored. Reloading
-    /// here keeps that invariant in one place instead of at every caller's
-    /// exit.
-    async fn reenter_dispatch(&self, bundle: &bundle::Bundle) {
-        let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
+    /// Re-enters dispatch for a parked bundle the caller has just re-claimed
+    /// into `Dispatching`, from its persisted record rather than the copy in
+    /// hand: parks persist status only, and the delivery door's failure exit
+    /// hands in a bundle whose block index is the attempt's rebuild (the
+    /// Deliver Rewriters' edits), whose extents no longer index the stored
+    /// bytes.
+    async fn reenter_dispatch(&self, id: &Id) {
+        let Some(bundle) = self.store.get_metadata(id).await else {
             // Someone resolved the bundle after the swap (e.g. the reaper
             // dropped it as expired); their resolution stands.
             debug!("Re-dispatch lost the bundle to a concurrent resolution");
@@ -396,7 +395,9 @@ impl Dispatcher {
                 // The re-claim is a conditional swap from the in-hand status:
                 // a concurrent resolver (the reaper, a peer sweep, a
                 // duplicate outcome) may have got there first, and its
-                // resolution stands.
+                // resolution stands. Both producers hand in a record that
+                // still indexes the stored bytes: the egress door edits none
+                // of it, and a deferred outcome reads it fresh.
                 if !self
                     .store
                     .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
@@ -411,7 +412,7 @@ impl Dispatcher {
                 if matches!(kind, OfferKind::Forward) {
                     metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
                 }
-                self.reenter_dispatch(&bundle).await
+                self.dispatch_bundle(bundle).await
             }
         }
     }

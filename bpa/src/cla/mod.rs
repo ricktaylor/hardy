@@ -401,12 +401,9 @@ pub trait Cla: Send + Sync {
     /// stream with [`stream::buffer_stream`],
     /// whose errors convert into this module's [`enum@Error`] via `?`.
     ///
-    /// An `Err` reports a transfer that did not complete.
+    /// An `Err` reports a transfer that did not complete:
     /// [`Error::StreamCancelled`] re-enters the bundle into dispatch at once,
-    /// so a CLA that cancels every attempt is offered the bundle again until
-    /// it expires. Any other error parks the bundle until the next routing or
-    /// link event: a failure that may be deterministic is never retried
-    /// inline.
+    /// and any other error parks it until the next routing or link event.
     async fn forward(
         &self,
         lane: Option<u32>,

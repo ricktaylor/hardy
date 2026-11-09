@@ -138,12 +138,13 @@ impl Dispatcher {
                 OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
             Err(cla::Error::StreamCancelled) => {
-                // A cancelled transfer is a failed acceptance: the bundle was
-                // not forwarded, and is valid to retry, so it re-enters
-                // dispatch at once, as a deferred `Failed` outcome does, with
-                // no routing or link event; resolve_offer re-claims it and
-                // counts the failure. A CLA that cancels every attempt loops
-                // until the bundle expires.
+                // A cancelled transfer is a failed acceptance, not evidence
+                // about the route: re-enter dispatch at once, as the deferred
+                // `Failed` outcome does. This handling is deliberately simple
+                // and needs to be smarter: every cancellation is retried
+                // alike, however often it recurs and whichever side ended the
+                // stream, so a CLA that cancels every attempt loops the
+                // bundle until it expires.
                 debug!("Transfer to peer {peer} was cancelled, re-dispatching");
                 OfferOutcome::Redispatch(bundle)
             }
