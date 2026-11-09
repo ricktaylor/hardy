@@ -834,6 +834,23 @@ async fn keyed_node(
     flume::Receiver<Bytes>,
     flume::Receiver<Bytes>,
 ) {
+    keyed_node_under(None, keys, pack, metadata).await
+}
+
+// `keyed_node` under a bundle size cap.
+#[cfg(feature = "rfc9173")]
+async fn keyed_node_under(
+    max_bundle_size: Option<NonZeroU64>,
+    keys: Vec<Key>,
+    pack: Option<FilterPack>,
+    metadata: Option<Arc<dyn MetadataStorage>>,
+) -> (
+    Bpa,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
@@ -853,6 +870,9 @@ async fn keyed_node(
     }
     if let Some(pack) = pack {
         builder = builder.add_filters(pack);
+    }
+    if let Some(max_bundle_size) = max_bundle_size {
+        builder = builder.max_bundle_size(max_bundle_size);
     }
     let bpa = builder.build().await.unwrap();
     bpa.start(false).await;
@@ -10233,6 +10253,41 @@ async fn an_unclocked_fragment_passes_the_gate_to_reassembly() {
         Some(plaintext.as_slice())
     );
     bpa.shutdown().await;
+}
+
+// An ADU whose total length exceeds the size cap is never rebuilt: the
+// whole would be materialised in memory and then refused by the cap as it
+// re-entered the door. Each fragment is dropped at reassembly as it
+// arrives, "Depleted storage", reported, and nothing whole is stored.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_fragment_of_an_adu_over_the_size_cap_is_dropped() {
+    let (inbound, _) = unclocked_with_bundle_age();
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    // Each fragment is under the cap; the 6 KiB ADU is over it.
+    let (first, second) = fragments(&inbound, 3072);
+    let (bpa, cla, saved_rx, _, sent_rx) =
+        keyed_node_under(NonZeroU64::new(4096), Vec::new(), None, None).await;
+
+    receive_in(&cla, first, 1).await;
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::DepletedStorage);
+
+    receive_in(&cla, second, 1).await;
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::DepletedStorage);
+
+    bpa.shutdown().await;
+    assert!(
+        saved_rx.try_iter().all(|data| {
+            let stored = parse(data).expect("a stored bundle parses");
+            stored.bundle.primary.id.source != source
+                || stored.bundle.primary.id.fragment_info.is_some()
+        }),
+        "nothing whole is stored"
+    );
 }
 
 // A Classifier claims a transit fragment set for reassembly here

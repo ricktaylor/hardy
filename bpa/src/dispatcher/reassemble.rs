@@ -1,3 +1,5 @@
+use hardy_bpv7::status_report::ReasonCode;
+use trace_err::*;
 use tracing::{debug, warn};
 
 use super::{Dispatcher, ingress::Received};
@@ -8,6 +10,21 @@ use crate::{
 
 impl Dispatcher {
     pub async fn reassemble(&self, mut bundle: Bundle) {
+        // The whole is materialised in memory until reassembly streams, and
+        // crosses the door again under the size cap once rebuilt, so an
+        // ADU the cap refuses is never rebuilt: each of its fragments is
+        // dropped as it arrives, "Depleted storage", reported.
+        let total_adu_length = bundle
+            .id()
+            .fragment_info
+            .as_ref()
+            .trace_expect("A whole bundle reached reassembly")
+            .total_adu_length;
+        if total_adu_length > self.max_bundle_size_wire() {
+            debug!("An ADU of {total_adu_length} bytes exceeds the size cap; fragment dropped");
+            return self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
+        }
+
         let (storage_name, mut data, received_at, origin) =
             match self.store.adu_reassemble(&bundle).await {
                 ReassemblyResult::NotReady => {
