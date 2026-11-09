@@ -109,7 +109,7 @@ impl Dispatcher {
                 bundle.bpv7.blocks = new_bundle.blocks;
                 data
             }
-            Err(PerHopRefusal::ProtectedPrimary) => {
+            Err(ProtectedPrimary) => {
                 debug!(
                     "Legacy next hop {next_hop} needs a re-encoded primary, which a BPSec operation covers"
                 );
@@ -117,10 +117,6 @@ impl Dispatcher {
                     bundle,
                     Some(ReasonCode::UnexpectedSecurityOperation),
                 );
-            }
-            Err(PerHopRefusal::Covered(e)) => {
-                warn!("Failed to update extension blocks: {e}");
-                return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
             }
         };
 
@@ -242,15 +238,15 @@ impl Dispatcher {
     }
 
     // The per-hop rewrite, over the Egress Rewriters' output. Its bytes were
-    // validated at ingress, so any failure other than a PerHopRefusal is a
-    // BPA bug or storage corruption, and fatal.
+    // validated at the door, so any failure but the legacy re-encode's
+    // refusal is a BPA bug or storage corruption, and fatal.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
         next_hop: &Eid,
-    ) -> Result<(hardy_bpv7::Bundle, Bytes), PerHopRefusal> {
+    ) -> Result<(hardy_bpv7::Bundle, Bytes), ProtectedPrimary> {
         // We read the cached per-hop fields (`hop_count` / `bundle_age` from
         // `metadata.per_hop`) to rebuild the wire blocks, but never write the
         // bumped values back: the rewrite is per-attempt and in-memory only, and
@@ -275,21 +271,17 @@ impl Dispatcher {
 
         // The per-hop blocks below are replaced through `insert_block`. This
         // node is the acceptor of every operation on a Previous Node or
-        // Bundle Age block, which it must replace (RFC 9171 §5.4), and
-        // ingress discharged that duty (RFC 9172 §5.1.2): it accepted each
-        // operation or discarded the block, so a received bundle's blocks
-        // meet no operation here. A source's bundle may carry a plaintext
-        // BIB over one, which `insert_block` strips the replaced block from,
-        // the operation having no acceptor beyond this node. A Previous Node
-        // or Bundle Age block the editor cannot safely update (BCB-covered,
-        // so possibly under an encrypted BIB) refuses, and the caller parks
-        // the bundle: both writes are MUSTs (RFC 9171 §5.4).
-        let covered = |(_, e)| PerHopRefusal::Covered(e);
+        // Bundle Age block, which it must replace (RFC 9171 §5.4), and the
+        // door discharged that duty: ingress accepted each operation or
+        // discarded the block (RFC 9172 §5.1.2), and origination refuses a
+        // protected one, so a stored bundle's blocks meet no operation here
+        // and the editor refuses neither write. A refusal is a BPA bug.
 
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
-            .map_err(covered)?
+            .map_err(|(_, e)| e)
+            .trace_expect("The per-hop rewrite's Previous Node write was refused")
             .with_flags(hardy_bpv7::block::Flags {
                 report_on_failure,
                 ..Default::default()
@@ -346,25 +338,21 @@ impl Dispatcher {
         }
 
         // Bundle Age. A bundle that carries one, or has no creation time and
-        // so must (RFC 9171 §4.4.2), gets this hop's: a MUST (§5.4), so a
-        // block the editor refuses parks the bundle. A bundle marked for one,
-        // by ingress for a Bundle Age it discarded or by a Classifier, gets
-        // one from the clock too, for a downstream node without one (§5.5),
-        // unless its Bundle Age a BCB covers: unread here, it travels
-        // unchanged.
+        // so must (RFC 9171 §4.4.2), gets this hop's (§5.4). A bundle marked
+        // for one, by ingress for a Bundle Age it discarded or by a
+        // Classifier, gets one from the clock too, for a downstream node
+        // without one (§5.5).
         let required =
             bundle.metadata.per_hop.bundle_age.is_some() || !bundle.id().timestamp.is_clocked();
-        let covered_age = raw.blocks.values().any(|block| {
-            block.block_type == hardy_bpv7::block::Type::BundleAge && block.bcb.is_some()
-        });
-        if required || (bundle.metadata.add_bundle_age() && !covered_age) {
+        if required || bundle.metadata.add_bundle_age() {
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
                 .whole_milliseconds()
                 .clamp(0, u64::MAX as i128) as u64;
 
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::BundleAge)
-                .map_err(covered)?
+                .map_err(|(_, e)| e)
+                .trace_expect("The per-hop rewrite's Bundle Age write was refused")
                 .with_flags(hardy_bpv7::block::Flags {
                     report_on_failure,
                     must_replicate: true,
@@ -399,7 +387,7 @@ impl Dispatcher {
                     Err((
                         _,
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
-                    )) => return Err(PerHopRefusal::ProtectedPrimary),
+                    )) => return Err(ProtectedPrimary),
                     result => result
                         .map_err(|(_, e)| e)
                         .trace_expect("The legacy re-encode of the source failed"),
@@ -417,7 +405,7 @@ impl Dispatcher {
                     Err((
                         _,
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
-                    )) => return Err(PerHopRefusal::ProtectedPrimary),
+                    )) => return Err(ProtectedPrimary),
                     result => result
                         .map_err(|(_, e)| e)
                         .trace_expect("The legacy re-encode of the destination failed"),
@@ -441,16 +429,11 @@ impl Dispatcher {
     }
 }
 
-/// Why the per-hop rewrite produced no bundle for this attempt.
-enum PerHopRefusal {
-    /// The next hop needs legacy IPN encoding, and a BPSec operation covers
-    /// the primary block the re-encode would change, as its target or
-    /// through its scope: deterministic for this next hop.
-    ProtectedPrimary,
-    /// A per-hop block is under BPSec coverage the keyless rewrite cannot
-    /// safely update.
-    Covered(EditorError),
-}
+/// The per-hop rewrite produced no bundle for this attempt: the next hop
+/// needs legacy IPN encoding, and a BPSec operation covers the primary block
+/// the re-encode would change, as its target or through its scope.
+/// Deterministic for this next hop.
+struct ProtectedPrimary;
 
 #[cfg(test)]
 mod tests {

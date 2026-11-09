@@ -112,7 +112,7 @@ A per-hop block's security operations end at the next node that changes it, whic
 | Status | Task |
 |---|---|
 | ✅ | Delivery's decryption of a received payload, at the Application and administrative doors, and its `NoKey` park: both doors hand over the stored payload through the record's block index, and a record still under a BCB is dropped, Block unsupported |
-| 🔲 | The egress per-hop decrypt and `PerHopRefusal::Covered`, unreachable since neither a Previous Node nor a Bundle Age reads `Maybe` and an accepted per-hop block is stored in plaintext |
+| ✅ | The egress per-hop decrypt and `PerHopRefusal::Covered`: the per-hop rewrite is keyless, and a Previous Node or Bundle Age it cannot update is one no door stores, so the editor's refusal is fatal rather than a park |
 | ✅ | The output doors' `!Send` key-source scopings, which `KeySource: Send + Sync` made unnecessary: gone with the doors' re-parses |
 | 🔲 | A ruling on a locally originated BCB-encrypted payload addressed to a local service: acceptance is ingress-only, so it never crosses the gate, and delivery would no longer decrypt it |
 | 🔲 | The Previous Node insertion switch, RFC 9171 §5.4's "if the BPA is configured to attach Previous Node Blocks", on by default |
