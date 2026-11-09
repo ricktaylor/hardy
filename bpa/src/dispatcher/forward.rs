@@ -1,6 +1,6 @@
 // `EditorError` keeps bpv7's editor error apart from this crate's `Error`,
 // in scope through the parent module.
-use hardy_bpv7::{editor::Error as EditorError, hop_info::HopInfo, parse::parse};
+use hardy_bpv7::{editor::Error as EditorError, hop_info::HopInfo};
 use hardy_cbor::encode::emit;
 
 use super::*;
@@ -238,9 +238,11 @@ impl Dispatcher {
         }
     }
 
-    // The per-hop rewrite, over the Egress Rewriters' output. Its bytes were
-    // validated at the door, so any failure but the legacy re-encode's
-    // refusal is a BPA bug or storage corruption, and fatal.
+    // The per-hop rewrite, over the Egress Rewriters' output. It edits over
+    // the record's block index, which the stages before it keep consistent
+    // with `source_data`. The bytes were validated at the door, so any
+    // failure but the legacy re-encode's refusal is a BPA bug or storage
+    // corruption, and fatal.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     fn update_extension_blocks(
         &self,
@@ -254,13 +256,6 @@ impl Dispatcher {
         // the cache mirrors the stored bytes, which stay as received. The cache
         // IS observed again after this rewrite: a park's reaper expiry watch
         // reads `per_hop.bundle_age`, and wants the original, un-bumped value.
-        //
-        // Editor needs a `&Bundle`, so re-parse structurally.
-        let Parsed {
-            data: source_data,
-            bundle: raw,
-            ..
-        } = parse(source_data).trace_expect("The per-hop rewrite's bytes do not decode");
 
         let legacy = self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop));
 
@@ -278,7 +273,7 @@ impl Dispatcher {
         // and the editor refuses neither write. A refusal is a BPA bug.
 
         // Previous Node Block
-        let mut editor = Editor::new(&raw, &source_data);
+        let mut editor = Editor::new(&bundle.bpv7, &source_data);
         editor
             .insert_block(block::Type::PreviousNode)
             .trace_expect("The per-hop rewrite's Previous Node write was refused")
@@ -308,7 +303,7 @@ impl Dispatcher {
         // read at ingress has no cached value. Origination is not a hop: a
         // bundle this node originated leaves with the count it was built
         // with, and the next node makes the first increment.
-        let signed = raw.blocks.values().any(|block| {
+        let signed = bundle.bpv7.blocks.values().any(|block| {
             block.block_type == block::Type::HopCount && block.bib != block::BibCoverage::None
         });
         let originated = matches!(bundle.metadata.origin(), bundle::Origin::Originated);
@@ -531,39 +526,6 @@ mod tests {
         assert!(
             metadata_store.get(&bundle_id).await.unwrap().is_none(),
             "the expired bundle is resolved terminally as LifetimeExpired"
-        );
-    }
-
-    /// The per-hop rewrite's bytes were validated at ingress and come back
-    /// from storage, so failing to decode them is a BPA bug or storage
-    /// corruption: fatal, never a park. Driven as a direct call because a
-    /// panic inside a running BPA aborts the test process.
-    #[tokio::test]
-    #[should_panic(expected = "The per-hop rewrite's bytes do not decode")]
-    async fn undecodable_per_hop_bytes_are_fatal() {
-        let dispatcher = dispatcher(
-            Arc::new(MetadataMemStorage::new(None)),
-            Arc::new(BundleMemStorage::new(None, None)),
-        )
-        .await;
-        let (_, data) = hardy_bpv7::builder::Builder::new(
-            "ipn:0.2.1".parse().unwrap(),
-            "ipn:0.3.2".parse().unwrap(),
-        )
-        .with_payload(b"truncated in storage".to_vec().into())
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .unwrap();
-        let data = Bytes::from(data);
-        let bundle = bundle::Bundle {
-            bpv7: hardy_bpv7::parse::parse(data.clone()).unwrap().bundle,
-            metadata: bundle::BundleMetadata::originated(),
-            status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
-        };
-
-        let _ = dispatcher.update_extension_blocks(
-            &bundle,
-            data.slice(..data.len() - 1),
-            &"ipn:0.3.0".parse().unwrap(),
         );
     }
 }
