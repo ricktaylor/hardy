@@ -14,7 +14,7 @@ use super::{decode_bcb_opset, encrypted_bibs};
 use crate::{
     HashMap, HashSet, block,
     bpsec::{
-        Decrypted, bcb, bib,
+        Decrypted, Error as BpsecError, bcb, bib,
         key::{self, KeySource},
     },
     editor::{Editor, Error as EditorError},
@@ -344,7 +344,8 @@ pub(super) fn stage_encrypted_bibs<'a>(
 // A `Maybe` coverage of `block_number` resolved with the editor's key
 // source and plaintext cache: the encrypted BIB that lists the block,
 // checked once decrypted, or none. It stays `Maybe` while an encrypted BIB
-// that may list the block cannot be read.
+// that may list the block cannot be read; one read but malformed, or
+// failing its checks, is the bundle's fault, and the error.
 pub(crate) fn resolve_maybe(
     editor: &mut Editor<'_>,
     block_number: u64,
@@ -362,7 +363,13 @@ pub(crate) fn resolve_maybe(
             editor.clear_bib_target(block_number);
             Ok(block::BibCoverage::None)
         }
-        Err(_) => Ok(block::BibCoverage::Maybe),
+        Err(EditorError::Bpsec(
+            BpsecError::NoKey
+            | BpsecError::DecryptionFailed
+            | BpsecError::UnrecognisedContext(_)
+            | BpsecError::UnsupportedOperation,
+        )) => Ok(block::BibCoverage::Maybe),
+        Err(e) => Err(e),
     }
 }
 

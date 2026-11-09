@@ -502,37 +502,8 @@ impl Parsed {
                     .get(&target)
                     .and_then(|b| b.bcb)
                     .expect("a coupled block is BCB-covered");
-                let checked = if unsupported_bcb_operation(blocks, bcb_ops, target) {
-                    Checked::Unsupported
-                } else if decrypted.plaintext.contains_key(&target) {
-                    Checked::Verified
-                } else if decrypted.failed.contains(&target) {
-                    Checked::Failed
-                } else {
-                    let result = decrypt_target(
-                        &CachedReader {
-                            blocks,
-                            source_data: data,
-                            decrypted: &decrypted.plaintext,
-                        },
-                        key_source,
-                        bcb_ops,
-                        target,
-                        bcb,
-                    );
-                    match result {
-                        Ok(plaintext) => {
-                            decrypted.plaintext.insert(target, plaintext);
-                            Checked::Verified
-                        }
-                        Err(bpsec::Error::NoKey) => Checked::NoKey,
-                        Err(bpsec::Error::DecryptionFailed) => {
-                            decrypted.failed.insert(target);
-                            Checked::Failed
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
-                };
+                let checked =
+                    decrypt_into_cache(blocks, data, key_source, bcb_ops, decrypted, target, bcb)?;
                 facts.record(bcb, target, SecurityService::Confidentiality, checked);
                 // A coupled operation this node could not process leaves the
                 // acceptance incomplete; the block's own failure is its outcome.
@@ -562,37 +533,8 @@ impl Parsed {
             let Some(bcb) = blocks.get(&target).and_then(|b| b.bcb) else {
                 continue;
             };
-            let checked = if unsupported_bcb_operation(blocks, bcb_ops, target) {
-                Checked::Unsupported
-            } else if decrypted.plaintext.contains_key(&target) {
-                Checked::Verified
-            } else if decrypted.failed.contains(&target) {
-                Checked::Failed
-            } else {
-                let result = decrypt_target(
-                    &CachedReader {
-                        blocks,
-                        source_data: data,
-                        decrypted: &decrypted.plaintext,
-                    },
-                    key_source,
-                    bcb_ops,
-                    target,
-                    bcb,
-                );
-                match result {
-                    Ok(plaintext) => {
-                        decrypted.plaintext.insert(target, plaintext);
-                        Checked::Verified
-                    }
-                    Err(bpsec::Error::NoKey) => Checked::NoKey,
-                    Err(bpsec::Error::DecryptionFailed) => {
-                        decrypted.failed.insert(target);
-                        Checked::Failed
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            };
+            let checked =
+                decrypt_into_cache(blocks, data, key_source, bcb_ops, decrypted, target, bcb)?;
             facts.record(bcb, target, SecurityService::Confidentiality, checked);
         }
 
@@ -846,6 +788,54 @@ fn decrypt_target(
                 blocks: reader,
             },
         )
+}
+
+// What the check makes of the BCB operation on `target`, which the BCB `bcb`
+// covers, decrypting into the cache where neither its plaintext nor its
+// failure is there already: an operation in an unsupported context is never
+// processed, a cached plaintext stands as verified, and a recorded failure
+// as failed.
+fn decrypt_into_cache(
+    blocks: &HashMap<u64, block::Block>,
+    data: &[u8],
+    key_source: &dyn bpsec::key::KeySource,
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    decrypted: &mut bpsec::Decrypted,
+    target: u64,
+    bcb: u64,
+) -> Result<Checked, Error> {
+    if unsupported_bcb_operation(blocks, bcb_ops, target) {
+        return Ok(Checked::Unsupported);
+    }
+    if decrypted.plaintext.contains_key(&target) {
+        return Ok(Checked::Verified);
+    }
+    if decrypted.failed.contains(&target) {
+        return Ok(Checked::Failed);
+    }
+    let result = decrypt_target(
+        &CachedReader {
+            blocks,
+            source_data: data,
+            decrypted: &decrypted.plaintext,
+        },
+        key_source,
+        bcb_ops,
+        target,
+        bcb,
+    );
+    match result {
+        Ok(plaintext) => {
+            decrypted.plaintext.insert(target, plaintext);
+            Ok(Checked::Verified)
+        }
+        Err(bpsec::Error::NoKey) => Ok(Checked::NoKey),
+        Err(bpsec::Error::DecryptionFailed) => {
+            decrypted.failed.insert(target);
+            Ok(Checked::Failed)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 // The integrity operations on the Previous Node and Bundle Age blocks among

@@ -261,9 +261,7 @@ registered service has claimed.
 
 ## `rfc9171-validity` — RFC 9171 Validity Checks
 
-This controls a SHOULD-level requirement from RFC 9171 that can be
-relaxed for interoperability with other implementations. It is the
-BPA's own configuration-gated check, not a registered filter.
+This controls a SHOULD-level requirement from RFC 9171 that can be relaxed for interoperability with other implementations. It is the BPA's own configuration-gated check, not a registered filter.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|

@@ -196,8 +196,8 @@ pub struct Classification {
     /// or the error of the security block's first unsupported operation, such
     /// as [`UnrecognisedContext`](bpsec::Error::UnrecognisedContext), for an
     /// A2/A3 block, so the caller can tell the two kinds apart; an A1 block's
-    /// before an A2 block's before an A3 block's, and within a kind the first
-    /// such block visited. The facts beside it are complete, so a caller
+    /// before an A2 block's before an A3 block's, and within a kind the
+    /// lowest-numbered such block's. The facts beside it are complete, so a caller
     /// reporting the deletion still sees which blocks request a status
     /// report: RFC 9171 §5.6 Step 4 reports, then deletes.
     pub delete_bundle: Option<Error>,
@@ -246,16 +246,23 @@ pub struct Parsed {
 
 // §A: the classification of the blocks this node can't process, at the
 // parser's tail, the deletion verdict first-wins: an A1 block's before an
-// A2 block's before an A3 block's, and within a kind the first such block
-// visited.
+// A2 block's before an A3 block's, and within a kind the lowest-numbered
+// such block's, so the verdict does not depend on the maps' iteration
+// order.
 fn classify(
     blocks: &HashMap<u64, block::Block>,
     bcbs: &HashMap<u64, bpsec::bcb::OperationSet>,
     bibs: &HashMap<u64, bpsec::bib::OperationSet>,
 ) -> Classification {
     let mut out = Classification::default();
+    // The lowest-numbered block of the kind in hand that demands the
+    // bundle's deletion.
+    let lowest = |deletes: &mut Option<u64>, block_number: u64| {
+        *deletes = Some(deletes.map_or(block_number, |n| n.min(block_number)));
+    };
 
     // A1 — unrecognised blocks.
+    let mut deletes = None;
     for (&block_number, block) in blocks {
         if !matches!(block.block_type, block::Type::Unrecognised(_)) {
             continue;
@@ -264,19 +271,21 @@ fn classify(
             out.report_unsupported_block = true;
         }
         if block.flags.delete_bundle_on_failure {
-            if out.delete_bundle.is_none() {
-                out.delete_bundle = Some(Error::Unsupported(block_number));
-            }
+            lowest(&mut deletes, block_number);
         } else if block.flags.delete_block_on_failure {
             out.unrecognised_deletable.push(block_number);
         }
     }
+    if let Some(block_number) = deletes {
+        out.delete_bundle = Some(Error::Unsupported(block_number));
+    }
 
     // A2 — BCBs with an unsupported security operation.
+    let mut deletes = None;
     for (&bcb_block_number, ops) in bcbs {
-        let Some(error) = ops.unsupported_error() else {
+        if ops.unsupported_error().is_none() {
             continue;
-        };
+        }
         let flags = &blocks
             .get(&bcb_block_number)
             .expect("the parse's BCB is in its blocks")
@@ -284,16 +293,22 @@ fn classify(
         if flags.report_on_failure {
             out.report_unsupported_security = true;
         }
-        if flags.delete_bundle_on_failure && out.delete_bundle.is_none() {
-            out.delete_bundle = Some(error.into());
+        if flags.delete_bundle_on_failure {
+            lowest(&mut deletes, bcb_block_number);
         }
+    }
+    if out.delete_bundle.is_none()
+        && let Some(bcb_block_number) = deletes
+    {
+        out.delete_bundle = bcbs[&bcb_block_number].unsupported_error().map(Into::into);
     }
 
     // A3 — plaintext BIBs with an unsupported security operation.
+    let mut deletes = None;
     for (&bib_block_number, ops) in bibs {
-        let Some(error) = ops.unsupported_error() else {
+        if ops.unsupported_error().is_none() {
             continue;
-        };
+        }
         let flags = &blocks
             .get(&bib_block_number)
             .expect("the parse's BIB is in its blocks")
@@ -302,12 +317,15 @@ fn classify(
             out.report_unsupported_security = true;
         }
         if flags.delete_bundle_on_failure {
-            if out.delete_bundle.is_none() {
-                out.delete_bundle = Some(error.into());
-            }
+            lowest(&mut deletes, bib_block_number);
         } else if flags.delete_block_on_failure {
             out.bib_deletable.push(bib_block_number);
         }
+    }
+    if out.delete_bundle.is_none()
+        && let Some(bib_block_number) = deletes
+    {
+        out.delete_bundle = bibs[&bib_block_number].unsupported_error().map(Into::into);
     }
 
     out

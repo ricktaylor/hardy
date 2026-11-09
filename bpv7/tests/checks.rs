@@ -198,6 +198,27 @@ fn build_parse_roundtrip() {
     );
 }
 
+// Two unrecognised blocks demanding the bundle's deletion: the verdict names
+// the lowest-numbered one, whatever order the parse's maps visit them in.
+#[test]
+fn a_deletion_verdict_names_the_lowest_block() {
+    let data = build_minimal_bundle();
+    // delete_bundle_on_failure (0x04) on blocks 3 and 2, block 3 first on
+    // the wire.
+    let later = make_block(999, 3, 0x04, &[0xDE, 0xAD]);
+    let earlier = make_block(998, 2, 0x04, &[0xBE, 0xEF]);
+    let modified = insert_after_primary(&data, &[&later, &earlier]);
+    let parsed = parse::parse(Bytes::copy_from_slice(&modified)).expect("the blocks parse");
+    assert!(
+        matches!(
+            parsed.classification.delete_bundle,
+            Some(Error::Unsupported(2))
+        ),
+        "{:?}",
+        parsed.classification.delete_bundle
+    );
+}
+
 // Requirement: LLR 1.1.30
 #[test]
 fn unknown_block_discard() {

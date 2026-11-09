@@ -1,6 +1,7 @@
 // `EditorError` keeps bpv7's editor error apart from this crate's `Error`,
 // in scope through the parent module.
-use hardy_bpv7::editor::Error as EditorError;
+use hardy_bpv7::{editor::Error as EditorError, hop_info::HopInfo, parse::parse};
+use hardy_cbor::encode::emit;
 
 use super::*;
 
@@ -246,7 +247,7 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         source_data: Bytes,
         next_hop: &Eid,
-    ) -> Result<(hardy_bpv7::Bundle, Bytes), ProtectedPrimary> {
+    ) -> Result<(Bpv7Bundle, Bytes), ProtectedPrimary> {
         // We read the cached per-hop fields (`hop_count` / `bundle_age` from
         // `metadata.per_hop`) to rebuild the wire blocks, but never write the
         // bumped values back: the rewrite is per-attempt and in-memory only, and
@@ -255,12 +256,11 @@ impl Dispatcher {
         // reads `per_hop.bundle_age`, and wants the original, un-bumped value.
         //
         // Editor needs a `&Bundle`, so re-parse structurally.
-        let hardy_bpv7::parse::Parsed {
+        let Parsed {
             data: source_data,
             bundle: raw,
             ..
-        } = hardy_bpv7::parse::parse(source_data)
-            .trace_expect("The per-hop rewrite's bytes do not decode");
+        } = parse(source_data).trace_expect("The per-hop rewrite's bytes do not decode");
 
         let legacy = self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop));
 
@@ -278,16 +278,16 @@ impl Dispatcher {
         // and the editor refuses neither write. A refusal is a BPA bug.
 
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data);
+        let mut editor = Editor::new(&raw, &source_data);
         editor
-            .insert_block(hardy_bpv7::block::Type::PreviousNode)
+            .insert_block(block::Type::PreviousNode)
             .trace_expect("The per-hop rewrite's Previous Node write was refused")
-            .with_flags(hardy_bpv7::block::Flags {
+            .with_flags(block::Flags {
                 report_on_failure,
                 ..Default::default()
             })
             .with_data(
-                hardy_cbor::encode::emit(
+                emit(
                     &self
                         .node_ids
                         .get_admin_endpoint(&bundle.primary().destination),
@@ -314,15 +314,15 @@ impl Dispatcher {
                 "Hop Count block travels unchanged: under an integrity operation this node did not accept"
             );
         } else if let Some(hop_count) = &bundle.metadata.per_hop.hop_count {
-            match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
+            match editor.insert_block(block::Type::HopCount) {
                 Ok(block) => block
-                    .with_flags(hardy_bpv7::block::Flags {
+                    .with_flags(block::Flags {
                         report_on_failure,
                         must_replicate: true,
                         ..Default::default()
                     })
                     .with_data(
-                        hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
+                        emit(&HopInfo {
                             limit: hop_count.limit,
                             count: hop_count.count.saturating_add(1),
                         })
@@ -347,14 +347,14 @@ impl Dispatcher {
                 .clamp(0, u64::MAX as i128) as u64;
 
             editor
-                .insert_block(hardy_bpv7::block::Type::BundleAge)
+                .insert_block(block::Type::BundleAge)
                 .trace_expect("The per-hop rewrite's Bundle Age write was refused")
-                .with_flags(hardy_bpv7::block::Flags {
+                .with_flags(block::Flags {
                     report_on_failure,
                     must_replicate: true,
                     ..Default::default()
                 })
-                .with_data(hardy_cbor::encode::emit(&bundle_age).0.into())
+                .with_data(emit(&bundle_age).0.into())
                 .rebuild();
         }
 
@@ -412,10 +412,7 @@ impl Dispatcher {
 
         // Zero-copy in place if `source_data` uniquely owns; otherwise
         // allocates a fresh buffer.
-        Ok((
-            new_bundle,
-            hardy_bpv7::editor::Chunk::flatten_bytes(chunks, source_data),
-        ))
+        Ok((new_bundle, Chunk::flatten_bytes(chunks, source_data)))
     }
 }
 

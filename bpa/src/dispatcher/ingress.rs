@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use core::ops::ControlFlow;
+use core::{mem::take, ops::ControlFlow};
 use trace_err::*;
 
 use hardy_bpv7::{
@@ -305,7 +305,7 @@ impl Dispatcher {
             hop_count_kept,
             mut report,
             mut verified,
-            deferred_verifiers,
+            mut deferred_verifiers,
             keys,
         } = hv;
         metadata.per_hop = parsed.per_hop.clone();
@@ -518,14 +518,22 @@ impl Dispatcher {
                 let len = decryptor
                     .as_ref()
                     .map_or(payload_data.end - payload_data.start, |d| d.plaintext_len());
-                // The BIB over the payload: its acceptor's where the
-                // payload is accepted for integrity, every operation
-                // beginning; a verifier's, where it holds the key, over a
-                // payload accepted for confidentiality alone.
-                let verifiers = if payload.any() {
+                // The BIB over the payload. Over an accepted payload's
+                // plaintext every operation begins afresh: its acceptor's
+                // where the payload is accepted for integrity, and a
+                // verifier's, where it holds the key, over a payload
+                // accepted for confidentiality alone. Over a payload
+                // received in plaintext the verifiers the header pass began
+                // are those: one per BIB it could check, over the data as
+                // received, and none where the payload was resident and the
+                // check verified it there; an operation it holds no key for
+                // or cannot process has already failed the acceptance.
+                let verifiers = if !payload.any() {
+                    Ok(Vec::new())
+                } else if decryptor.is_some() {
                     begin_payload_verifiers(&parsed, &*keys, len, payload.integrity)
                 } else {
-                    Ok(Vec::new())
+                    Ok(take(&mut deferred_verifiers))
                 };
                 verifiers.map(|verifiers| PayloadStages {
                     decryptor,

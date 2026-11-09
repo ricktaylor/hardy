@@ -3395,6 +3395,23 @@ fn a_streamed_rebuild_needs_its_payload_accepted() {
     ));
 }
 
+// A payload whose data was staged cannot stream: the staged bytes would
+// never reach the wire, so the rebuild refuses rather than drop them.
+#[test]
+fn a_streamed_rebuild_refuses_a_staged_payload() {
+    let (bundle, data) = make_bundle();
+    let mut editor = Editor::new(&bundle, &data).with_streamed_payload(6);
+    editor
+        .restore_block(1)
+        .expect("stage the payload's data")
+        .with_data(b"staged".as_slice().into())
+        .rebuild();
+    assert!(matches!(
+        editor.rebuild_streamed(),
+        Err(Error::StagedPayload)
+    ));
+}
+
 // Fed short, the trailer refuses to end the wire form: the declared length
 // framed the payload's header.
 #[test]

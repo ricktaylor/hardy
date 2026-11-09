@@ -57,8 +57,11 @@ impl ReceptionReport {
 /// stages combine with `|`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReportFacts {
-    /// A target whose security operation failed is discarded: "Failed
-    /// security operation", gated on the bundle's receipt-report flag.
+    /// A target whose security operation failed is scheduled for discard:
+    /// "Failed security operation", the reason naming the failed operation,
+    /// gated on the bundle's receipt-report flag. The ingress rewrite may
+    /// yet keep a block whose removal its cascade refuses, logged; the
+    /// failure the reason names stands either way.
     pub failure_dropped: bool,
     /// A block under a security operation no valid bundle carries, which
     /// this node cannot accept, demands the report: "Conflicting security

@@ -570,6 +570,11 @@ fn remove_scheduled(
                 );
             }
             Err(error) => match refused_removal(&error).filter(|n| to_remove.remove(n)) {
+                // A block the RFCs require gone stays, and the bundle
+                // travels on with it: the operator should see that.
+                Some(block) if forced => warn!(
+                    "Block {block} stays as received, though it must go (RFC 9172 §5.1.1, RFC 9171 §5.6): {error}"
+                ),
                 Some(block) => info!("Block {block} stays as received: {error}"),
                 None => match error {
                     editor::Error::Bpsec(e) => return Err(e.into()),

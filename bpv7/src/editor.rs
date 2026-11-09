@@ -70,6 +70,12 @@ pub enum Error {
     #[error("Security blocks (BIB/BCB) must be managed via Signer/Encryptor, not the Editor")]
     SecurityBlock,
 
+    /// The payload's data was staged, but the payload streams past the
+    /// editor ([`Editor::with_streamed_payload`]): the staged data would
+    /// never reach the wire.
+    #[error("The payload's data is staged, but the payload streams")]
+    StagedPayload,
+
     /// A block carries `report_on_failure` on a bundle whose final primary
     /// forbids it (RFC 9171 §4.2.3-4/-5); refused when the bundle is rebuilt,
     /// naming the lowest such block.
@@ -1294,7 +1300,9 @@ impl<'a> Editor<'a> {
     /// As [`rebuild_bundle`](Self::rebuild_bundle);
     /// [`NoBlockData`](builder::Error::NoBlockData) when the editor was not
     /// told the payload streams, or the payload is encrypted and its
-    /// encryption was not removed for it; and
+    /// encryption was not removed for it;
+    /// [`StagedPayload`](Error::StagedPayload) when the payload's data was
+    /// staged, which cannot stream; and
     /// [`PayloadLengthOverflow`](builder::Error::PayloadLengthOverflow)
     /// for a declared length whose wire form would pass `u64::MAX`.
     #[allow(clippy::type_complexity)]
@@ -1312,9 +1320,9 @@ impl<'a> Editor<'a> {
             Some(BlockTemplate::Update(template)) if template.data.is_none() => {
                 template.block.clone()
             }
-            Some(BlockTemplate::Update(template)) if template.block.bcb.is_none() => {
-                template.block.clone()
-            }
+            // Staged data never reaches the wire of a streamed rebuild:
+            // refused rather than dropped.
+            Some(BlockTemplate::Update(_)) => return Err(Error::StagedPayload),
             Some(BlockTemplate::Keep(_)) => {
                 let payload = self
                     .original
