@@ -221,11 +221,11 @@ impl services::Service for EchoService {
         else {
             return Ok(());
         };
-        let Ok(editor) = Editor::new(&raw, &data).with_source(raw.primary.destination.clone())
-        else {
+        let mut editor = Editor::new(&raw, &data);
+        let Ok(()) = editor.set_source(raw.primary.destination.clone()) else {
             return Ok(());
         };
-        let Ok(editor) = editor.with_destination(raw.primary.id.source.clone()) else {
+        let Ok(()) = editor.set_destination(raw.primary.id.source.clone()) else {
             return Ok(());
         };
         let Ok(chunks) = editor.rebuild() else {
@@ -619,39 +619,37 @@ fn with_protected_per_hop_blocks(source: &Eid, dest: &Eid, previous: &Eid) -> (B
 
     let (sign_key, enc_key) = generated_keys();
 
+    let mut signer = Signer::new(&built, &data);
+    signer
+        .sign_block(
+            number(Type::BundleAge),
+            signer::Context::HMAC_SHA2(Default::default()),
+            previous.clone(),
+            &sign_key,
+        )
+        .expect("sign the Bundle Age");
     let signed = parse(Bytes::from(
-        Signer::new(&built, &data)
-            .sign_block(
-                number(Type::BundleAge),
-                signer::Context::HMAC_SHA2(Default::default()),
-                previous.clone(),
-                &sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the Bundle Age")
-            .rebuild()
-            .expect("rebuild the signed bundle"),
+        signer.rebuild().expect("rebuild the signed bundle"),
     ))
     .unwrap();
-    let encrypted = Encryptor::new(&signed.bundle, &signed.data)
+    let mut encryptor = Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
         .encrypt_block(
             number(Type::PreviousNode),
             EncryptContext::AES_GCM(Default::default()),
             previous.clone(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .expect("encrypt the Previous Node")
+        .expect("encrypt the Previous Node");
+    encryptor
         .encrypt_block(
             number(Type::HopCount),
             EncryptContext::AES_GCM(Default::default()),
             previous.clone(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .expect("encrypt the Hop Count")
-        .rebuild()
-        .expect("rebuild the encrypted bundle");
+        .expect("encrypt the Hop Count");
+    let encrypted = encryptor.rebuild().expect("rebuild the encrypted bundle");
     (Bytes::from(encrypted), vec![sign_key, enc_key])
 }
 
@@ -713,30 +711,28 @@ fn unclocked_with_protected_bundle_age(signed: bool, altered: bool) -> (Bytes, K
         .0;
     let (sign_key, enc_key) = generated_keys();
     let (protected, key) = if signed {
-        let signed = Signer::new(&built, &data)
+        let mut signer = Signer::new(&built, &data);
+        signer
             .sign_block(
                 age,
                 signer::Context::HMAC_SHA2(Default::default()),
                 previous,
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
-            .expect("sign the Bundle Age")
-            .rebuild()
-            .expect("rebuild the signed bundle");
+            .expect("sign the Bundle Age");
+        let signed = signer.rebuild().expect("rebuild the signed bundle");
         (signed, sign_key)
     } else {
-        let encrypted = Encryptor::new(&built, &data)
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
             .encrypt_block(
                 age,
                 EncryptContext::AES_GCM(Default::default()),
                 previous,
                 &enc_key,
             )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the Bundle Age")
-            .rebuild()
-            .expect("rebuild the encrypted bundle");
+            .expect("encrypt the Bundle Age");
+        let encrypted = encryptor.rebuild().expect("rebuild the encrypted bundle");
         (encrypted, enc_key)
     };
     let mut inbound = Vec::from(protected);
@@ -1103,14 +1099,13 @@ fn signed_by_source(parsed: &Parsed, targets: &[u64], key: &Key) -> Parsed {
     let source: Eid = "ipn:0.9.1".parse().unwrap();
     let mut signing = Signer::new(&parsed.bundle, &parsed.data);
     for &n in targets {
-        signing = signing
+        signing
             .sign_block(
                 n,
                 signer::Context::HMAC_SHA2(shared_scope()),
                 source.clone(),
                 key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     parse(Bytes::from(signing.rebuild().expect("rebuild signed"))).unwrap()
@@ -1187,14 +1182,13 @@ fn protected_block(
     };
     let mut encrypting = Encryptor::new(&signed.bundle, &signed.data);
     for &n in &targets {
-        encrypting = encrypting
+        encrypting
             .encrypt_block(
                 n,
                 EncryptContext::AES_GCM(shared_scope()),
                 source.clone(),
                 &enc_key,
             )
-            .map_err(|(_, e)| e)
             .expect("encrypt the target");
     }
     (
@@ -1744,27 +1738,25 @@ fn with_blocks_signed_together() -> (Bytes, u64, u64, Vec<Key>) {
     };
     let mut signing = Signer::new(&built, &data);
     for n in targets {
-        signing = signing
+        signing
             .sign_block(
                 n,
                 signer::Context::HMAC_SHA2(scope.clone()),
                 source.clone(),
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     let signed = parse(Bytes::from(signing.rebuild().expect("rebuild signed"))).unwrap();
     let mut encrypting = Encryptor::new(&signed.bundle, &signed.data);
     for n in targets {
-        encrypting = encrypting
+        encrypting
             .encrypt_block(
                 n,
                 EncryptContext::AES_GCM(scope.clone()),
                 source.clone(),
                 &enc_key,
             )
-            .map_err(|(_, e)| e)
             .expect("encrypt the target");
     }
     (
@@ -1886,14 +1878,13 @@ async fn a_relay_accepts_a_hop_count_sharing_a_plaintext_bib_with_the_payload() 
     };
     let mut signing = Signer::new(&built, &data);
     for n in [hop_count, 1] {
-        signing = signing
+        signing
             .sign_block(
                 n,
                 signer::Context::HMAC_SHA2(scope.clone()),
                 source.clone(),
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     let inbound = Bytes::from(signing.rebuild().expect("rebuild signed"));
@@ -1965,27 +1956,25 @@ fn with_hop_count_signed_with(partner: Type) -> (Bytes, u64, u64, Key, Key) {
     };
     let mut signing = Signer::new(&built, &data);
     for n in [hop_count, partner] {
-        signing = signing
+        signing
             .sign_block(
                 n,
                 signer::Context::HMAC_SHA2(scope.clone()),
                 source.clone(),
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     let signed = parse(Bytes::from(signing.rebuild().expect("rebuild signed"))).unwrap();
     let mut encrypting = Encryptor::new(&signed.bundle, &signed.data);
     for n in [hop_count, partner] {
-        encrypting = encrypting
+        encrypting
             .encrypt_block(
                 n,
                 EncryptContext::AES_GCM(scope.clone()),
                 source.clone(),
                 &enc_key,
             )
-            .map_err(|(_, e)| e)
             .expect("encrypt the target");
     }
     (
@@ -2303,24 +2292,23 @@ fn with_signed_primary(with_payload: bool) -> (Bytes, Key) {
         .build(CreationTimestamp::now())
         .unwrap();
     let (sign_key, _) = generated_keys();
-    let mut signing = Signer::new(&built, &data)
+    let mut signing = Signer::new(&built, &data);
+    signing
         .sign_block(
             0,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             source.clone(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("sign the primary block");
     if with_payload {
-        signing = signing
+        signing
             .sign_block(
                 1,
                 signer::Context::HMAC_SHA2(ScopeFlags::default()),
                 source,
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the payload");
     }
     (
@@ -3312,18 +3300,17 @@ async fn service_streamed_send_refuses_a_protected_hop_count() {
         .find(|(_, b)| b.block_type == Type::HopCount)
         .expect("the builder emitted the Hop Count block")
         .0;
+    let mut encryptor = Encryptor::new(&built, &data);
+    encryptor
+        .encrypt_block(
+            hop_count,
+            EncryptContext::AES_GCM(Default::default()),
+            source_eid,
+            &key,
+        )
+        .expect("encrypt the Hop Count block");
     let encrypted = parse(Bytes::from(
-        Encryptor::new(&built, &data)
-            .encrypt_block(
-                hop_count,
-                EncryptContext::AES_GCM(Default::default()),
-                source_eid,
-                &key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the Hop Count block")
-            .rebuild()
-            .expect("rebuild the encrypted bundle"),
+        encryptor.rebuild().expect("rebuild the encrypted bundle"),
     ))
     .unwrap();
 
@@ -7778,12 +7765,12 @@ async fn raw_originate_rejects_a_fragment() {
     let Parsed {
         bundle: raw, data, ..
     } = parse(Bytes::from(data)).expect("parse the built bundle");
-    let editor = Editor::new(&raw, &data)
-        .with_fragment_info(Some(FragmentInfo {
+    let mut editor = Editor::new(&raw, &data);
+    editor
+        .set_fragment_info(Some(FragmentInfo {
             offset: 0,
             total_adu_length: 1024,
         }))
-        .map_err(|(_, e)| e)
         .expect("set fragment info");
     let chunks = editor.rebuild().expect("rebuild the fragment");
     let mut fragment = Chunk::flatten_bytes(chunks, data);
@@ -8667,35 +8654,29 @@ fn protected_payload(
     let mut data = Bytes::from(data);
     if signed {
         let parsed = parse(data).unwrap();
-        data = Bytes::from(
-            Signer::new(&parsed.bundle, &parsed.data)
-                .sign_block(
-                    1,
-                    signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                    source.clone(),
-                    &sign_key,
-                )
-                .map_err(|(_, e)| e)
-                .unwrap()
-                .rebuild()
-                .unwrap(),
-        );
+        let mut signer = Signer::new(&parsed.bundle, &parsed.data);
+        signer
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                source.clone(),
+                &sign_key,
+            )
+            .unwrap();
+        data = Bytes::from(signer.rebuild().unwrap());
     }
     if encrypted {
         let parsed = parse(data).unwrap();
-        data = Bytes::from(
-            Encryptor::new(&parsed.bundle, &parsed.data)
-                .encrypt_block(
-                    1,
-                    EncryptContext::AES_GCM(ScopeFlags::default()),
-                    source,
-                    &enc_key,
-                )
-                .map_err(|(_, e)| e)
-                .unwrap()
-                .rebuild()
-                .unwrap(),
-        );
+        let mut encryptor = Encryptor::new(&parsed.bundle, &parsed.data);
+        encryptor
+            .encrypt_block(
+                1,
+                EncryptContext::AES_GCM(ScopeFlags::default()),
+                source,
+                &enc_key,
+            )
+            .unwrap();
+        data = Bytes::from(encryptor.rebuild().unwrap());
     }
     (data, plaintext, vec![sign_key, enc_key])
 }
@@ -9474,34 +9455,26 @@ fn with_protected_payload_and_previous_node() -> (Bytes, Vec<Key>) {
         .unwrap();
     let (sign_key, enc_key) = generated_keys();
     let parsed = parse(Bytes::from(data)).unwrap();
-    let signed = parse(Bytes::from(
-        Signer::new(&parsed.bundle, &parsed.data)
-            .sign_block(
-                1,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source.clone(),
-                &sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild()
-            .unwrap(),
-    ))
-    .unwrap();
-    let encrypted = parse(Bytes::from(
-        Encryptor::new(&signed.bundle, &signed.data)
-            .encrypt_block(
-                1,
-                EncryptContext::AES_GCM(ScopeFlags::default()),
-                source,
-                &enc_key,
-            )
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild()
-            .unwrap(),
-    ))
-    .unwrap();
+    let mut signer = Signer::new(&parsed.bundle, &parsed.data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .unwrap();
+    let signed = parse(Bytes::from(signer.rebuild().unwrap())).unwrap();
+    let mut encryptor = Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            1,
+            EncryptContext::AES_GCM(ScopeFlags::default()),
+            source,
+            &enc_key,
+        )
+        .unwrap();
+    let encrypted = parse(Bytes::from(encryptor.rebuild().unwrap())).unwrap();
     let previous_node = *encrypted
         .bundle
         .blocks
@@ -9509,17 +9482,16 @@ fn with_protected_payload_and_previous_node() -> (Bytes, Vec<Key>) {
         .find(|(_, b)| b.block_type == Type::PreviousNode)
         .expect("the Previous Node is present")
         .0;
-    let data = Encryptor::new(&encrypted.bundle, &encrypted.data)
+    let mut encryptor = Encryptor::new(&encrypted.bundle, &encrypted.data);
+    encryptor
         .encrypt_block(
             previous_node,
             EncryptContext::AES_GCM(ScopeFlags::default()),
             previous,
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let data = encryptor.rebuild().unwrap();
     (Bytes::from(data), vec![sign_key, enc_key])
 }
 
@@ -9551,14 +9523,13 @@ fn with_block_signed_with_the_payload() -> (Bytes, u64, Vec<Key>) {
     };
     let mut signing = Signer::new(&built, &data);
     for n in [block, 1] {
-        signing = signing
+        signing
             .sign_block(
                 n,
                 signer::Context::HMAC_SHA2(scope.clone()),
                 source.clone(),
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     (
@@ -9633,15 +9604,14 @@ async fn a_local_destination_checks_a_payload_bib_the_header_pass_decrypted() {
 #[cfg(feature = "rfc9173")]
 fn as_fragment(data: Bytes) -> Bytes {
     let parsed = parse(data).unwrap();
-    let chunks = Editor::new(&parsed.bundle, &parsed.data)
-        .with_fragment_info(Some(FragmentInfo {
+    let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+    editor
+        .set_fragment_info(Some(FragmentInfo {
             offset: 0,
             total_adu_length: 1 << 20,
         }))
-        .map_err(|(_, e)| e)
-        .expect("set the fragment info")
-        .rebuild()
-        .expect("rebuild the fragment");
+        .expect("set the fragment info");
+    let chunks = editor.rebuild().expect("rebuild the fragment");
     Chunk::flatten_bytes(chunks, parsed.data)
 }
 
@@ -9657,20 +9627,19 @@ fn fragments(data: &Bytes, cut: usize) -> (Bytes, Bytes) {
         .to_vec();
     let total_adu_length = payload.len() as u64;
     let fragment = |range: Range<usize>| {
-        let chunks = Editor::new(&parsed.bundle, &parsed.data)
-            .with_fragment_info(Some(FragmentInfo {
+        let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
                 offset: range.start as u64,
                 total_adu_length,
             }))
-            .map_err(|(_, e)| e)
-            .expect("set the fragment info")
+            .expect("set the fragment info");
+        editor
             .restore_block(1)
-            .map_err(|(_, e)| e)
             .expect("restore the payload")
             .with_data(payload[range].to_vec().into())
-            .rebuild()
-            .rebuild()
-            .expect("rebuild the fragment");
+            .rebuild();
+        let chunks = editor.rebuild().expect("rebuild the fragment");
         Chunk::flatten_bytes(chunks, parsed.data.clone())
     };
     (fragment(0..cut), fragment(cut..payload.len()))
@@ -9881,25 +9850,23 @@ fn with_protected_per_hop_block(
         .0;
     let (sign_key, enc_key) = generated_keys();
     if signed {
-        let signed = Signer::new(&built, &data)
+        let mut signer = Signer::new(&built, &data);
+        signer
             .sign_block(
                 number,
                 signer::Context::HMAC_SHA2(scope),
                 previous,
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
-            .expect("sign the block")
-            .rebuild()
-            .expect("rebuild the signed bundle");
+            .expect("sign the block");
+        let signed = signer.rebuild().expect("rebuild the signed bundle");
         (Bytes::from(signed), sign_key)
     } else {
-        let encrypted = Encryptor::new(&built, &data)
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
             .encrypt_block(number, EncryptContext::AES_GCM(scope), previous, &enc_key)
-            .map_err(|(_, e)| e)
-            .expect("encrypt the block")
-            .rebuild()
-            .expect("rebuild the encrypted bundle");
+            .expect("encrypt the block");
+        let encrypted = encryptor.rebuild().expect("rebuild the encrypted bundle");
         (Bytes::from(encrypted), enc_key)
     }
 }
@@ -9932,17 +9899,16 @@ fn with_per_hop_blocks_and_signed_payload() -> (Bytes, Vec<u8>, Key) {
         .build(CreationTimestamp::default())
         .unwrap();
     let (sign_key, _) = generated_keys();
-    let signed = Signer::new(&built, &data)
+    let mut signer = Signer::new(&built, &data);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             source,
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .expect("sign the payload")
-        .rebuild()
-        .expect("rebuild the signed bundle");
+        .expect("sign the payload");
+    let signed = signer.rebuild().expect("rebuild the signed bundle");
     (Bytes::from(signed), plaintext, sign_key)
 }
 

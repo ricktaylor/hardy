@@ -526,7 +526,7 @@ fn edit_received<'a>(
             .blocks
             .get(&number)
             .expect("an accepted block is in the bundle");
-        editor = accept_operations(editor, number, block, services);
+        accept_operations(&mut editor, number, block, services);
     }
     // RFC 9172 §5.1.1 discards a target whose ciphertext did not
     // authenticate with every security block associated with it, RFC 9171
@@ -545,44 +545,41 @@ fn edit_received<'a>(
                     || b.block_type == block::Type::HopCount
             })
     });
-    let editor = remove_scheduled(editor, forced, true)?;
-    remove_scheduled(editor, rest, false)
+    remove_scheduled(&mut editor, forced, true)?;
+    remove_scheduled(&mut editor, rest, false)?;
+    Ok(editor)
 }
 
 // The scheduled removals of `to_remove`, the cascade's refusals handled: a
 // block whose removal would shrink an encrypted BIB takes that BIB with it,
 // whole, where `forced`, and otherwise stays as received, as does one an
 // encrypted BIB this node cannot read may cover; each is logged.
-fn remove_scheduled<'a>(
-    mut editor: Editor<'a>,
+fn remove_scheduled(
+    editor: &mut Editor<'_>,
     mut to_remove: HashSet<u64>,
     forced: bool,
-) -> Result<Editor<'a>, Bpv7Error> {
+) -> Result<(), Bpv7Error> {
     while !to_remove.is_empty() {
         match editor.remove_blocks(&to_remove) {
-            Ok((removed, _)) => return Ok(removed),
-            Err((refused, editor::Error::ShrinksEncryptedBib { block, bib }))
+            Ok(_) => return Ok(()),
+            Err(editor::Error::ShrinksEncryptedBib { block, bib })
                 if forced && to_remove.insert(bib) =>
             {
-                editor = refused;
                 info!(
                     "Block {block} is removed with encrypted BIB {bib}, which also covers a block that stays"
                 );
             }
-            Err((refused, error)) => {
-                editor = refused;
-                match refused_removal(&error).filter(|n| to_remove.remove(n)) {
-                    Some(block) => info!("Block {block} stays as received: {error}"),
-                    None => match error {
-                        editor::Error::Bpsec(e) => return Err(e.into()),
-                        editor::Error::Builder(builder::Error::InternalError(e)) => return Err(e),
-                        error => Err(error).trace_expect("The scheduled block removals failed"),
-                    },
-                }
-            }
+            Err(error) => match refused_removal(&error).filter(|n| to_remove.remove(n)) {
+                Some(block) => info!("Block {block} stays as received: {error}"),
+                None => match error {
+                    editor::Error::Bpsec(e) => return Err(e.into()),
+                    editor::Error::Builder(builder::Error::InternalError(e)) => return Err(e),
+                    error => Err(error).trace_expect("The scheduled block removals failed"),
+                },
+            },
         }
     }
-    Ok(editor)
+    Ok(())
 }
 
 // The scheduled removal the cascade refused, which stays: one that would
@@ -606,27 +603,26 @@ fn refused_removal(error: &editor::Error) -> Option<u64> {
 // plaintext the cache holds; one an earlier acceptance already removed so
 // is left as it is. Every refusal is of an operation the header pass or the
 // gate has checked, so it is a BPA bug, and fatal.
-fn accept_operations<'a>(
-    mut editor: Editor<'a>,
+fn accept_operations(
+    editor: &mut Editor<'_>,
     number: u64,
     block: &block::Block,
     services: SecurityServices,
-) -> Editor<'a> {
+) {
     if services.confidentiality && block.bcb.is_some() {
-        editor = match editor.remove_encryption(number) {
-            Ok(editor) => editor,
-            Err((editor, e)) if taken_already(&e) => editor,
-            Err((_, e)) => Err(e).trace_expect("The acceptance of a block's BCB failed"),
-        };
+        match editor.remove_encryption(number) {
+            Ok(()) => {}
+            Err(e) if taken_already(&e) => {}
+            Err(e) => Err(e).trace_expect("The acceptance of a block's BCB failed"),
+        }
     }
     if services.integrity && matches!(block.bib, block::BibCoverage::Some(_)) {
-        editor = match editor.remove_integrity(number) {
-            Ok(editor) => editor,
-            Err((editor, e)) if taken_already(&e) => editor,
-            Err((_, e)) => Err(e).trace_expect("The acceptance of a block's BIB failed"),
-        };
+        match editor.remove_integrity(number) {
+            Ok(()) => {}
+            Err(e) if taken_already(&e) => {}
+            Err(e) => Err(e).trace_expect("The acceptance of a block's BIB failed"),
+        }
     }
-    editor
 }
 
 // Whether `error` says the operation was already gone: an earlier acceptance

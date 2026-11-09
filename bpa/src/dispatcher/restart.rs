@@ -349,19 +349,16 @@ mod tests {
         .with_payload(b"signed before the rotation".to_vec().into())
         .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
         .unwrap();
-        let data = Bytes::from(
-            Signer::new(&built, &data)
-                .sign_block(
-                    1,
-                    signer::Context::HMAC_SHA2(Default::default()),
-                    "ipn:0.3.1".parse().unwrap(),
-                    &signing_key,
-                )
-                .map_err(|(_, e)| e)
-                .expect("sign the payload")
-                .rebuild()
-                .expect("rebuild the signed bundle"),
-        );
+        let mut signer = Signer::new(&built, &data);
+        signer
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(Default::default()),
+                "ipn:0.3.1".parse().unwrap(),
+                &signing_key,
+            )
+            .expect("sign the payload");
+        let data = Bytes::from(signer.rebuild().expect("rebuild the signed bundle"));
         let storage_name = data_store.save(data.clone()).await.unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name.clone());

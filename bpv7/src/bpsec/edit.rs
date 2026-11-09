@@ -72,44 +72,37 @@ mod keyed {
         pub(super) undecrypted: SmallVec<[u64; 4]>,
     }
 
-    pub(super) fn stage_encrypted_bibs<'a>(
-        editor: Editor<'a>,
+    pub(super) fn stage_encrypted_bibs(
+        editor: &mut Editor<'_>,
         _to_remove: &HashSet<u64>,
-    ) -> (Editor<'a>, Result<EncryptedBibs, EditorError>) {
-        let undecrypted = encrypted_bibs(&editor)
-            .into_iter()
-            .map(|(bib, _)| bib)
-            .collect();
-        (
-            editor,
-            Ok(EncryptedBibs {
-                resolved_targets: HashSet::new(),
-                undecrypted,
-            }),
-        )
+    ) -> Result<EncryptedBibs, EditorError> {
+        Ok(EncryptedBibs {
+            resolved_targets: HashSet::new(),
+            undecrypted: encrypted_bibs(editor)
+                .into_iter()
+                .map(|(bib, _)| bib)
+                .collect(),
+        })
     }
 
     pub(crate) fn resolve_maybe(
-        editor: Editor<'_>,
+        _editor: &mut Editor<'_>,
         _block_number: u64,
-    ) -> (Editor<'_>, Result<block::BibCoverage, EditorError>) {
-        (editor, Ok(block::BibCoverage::Maybe))
+    ) -> Result<block::BibCoverage, EditorError> {
+        Ok(block::BibCoverage::Maybe)
     }
 }
 
-#[cfg(feature = "bpsec")]
-pub(crate) use keyed::EditorReader;
 pub(crate) use keyed::resolve_maybe;
 use keyed::stage_encrypted_bibs;
 
 /// BPSec-aware operations on an [`Editor`]. See module docs for the
 /// capability list. Implemented on [`Editor<'_>`] in this module.
-pub trait BPSecEditor: Sized {
+pub trait BPSecEditor {
     /// Bulk-remove blocks with full BPSec cascade handling: every
     /// operation that targets a removed block goes, and a security block
-    /// its last operation leaves empty goes with it. Returns the editor and
-    /// the set of block numbers removed, which omits numbers the bundle
-    /// does not hold.
+    /// its last operation leaves empty goes with it. Returns the set of
+    /// block numbers removed, which omits numbers the bundle does not hold.
     ///
     /// For naive single-block removal that errors on any BPSec
     /// involvement, use [`Editor::remove_block`] (the inherent method).
@@ -124,8 +117,8 @@ pub trait BPSecEditor: Sized {
     /// again.
     ///
     /// Every requested block goes, or nothing does: the request is refused,
-    /// the editor returned unchanged but for coverage the decrypts
-    /// resolved, where removing a block would
+    /// the editor left unchanged but for coverage the decrypts resolved,
+    /// where removing a block would
     /// - remove its operation from an encrypted BIB that also covers a
     ///   block that stays, which would have to be encrypted again, as only
     ///   its BCB's security source may
@@ -139,11 +132,7 @@ pub trait BPSecEditor: Sized {
     ///
     /// Every block keeps its CRC type as it stands, the primary block
     /// included: no security operation changes a target's CRC.
-    #[allow(clippy::result_large_err)]
-    fn remove_blocks(
-        self,
-        blocks: &HashSet<u64>,
-    ) -> Result<(Self, HashSet<u64>), (Self, EditorError)>;
+    fn remove_blocks(&mut self, blocks: &HashSet<u64>) -> Result<HashSet<u64>, EditorError>;
 
     /// Strip the integrity check (BIB) covering a target block. The target
     /// keeps its CRC type as it stands, the primary block included: no
@@ -160,8 +149,7 @@ pub trait BPSecEditor: Sized {
     /// [`MaybeHasBib`](EditorError::MaybeHasBib). Errors if the covering
     /// BIB is itself BCB-encrypted (the BIB OpSet parse on ciphertext
     /// fails); use [`remove_blocks`](Self::remove_blocks) for that case.
-    #[allow(clippy::result_large_err)]
-    fn remove_integrity(self, block_number: u64) -> Result<Self, (Self, EditorError)>;
+    fn remove_integrity(&mut self, block_number: u64) -> Result<(), EditorError>;
 
     /// Remove the encryption from a block in the bundle, as the acceptor of
     /// its BCB operation (RFC 9172 §5.1.1): decrypt the block, rewrite it
@@ -201,7 +189,7 @@ pub trait BPSecEditor: Sized {
     /// # Errors
     ///
     /// Every decryption the removal needs must succeed, or nothing is
-    /// removed and the editor is returned with the error:
+    /// removed:
     /// [`NoKey`](crate::bpsec::Error::NoKey) where neither the cache nor
     /// the key source serves a block (an editor without a key source
     /// decrypts with none), or the context's failure, such as
@@ -211,15 +199,11 @@ pub trait BPSecEditor: Sized {
     /// its checks returns that error, and a BCB that does not list the
     /// block it covers is [`Altered`](crate::Error::Altered).
     #[cfg(feature = "bpsec")]
-    #[allow(clippy::result_large_err)]
-    fn remove_encryption(self, block_number: u64) -> Result<Self, (Self, EditorError)>;
+    fn remove_encryption(&mut self, block_number: u64) -> Result<(), EditorError>;
 }
 
 impl<'a> BPSecEditor for Editor<'a> {
-    fn remove_blocks(
-        mut self,
-        to_remove: &HashSet<u64>,
-    ) -> Result<(Self, HashSet<u64>), (Self, EditorError)> {
+    fn remove_blocks(&mut self, to_remove: &HashSet<u64>) -> Result<HashSet<u64>, EditorError> {
         // 0. Screen the request. The primary and payload blocks are never
         //    removable, and a BCB may only be removed together with all of
         //    its targets — removing it alone would strand ciphertext that
@@ -227,10 +211,10 @@ impl<'a> BPSecEditor for Editor<'a> {
         //    fine: removing a BIB wholesale is the RFC 9172 §5.1.1
         //    failure-drop.)
         if to_remove.contains(&0) {
-            return Err((self, EditorError::PrimaryBlock));
+            return Err(EditorError::PrimaryBlock);
         }
         if to_remove.contains(&1) {
-            return Err((self, EditorError::PayloadBlock));
+            return Err(EditorError::PayloadBlock);
         }
         for &n in to_remove {
             if !self
@@ -239,25 +223,19 @@ impl<'a> BPSecEditor for Editor<'a> {
             {
                 continue;
             }
-            let strands = match decode_bcb_opset(&self, n) {
-                Ok(Some(opset)) => opset.operations.keys().any(|t| !to_remove.contains(t)),
-                Ok(None) => false,
-                Err(e) => return Err((self, e)),
+            let strands = match decode_bcb_opset(self, n)? {
+                Some(opset) => opset.operations.keys().any(|t| !to_remove.contains(t)),
+                None => false,
             };
             if strands {
-                return Err((self, EditorError::StrandsCiphertext(n)));
+                return Err(EditorError::StrandsCiphertext(n));
             }
         }
 
         // 1–2. Read the BCB-encrypted BIBs the cascade might touch and stage
         //      what it can read in plaintext, with the `bpsec` feature;
         //      without it every encrypted BIB stays opaque.
-        let (editor, learnt) = stage_encrypted_bibs(self, to_remove);
-        self = editor;
-        let learnt = match learnt {
-            Ok(learnt) => learnt,
-            Err(e) => return Err((self, e)),
-        };
+        let learnt = stage_encrypted_bibs(self, to_remove)?;
 
         // 2b. A `Maybe`-covered target must not be removed before its
         //     coverage is resolved: if an encrypted BIB survives
@@ -274,16 +252,14 @@ impl<'a> BPSecEditor for Editor<'a> {
                         .is_some_and(|(b, _)| matches!(b.bib, block::BibCoverage::Maybe))
             })
         {
-            return Err((self, EditorError::MaybeHasBib(unresolved)));
+            return Err(EditorError::MaybeHasBib(unresolved));
         }
 
         // 3. Stage the plaintext the reads recovered into the editor's
         //    templates, so the cascade reads plaintext instead of tripping
         //    on ciphertext.
         #[cfg(feature = "bpsec")]
-        {
-            self = learnt.stage(self)?;
-        }
+        learnt.stage(self)?;
 
         // 4. Cascade. HashSet iteration order is non-deterministic but
         //    the cascade is order-independent: BIB/BCB shrinkage commutes.
@@ -296,33 +272,28 @@ impl<'a> BPSecEditor for Editor<'a> {
             .filter(|&n| self.block(n).is_some())
             .collect();
         for &block_number in to_remove {
-            self = self.remove_block_inner(block_number)?;
+            self.remove_block_inner(block_number)?;
         }
 
-        Ok((self, removed))
+        Ok(removed)
     }
 
     #[cfg(feature = "bpsec")]
-    fn remove_encryption(self, block_number: u64) -> Result<Self, (Self, EditorError)> {
+    fn remove_encryption(&mut self, block_number: u64) -> Result<(), EditorError> {
         keyed::remove_encryption(self, block_number)
     }
 
-    fn remove_integrity(mut self, block_number: u64) -> Result<Self, (Self, EditorError)> {
+    fn remove_integrity(&mut self, block_number: u64) -> Result<(), EditorError> {
         let Some((mut bib, _)) = self.current_coverage(block_number) else {
-            return Err((self, EditorError::NoSuchBlock(block_number)));
+            return Err(EditorError::NoSuchBlock(block_number));
         };
         if matches!(bib, block::BibCoverage::Maybe) {
-            let (editor, resolved) = resolve_maybe(self, block_number);
-            self = editor;
-            bib = match resolved {
-                Ok(bib) => bib,
-                Err(e) => return Err((self, e)),
-            };
+            bib = resolve_maybe(self, block_number)?;
         }
         match bib {
             block::BibCoverage::Some(bib) => self.remove_from_bib_targets(block_number, bib),
-            block::BibCoverage::Maybe => Err((self, EditorError::MaybeHasBib(block_number))),
-            block::BibCoverage::None => Err((self, EditorError::NotSigned)),
+            block::BibCoverage::Maybe => Err(EditorError::MaybeHasBib(block_number)),
+            block::BibCoverage::None => Err(EditorError::NotSigned),
         }
     }
 }

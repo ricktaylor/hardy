@@ -278,9 +278,9 @@ impl Dispatcher {
         // and the editor refuses neither write. A refusal is a BPA bug.
 
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
+        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data);
+        editor
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
-            .map_err(|(_, e)| e)
             .trace_expect("The per-hop rewrite's Previous Node write was refused")
             .with_flags(hardy_bpv7::block::Flags {
                 report_on_failure,
@@ -314,7 +314,7 @@ impl Dispatcher {
                 "Hop Count block travels unchanged: under an integrity operation this node did not accept"
             );
         } else if let Some(hop_count) = &bundle.metadata.per_hop.hop_count {
-            editor = match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
+            match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
                 Ok(block) => block
                     .with_flags(hardy_bpv7::block::Flags {
                         report_on_failure,
@@ -330,11 +330,8 @@ impl Dispatcher {
                         .into(),
                     )
                     .rebuild(),
-                Err((editor, e)) => {
-                    debug!("Hop Count block travels unchanged: {e}");
-                    editor
-                }
-            };
+                Err(e) => debug!("Hop Count block travels unchanged: {e}"),
+            }
         }
 
         // Bundle Age. A bundle that carries one, or has no creation time and
@@ -349,9 +346,8 @@ impl Dispatcher {
                 .whole_milliseconds()
                 .clamp(0, u64::MAX as i128) as u64;
 
-            editor = editor
+            editor
                 .insert_block(hardy_bpv7::block::Type::BundleAge)
-                .map_err(|(_, e)| e)
                 .trace_expect("The per-hop rewrite's Bundle Age write was refused")
                 .with_flags(hardy_bpv7::block::Flags {
                     report_on_failure,
@@ -380,36 +376,30 @@ impl Dispatcher {
                 service_number,
             } = &bundle.id().source
             {
-                editor = match editor.with_source(Eid::LegacyIpn {
+                match editor.set_source(Eid::LegacyIpn {
                     fqnn: *fqnn,
                     service_number: *service_number,
                 }) {
-                    Err((
-                        _,
+                    Err(
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
-                    )) => return Err(ProtectedPrimary),
-                    result => result
-                        .map_err(|(_, e)| e)
-                        .trace_expect("The legacy re-encode of the source failed"),
-                };
+                    ) => return Err(ProtectedPrimary),
+                    result => result.trace_expect("The legacy re-encode of the source failed"),
+                }
             }
             if let Eid::Ipn {
                 fqnn,
                 service_number,
             } = &bundle.primary().destination
             {
-                editor = match editor.with_destination(Eid::LegacyIpn {
+                match editor.set_destination(Eid::LegacyIpn {
                     fqnn: *fqnn,
                     service_number: *service_number,
                 }) {
-                    Err((
-                        _,
+                    Err(
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
-                    )) => return Err(ProtectedPrimary),
-                    result => result
-                        .map_err(|(_, e)| e)
-                        .trace_expect("The legacy re-encode of the destination failed"),
-                };
+                    ) => return Err(ProtectedPrimary),
+                    result => result.trace_expect("The legacy re-encode of the destination failed"),
+                }
             }
         }
 

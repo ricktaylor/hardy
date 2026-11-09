@@ -288,19 +288,16 @@ mod tests {
                 .with_payload(b"secret".as_slice().into())
                 .build(CreationTimestamp::now())
                 .unwrap();
-        let encrypted = Bytes::from(
-            Encryptor::new(&built, &data)
-                .encrypt_block(
-                    1,
-                    Context::AES_GCM(Default::default()),
-                    "ipn:0.2.1".parse().unwrap(),
-                    &key,
-                )
-                .map_err(|(_, e)| e)
-                .expect("encrypt the payload")
-                .rebuild()
-                .expect("rebuild the encrypted bundle"),
-        );
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
+            .encrypt_block(
+                1,
+                Context::AES_GCM(Default::default()),
+                "ipn:0.2.1".parse().unwrap(),
+                &key,
+            )
+            .expect("encrypt the payload");
+        let encrypted = Bytes::from(encryptor.rebuild().expect("rebuild the encrypted bundle"));
         let parsed = hardy_bpv7::parse::parse(encrypted).expect("the encrypted bundle parses");
         (parsed.bundle, parsed.data)
     }

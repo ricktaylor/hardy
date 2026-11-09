@@ -350,29 +350,27 @@ impl Store {
             }
         };
         let mut editor = Editor::new(&raw, &old_data);
-        editor = match editor.with_fragment_info(None) {
-            Ok(e) => e,
-            Err((_, e)) => {
-                debug!("Failed to clear fragment info: {e}");
-                return None;
-            }
-        };
+        if let Err(e) = editor.set_fragment_info(None) {
+            debug!("Failed to clear fragment info: {e}");
+            return None;
+        }
 
         // Now rebuild: the payload restored to the whole the fragmenter
         // split, under the security operations fragment 0 carries over it
         // (RFC 9172 §5.2), which the reassembled bundle's receiver checks.
-        let chunks = match editor.restore_block(1) {
-            Err((_, e)) => {
+        match editor.restore_block(1) {
+            Err(e) => {
                 debug!("Missing payload block?: {e}");
                 return None;
             }
-            Ok(b) => match b.with_data(new_data.into()).rebuild().rebuild() {
-                Err(e) => {
-                    debug!("Failed to rebuild bundle: {e}");
-                    return None;
-                }
-                Ok(chunks) => chunks,
-            },
+            Ok(b) => b.with_data(new_data.into()).rebuild(),
+        }
+        let chunks = match editor.rebuild() {
+            Err(e) => {
+                debug!("Failed to rebuild bundle: {e}");
+                return None;
+            }
+            Ok(chunks) => chunks,
         };
 
         // Write the rewritten bundle now for safety. Zero-copy when
@@ -615,35 +613,37 @@ mod tests {
         } = hardy_bpv7::parse::parse(Bytes::copy_from_slice(&complete_data)).unwrap();
 
         // Create fragment 0: offset=0, total=10, payload="Hello"
-        let frag0_data = Editor::new(&raw_bundle, &complete_data)
-            .with_fragment_info(Some(FragmentInfo {
+        let mut editor = Editor::new(&raw_bundle, &complete_data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
                 offset: 0,
                 total_adu_length: 10,
             }))
-            .map_err(|(_, e)| e)
-            .unwrap()
+            .unwrap();
+        editor
             .update_block(1)
-            .map_err(|(_, e)| e)
             .unwrap()
             .with_data(alloc::borrow::Cow::Borrowed(&b"Hello"[..]))
-            .rebuild()
+            .rebuild();
+        let frag0_data = editor
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();
 
         // Create fragment 1: offset=5, total=10, payload="World"
-        let frag1_data = Editor::new(&raw_bundle, &complete_data)
-            .with_fragment_info(Some(FragmentInfo {
+        let mut editor = Editor::new(&raw_bundle, &complete_data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
                 offset: 5,
                 total_adu_length: 10,
             }))
-            .map_err(|(_, e)| e)
-            .unwrap()
+            .unwrap();
+        editor
             .update_block(1)
-            .map_err(|(_, e)| e)
             .unwrap()
             .with_data(alloc::borrow::Cow::Borrowed(&b"World"[..]))
-            .rebuild()
+            .rebuild();
+        let frag1_data = editor
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();

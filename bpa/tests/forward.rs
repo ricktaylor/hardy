@@ -862,14 +862,13 @@ async fn assert_forwarded_legacy(
 fn signed(bundle: &Parsed, targets: &[u64], scope: ScopeFlags, key: &Key) -> Parsed {
     let mut signing = Signer::new(&bundle.bundle, &bundle.data);
     for &target in targets {
-        signing = signing
+        signing
             .sign_block(
                 target,
                 signer::Context::HMAC_SHA2(scope.clone()),
                 bundle.bundle.primary.id.source.clone(),
                 key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     hardy_bpv7::parse::parse(Bytes::from(
@@ -956,18 +955,17 @@ async fn legacy_peer_drops_a_bundle_whose_bcb_scopes_the_primary() {
     let (bpa, cla, events_rx) = legacy_relay().await;
     let (built, _) = legacy_bound_bundle();
     let key = enc_key();
+    let mut encryptor = Encryptor::new(&built.bundle, &built.data);
+    encryptor
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(ScopeFlags::default()),
+            built.bundle.primary.id.source.clone(),
+            &key,
+        )
+        .expect("encrypt the payload");
     let received = hardy_bpv7::parse::parse(Bytes::from(
-        Encryptor::new(&built.bundle, &built.data)
-            .encrypt_block(
-                1,
-                encryptor::Context::AES_GCM(ScopeFlags::default()),
-                built.bundle.primary.id.source.clone(),
-                &key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the payload")
-            .rebuild()
-            .expect("rebuild the encrypted bundle"),
+        encryptor.rebuild().expect("rebuild the encrypted bundle"),
     ))
     .unwrap();
 
@@ -983,21 +981,20 @@ async fn legacy_peer_takes_a_bundle_whose_bcb_leaves_the_primary_out() {
     let (bpa, cla, events_rx) = legacy_relay().await;
     let (built, _) = legacy_bound_bundle();
     let key = enc_key();
+    let mut encryptor = Encryptor::new(&built.bundle, &built.data);
+    encryptor
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(ScopeFlags {
+                include_primary_block: false,
+                ..ScopeFlags::default()
+            }),
+            built.bundle.primary.id.source.clone(),
+            &key,
+        )
+        .expect("encrypt the payload");
     let received = hardy_bpv7::parse::parse(Bytes::from(
-        Encryptor::new(&built.bundle, &built.data)
-            .encrypt_block(
-                1,
-                encryptor::Context::AES_GCM(ScopeFlags {
-                    include_primary_block: false,
-                    ..ScopeFlags::default()
-                }),
-                built.bundle.primary.id.source.clone(),
-                &key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the payload")
-            .rebuild()
-            .expect("rebuild the encrypted bundle"),
+        encryptor.rebuild().expect("rebuild the encrypted bundle"),
     ))
     .unwrap();
 
@@ -1117,32 +1114,31 @@ fn protected_bundle(
         .build(CreationTimestamp::now())
         .expect("build the bundle");
     let built = hardy_bpv7::parse::parse(Bytes::from(data)).unwrap();
+    let mut signer = Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            sign_key,
+        )
+        .expect("sign the payload");
     let signed = hardy_bpv7::parse::parse(Bytes::from(
-        Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                1,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source.clone(),
-                sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the payload")
-            .rebuild()
-            .expect("rebuild the signed bundle"),
+        signer.rebuild().expect("rebuild the signed bundle"),
     ))
     .unwrap();
     let flags = ScopeFlags {
         include_security_header: false,
         ..ScopeFlags::default()
     };
-    let mut encryptor = Encryptor::new(&signed.bundle, &signed.data)
+    let mut encryptor = Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags.clone()),
             source.clone(),
             enc_key,
         )
-        .map_err(|(_, e)| e)
         .expect("encrypt the payload (and so its covering BIB)");
     for &(block_type, security_source, key) in encrypted {
         let number = *signed
@@ -1152,14 +1148,13 @@ fn protected_bundle(
             .find(|(_, b)| b.block_type == block_type)
             .expect("the bundle carries the per-hop block")
             .0;
-        encryptor = encryptor
+        encryptor
             .encrypt_block(
                 number,
                 encryptor::Context::AES_GCM(flags.clone()),
                 security_source.clone(),
                 key,
             )
-            .map_err(|(_, e)| e)
             .expect("encrypt the per-hop block");
     }
     hardy_bpv7::parse::parse(Bytes::from(
@@ -1577,14 +1572,13 @@ async fn key_holding_relay_forwards_a_hop_count_sharing_an_encrypted_bib_unchang
         };
         let mut signing = Signer::new(&built.bundle, &built.data);
         for target in targets {
-            signing = signing
+            signing
                 .sign_block(
                     target,
                     signer::Context::HMAC_SHA2(flags.clone()),
                     source.clone(),
                     &sign_key,
                 )
-                .map_err(|(_, e)| e)
                 .expect("sign the target");
         }
         let signed = hardy_bpv7::parse::parse(Bytes::from(
@@ -1593,14 +1587,13 @@ async fn key_holding_relay_forwards_a_hop_count_sharing_an_encrypted_bib_unchang
         .unwrap();
         let mut encrypting = Encryptor::new(&signed.bundle, &signed.data);
         for target in targets {
-            encrypting = encrypting
+            encrypting
                 .encrypt_block(
                     target,
                     encryptor::Context::AES_GCM(flags.clone()),
                     source.clone(),
                     &enc_key,
                 )
-                .map_err(|(_, e)| e)
                 .expect("encrypt the target");
         }
         let received = hardy_bpv7::parse::parse(Bytes::from(
@@ -1678,37 +1671,35 @@ fn per_hop_under_encrypted_bib(
         .find(|(_, b)| b.block_type == block_type)
         .expect("the per-hop block is present")
         .0;
+    let mut signer = Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            target,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            sign_key,
+        )
+        .expect("sign the per-hop block");
     let signed = hardy_bpv7::parse::parse(Bytes::from(
-        Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                target,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source.clone(),
-                sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the per-hop block")
-            .rebuild()
-            .expect("rebuild the signed bundle"),
+        signer.rebuild().expect("rebuild the signed bundle"),
     ))
     .unwrap();
     let flags = ScopeFlags {
         include_security_header: false,
         ..ScopeFlags::default()
     };
-    let mut encrypting = Encryptor::new(&signed.bundle, &signed.data)
+    let mut encrypting = Encryptor::new(&signed.bundle, &signed.data);
+    encrypting
         .encrypt_block(
             target,
             encryptor::Context::AES_GCM(flags.clone()),
             source.clone(),
             enc_key,
         )
-        .map_err(|(_, e)| e)
         .expect("encrypt the per-hop block, and so its BIB");
     if encrypt_payload {
-        encrypting = encrypting
+        encrypting
             .encrypt_block(1, encryptor::Context::AES_GCM(flags), source, enc_key)
-            .map_err(|(_, e)| e)
             .expect("encrypt the payload");
     }
     hardy_bpv7::parse::parse(Bytes::from(
@@ -1961,32 +1952,30 @@ fn previous_node_signed_with_the_payload(sign_key: &Key, enc_key: &Key) -> Parse
     };
     let mut signing = Signer::new(&built.bundle, &built.data);
     for target in [previous, 1] {
-        signing = signing
+        signing
             .sign_block(
                 target,
                 signer::Context::HMAC_SHA2(flags.clone()),
                 source.clone(),
                 sign_key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     let signed = hardy_bpv7::parse::parse(Bytes::from(
         signing.rebuild().expect("rebuild the signed bundle"),
     ))
     .unwrap();
+    let mut encryptor = Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            previous,
+            encryptor::Context::AES_GCM(flags),
+            source,
+            enc_key,
+        )
+        .expect("encrypt the Previous Node, and so its BIB");
     hardy_bpv7::parse::parse(Bytes::from(
-        Encryptor::new(&signed.bundle, &signed.data)
-            .encrypt_block(
-                previous,
-                encryptor::Context::AES_GCM(flags),
-                source,
-                enc_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the Previous Node, and so its BIB")
-            .rebuild()
-            .expect("rebuild the encrypted bundle"),
+        encryptor.rebuild().expect("rebuild the encrypted bundle"),
     ))
     .unwrap()
 }
@@ -2068,14 +2057,13 @@ fn with_failed_hop_count_sharing_an_encrypted_bib(sign_key: &Key, enc_key: &Key)
     };
     let mut signing = Signer::new(&built.bundle, &built.data);
     for target in targets {
-        signing = signing
+        signing
             .sign_block(
                 target,
                 signer::Context::HMAC_SHA2(flags.clone()),
                 source.clone(),
                 sign_key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     let signed = hardy_bpv7::parse::parse(Bytes::from(
@@ -2091,14 +2079,13 @@ fn with_failed_hop_count_sharing_an_encrypted_bib(sign_key: &Key, enc_key: &Key)
     let altered = hardy_bpv7::parse::parse(Bytes::from(data)).unwrap();
     let mut encrypting = Encryptor::new(&altered.bundle, &altered.data);
     for target in targets {
-        encrypting = encrypting
+        encrypting
             .encrypt_block(
                 target,
                 encryptor::Context::AES_GCM(flags.clone()),
                 source.clone(),
                 enc_key,
             )
-            .map_err(|(_, e)| e)
             .expect("encrypt the target");
     }
     hardy_bpv7::parse::parse(Bytes::from(
@@ -2159,18 +2146,17 @@ fn with_signed_hop_count(sign_key: &Key) -> Parsed {
         .find(|(_, b)| b.block_type == block::Type::HopCount)
         .expect("the Hop Count block is present")
         .0;
+    let mut signer = Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            hop_count,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source,
+            sign_key,
+        )
+        .expect("sign the Hop Count");
     hardy_bpv7::parse::parse(Bytes::from(
-        Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                hop_count,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source,
-                sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the Hop Count")
-            .rebuild()
-            .expect("rebuild the signed bundle"),
+        signer.rebuild().expect("rebuild the signed bundle"),
     ))
     .unwrap()
 }
@@ -2237,13 +2223,12 @@ fn with_encrypted_bundle_age(enc_key: &Key, timestamp: CreationTimestamp) -> Par
         include_security_header: false,
         ..ScopeFlags::default()
     };
+    let mut encryptor = Encryptor::new(&built.bundle, &built.data);
+    encryptor
+        .encrypt_block(age, encryptor::Context::AES_GCM(flags), source, enc_key)
+        .expect("encrypt the Bundle Age block");
     hardy_bpv7::parse::parse(Bytes::from(
-        Encryptor::new(&built.bundle, &built.data)
-            .encrypt_block(age, encryptor::Context::AES_GCM(flags), source, enc_key)
-            .map_err(|(_, e)| e)
-            .expect("encrypt the Bundle Age block")
-            .rebuild()
-            .expect("rebuild the encrypted bundle"),
+        encryptor.rebuild().expect("rebuild the encrypted bundle"),
     ))
     .unwrap()
 }

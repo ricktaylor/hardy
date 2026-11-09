@@ -1024,17 +1024,16 @@ mod tests {
             .find(|(_, b)| b.block_type == block::Type::HopCount)
             .unwrap()
             .0;
-        let encrypted = Encryptor::new(&built, &data)
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
             .encrypt_block(
                 hop_count,
                 Context::AES_GCM(Default::default()),
                 "ipn:1.1".parse().unwrap(),
                 &key,
             )
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild()
             .unwrap();
+        let encrypted = encryptor.rebuild().unwrap();
         let Parsed {
             bundle, data, bcbs, ..
         } = parse(Bytes::from(encrypted)).unwrap();

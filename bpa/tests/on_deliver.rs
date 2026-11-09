@@ -943,19 +943,16 @@ async fn a_service_receives_an_accepted_payload_in_plaintext() {
         &plaintext,
     );
     let parsed = parse(built).unwrap();
-    let encrypted = Bytes::from(
-        Encryptor::new(&parsed.bundle, &parsed.data)
-            .encrypt_block(
-                1,
-                Context::AES_GCM(ScopeFlags::default()),
-                "ipn:0.2.1".parse().unwrap(),
-                &key,
-            )
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild()
-            .unwrap(),
-    );
+    let mut encryptor = Encryptor::new(&parsed.bundle, &parsed.data);
+    encryptor
+        .encrypt_block(
+            1,
+            Context::AES_GCM(ScopeFlags::default()),
+            "ipn:0.2.1".parse().unwrap(),
+            &key,
+        )
+        .unwrap();
+    let encrypted = Bytes::from(encryptor.rebuild().unwrap());
 
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {

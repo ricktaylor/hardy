@@ -196,10 +196,9 @@ mod tests {
         }
     }
 
-    fn update_hop_count(editor: Editor<'_>, hop_count: u64) -> Editor<'_> {
+    fn update_hop_count(mut editor: Editor<'_>, hop_count: u64) -> Editor<'_> {
         editor
             .update_block(hop_count)
-            .map_err(|(_, e)| e)
             .unwrap()
             .with_data(
                 emit(&HopInfo {
@@ -209,11 +208,13 @@ mod tests {
                 .0
                 .into(),
             )
-            .rebuild()
+            .rebuild();
+        editor
     }
 
-    fn remove_hop_count(editor: Editor<'_>, hop_count: u64) -> Editor<'_> {
-        editor.remove_block(hop_count).map_err(|(_, e)| e).unwrap()
+    fn remove_hop_count(mut editor: Editor<'_>, hop_count: u64) -> Editor<'_> {
+        editor.remove_block(hop_count).unwrap();
+        editor
     }
 
     #[tokio::test]
@@ -298,14 +299,13 @@ mod tests {
     #[should_panic(expected = "the rebuild keeps the payload block as it stands")]
     fn a_rebuilt_payload_cannot_stream() {
         let (bundle, data) = bundle(16);
-        let chunks = Editor::new(&bundle, &data)
+        let mut editor = Editor::new(&bundle, &data);
+        editor
             .update_block(1)
-            .map_err(|(_, e)| e)
             .unwrap()
             .with_data(b"replaced".as_slice().into())
-            .rebuild()
-            .rebuild()
-            .unwrap();
+            .rebuild();
+        let chunks = editor.rebuild().unwrap();
         let mut stream = data.clone();
         let _ = RebuiltHeaders::new(chunks, &data, &mut stream);
     }

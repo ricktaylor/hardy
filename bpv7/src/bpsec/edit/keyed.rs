@@ -18,7 +18,6 @@ use crate::{
         key::{self, KeySource},
     },
     editor::{Editor, Error as EditorError},
-    reader::{Availability, Reader},
 };
 
 // What an editor without a key source decrypts with: nothing, so that an
@@ -55,58 +54,36 @@ impl<'a> Editor<'a> {
 
 // The acceptor's removal of a block's encryption
 // ([`BPSecEditor::remove_encryption`](super::BPSecEditor::remove_encryption)).
-#[allow(clippy::result_large_err)]
 pub(super) fn remove_encryption<'a>(
-    editor: Editor<'a>,
+    editor: &mut Editor<'a>,
     block_number: u64,
-) -> Result<Editor<'a>, (Editor<'a>, EditorError)> {
-    let (bcb, opset, block_type) = match encryption_of(&editor, block_number) {
-        Ok(found) => found,
-        Err(e) => return Err((editor, e)),
-    };
-    let (mut editor, plaintext) = plaintext_of(editor, block_number, bcb, &opset);
-    let plaintext = match plaintext {
-        Ok(plaintext) => plaintext,
-        Err(e) => return Err((editor, e)),
-    };
+) -> Result<(), EditorError> {
+    let (bcb, opset, block_type) = encryption_of(editor, block_number)?;
+    let plaintext = plaintext_of(editor, block_number, bcb, &opset)?;
 
     // The encrypted BIB the removal is coupled to: the block itself when
     // it is a BIB, else the encrypted BIB over it, if any.
     let mut writes: SmallVec<[PlaintextWrite<'a>; 4]> = SmallVec::new();
     let coupled = if matches!(block_type, block::Type::BlockIntegrity) {
-        match parse_bib_opset(plaintext.as_slice()) {
-            Ok(bib_opset) => Some(CoupledBib {
-                block_number,
-                bcb,
-                bcb_opset: opset,
-                plaintext,
-                opset: bib_opset,
-            }),
-            Err(e) => return Err((editor, e)),
-        }
+        Some(CoupledBib {
+            block_number,
+            bcb,
+            bcb_opset: opset,
+            opset: parse_bib_opset(plaintext.as_slice())?,
+            plaintext,
+        })
     } else {
         writes.push(PlaintextWrite {
             block_number,
             bcb,
             plaintext,
         });
-        let (ed, covering) = covering_bib(editor, block_number);
-        editor = ed;
-        match covering {
-            Ok(covering) => covering,
-            Err(e) => return Err((editor, e)),
-        }
+        covering_bib(editor, block_number)?
     };
 
     if let Some(bib) = &coupled {
-        let reader = EditorReader { editor };
-        let checked = bib
-            .opset
-            .check_decrypted(bib.block_number, &bib.bcb_opset, &reader);
-        editor = reader.editor;
-        if let Err(e) = checked {
-            return Err((editor, e.into()));
-        }
+        bib.opset
+            .check_decrypted(bib.block_number, &bib.bcb_opset, &*editor)?;
 
         // The BIB's other targets a BCB covers.
         for &target in bib.opset.operations.keys() {
@@ -116,23 +93,15 @@ pub(super) fn remove_encryption<'a>(
             let Some((_, Some(target_bcb))) = editor.current_coverage(target) else {
                 continue;
             };
-            let target_opset = match decode_bcb_opset(&editor, target_bcb) {
-                Ok(Some(target_opset)) if target_opset.operations.contains_key(&target) => {
-                    target_opset
-                }
-                Ok(_) => continue,
-                Err(e) => return Err((editor, e)),
+            let target_opset = match decode_bcb_opset(editor, target_bcb)? {
+                Some(target_opset) if target_opset.operations.contains_key(&target) => target_opset,
+                _ => continue,
             };
-            let (ed, plaintext) = plaintext_of(editor, target, target_bcb, &target_opset);
-            editor = ed;
-            match plaintext {
-                Ok(plaintext) => writes.push(PlaintextWrite {
-                    block_number: target,
-                    bcb: target_bcb,
-                    plaintext,
-                }),
-                Err(e) => return Err((editor, e)),
-            }
+            writes.push(PlaintextWrite {
+                block_number: target,
+                bcb: target_bcb,
+                plaintext: plaintext_of(editor, target, target_bcb, &target_opset)?,
+            });
         }
     }
 
@@ -173,10 +142,10 @@ pub(super) fn remove_encryption<'a>(
         if let Some(data) = plaintext.into_data() {
             block = block.with_data(data);
         }
-        editor = block.rebuild();
-        editor = editor.remove_from_bcb_targets(n, bcb)?;
+        block.rebuild();
+        editor.remove_from_bcb_targets(n, bcb)?;
     }
-    Ok(editor)
+    Ok(())
 }
 
 // The BCB that encrypts `block_number` now, its decoded OperationSet, and
@@ -269,11 +238,7 @@ impl<'a> EncryptedBibs<'a> {
     // Stages the plaintext of the BIBs the cascade edits into the editor's
     // templates, so the cascade reads plaintext instead of tripping on
     // ciphertext.
-    #[allow(clippy::result_large_err)]
-    pub(super) fn stage(
-        self,
-        mut editor: Editor<'a>,
-    ) -> Result<Editor<'a>, (Editor<'a>, EditorError)> {
+    pub(super) fn stage(self, editor: &mut Editor<'a>) -> Result<(), EditorError> {
         let EncryptedBibs {
             staged,
             mut plaintexts,
@@ -285,12 +250,12 @@ impl<'a> EncryptedBibs<'a> {
                 .expect("staged BIB must be in plaintexts")
                 .into_data()
                 .expect("a BIB is resident, so its plaintext is data");
-            editor = editor
+            editor
                 .update_block_inner(bib_num)?
                 .with_data(data)
                 .rebuild();
         }
-        Ok(editor)
+        Ok(())
     }
 }
 
@@ -299,26 +264,22 @@ impl<'a> EncryptedBibs<'a> {
 // decrypt reveals, and stages in plaintext those a removal in `to_remove`
 // edits, or refuses.
 pub(super) fn stage_encrypted_bibs<'a>(
-    mut editor: Editor<'a>,
+    editor: &mut Editor<'a>,
     to_remove: &HashSet<u64>,
-) -> (Editor<'a>, Result<EncryptedBibs<'a>, EditorError>) {
+) -> Result<EncryptedBibs<'a>, EditorError> {
     let mut learnt = EncryptedBibs {
         resolved_targets: HashSet::new(),
         undecrypted: SmallVec::new(),
         staged: SmallVec::new(),
         plaintexts: HashMap::new(),
     };
-    for (bib_num, bcb_num) in encrypted_bibs(&editor) {
-        let bcb_opset = match decode_bcb_opset(&editor, bcb_num) {
-            Ok(Some(opset)) => opset,
-            Ok(None) => continue,
-            Err(e) => return (editor, Err(e)),
+    for (bib_num, bcb_num) in encrypted_bibs(editor) {
+        let Some(bcb_opset) = decode_bcb_opset(editor, bcb_num)? else {
+            continue;
         };
 
         // Read + parse the BIB body.
-        let (ed, outcome) = read_covered_bib(editor, &bcb_opset, bib_num, bcb_num);
-        editor = ed;
-        let (plaintext, bib_opset) = match outcome {
+        let (plaintext, bib_opset) = match read_covered_bib(editor, &bcb_opset, bib_num, bcb_num) {
             CoveredBib::NotCovered => continue,
             // NoKey or DecryptionFailed: leave the BIB encrypted and
             // skip staging. A corrupt (undecryptable) BIB is handled
@@ -331,17 +292,12 @@ pub(super) fn stage_encrypted_bibs<'a>(
                 learnt.undecrypted.push(bib_num);
                 continue;
             }
-            CoveredBib::ParseFailed(e) => return (editor, Err(e)),
+            CoveredBib::ParseFailed(e) => return Err(e),
             CoveredBib::Decrypted(plaintext, opset) => (plaintext, opset),
         };
         // What the decrypt reveals is checked here, as the cascade is
         // what decrypted it.
-        let reader = EditorReader { editor };
-        let checked = bib_opset.check_decrypted(bib_num, &bcb_opset, &reader);
-        editor = reader.editor;
-        if let Err(e) = checked {
-            return (editor, Err(e.into()));
-        }
+        bib_opset.check_decrypted(bib_num, &bcb_opset, &*editor)?;
         learnt
             .resolved_targets
             .extend(bib_opset.operations.keys().copied());
@@ -363,13 +319,10 @@ pub(super) fn stage_encrypted_bibs<'a>(
                 .keys()
                 .find(|t| to_remove.contains(*t))
                 .expect("a dead target is requested");
-            return (
-                editor,
-                Err(EditorError::ShrinksEncryptedBib {
-                    block,
-                    bib: bib_num,
-                }),
-            );
+            return Err(EditorError::ShrinksEncryptedBib {
+                block,
+                bib: bib_num,
+            });
         }
         // All-dead shrinks fall through here, as does a BIB the request
         // names itself, removed wholesale — the cascade empties the
@@ -385,7 +338,7 @@ pub(super) fn stage_encrypted_bibs<'a>(
         learnt.staged.push(bib_num);
         learnt.plaintexts.insert(bib_num, plaintext);
     }
-    (editor, Ok(learnt))
+    Ok(learnt)
 }
 
 // A `Maybe` coverage of `block_number` resolved with the editor's key
@@ -393,30 +346,23 @@ pub(super) fn stage_encrypted_bibs<'a>(
 // checked once decrypted, or none. It stays `Maybe` while an encrypted BIB
 // that may list the block cannot be read.
 pub(crate) fn resolve_maybe(
-    editor: Editor<'_>,
+    editor: &mut Editor<'_>,
     block_number: u64,
-) -> (Editor<'_>, Result<block::BibCoverage, EditorError>) {
-    let (mut editor, covering) = covering_bib(editor, block_number);
-    match covering {
+) -> Result<block::BibCoverage, EditorError> {
+    match covering_bib(editor, block_number) {
         Ok(Some(bib)) => {
-            let reader = EditorReader { editor };
-            let checked = bib
-                .opset
-                .check_decrypted(bib.block_number, &bib.bcb_opset, &reader);
-            editor = reader.editor;
-            if let Err(e) = checked {
-                return (editor, Err(e.into()));
-            }
+            bib.opset
+                .check_decrypted(bib.block_number, &bib.bcb_opset, &*editor)?;
             for &target in bib.opset.operations.keys() {
                 editor.set_bib_target(target, bib.block_number);
             }
-            (editor, Ok(block::BibCoverage::Some(bib.block_number)))
+            Ok(block::BibCoverage::Some(bib.block_number))
         }
         Ok(None) => {
             editor.clear_bib_target(block_number);
-            (editor, Ok(block::BibCoverage::None))
+            Ok(block::BibCoverage::None)
         }
-        Err(_) => (editor, Ok(block::BibCoverage::Maybe)),
+        Err(_) => Ok(block::BibCoverage::Maybe),
     }
 }
 
@@ -426,9 +372,9 @@ pub(crate) fn resolve_maybe(
 // decrypted or read leaves the answer open, and its error is returned if no
 // other BIB lists the block.
 fn covering_bib<'a>(
-    mut editor: Editor<'a>,
+    editor: &Editor<'a>,
     block_number: u64,
-) -> (Editor<'a>, Result<Option<CoupledBib<'a>>, EditorError>) {
+) -> Result<Option<CoupledBib<'a>>, EditorError> {
     let candidates: SmallVec<[u64; 4]> = match editor.current_coverage(block_number) {
         Some((block::BibCoverage::Some(bib), _)) => SmallVec::from_slice(&[bib]),
         Some((block::BibCoverage::Maybe, _)) => editor
@@ -439,7 +385,7 @@ fn covering_bib<'a>(
                     .is_some_and(|(b, _)| matches!(b.block_type, block::Type::BlockIntegrity))
             })
             .collect(),
-        _ => return (editor, Ok(None)),
+        _ => return Ok(None),
     };
 
     let mut unread = None;
@@ -447,26 +393,22 @@ fn covering_bib<'a>(
         let Some((_, Some(bcb))) = editor.current_coverage(bib) else {
             continue;
         };
-        let bcb_opset = match decode_bcb_opset(&editor, bcb) {
-            Ok(Some(bcb_opset)) if bcb_opset.operations.contains_key(&bib) => bcb_opset,
-            Ok(_) => continue,
-            Err(e) => return (editor, Err(e)),
+        let bcb_opset = match decode_bcb_opset(editor, bcb)? {
+            Some(bcb_opset) if bcb_opset.operations.contains_key(&bib) => bcb_opset,
+            _ => continue,
         };
-        let (ed, plaintext) = plaintext_of(editor, bib, bcb, &bcb_opset);
-        editor = ed;
-        let read = plaintext.and_then(|plaintext| {
+        let read = plaintext_of(editor, bib, bcb, &bcb_opset).and_then(|plaintext| {
             parse_bib_opset(plaintext.as_slice()).map(|opset| (plaintext, opset))
         });
         match read {
             Ok((plaintext, opset)) if opset.operations.contains_key(&block_number) => {
-                let bib = CoupledBib {
+                return Ok(Some(CoupledBib {
                     block_number: bib,
                     bcb,
                     bcb_opset,
                     plaintext,
                     opset,
-                };
-                return (editor, Ok(Some(bib)));
+                }));
             }
             Ok(_) => {}
             Err(e) => {
@@ -474,7 +416,7 @@ fn covering_bib<'a>(
             }
         }
     }
-    (editor, unread.map_or(Ok(None), Err))
+    unread.map_or(Ok(None), Err)
 }
 
 // A BCB target's plaintext: the caller's stream, for a payload the editor
@@ -482,39 +424,36 @@ fn covering_bib<'a>(
 // else a decrypt with the editor's key source, or with no keys where none
 // is set, under the operation `bcb_opset` holds for it.
 fn plaintext_of<'a>(
-    editor: Editor<'a>,
+    editor: &Editor<'a>,
     block_number: u64,
     bcb: u64,
     bcb_opset: &bcb::OperationSet,
-) -> (Editor<'a>, Result<Plaintext<'a>, EditorError>) {
+) -> Result<Plaintext<'a>, EditorError> {
     if block_number == 1 && editor.streamed_payload().is_some() {
-        return (editor, Ok(Plaintext::Streamed));
+        return Ok(Plaintext::Streamed);
     }
     if let Some(plaintext) = editor
         .decrypted
         .and_then(|cache| cache.plaintext.get(&block_number))
     {
-        return (editor, Ok(Plaintext::Cached(plaintext)));
+        return Ok(Plaintext::Cached(plaintext));
     }
     let key_source = editor.key_source.unwrap_or(&NO_KEYS);
     let op = bcb_opset
         .operations
         .get(&block_number)
         .expect("the BCB's OperationSet lists the block it covers");
-    let reader = EditorReader { editor };
-    let result = op.decrypt(
+    op.decrypt(
         key_source,
         bcb::OperationArgs {
             source: &bcb_opset.source,
             target: block_number,
             security_block: bcb,
-            blocks: &reader,
+            blocks: editor,
         },
-    );
-    (
-        reader.editor,
-        result.map(Plaintext::Decrypted).map_err(Into::into),
     )
+    .map(Plaintext::Decrypted)
+    .map_err(Into::into)
 }
 
 /// Outcome of reading a BCB-covered BIB's OperationSet.
@@ -533,26 +472,22 @@ enum CoveredBib<'a> {
 
 /// Read a BCB-covered BIB body, from the editor's cache or decrypted with
 /// its key source under the per-target `Operation` already decoded into
-/// `bcb_opset`, and parse its OperationSet. Threads the editor through (the
-/// [`EditorReader`] borrows it for the AAD lookup) and returns it alongside
-/// the [`CoveredBib`] outcome.
+/// `bcb_opset`, and parse its OperationSet.
 fn read_covered_bib<'a>(
-    editor: Editor<'a>,
+    editor: &Editor<'a>,
     bcb_opset: &bcb::OperationSet,
     bib_num: u64,
     bcb_num: u64,
-) -> (Editor<'a>, CoveredBib<'a>) {
+) -> CoveredBib<'a> {
     if !bcb_opset.operations.contains_key(&bib_num) {
-        return (editor, CoveredBib::NotCovered);
+        return CoveredBib::NotCovered;
     }
-    let (editor, plaintext) = plaintext_of(editor, bib_num, bcb_num, bcb_opset);
-    let plaintext = match plaintext {
-        Ok(plaintext) => plaintext,
-        Err(_) => return (editor, CoveredBib::DecryptFailed),
+    let Ok(plaintext) = plaintext_of(editor, bib_num, bcb_num, bcb_opset) else {
+        return CoveredBib::DecryptFailed;
     };
     match parse_bib_opset(plaintext.as_slice()) {
-        Ok(opset) => (editor, CoveredBib::Decrypted(plaintext, opset)),
-        Err(e) => (editor, CoveredBib::ParseFailed(e)),
+        Ok(opset) => CoveredBib::Decrypted(plaintext, opset),
+        Err(e) => CoveredBib::ParseFailed(e),
     }
 }
 
@@ -565,19 +500,4 @@ fn parse_bib_opset(plaintext: &[u8]) -> Result<bib::OperationSet, EditorError> {
         }
         .into()
     })
-}
-pub(crate) struct EditorReader<'a> {
-    pub(crate) editor: Editor<'a>,
-}
-
-impl<'a> Reader<'a> for EditorReader<'a> {
-    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
-        let (block, payload) = self.editor.block(block_number)?;
-        Some((
-            block,
-            payload
-                .map(block::Payload::Borrowed)
-                .map_or(Availability::NotResident, Availability::Available),
-        ))
-    }
 }
