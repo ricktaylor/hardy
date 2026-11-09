@@ -10,12 +10,14 @@
 //!
 //! - [`PlainReader`] — the raw wire body of a parsed, wholly in-memory
 //!   bundle; no decryption, no staged rewrites.
-//! - The editor's internal reader — staged (unmaterialised) rewrites.
+//! - [`Editor`](crate::editor::Editor) — the bundle as its staged
+//!   (unmaterialised) edits leave it: a staged block's data, or a kept
+//!   block's wire bytes.
 //!
 //! For BCB-covered payloads decrypted on demand, see
 //! [`bpsec::DecryptingReader`](crate::bpsec::DecryptingReader), which
-//! composes a [`PlainReader`] with the BCB decrypt operation and memoises
-//! the outcomes.
+//! composes a plain reader — over the wire, or over an editor — with the
+//! BCB decrypt operation and memoises the outcomes.
 
 use hardy_cbor::decode::{Error as CborError, FromCbor, parse_exact};
 

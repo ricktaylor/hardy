@@ -490,6 +490,36 @@ impl<'a> Editor<'a> {
         self.primary.as_ref().unwrap_or(&self.original.primary)
     }
 
+    /// The bundle as the staged edits leave it: the current primary block
+    /// and the block headers, each with its current BIB and BCB coverage.
+    /// A copy of the headers alone, for reading while the editor goes on
+    /// editing: later edits do not show in it.
+    ///
+    /// A staged block's `extent` and `data` index no bytes: its body is
+    /// staged, not on the wire. Read block bodies through the editor's
+    /// [`Reader`] impl, or through a
+    /// [`DecryptingReader`](crate::bpsec::DecryptingReader) over it.
+    #[must_use]
+    pub fn current_bundle(&self) -> bundle::Bundle {
+        let blocks = self
+            .blocks
+            .keys()
+            .filter_map(|&block_number| {
+                let (block, _) = self.block(block_number)?;
+                let mut header = block.clone();
+                if let Some((bib, bcb)) = self.current_coverage(block_number) {
+                    header.bib = bib;
+                    header.bcb = bcb;
+                }
+                Some((block_number, header))
+            })
+            .collect();
+        bundle::Bundle {
+            primary: self.current_primary().clone(),
+            blocks,
+        }
+    }
+
     fn primary_block(&mut self) -> Result<&mut primary_block::PrimaryBlock, Error> {
         // Refuse while a BIB still targets the primary block, judged by the
         // primary's current coverage rather than the BIB's template: an edit

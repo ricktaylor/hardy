@@ -42,7 +42,7 @@ use hardy_bpv7::{
     },
     hop_info::HopInfo,
     parse::{Parsed, parse},
-    reader::Availability,
+    reader::{Availability, Reader},
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion},
 };
 // Aliased: the key type, beside the block `Type` imported above.

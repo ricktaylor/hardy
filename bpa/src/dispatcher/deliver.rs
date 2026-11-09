@@ -67,16 +67,46 @@ impl Dispatcher {
         &self,
         service: Arc<Service>,
         service_eid: Eid,
-        bundle: bundle::Bundle,
+        mut bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // Deliver chain: Rewriters (transport-block strip), then Verifiers.
-        let (bundle, mut data) = match self.filters.run_deliver(bundle, data, &*self.key_provider) {
-            filter::ChainOutcome::Continue(bundle, data) => (bundle, data),
-            filter::ChainOutcome::Drop(bundle, reason) => {
+        // The Deliver Rewriters (transport-block strip) edit one editor over
+        // the record's block index and the loaded bytes, rebuilt once, only
+        // if a link edited; with no Rewriters, none is built. The keys are
+        // derived once, over the stored bundle, and serve the Verifiers too.
+        let mut data = {
+            let keys = filter::output_keys(&bundle.bpv7, &data, &*self.key_provider);
+            let data = if !self.filters.has_deliver_rewriters() {
+                data
+            } else {
+                let mut editor = Editor::new(&bundle.bpv7, &data);
+                let rewritten = self
+                    .filters
+                    .run_deliver(&mut editor, &bundle.metadata, &*keys);
+
+                // The bytes were validated at ingress and every edit was
+                // checked when it was staged, so a failed rebuild is a BPA
+                // or bpv7 bug.
+                let rebuilt = rewritten.then(|| {
+                    editor
+                        .rebuild_bundle()
+                        .trace_expect("The delivery rewrite failed to rebuild the bundle")
+                });
+                match rebuilt {
+                    Some((rebuilt, chunks)) => {
+                        bundle.bpv7.blocks = rebuilt.blocks;
+                        Chunk::flatten_bytes(chunks, data)
+                    }
+                    None => data,
+                }
+            };
+
+            // The Deliver Verifiers, over the bundle as it will be delivered.
+            if let Some(reason) = self.filters.verify_deliver(&bundle, &data, &*keys) {
                 return OfferOutcome::Dropped(bundle, reason);
             }
+            data
         };
 
         let delivery_result = match &service.service {

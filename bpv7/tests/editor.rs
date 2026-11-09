@@ -21,7 +21,10 @@ use hardy_bpv7::{
 // Aliased: the parser's error, beside the editor's `Error` imported above.
 use hardy_bpv7::Error as Bpv7Error;
 // Aliased: the CBOR codec's error, beside the two above.
-use hardy_cbor::{decode::Error as CborError, encode::emit};
+use hardy_cbor::{
+    decode::{Error as CborError, parse_exact},
+    encode::emit,
+};
 
 mod common;
 use self::common::{insert_after_primary, make_block, make_unknown_context_asb, rand_k};
@@ -3584,4 +3587,166 @@ fn a_plaintext_payloads_accepted_bib_streams() {
         Some(plaintext.as_slice())
     );
     assert_eq!(parsed.bundle.blocks, index.blocks);
+}
+
+// === Reading an editor's staged edits ===================================
+
+// The body a reader yields for `block_number`, or the state that says why
+// there is none.
+fn body<'a>(
+    reader: &'a dyn reader::Reader<'a>,
+    block_number: u64,
+) -> Option<Result<Vec<u8>, String>> {
+    let (_, availability) = reader.block(block_number)?;
+    Some(match availability {
+        reader::Availability::Available(payload) => Ok(payload.as_ref().to_vec()),
+        other => Err(format!("{other:?}")),
+    })
+}
+
+// The BCB operation sets `editor`'s BCB blocks carry as staged, keyed by
+// block number, decoded from the bodies the editor reads for them: what a
+// decrypting reader over the editor is built with.
+fn staged_bcbs(current: &Bundle, editor: &Editor<'_>) -> HashMap<u64, bpsec::bcb::OperationSet> {
+    current
+        .blocks
+        .iter()
+        .filter(|(_, b)| b.block_type == block::Type::BlockSecurity)
+        .map(|(&n, _)| {
+            let (_, availability) = reader::Reader::block(editor, n).expect("the BCB is held");
+            let reader::Availability::Available(body) = availability else {
+                panic!("the BCB's body is resident");
+            };
+            let opset = parse_exact::<bpsec::bcb::OperationSet>(body.as_ref())
+                .expect("the BCB body decodes");
+            (n, opset)
+        })
+        .collect()
+}
+
+// The current bundle copies the edits staged when it was taken — an insert
+// and an update over kept wire blocks — and none made after it; the editor
+// and a decrypting reader over it read the staged bodies.
+#[test]
+fn the_current_bundle_copies_the_edits_staged_when_taken() {
+    let (bundle, data, ext) = make_bundle_with_extension();
+    let mut owner = Editor::new(&bundle, &data);
+    owner
+        .push_block(block::Type::Unrecognised(201))
+        .expect("push a block")
+        .with_data(b"inserted".as_slice().into())
+        .rebuild();
+    let inserted = *owner
+        .current_bundle()
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::Unrecognised(201))
+        .expect("the insert is in the current bundle")
+        .0;
+    owner
+        .update_block(ext)
+        .expect("update the extension block")
+        .with_data(b"updated".as_slice().into())
+        .rebuild();
+    let current = owner.current_bundle();
+
+    let keys = key::KeySet::EMPTY;
+    let bcbs = staged_bcbs(&current, &owner);
+    let decrypting = bpsec::DecryptingReader::over_editor(&current.blocks, &owner, &bcbs, &keys);
+    for reader in [
+        &owner as &dyn reader::Reader,
+        &decrypting as &dyn reader::Reader,
+    ] {
+        assert_eq!(body(reader, inserted), Some(Ok(b"inserted".to_vec())));
+        assert_eq!(body(reader, ext), Some(Ok(b"updated".to_vec())));
+        assert_eq!(
+            body(reader, 1),
+            Some(Ok(b"Hello".to_vec())),
+            "the kept payload"
+        );
+    }
+    drop(decrypting);
+
+    // A later edit leaves the copy alone: the editor has moved on past it.
+    owner.remove_block(inserted).expect("remove the insert");
+    owner.remove_block(ext).expect("remove the extension block");
+    assert!(current.blocks.contains_key(&ext));
+    assert!(!owner.current_bundle().blocks.contains_key(&ext));
+    assert_eq!(body(&owner, ext), None, "a removed block reads as absent");
+}
+
+// A kept BCB-covered block decrypts through a reader over the editor with
+// the key, and reads as no-key without it.
+#[test]
+fn a_reader_over_an_editor_decrypts_a_kept_covered_block() {
+    let (bundle, data, ext) = make_bundle_with_extension();
+    let enc_key = aes_key();
+    let (encrypted, encrypted_bytes) = encrypt(&bundle, &data, ext, &enc_key);
+    let editor = Editor::new(&encrypted, &encrypted_bytes);
+    let current = editor.current_bundle();
+    let bcbs = staged_bcbs(&current, &editor);
+
+    let keys = key::KeySet::new(vec![enc_key]);
+    assert_eq!(
+        body(
+            &bpsec::DecryptingReader::over_editor(&current.blocks, &editor, &bcbs, &keys),
+            ext
+        ),
+        Some(Ok(b"ext-data".to_vec()))
+    );
+    assert_eq!(
+        body(
+            &bpsec::DecryptingReader::over_editor(
+                &current.blocks,
+                &editor,
+                &bcbs,
+                &key::KeySet::EMPTY
+            ),
+            ext
+        ),
+        Some(Err("NoKey".to_string()))
+    );
+}
+
+// A block whose encryption an earlier edit removed is staged in plaintext,
+// released from its BCB: a reader over the editor serves the staged
+// plaintext with no key, while the BCB's other target still decrypts.
+#[test]
+fn a_reader_over_an_editor_serves_a_decrypted_blocks_plaintext() {
+    let (bundle, data, ext) = make_bundle_with_extension();
+    let enc_key = aes_key();
+    let (encrypted, encrypted_bytes) = encrypt(&bundle, &data, ext, &enc_key);
+    let bcb = encrypted.blocks[&ext]
+        .bcb
+        .expect("the extension block is encrypted");
+    let keys = key::KeySet::new(vec![enc_key]);
+
+    let mut editor = Editor::new(&encrypted, &encrypted_bytes).with_key_source(&keys);
+    editor
+        .remove_encryption(ext)
+        .expect("remove the extension block's encryption");
+    let current = editor.current_bundle();
+    assert_eq!(
+        current.blocks[&ext].bcb, None,
+        "the current headers release the block from its BCB"
+    );
+    assert!(
+        !current.blocks.contains_key(&bcb),
+        "the BCB, with no target left, is gone"
+    );
+    let bcbs = staged_bcbs(&current, &editor);
+
+    assert_eq!(
+        body(
+            &bpsec::DecryptingReader::over_editor(
+                &current.blocks,
+                &editor,
+                &bcbs,
+                &key::KeySet::EMPTY
+            ),
+            ext
+        ),
+        Some(Ok(b"ext-data".to_vec())),
+        "the staged plaintext needs no key"
+    );
 }

@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 use super::{Decrypted, Error, bcb, key};
 use crate::{
     HashMap, block,
+    editor::Editor,
     reader::{Availability, PlainReader, Reader},
 };
 
@@ -51,6 +52,12 @@ enum Decrypt {
 /// [`Reader`] impl panics (the lending door has no error channel), while the
 /// give doors return `Err(Altered)`.
 ///
+/// Over an editor ([`over_editor`](Self::over_editor)) the reader reads
+/// the bundle as the editor's staged edits leave it: a block's body is the
+/// one the editor holds when it is read, a staged block's data or a kept
+/// block's wire bytes, and the editor's current headers and the BCB
+/// operation sets its BCB blocks carry as staged decide what to decrypt.
+///
 /// The memoisation uses interior mutability without locking, so the
 /// reader is not `Sync`; share it within one thread of work.
 pub struct DecryptingReader<'a> {
@@ -58,11 +65,19 @@ pub struct DecryptingReader<'a> {
     // any of them afterwards would pair the memoised outcomes with other
     // blocks, bytes or keys.
     blocks: &'a HashMap<u64, block::Block>,
-    source_data: &'a [u8],
+    bodies: Bodies<'a>,
     bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
     keys: &'a dyn key::KeySource,
     // One cell per BCB-covered block, memoising its decrypt outcome.
     cache: HashMap<u64, OnceCell<Decrypt>>,
+}
+
+// Where a reader's plain block bodies come from.
+enum Bodies<'a> {
+    // The complete, contiguous wire bytes the blocks' extents index.
+    Wire(&'a [u8]),
+    // An editor: a staged block's data, or a kept block's wire bytes.
+    Editor(&'a Editor<'a>),
 }
 
 impl<'a> DecryptingReader<'a> {
@@ -76,15 +91,45 @@ impl<'a> DecryptingReader<'a> {
     ) -> Self {
         Self {
             blocks,
-            source_data,
+            bodies: Bodies::Wire(source_data),
             bcb_ops,
             keys,
-            cache: blocks
-                .iter()
-                .filter(|(_, block)| block.bcb.is_some())
-                .map(|(number, _)| (*number, OnceCell::new()))
-                .collect(),
+            cache: Self::covered(blocks),
         }
+    }
+
+    /// Builds a reader over an editor's staged bundle: `blocks` are the
+    /// editor's current block headers
+    /// ([`Editor::current_bundle`](crate::editor::Editor::current_bundle))
+    /// and `bcb_ops` the operation sets its BCB blocks carry as staged,
+    /// each decoded from the body the editor reads for it. The two MUST be
+    /// taken from the editor as it stands, with no edit between them.
+    ///
+    /// A block's body is the one the editor holds when it is read: a
+    /// staged block's data, or a kept block's wire bytes. A block the
+    /// editor no longer holds reads as not resident.
+    pub fn over_editor(
+        blocks: &'a HashMap<u64, block::Block>,
+        editor: &'a Editor<'a>,
+        bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
+        keys: &'a dyn key::KeySource,
+    ) -> Self {
+        Self {
+            blocks,
+            bodies: Bodies::Editor(editor),
+            bcb_ops,
+            keys,
+            cache: Self::covered(blocks),
+        }
+    }
+
+    // One empty memo cell per BCB-covered block.
+    fn covered(blocks: &HashMap<u64, block::Block>) -> HashMap<u64, OnceCell<Decrypt>> {
+        blocks
+            .iter()
+            .filter(|(_, block)| block.bcb.is_some())
+            .map(|(number, _)| (*number, OnceCell::new()))
+            .collect()
     }
 
     /// Seeds the memo with an earlier pass's outcomes over the same parse, so
@@ -140,16 +185,22 @@ impl<'a> DecryptingReader<'a> {
         let _ = cell.set(outcome);
     }
 
-    // The block's payload extents lie within the resident bytes. Compared
-    // in u64: a block past usize::MAX on a 32-bit target is equally
-    // non-resident.
-    fn is_resident(&self, block: &block::Block) -> bool {
-        block.payload_range().end <= self.source_data.len() as u64
+    // The block's plain body: its wire bytes, or over an editor the body the
+    // editor holds. `None` when the body is not resident (`Block::payload`
+    // compares the extent in u64, so a block past usize::MAX on a 32-bit
+    // target is equally non-resident).
+    fn plain_body(&self, block_number: u64, block: &'a block::Block) -> Option<&'a [u8]> {
+        match self.bodies {
+            Bodies::Wire(source_data) => block.payload(source_data),
+            Bodies::Editor(editor) => editor.block(block_number).and_then(|(_, body)| body),
+        }
     }
 
     // Runs the BCB decrypt operation for `block_number` (covered by BCB
-    // `bcb_num`), with PlainReader serving the AAD lookups. Missing
-    // OperationSet entries surface as `Altered`, matching [`block_data`].
+    // `bcb_num`), with the plain view the reader serves (a PlainReader over
+    // the wire, or the editor) supplying the ciphertext and the AAD lookups.
+    // Missing OperationSet entries surface as `Altered`, matching
+    // [`block_data`].
     fn decrypt_target(
         &self,
         block_number: u64,
@@ -160,16 +211,24 @@ impl<'a> DecryptingReader<'a> {
             .operations
             .get(&block_number)
             .ok_or(crate::Error::Altered)?;
+        let wire;
+        let blocks: &dyn Reader<'_> = match self.bodies {
+            Bodies::Wire(source_data) => {
+                wire = PlainReader {
+                    blocks: self.blocks,
+                    source_data,
+                };
+                &wire
+            }
+            Bodies::Editor(editor) => editor,
+        };
         op.decrypt(
             self.keys,
             bcb::OperationArgs {
                 source: &opset.source,
                 target: block_number,
                 security_block: bcb_num,
-                blocks: &PlainReader {
-                    blocks: self.blocks,
-                    source_data: self.source_data,
-                },
+                blocks,
             },
         )
         .map_err(crate::Error::InvalidBPSec)
@@ -186,16 +245,13 @@ impl<'a> DecryptingReader<'a> {
             .blocks
             .get(&block_number)
             .ok_or(crate::Error::MissingBlock(block_number))?;
-        if !self.is_resident(target) {
+        let Some(body) = self.plain_body(block_number, target) else {
             return Ok(ControlFlow::Break(None));
-        }
+        };
         match target.bcb {
             Some(bcb_num) => Ok(ControlFlow::Continue(bcb_num)),
-            // Unencrypted — the raw wire body is the plaintext.
-            None => target
-                .payload(self.source_data)
-                .map(|payload| ControlFlow::Break(Some(block::Payload::Borrowed(payload))))
-                .ok_or(crate::Error::Altered),
+            // Unencrypted — the plain body is the plaintext.
+            None => Ok(ControlFlow::Break(Some(block::Payload::Borrowed(body)))),
         }
     }
 
@@ -307,16 +363,13 @@ impl<'a> Reader<'a> for DecryptingReader<'a> {
     // report it through.
     fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let block = self.blocks.get(&block_number)?;
-        if !self.is_resident(block) {
+        let Some(body) = self.plain_body(block_number, block) else {
             return Some((block, Availability::NotResident));
-        }
+        };
         let Some(bcb_num) = block.bcb else {
             return Some((
                 block,
-                block
-                    .payload(self.source_data)
-                    .map(block::Payload::Borrowed)
-                    .map_or(Availability::NotResident, Availability::Available),
+                Availability::Available(block::Payload::Borrowed(body)),
             ));
         };
 
