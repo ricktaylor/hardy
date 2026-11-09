@@ -94,7 +94,7 @@ impl<'a> DecryptingReader<'a> {
             bodies: Bodies::Wire(source_data),
             bcb_ops,
             keys,
-            cache: Self::covered(blocks),
+            cache: Self::memo_cells(blocks),
         }
     }
 
@@ -119,12 +119,12 @@ impl<'a> DecryptingReader<'a> {
             bodies: Bodies::Editor(editor),
             bcb_ops,
             keys,
-            cache: Self::covered(blocks),
+            cache: Self::memo_cells(blocks),
         }
     }
 
     // One empty memo cell per BCB-covered block.
-    fn covered(blocks: &HashMap<u64, block::Block>) -> HashMap<u64, OnceCell<Decrypt>> {
+    fn memo_cells(blocks: &HashMap<u64, block::Block>) -> HashMap<u64, OnceCell<Decrypt>> {
         blocks
             .iter()
             .filter(|(_, block)| block.bcb.is_some())
@@ -188,7 +188,8 @@ impl<'a> DecryptingReader<'a> {
     // The block's plain body: its wire bytes, or over an editor the body the
     // editor holds. `None` when the body is not resident (`Block::payload`
     // compares the extent in u64, so a block past usize::MAX on a 32-bit
-    // target is equally non-resident).
+    // target is equally non-resident), and over an editor for a staged block
+    // given no data yet.
     fn plain_body(&self, block_number: u64, block: &'a block::Block) -> Option<&'a [u8]> {
         match self.bodies {
             Bodies::Wire(source_data) => block.payload(source_data),

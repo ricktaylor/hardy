@@ -496,7 +496,8 @@ impl<'a> Editor<'a> {
     /// editing: later edits do not show in it.
     ///
     /// A staged block's `extent` and `data` index no bytes: its body is
-    /// staged, not on the wire. Read block bodies through the editor's
+    /// staged, not on the wire, and that includes a staged primary block's.
+    /// Read block bodies through the editor's
     /// [`Reader`] impl, or through a
     /// [`DecryptingReader`](crate::bpsec::DecryptingReader) over it.
     #[must_use]
@@ -504,14 +505,19 @@ impl<'a> Editor<'a> {
         let blocks = self
             .blocks
             .keys()
-            .filter_map(|&block_number| {
-                let (block, _) = self.block(block_number)?;
-                let mut header = block.clone();
-                if let Some((bib, bcb)) = self.current_coverage(block_number) {
-                    header.bib = bib;
-                    header.bcb = bcb;
-                }
-                Some((block_number, header))
+            .map(|&block_number| {
+                let (block, bib, bcb) = self
+                    .current_block(block_number)
+                    .expect("the editor holds every block it lists");
+                let mut header = match (block_number, &self.primary) {
+                    (0, Some(primary)) => {
+                        primary_block::PrimaryBlock::as_block(primary.crc_type, 0..0)
+                    }
+                    _ => block.clone(),
+                };
+                header.bib = bib;
+                header.bcb = bcb;
+                (block_number, header)
             })
             .collect();
         bundle::Bundle {
@@ -540,16 +546,18 @@ impl<'a> Editor<'a> {
             .get_or_insert_with(|| self.original.primary.clone())
     }
 
-    /// A block's current BIB and BCB coverage, or `None` if the bundle no
-    /// longer holds it. An earlier edit's strip records the new coverage in
-    /// the overrides and leaves the block's stamps stale: the BIB or BCB they
-    /// name may be gone, and its number reused by an unrelated block.
-    pub(crate) fn current_coverage(
+    /// A block's header and its current BIB and BCB coverage, or `None` if
+    /// the bundle no longer holds it. An earlier edit's strip records the new
+    /// coverage in the overrides and leaves the header's stamps stale: the
+    /// BIB or BCB they name may be gone, and its number reused by an
+    /// unrelated block.
+    pub(crate) fn current_block(
         &self,
         block_number: u64,
-    ) -> Option<(block::BibCoverage, Option<u64>)> {
+    ) -> Option<(&block::Block, block::BibCoverage, Option<u64>)> {
         let (block, _) = self.block(block_number)?;
         Some((
+            block,
             self.bib_overrides
                 .get(&block_number)
                 .cloned()
@@ -559,6 +567,16 @@ impl<'a> Editor<'a> {
                 .copied()
                 .unwrap_or(block.bcb),
         ))
+    }
+
+    /// A block's current BIB and BCB coverage, as
+    /// [`current_block`](Self::current_block) gives it.
+    pub(crate) fn current_coverage(
+        &self,
+        block_number: u64,
+    ) -> Option<(block::BibCoverage, Option<u64>)> {
+        self.current_block(block_number)
+            .map(|(_, bib, bcb)| (bib, bcb))
     }
 
     /// The BIB that currently targets the primary block, if any.
@@ -613,7 +631,9 @@ impl<'a> Editor<'a> {
     }
 
     /// Sets the bundle flags for this [`Editor`], canonicalized so an alias
-    /// bit in `unrecognised` counts as the flag it encodes.
+    /// bit in `unrecognised` counts as the flag it encodes. The fragment flag
+    /// follows the fragment info, which
+    /// [`set_fragment_info`](Self::set_fragment_info) sets.
     ///
     /// # Errors
     ///
@@ -623,6 +643,7 @@ impl<'a> Editor<'a> {
     pub fn set_bundle_flags(&mut self, flags: bundle::Flags) -> Result<(), Error> {
         let pb = self.primary_block()?;
         pb.flags = flags.canonicalize();
+        pb.flags.is_fragment = pb.id.fragment_info.is_some();
         self.generation += 1;
         Ok(())
     }
@@ -713,7 +734,8 @@ impl<'a> Editor<'a> {
         Ok(())
     }
 
-    /// Sets the fragment info for this [`Editor`].
+    /// Sets the fragment info for this [`Editor`], and the fragment flag
+    /// with it.
     ///
     /// Exempt from the other setters' security refusals, so it does not
     /// fail: no BIB or BCB is added to a bundle fragment (RFC 9172 §5.2),
@@ -725,7 +747,9 @@ impl<'a> Editor<'a> {
         &mut self,
         fragment_info: Option<bundle::FragmentInfo>,
     ) -> Result<(), Error> {
-        self.primary_block_unchecked().id.fragment_info = fragment_info;
+        let pb = self.primary_block_unchecked();
+        pb.flags.is_fragment = fragment_info.is_some();
+        pb.id.fragment_info = fragment_info;
         self.generation += 1;
         Ok(())
     }
@@ -1244,9 +1268,7 @@ impl<'a> Editor<'a> {
         self.blocks.remove(&0).expect("No primary block!");
 
         // Build primary chunk + final PrimaryBlock for the output Bundle.
-        let (primary_out, primary_chunk) = if let Some(mut primary) = self.primary.take() {
-            // is_fragment must match fragment_info presence.
-            primary.flags.is_fragment = primary.id.fragment_info.is_some();
+        let (primary_out, primary_chunk) = if let Some(primary) = self.primary.take() {
             let primary_bytes = primary.emit()?;
             let len = primary_bytes.len();
             // `extent` here is a placeholder — the offset-fixup loop in
@@ -1417,8 +1439,7 @@ impl<'a> Editor<'a> {
         self.blocks.remove(&0).expect("No primary block!");
 
         // Build primary chunk
-        let primary_chunk = if let Some(mut primary) = self.primary.take() {
-            primary.flags.is_fragment = primary.id.fragment_info.is_some();
+        let primary_chunk = if let Some(primary) = self.primary.take() {
             (0u64, Chunk::New(primary.emit()?.into()))
         } else {
             let block = self
@@ -1579,7 +1600,12 @@ impl<'e, 'a> BlockBuilder<'e, 'a> {
 
 /// An editor reads as the bundle its staged edits leave: a staged block's
 /// data, or a kept block's wire bytes, each plain. A read borrows the
-/// editor only for its own duration, so edits follow it.
+/// editor only for its own duration, so edits follow it. The headers keep
+/// their parsed coverage stamps; [`Editor::current_bundle`] re-stamps them.
+/// A staged block given no data yet reads as
+/// [`NotResident`](Availability::NotResident): no state says "staged without
+/// data", and the rebuild refuses such a block with
+/// [`NoBlockData`](builder::Error::NoBlockData).
 impl<'a> Reader<'a> for Editor<'a> {
     fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let (block, payload) = Editor::block(self, block_number)?;

@@ -1114,6 +1114,36 @@ fn remove_blocks_removes_the_primary_bib_under_another_scope() {
         .expect("the payload's operation verifies over the unchanged primary");
 }
 
+// The fragment flag follows the fragment info through both setters, so the
+// current bundle's primary agrees with what the rebuild emits; the staged
+// primary's header indexes no bytes.
+#[test]
+fn the_fragment_flag_follows_the_fragment_info() {
+    let (bundle, data) = make_bundle();
+    let mut editor = Editor::new(&bundle, &data);
+    editor
+        .set_fragment_info(Some(bundle::FragmentInfo {
+            offset: 0,
+            total_adu_length: 5,
+        }))
+        .unwrap();
+    let current = editor.current_bundle();
+    assert!(current.primary.flags.is_fragment);
+    assert_eq!(current.blocks[&0].extent, 0..0);
+    assert_eq!(current.blocks[&0].data, 0..0);
+
+    editor
+        .set_bundle_flags(bundle::Flags::default())
+        .expect("no BIB covers the primary");
+    assert!(
+        editor.current_bundle().primary.flags.is_fragment,
+        "the flags setter keeps the fragment flag with the fragment info"
+    );
+
+    editor.set_fragment_info(None).unwrap();
+    assert!(!editor.current_bundle().primary.flags.is_fragment);
+}
+
 // Fragment info is exempt: no BIB or BCB is added to a fragment (RFC 9172
 // §5.2), so every operation covers the unfragmented primary. Fragmenting a
 // bundle a default-scope BIB protects and clearing the fragment info again
@@ -1973,6 +2003,55 @@ fn extension_editor_refusals_keep_the_owners_edits() {
             .unwrap_or_else(|| panic!("the {block_type:?} edit reaches the rebuild"));
         assert_eq!(block.payload(&new_data), Some(body));
     }
+}
+
+// Two handles edit one owner's editor in turn: the second starts with no edit
+// of its own, targets the first's insert, and both handles' edits reach the
+// owner's one rebuild.
+#[test]
+fn extension_editor_handles_edit_one_owner_in_turn() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let mut owner = Editor::new(&bundle, &data);
+    let first = {
+        let mut editor = ExtensionEditor::new(&mut owner);
+        let first = editor
+            .insert(
+                block::Type::Unrecognised(201),
+                block::Flags::default(),
+                crc::CrcType::None,
+                b"first".as_slice().into(),
+            )
+            .expect("the first handle inserts");
+        assert!(editor.is_modified());
+        first
+    };
+
+    let mut editor = ExtensionEditor::new(&mut owner);
+    assert!(!editor.is_modified(), "a new handle has made no edit");
+    editor
+        .replace(first, b"replaced".as_slice().into())
+        .expect("the second handle replaces the first's insert");
+    let second = editor
+        .insert(
+            block::Type::Unrecognised(202),
+            block::Flags::default(),
+            crc::CrcType::None,
+            b"second".as_slice().into(),
+        )
+        .expect("the second handle inserts");
+    assert!(editor.is_modified());
+
+    let (_, chunks) = owner.rebuild_bundle().expect("materialise");
+    let new_data = Chunk::flatten(chunks, &data);
+    let reparsed = reparse(&new_data);
+    assert_eq!(
+        reparsed.blocks[&first].payload(&new_data),
+        Some(b"replaced".as_slice())
+    );
+    assert_eq!(
+        reparsed.blocks[&second].payload(&new_data),
+        Some(b"second".as_slice())
+    );
 }
 
 // === ExtensionEditor: the parser's accept-set at call time =============
@@ -3591,17 +3670,14 @@ fn a_plaintext_payloads_accepted_bib_streams() {
 
 // === Reading an editor's staged edits ===================================
 
-// The body a reader yields for `block_number`, or the state that says why
-// there is none.
-fn body<'a>(
-    reader: &'a dyn reader::Reader<'a>,
-    block_number: u64,
-) -> Option<Result<Vec<u8>, String>> {
+// The plaintext a reader yields for `block_number`, or `None` for a block it
+// does not hold. Any other state fails the test, naming the state.
+fn body<'a>(reader: &'a dyn reader::Reader<'a>, block_number: u64) -> Option<Vec<u8>> {
     let (_, availability) = reader.block(block_number)?;
-    Some(match availability {
-        reader::Availability::Available(payload) => Ok(payload.as_ref().to_vec()),
-        other => Err(format!("{other:?}")),
-    })
+    match availability {
+        reader::Availability::Available(payload) => Some(payload.as_ref().to_vec()),
+        other => panic!("block {block_number} reads as {other:?}"),
+    }
 }
 
 // The BCB operation sets `editor`'s BCB blocks carry as staged, keyed by
@@ -3657,13 +3733,9 @@ fn the_current_bundle_copies_the_edits_staged_when_taken() {
         &owner as &dyn reader::Reader,
         &decrypting as &dyn reader::Reader,
     ] {
-        assert_eq!(body(reader, inserted), Some(Ok(b"inserted".to_vec())));
-        assert_eq!(body(reader, ext), Some(Ok(b"updated".to_vec())));
-        assert_eq!(
-            body(reader, 1),
-            Some(Ok(b"Hello".to_vec())),
-            "the kept payload"
-        );
+        assert_eq!(body(reader, inserted), Some(b"inserted".to_vec()));
+        assert_eq!(body(reader, ext), Some(b"updated".to_vec()));
+        assert_eq!(body(reader, 1), Some(b"Hello".to_vec()), "the kept payload");
     }
     drop(decrypting);
 
@@ -3692,25 +3764,19 @@ fn a_reader_over_an_editor_decrypts_a_kept_covered_block() {
             &bpsec::DecryptingReader::over_editor(&current.blocks, &editor, &bcbs, &keys),
             ext
         ),
-        Some(Ok(b"ext-data".to_vec()))
+        Some(b"ext-data".to_vec())
     );
-    assert_eq!(
-        body(
-            &bpsec::DecryptingReader::over_editor(
-                &current.blocks,
-                &editor,
-                &bcbs,
-                &key::KeySet::EMPTY
-            ),
-            ext
-        ),
-        Some(Err("NoKey".to_string()))
-    );
+    let no_keys = key::KeySet::EMPTY;
+    let keyless = bpsec::DecryptingReader::over_editor(&current.blocks, &editor, &bcbs, &no_keys);
+    assert!(matches!(
+        reader::Reader::block(&keyless, ext),
+        Some((_, reader::Availability::NoKey))
+    ));
 }
 
 // A block whose encryption an earlier edit removed is staged in plaintext,
 // released from its BCB: a reader over the editor serves the staged
-// plaintext with no key, while the BCB's other target still decrypts.
+// plaintext with no key.
 #[test]
 fn a_reader_over_an_editor_serves_a_decrypted_blocks_plaintext() {
     let (bundle, data, ext) = make_bundle_with_extension();
@@ -3746,7 +3812,7 @@ fn a_reader_over_an_editor_serves_a_decrypted_blocks_plaintext() {
             ),
             ext
         ),
-        Some(Ok(b"ext-data".to_vec())),
+        Some(b"ext-data".to_vec()),
         "the staged plaintext needs no key"
     );
 }

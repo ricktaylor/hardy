@@ -12,7 +12,9 @@
 //!   bundle; no decryption, no staged rewrites.
 //! - [`Editor`](crate::editor::Editor) — the bundle as its staged
 //!   (unmaterialised) edits leave it: a staged block's data, or a kept
-//!   block's wire bytes.
+//!   block's wire bytes. Its headers keep their parsed coverage stamps;
+//!   [`Editor::current_bundle`](crate::editor::Editor::current_bundle)
+//!   re-stamps them.
 //!
 //! For BCB-covered payloads decrypted on demand, see
 //! [`bpsec::DecryptingReader`](crate::bpsec::DecryptingReader), which

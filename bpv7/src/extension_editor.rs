@@ -1,31 +1,31 @@
 //! Scoped extension-block editing: insert/replace/remove of *extension*
 //! blocks only, with every owner privilege either absent or refused.
 //!
-//! [`ExtensionEditor`] is a handle on an owner's [`Editor`]: it edits
-//! through a borrow it never exposes, and the owner rebuilds the bundle once
-//! the handle is gone. Some owner privileges are absent by construction — there are no primary-field
-//! setters and no way to add or manage a BIB or BCB — and the target gates
-//! refuse the rest at call time with a typed [`Error`](enum@Error): the
-//! primary and payload blocks, the reserved block types, and security
-//! blocks as targets. A caller's no-match path is an `Err`, never a review
-//! convention. Editing a block under existing BPSec coverage is
-//! refused outright (the full [`Editor`] instead strips the target from
-//! its coverage — an owner decision this handle deliberately cannot make),
-//! and unprovable coverage (undecryptable BIBs) refuses conservatively.
+//! [`ExtensionEditor`] is a handle on an owner's [`Editor`]: it edits through
+//! a borrow it never exposes, and the owner rebuilds the bundle once the
+//! handle is gone. Some owner privileges are absent by construction — there
+//! are no primary-field setters and no way to add or manage a BIB or BCB —
+//! and the target gates refuse the rest at call time with a typed
+//! [`Error`](enum@Error): the primary and payload blocks, the reserved block
+//! types, and security blocks as targets. A caller's no-match path is an
+//! `Err`, never a review convention. Editing a block under existing BPSec
+//! coverage is refused outright (the full [`Editor`] instead strips the
+//! target from its coverage — an owner decision this handle deliberately
+//! cannot make), and unprovable coverage (undecryptable BIBs) refuses
+//! conservatively.
 //!
 //! Blocks inserted through this editor are valid targets for its own
 //! `replace`/`remove`: a fresh insert is by definition an uncovered
 //! extension block, so every gate above still holds.
 //!
-//! An edit that would make a malformed bundle is refused at call time
-//! instead of failing at the owner's rebuild or at the receiver's
-//! decoders. What the structural parser rejects — a
-//! `report_on_failure` flag the bundle forbids, an unrecognised CRC type,
-//! a bundle without a creation time losing its Bundle Age block (RFC 9171
-//! §4.4.2) — is refused with the parser's own error. Previous Node, Bundle Age, or
-//! Hop Count data that does not decode as its type is refused as
-//! [`UndecodableBody`](Error::UndecodableBody), decoded as the parser
-//! decodes a received one.
+//! An edit that would make a malformed bundle is refused at call time instead
+//! of failing at the owner's rebuild or at the receiver's decoders. What the
+//! structural parser rejects — a `report_on_failure` flag the bundle forbids,
+//! an unrecognised CRC type, a bundle without a creation time losing its
+//! Bundle Age block (RFC 9171 §4.4.2) — is refused with the parser's own
+//! error. Previous Node, Bundle Age, or Hop Count data that does not decode
+//! as its type is refused as [`UndecodableBody`](Error::UndecodableBody),
+//! decoded as the parser decodes a received one.
 //!
 //! Receiver policy over a well-formed bundle is the caller's to decide, not
 //! refused here: hop limits, and how a receiver treats blocks it does not
@@ -232,16 +232,12 @@ impl<'e, 'a> ExtensionEditor<'e, 'a> {
         if block_number <= 1 {
             return Err(Error::ReservedBlock(block_number));
         }
-        let Some((block, _)) = self.editor.block(block_number) else {
+        let Some((block, bib, bcb)) = self.editor.current_block(block_number) else {
             return Err(Error::NoSuchBlock(block_number));
         };
         if matches!(block.block_type, Type::BlockIntegrity | Type::BlockSecurity) {
             return Err(Error::ReservedType(block.block_type));
         }
-        let (bib, bcb) = self
-            .editor
-            .current_coverage(block_number)
-            .unwrap_or((block.bib, block.bcb));
         // `Maybe` (undecryptable BIBs of unknown coverage) refuses
         // conservatively: coverage cannot be proven absent.
         if !matches!(bib, BibCoverage::None) || bcb.is_some() {
