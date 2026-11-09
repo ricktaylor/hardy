@@ -1,7 +1,17 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
 use futures::join;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+// Aliased: `Bundle` and `Error` in this module are the BPA's own, and
+// bpsec's `Error` would collide with bpv7's.
+use hardy_bpv7::{
+    Bundle as Bpv7Bundle, Error as Bpv7Error, block,
+    bpsec::{SecurityServices, edit::BPSecEditor, key::KeySource},
+    builder,
+    editor::{self, Chunk, Editor},
+    eid::Eid,
+    parse::Parsed,
+    status_report::ReasonCode,
+};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
@@ -42,9 +52,6 @@ pub struct Config {
     /// Pre-drain gate: require primary-block integrity protection
     /// (RFC 9171 §4.3.1).
     pub primary_block_integrity: bool,
-    /// Pre-drain gate: require a Bundle Age block on clockless bundles
-    /// (RFC 9171 §4.4.2).
-    pub bundle_age_required: bool,
     /// Peers whose next hop requires legacy 2-element IPN EID encoding in
     /// the per-hop rewrite stage.
     pub ipn_legacy_peers: Vec<EidPattern>,
@@ -99,7 +106,6 @@ pub(crate) struct Dispatcher {
     poll_channel_depth: usize,
     max_bundle_size: Option<NonZeroU64>,
     primary_block_integrity: bool,
-    bundle_age_required: bool,
     ipn_legacy_peers: Vec<EidPattern>,
 }
 
@@ -156,7 +162,6 @@ impl Dispatcher {
                     .min(ADDRESSABLE_CAP),
             ),
             primary_block_integrity: config.primary_block_integrity,
-            bundle_age_required: config.bundle_age_required,
             ipn_legacy_peers: config.ipn_legacy_peers,
         });
 
@@ -432,13 +437,6 @@ impl Dispatcher {
         );
     }
 
-    fn key_provider(
-        &self,
-    ) -> impl Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> + Clone + '_
-    {
-        |bundle, data| self.key_provider.key_source(bundle, data)
-    }
-
     fn key_source(
         &self,
         bundle: &hardy_bpv7::Bundle,
@@ -446,38 +444,207 @@ impl Dispatcher {
     ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
         self.key_provider.key_source(bundle, data)
     }
+}
 
-    // Applies the §E block removals the ingress gate deferred (RFC 9172
-    // §5.1.1 failure-drops and honoured `delete_block_on_failure` unknowns)
-    // to a bundle's wire form for one output attempt, ahead of the door's
-    // filter chain; the stored bundle keeps the blocks. The rebuilt block map
-    // replaces the record's, so the pair stays consistent (the primary is
-    // never replaced). Nothing scheduled costs one branch. bpv7's cascade
-    // retains, rather than fails on, a removal it cannot complete for want of
-    // a key; the bytes were validated at ingress, so any failure here is a
-    // BPA bug or storage corruption, and fatal.
-    fn strip_removed_blocks(&self, bundle: &mut bundle::Bundle, data: Bytes) -> Bytes {
-        use hardy_bpv7::bpsec::edit::BPSecEditor;
-
-        if bundle.metadata.to_remove.is_empty() {
-            return data;
-        }
-        let hardy_bpv7::parse::Parsed {
-            data, bundle: raw, ..
-        } = hardy_bpv7::parse::parse(data).trace_expect("The stored bundle's bytes do not decode");
-        let key_source = self.key_source(&raw, &data);
-        let to_remove: HashSet<u64> = bundle.metadata.to_remove.iter().copied().collect();
-        let (editor, _) = hardy_bpv7::editor::Editor::new(&raw, &data)
-            .with_key_source(key_source.as_ref())
-            .remove_blocks(&to_remove)
-            .map_err(|(_, e)| e)
-            .trace_expect("The scheduled block removals failed");
-        let (stripped, chunks) = editor
-            .rebuild_bundle()
-            .trace_expect("The scheduled block removals failed to rebuild the bundle");
-        bundle.bpv7.blocks = stripped.blocks;
-        hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data)
+// The ingress rewrite of an admitted arrival's resident headers, before its
+// first persistence: each per-hop block whose security operations the header
+// pass accepted is written in plaintext without them, and the scheduled block
+// removals (RFC 9172 §5.1.1 failure-drops and honoured
+// `delete_block_on_failure` unknowns) leave, so the stored bundle carries
+// none of either. Returns the bundle the editor rebuilds and the rebuild's
+// chunks, which `RebuiltHeaders` splices into the drain, or `None` when there
+// is nothing to rewrite.
+//
+// Acceptance comes first, from the arrival's plaintext cache, while the
+// cache still matches the received bytes. The removal cascade
+// decrypts and checks the encrypted BIBs it passes through with `keys`, and
+// never encrypts one again. Where a removal would shrink an encrypted BIB
+// that also covers a block that stays, a block the RFCs require gone, one
+// whose ciphertext did not authenticate (RFC 9172 §5.1.1) or one flagged to
+// be discarded (RFC 9171 §5.6 Step 4), goes with that BIB, whole, as §5.1.1
+// discards a target with every security block associated with it, the
+// BIB's other targets keeping their ciphertext without its operations; any
+// other stays as received. A removal the cascade refuses otherwise, since
+// it would orphan a block an unreadable BIB may list, also leaves that
+// block as received. Each is logged, and the rest go. A BIB it
+// decrypts and finds invalid is the bundle's fault, an `Err`; anything else
+// it refuses, the header pass that scheduled the removals has checked, so
+// it is a BPA bug, and fatal.
+fn rewrite_received_headers(
+    parsed: &Parsed,
+    accepted: &HashMap<u64, SecurityServices>,
+    to_remove: HashSet<u64>,
+    keys: &dyn KeySource,
+) -> Result<Option<(Bpv7Bundle, Vec<Chunk>)>, Bpv7Error> {
+    if accepted.is_empty() && to_remove.is_empty() {
+        return Ok(None);
     }
+    let editor = edit_received(
+        Editor::new(&parsed.bundle, &parsed.data),
+        parsed,
+        accepted,
+        to_remove,
+        keys,
+    )?;
+    Ok(Some(editor.rebuild_bundle().trace_expect(
+        "The ingress rewrite failed to rebuild the bundle",
+    )))
+}
+
+// The ingress rewrite of an arrival whose payload this node accepts (RFC
+// 9172 §1.4): as `rewrite_received_headers`, with the payload's own
+// operations accepted too, its BCB's for a plaintext of `plaintext_len`
+// bytes that the drain's decrypt stage hands on as the payload streams, and
+// its BIB's. Returns the rebuilt bundle, the header chunks through the
+// payload block's header, and the trailer that frames the payload's data
+// and ends the bundle.
+fn rewrite_received_bundle(
+    parsed: &Parsed,
+    accepted: &HashMap<u64, SecurityServices>,
+    to_remove: HashSet<u64>,
+    keys: &dyn KeySource,
+    plaintext_len: u64,
+) -> Result<(Bpv7Bundle, Vec<Chunk>, builder::PayloadTrailer), Bpv7Error> {
+    let editor = Editor::new(&parsed.bundle, &parsed.data).with_streamed_payload(plaintext_len);
+    let editor = edit_received(editor, parsed, accepted, to_remove, keys)?;
+    Ok(editor
+        .rebuild_streamed()
+        .trace_expect("The ingress rewrite failed to rebuild the bundle"))
+}
+
+// The edits both ingress rewrites make: the accepted operations removed,
+// then the scheduled removals applied.
+fn edit_received<'a>(
+    editor: Editor<'a>,
+    parsed: &'a Parsed,
+    accepted: &HashMap<u64, SecurityServices>,
+    to_remove: HashSet<u64>,
+    keys: &'a dyn KeySource,
+) -> Result<Editor<'a>, Bpv7Error> {
+    let bundle = &parsed.bundle;
+    // The editor reads the arrival's keys and the plaintext its header pass
+    // and gate decrypted, so nothing is decrypted twice.
+    let mut editor = editor
+        .with_key_source(keys)
+        .with_decrypted(&parsed.decrypted);
+    // The primary block is emitted as received: an accepted BIB on it goes,
+    // and nothing in the primary changes (RFC 9171 §4.3.1).
+    for (&number, &services) in accepted {
+        let block = bundle
+            .blocks
+            .get(&number)
+            .expect("an accepted block is in the bundle");
+        editor = accept_operations(editor, number, block, services);
+    }
+    // RFC 9172 §5.1.1 discards a target whose ciphertext did not
+    // authenticate with every security block associated with it, RFC 9171
+    // §5.6 Step 4 removes a block flagged to be discarded, and a per-hop
+    // block the fate discards is one this node replaces (RFC 9171 §5.4) or,
+    // as its acceptor, found failed: those removals go first, each taking
+    // with it, whole, an encrypted BIB it would shrink. The rest follow, and
+    // one that would still shrink an encrypted BIB stays as received.
+    let (forced, rest): (HashSet<u64>, HashSet<u64>) = to_remove.into_iter().partition(|n| {
+        parsed.decrypted.failed.contains(n)
+            || bundle.blocks.get(n).is_some_and(|b| {
+                // Compared by encoding, so an alias of a type counts.
+                b.flags.delete_block_on_failure
+                    || b.block_type == block::Type::PreviousNode
+                    || b.block_type == block::Type::BundleAge
+                    || b.block_type == block::Type::HopCount
+            })
+    });
+    let editor = remove_scheduled(editor, forced, true)?;
+    remove_scheduled(editor, rest, false)
+}
+
+// The scheduled removals of `to_remove`, the cascade's refusals handled: a
+// block whose removal would shrink an encrypted BIB takes that BIB with it,
+// whole, where `forced`, and otherwise stays as received, as does one an
+// encrypted BIB this node cannot read may cover; each is logged.
+fn remove_scheduled<'a>(
+    mut editor: Editor<'a>,
+    mut to_remove: HashSet<u64>,
+    forced: bool,
+) -> Result<Editor<'a>, Bpv7Error> {
+    while !to_remove.is_empty() {
+        match editor.remove_blocks(&to_remove) {
+            Ok((removed, _)) => return Ok(removed),
+            Err((refused, editor::Error::ShrinksEncryptedBib { block, bib }))
+                if forced && to_remove.insert(bib) =>
+            {
+                editor = refused;
+                info!(
+                    "Block {block} is removed with encrypted BIB {bib}, which also covers a block that stays"
+                );
+            }
+            Err((refused, error)) => {
+                editor = refused;
+                match refused_removal(&error).filter(|n| to_remove.remove(n)) {
+                    Some(block) => info!("Block {block} stays as received: {error}"),
+                    None => match error {
+                        editor::Error::Bpsec(e) => return Err(e.into()),
+                        editor::Error::Builder(builder::Error::InternalError(e)) => return Err(e),
+                        error => Err(error).trace_expect("The scheduled block removals failed"),
+                    },
+                }
+            }
+        }
+    }
+    Ok(editor)
+}
+
+// The scheduled removal the cascade refused, which stays: one that would
+// shrink an encrypted BIB, or one an encrypted BIB this node cannot read
+// may cover.
+fn refused_removal(error: &editor::Error) -> Option<u64> {
+    match error {
+        editor::Error::ShrinksEncryptedBib { block, .. } | editor::Error::MaybeHasBib(block) => {
+            Some(*block)
+        }
+        _ => None,
+    }
+}
+
+// The security operations on `block` accepted at ingress, `services`,
+// removed from it: its BCB operation, by writing the plaintext the
+// editor's cache holds, then its BIB operation; one not accepted stays.
+// Removing the BCB operation takes with it, all or
+// none, those on the encrypted BIB over the block and on that BIB's other
+// targets (RFC 9172 §3.9), each a block this node accepts too, whose
+// plaintext the cache holds; one an earlier acceptance already removed so
+// is left as it is. Every refusal is of an operation the header pass or the
+// gate has checked, so it is a BPA bug, and fatal.
+fn accept_operations<'a>(
+    mut editor: Editor<'a>,
+    number: u64,
+    block: &block::Block,
+    services: SecurityServices,
+) -> Editor<'a> {
+    if services.confidentiality && block.bcb.is_some() {
+        editor = match editor.remove_encryption(number) {
+            Ok(editor) => editor,
+            Err((editor, e)) if taken_already(&e) => editor,
+            Err((_, e)) => Err(e).trace_expect("The acceptance of a block's BCB failed"),
+        };
+    }
+    if services.integrity && matches!(block.bib, block::BibCoverage::Some(_)) {
+        editor = match editor.remove_integrity(number) {
+            Ok(editor) => editor,
+            Err((editor, e)) if taken_already(&e) => editor,
+            Err((_, e)) => Err(e).trace_expect("The acceptance of a block's BIB failed"),
+        };
+    }
+    editor
+}
+
+// Whether `error` says the operation was already gone: an earlier acceptance
+// took this block's BCB operation with its own, or removed the encrypted BIB
+// it named once that BIB emptied.
+fn taken_already(error: &editor::Error) -> bool {
+    matches!(
+        error,
+        editor::Error::NoSuchBlock(_) | editor::Error::NotEncrypted | editor::Error::NotSigned
+    )
 }
 
 // Fixtures shared by the dispatcher's submodule tests.
@@ -524,7 +691,6 @@ pub mod tests {
                 processing_pool_size: NonZeroUsize::new(4).unwrap(),
                 max_bundle_size: None,
                 primary_block_integrity: false,
-                bundle_age_required: false,
                 ipn_legacy_peers: Vec::new(),
             },
             node_ids,

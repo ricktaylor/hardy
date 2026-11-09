@@ -411,8 +411,7 @@ mod tests {
     /// Structural parse into the `hardy_bpv7::bundle::Bundle` the BPA wrapper
     /// expects. Used by tests that build bundles via `Editor::flatten` and need
     /// to feed them back through the BPA's `Bundle { bundle, metadata }`
-    /// container; the keyed validate pipeline (`parse_validate_with_provider`)
-    /// would just do this same parse after redundant BPSec validation.
+    /// container.
     fn bundle_from_bytes(data: &[u8]) -> hardy_bpv7::bundle::Bundle {
         let hardy_bpv7::parse::Parsed { bundle, .. } =
             hardy_bpv7::parse::parse(Bytes::copy_from_slice(data)).unwrap();

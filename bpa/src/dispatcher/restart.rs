@@ -1,3 +1,5 @@
+use hardy_bpv7::parse::parse;
+
 use super::{ingress::Received, *};
 
 impl Dispatcher {
@@ -14,17 +16,16 @@ impl Dispatcher {
             return;
         };
 
-        // Validate the stored bundle data is not corrupt. We use the
-        // Preserve-mode parse (rather than the full ingress pipeline) because the
-        // bundle was already fully processed at ingress — restart should verify
-        // integrity and resume, not re-apply block removal or canonicalization.
-        // Soft NoKey: re-checking already-accepted data, so a key that has since
-        // rotated away mustn't drop the bundle — the `nokey_ext` facts are ignored.
-        let bundle = match crate::bundle::parse::parse_validate_with_provider(
-            data.clone(),
-            self.key_provider(),
-        ) {
-            Ok(bundle) => bundle,
+        // Re-check the stored bytes with the structural parse alone — CRCs and
+        // the per-hop blocks included, as egress parses them — and no keys:
+        // acceptance precedes first persistence, so the security operations
+        // this node processes at ingress were processed before the bundle was
+        // first stored. Restart has none to repeat, and a key that has since
+        // rotated away cannot cost a stored bundle. The bundle was fully
+        // processed at ingress, so restart resumes it rather than re-running
+        // the pipeline.
+        let bundle = match parse(data.clone()) {
+            Ok(parsed) => parsed.bundle,
             Err(e) => {
                 // Can't extract a bundle ID, so we can't check or clean up
                 // metadata here. Any orphaned metadata referencing this
@@ -144,7 +145,17 @@ mod tests {
         eid::{Eid, IpnNodeId, NodeId},
     };
 
+    #[cfg(feature = "rfc9173")]
+    use hardy_bpv7::bpsec::{
+        key::{Key, KeyAlgorithm, KeySet, KeySource, Operation, Type},
+        signer::{self, Signer},
+    };
+    #[cfg(feature = "rfc9173")]
+    use rand::{TryRng, rngs::SysRng};
+
     use super::*;
+    #[cfg(feature = "rfc9173")]
+    use crate::keys::KeyProvider;
     use crate::{
         bpa::{Bpa, BpaRegistration},
         cla::ClaInit,
@@ -287,6 +298,119 @@ mod tests {
         }
     }
 
+    // Hands every bundle the same keys.
+    #[cfg(feature = "rfc9173")]
+    struct FixedKeys(Vec<Key>);
+
+    #[cfg(feature = "rfc9173")]
+    impl KeyProvider for FixedKeys {
+        fn key_source(&self, _: &hardy_bpv7::Bundle, _: &[u8]) -> Box<dyn KeySource> {
+            Box::new(KeySet::new(self.0.clone()))
+        }
+    }
+
+    // Immaterial key bytes: generated per the no-literal-keys rule.
+    #[cfg(feature = "rfc9173")]
+    fn random_key() -> Vec<u8> {
+        let mut k = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut k).unwrap();
+        k
+    }
+
+    #[cfg(feature = "rfc9173")]
+    fn hmac_key(k: Vec<u8>) -> Key {
+        Key {
+            key_type: Type::octet_sequence(k),
+            key_algorithm: Some(KeyAlgorithm::HS256),
+            enc_algorithm: None,
+            operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
+            id: None,
+            key_use: None,
+        }
+    }
+
+    // Restart re-checks a stored bundle without keys: acceptance preceded
+    // its first persistence. A bundle whose payload was signed under a key
+    // the node has since rotated away, so that the key it now holds would
+    // fail the signature, is kept and resumed, not deleted as corrupt.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_keeps_a_bundle_its_current_keys_would_fail() {
+        let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
+        let data_store = Arc::new(BundleMemStorage::new(None, None));
+
+        let (signing, rotated) = (random_key(), random_key());
+        assert_ne!(signing, rotated, "the rotated key differs");
+        let (signing_key, rotated_key) = (hmac_key(signing), hmac_key(rotated));
+        let (built, data) = hardy_bpv7::builder::Builder::new(
+            "ipn:0.3.1".parse().unwrap(),
+            "ipn:0.2.99".parse().unwrap(),
+        )
+        .with_payload(b"signed before the rotation".to_vec().into())
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+        let data = Bytes::from(
+            Signer::new(&built, &data)
+                .sign_block(
+                    1,
+                    signer::Context::HMAC_SHA2(Default::default()),
+                    "ipn:0.3.1".parse().unwrap(),
+                    &signing_key,
+                )
+                .map_err(|(_, e)| e)
+                .expect("sign the payload")
+                .rebuild()
+                .expect("rebuild the signed bundle"),
+        );
+        let storage_name = data_store.save(data.clone()).await.unwrap();
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.storage_name = Some(storage_name.clone());
+        let bundle = bundle::Bundle {
+            bpv7: parse(data.clone()).unwrap().bundle,
+            metadata,
+            status: bundle::BundleStatus::Waiting,
+        };
+        let id = bundle.id().clone();
+        assert!(metadata_store.insert(&bundle).await.unwrap());
+
+        let node_ids = crate::node_ids::NodeIds::try_from(
+            [NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            })]
+            .as_slice(),
+        )
+        .unwrap();
+        let bpa = Bpa::builder()
+            .node_ids(node_ids)
+            .key_provider(Arc::new(FixedKeys(vec![rotated_key])))
+            .metadata_storage(metadata_store.clone())
+            .bundle_storage(data_store.clone())
+            .build()
+            .await
+            .unwrap();
+        // start(true) awaits recovery to completion: data restart had found
+        // corrupt would be deleted by now.
+        bpa.start(true).await;
+
+        assert_eq!(
+            data_store.load(&storage_name).await.unwrap(),
+            Some(data),
+            "the stored bytes survive recovery"
+        );
+        assert_eq!(
+            metadata_store
+                .get(&id)
+                .await
+                .unwrap()
+                .expect("the record survives recovery")
+                .status,
+            bundle::BundleStatus::Waiting
+        );
+
+        bpa.shutdown().await;
+    }
+
     // A transfer that is still ForwardAckPending when the BPA comes back up
     // (an unclean stop: a clean shutdown's unregistration sweep resolves it
     // first) is outcome-unknown: recovery resets it to Waiting, and it is
@@ -307,11 +431,7 @@ mod tests {
         .unwrap();
         let data = Bytes::from(data);
         let storage_name = data_store.save(data.clone()).await.unwrap();
-        let parsed = crate::bundle::parse::parse_validate_with_provider(
-            data.clone(),
-            hardy_bpv7::bpsec::no_keys,
-        )
-        .unwrap();
+        let parsed = parse(data.clone()).unwrap().bundle;
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -408,11 +528,7 @@ mod tests {
         .unwrap();
         let data = Bytes::from(data);
         let storage_name = data_store.save(data.clone()).await.unwrap();
-        let parsed = crate::bundle::parse::parse_validate_with_provider(
-            data.clone(),
-            hardy_bpv7::bpsec::no_keys,
-        )
-        .unwrap();
+        let parsed = parse(data.clone()).unwrap().bundle;
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -556,11 +672,7 @@ mod tests {
             .unwrap();
             let data = Bytes::from(data);
             let storage_name = data_store.save(data.clone()).await.unwrap();
-            let parsed = crate::bundle::parse::parse_validate_with_provider(
-                data.clone(),
-                hardy_bpv7::bpsec::no_keys,
-            )
-            .unwrap();
+            let parsed = parse(data.clone()).unwrap().bundle;
             let mut metadata = bundle::BundleMetadata::originated();
             metadata.storage_name = Some(storage_name);
             let bundle = bundle::Bundle {

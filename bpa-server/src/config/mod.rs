@@ -126,17 +126,14 @@ impl From<WatchConfig> for Option<WatchMode> {
     }
 }
 
-// The RFC9171 validity checks: absent keys defer to the BPA's own
-// defaults (all checks enabled).
+// The RFC 9171 validity check: an absent key defers to the BPA's own
+// default (enabled).
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct Rfc9171ValidityConfig {
     // Require CRC or BIB on the primary block; disable for
     // interoperability with implementations that don't add a CRC.
     pub primary_block_integrity: Option<bool>,
-
-    // Require a Bundle Age block when the creation time has no clock.
-    pub bundle_age_required: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -356,7 +353,7 @@ admin-endpoints:
         assert_eq!(config.poll_channel_depth.map(|v| v.get()), Some(32));
     }
 
-    // The per-hop re-encode's peer patterns and the RFC 9171 check switches
+    // The per-hop re-encode's peer patterns and the RFC 9171 check switch
     // reach the config typed.
     #[test]
     #[serial]
@@ -371,7 +368,6 @@ ipn-legacy-nodes:
   - "ipn:[100-199].*"
 rfc9171-validity:
   primary-block-integrity: false
-  bundle-age-required: true
 "#,
         );
         assert_eq!(
@@ -382,7 +378,6 @@ rfc9171-validity:
             ]
         );
         assert_eq!(config.rfc9171_validity.primary_block_integrity, Some(false));
-        assert_eq!(config.rfc9171_validity.bundle_age_required, Some(true));
     }
 
     // TOML config file works identically to YAML.

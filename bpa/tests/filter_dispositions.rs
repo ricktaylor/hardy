@@ -48,6 +48,7 @@ use hardy_bpv7::{
     bundle::{Flags as BundleFlags, Id},
     crc::CrcType,
     creation_timestamp::CreationTimestamp,
+    dtn_time::DtnTime,
     eid::{Eid, IpnNodeId, NodeId, Service},
     extension_editor::Error as EditorError,
     hop_info::HopInfo,
@@ -56,6 +57,8 @@ use hardy_bpv7::{
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
 use hardy_cbor::encode::emit;
+// Aliased: `time`'s duration, beside the `core` one imported above.
+use time::{Duration as TimeDuration, OffsetDateTime};
 
 // The block type the inserting Rewriter adds.
 const INSERTED: Type = Type::Unrecognised(200);
@@ -311,7 +314,7 @@ impl services::Application for SendingApp {
     async fn on_deliver(
         &self,
         _bundle_id: &Id,
-        _expiry: time::OffsetDateTime,
+        _expiry: OffsetDateTime,
         _ack_requested: bool,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -326,7 +329,7 @@ impl services::Application for SendingApp {
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
-        _timestamp: Option<time::OffsetDateTime>,
+        _timestamp: Option<OffsetDateTime>,
     ) {
     }
 }
@@ -381,7 +384,7 @@ impl services::Service for CapturingService {
     async fn on_deliver(
         &self,
         _bundle_id: &Id,
-        _expiry: time::OffsetDateTime,
+        _expiry: OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
@@ -396,7 +399,7 @@ impl services::Service for CapturingService {
         _from: &Eid,
         _kind: services::StatusNotify,
         _reason: ReasonCode,
-        _timestamp: Option<time::OffsetDateTime>,
+        _timestamp: Option<OffsetDateTime>,
     ) {
     }
 }
@@ -703,9 +706,9 @@ impl Rewriter for PerHopRemover {
 }
 
 /// The per-hop writes follow the Egress Rewriters and supersede their edits
-/// to the blocks they write: a Rewriter removes a clockless bundle's Bundle
-/// Age and its Hop Count, and the transmitted bundle carries both again, as
-/// this hop writes them.
+/// to the blocks they write: a Rewriter removes a bundle's Bundle Age and
+/// its Hop Count, and the transmitted bundle carries both again, as this
+/// hop writes them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn per_hop_writes_supersede_an_egress_rewriter() {
     let removed = Arc::new(Mutex::new(Vec::new()));
@@ -718,8 +721,10 @@ async fn per_hop_writes_supersede_an_egress_rewriter() {
     );
     let (bpa, cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
 
-    // No creation clock: the Bundle Age block is the bundle's only expiry
-    // signal, and every forwarder must increase it.
+    // A clocked bundle, created ten seconds ago, that arrived with a Bundle
+    // Age block: a Rewriter may remove it (one without a creation time must
+    // keep it, RFC 9171 §4.4.2), and this hop writes it again from the clock.
+    let created = DtnTime::saturating_from(OffsetDateTime::now_utc() - TimeDuration::seconds(10));
     let (_, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
         .with_hop_count(&HopInfo {
             limit: NonZeroU8::new(64).unwrap(),
@@ -729,7 +734,7 @@ async fn per_hop_writes_supersede_an_egress_rewriter() {
         .unwrap()
         .build(emit(&1000u64).0.into())
         .with_payload(b"payload".as_slice().into())
-        .build(CreationTimestamp::from_parts(None, 1))
+        .build(CreationTimestamp::from_parts(Some(created), 1))
         .unwrap();
     let mut inbound = Bytes::from(data);
     assert_eq!(

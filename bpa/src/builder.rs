@@ -47,7 +47,6 @@ pub struct BpaBuilder {
     rib_builder: RibBuilder,
     filter_packs: Vec<FilterPack>,
     primary_block_integrity: bool,
-    bundle_age_required: bool,
     ipn_legacy_peers: Vec<EidPattern>,
 }
 
@@ -75,7 +74,6 @@ impl BpaBuilder {
             rib_builder: RibBuilder::new(),
             filter_packs: Vec::new(),
             primary_block_integrity: true,
-            bundle_age_required: true,
             ipn_legacy_peers: Vec::new(),
         }
     }
@@ -157,7 +155,7 @@ impl BpaBuilder {
     /// Register a CLA to be initialized when the BPA is built.
     ///
     /// `init` carries the CLA's set-once declarations
-    /// ([`ClaInit`](crate::cla::ClaInit)), snapshotted at registration;
+    /// ([`ClaInit`]), snapshotted at registration;
     /// its `max_bundle_size` is the CLA's declared receive limit, folded
     /// with the BPA's configured cap into the effective value delivered to
     /// [`Cla::on_register`](crate::cla::Cla).
@@ -207,14 +205,6 @@ impl BpaBuilder {
     /// neither.
     pub fn primary_block_integrity(mut self, enabled: bool) -> Self {
         self.primary_block_integrity = enabled;
-        self
-    }
-
-    /// Sets whether the pre-drain gate requires a clockless bundle to carry
-    /// a Bundle Age block. RFC 9171 §4.4.2; strict by default. Disable for
-    /// compatibility with the RFC 9173 Appendix A test vectors.
-    pub fn bundle_age_required(mut self, enabled: bool) -> Self {
-        self.bundle_age_required = enabled;
         self
     }
 
@@ -282,7 +272,6 @@ impl BpaBuilder {
                 processing_pool_size: self.processing_pool_size,
                 max_bundle_size: self.max_bundle_size,
                 primary_block_integrity: self.primary_block_integrity,
-                bundle_age_required: self.bundle_age_required,
                 ipn_legacy_peers: self.ipn_legacy_peers,
             },
             node_ids.clone(),

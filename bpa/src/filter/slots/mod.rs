@@ -32,7 +32,7 @@ use core::{
     marker::PhantomData,
 };
 
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{bpsec::Roles, eid::Eid};
 // `encode::Bytes` is aliased: in this crate a bare `Bytes` reads as the
 // ubiquitous `bytes::Bytes` buffer, not a CBOR byte-string wrapper.
 use hardy_cbor::{
@@ -41,7 +41,7 @@ use hardy_cbor::{
 };
 
 use self::state::SlotWrite;
-use crate::routing::TableId;
+use crate::{HashMap, routing::TableId};
 
 pub(crate) mod state;
 
@@ -169,6 +169,74 @@ pub struct MetadataDelta {
     /// bundle that must forward (`docs/routing_table_redesign.md`, "Key
     /// selection").
     pub route_key: Option<Eid>,
+    /// Whether egress writes a Bundle Age block, from the clock, on a bundle
+    /// with a creation time that carries none, for downstream nodes without a
+    /// clock (RFC 9171 §5.5). Same write semantics as `route_table`; unset
+    /// adds none. Ingress sets it, ahead of the chain, on a bundle whose
+    /// Bundle Age it discards, which `Some(false)` clears. A Bundle Age the
+    /// bundle carries is updated regardless (§5.4).
+    pub add_bundle_age: Option<bool>,
+    /// This node's security roles on the blocks, by block number: on each
+    /// block's BCB operation (confidentiality) and BIB operation
+    /// (integrity), whether this node is the operation's verifier or its
+    /// acceptor (RFC 9172 §1.4), as a matter of its policy.
+    ///
+    /// As the acceptor of an operation (RFC 9172 §5.1.1, §5.1.2) the gate
+    /// decrypts a block accepted for confidentiality and verifies one
+    /// accepted for integrity, and the bundle is stored without the
+    /// accepted operations; the BIB over a block accepted for
+    /// confidentiality alone stays, in plaintext, checked where this node
+    /// holds its key. Accepting a block's BCB operation takes with it the
+    /// BCB operations on an encrypted BIB that covers the block and on that
+    /// BIB's other targets, all or none (§3.9), so each of those targets
+    /// must be announced for confidentiality too; and a block encrypted
+    /// here cannot be accepted for integrity alone, since its BIB is
+    /// encrypted with it. A block this node cannot accept, for want of a
+    /// key, for a failed operation, for a target the walk reaches that is
+    /// not announced, or for a service announced that the block does not
+    /// carry, which the announcement expected ("Missing security
+    /// operation", the target discarded as §5.1.1 and §5.1.2 recommend of
+    /// one the policy expected protected), its flags decide, as for a block
+    /// it cannot process (RFC 9171 §5.6 Step 4): the bundle is deleted, or
+    /// the block discarded with its operations; the primary block, which
+    /// the bundle cannot lose, deletes it. A BIB on the primary block is
+    /// verified and removed, the primary left as received (RFC 9171
+    /// §4.3.1). An announced payload is
+    /// accepted as it streams, as a node that is not the destination
+    /// processes a BCB where its security policy directs it (§5.1.1).
+    ///
+    /// As the verifier of an operation, a role a node that is not its
+    /// acceptor "MAY attempt" (RFC 9172 §5.1.2) and one announced here is
+    /// expected to fill, integrity is verified by the BIB operation this
+    /// arrival checked and found good, the header pass's for a resident
+    /// block, the drain's for a payload still streaming, and
+    /// confidentiality by authenticating the block's ciphertext, decrypting
+    /// it under the key this node holds, the plaintext going nowhere. A
+    /// verification that passes changes nothing: the block travels as
+    /// received, its operations on to their acceptor. One this node could
+    /// not make, for want of a key, for an operation in a security context
+    /// it does not support, or, for integrity, because the block is
+    /// encrypted here, so that its BIB is encrypted with it (RFC 9172 §3.9)
+    /// and unreadable without accepting it, is a block it cannot process
+    /// (RFC 9171 §5.6 Step 4), whose flags decide as above, with the report
+    /// "Block unsupported" or "Unknown security operation"; ciphertext that
+    /// does not authenticate is a failed operation, "Failed security
+    /// operation" (RFC 9172 §5.1.1); and a block that carries no operation
+    /// of the service announced is discarded, as RFC 9172 §5.1.1 and §5.1.2
+    /// recommend, or deletes the bundle where its flags say so, with the
+    /// report "Missing security operation".
+    ///
+    /// A fragment's payload is passed over, its operations accepted or
+    /// verified after reassembly, when the whole bundle crosses this gate;
+    /// so is anything at the Originate hook, since a source accepts
+    /// nothing. Announcements accumulate across the Ingress chain, one
+    /// Classifier unable to withdraw another's, the acceptor's role
+    /// outranking the verifier's on one operation, and serve the arrival
+    /// only: they are never persisted. None reaches the per-hop blocks,
+    /// whose operations the header pass accepts before the chain runs (RFC
+    /// 9171 §5.4), nor the destination's acceptance of every operation
+    /// (RFC 9172 §1.4), which outranks any verification announced.
+    pub roles: HashMap<u64, Roles>,
 }
 
 impl MetadataDelta {
