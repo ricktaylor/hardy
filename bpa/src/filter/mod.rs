@@ -276,24 +276,30 @@ impl Debug for ClassifyContext<'_> {
 /// and the scoped [`ExtensionEditor`] its edits go through.
 ///
 /// Built by the engine for each Rewriter, over the wire form as the
-/// preceding link left it. The read getters return the lent views
-/// themselves, not borrows of the context, so a Rewriter can hold a block
-/// it read while it edits; see [reading the bundle](self#reading-the-bundle).
-pub struct RewriteContext<'a> {
-    bundle: &'a Bundle,
-    reader: &'a dyn Reader<'a>,
-    metadata: &'a BundleMetadata,
-    boundary: Boundary<'a>,
-    editor: ExtensionEditor<'a>,
+/// preceding link left it; its editor is a handle on an editor the engine
+/// owns and rebuilds once the handle is gone. The read getters return the
+/// lent views themselves, not borrows of the context, so a Rewriter can
+/// hold a block it read while it edits; see
+/// [reading the bundle](self#reading-the-bundle).
+///
+/// `'e` is the invocation's lending lifetime and `'a` the lifetime of the
+/// bundle data the engine's editor borrows; a Rewriter names neither
+/// (`RewriteContext<'_, '_>`).
+pub struct RewriteContext<'e, 'a> {
+    bundle: &'e Bundle,
+    reader: &'e dyn Reader<'e>,
+    metadata: &'e BundleMetadata,
+    boundary: Boundary<'e>,
+    editor: ExtensionEditor<'e, 'a>,
 }
 
-impl<'a> RewriteContext<'a> {
+impl<'e, 'a> RewriteContext<'e, 'a> {
     pub(crate) fn new(
-        bundle: &'a Bundle,
-        reader: &'a dyn Reader<'a>,
-        metadata: &'a BundleMetadata,
-        boundary: Boundary<'a>,
-        editor: ExtensionEditor<'a>,
+        bundle: &'e Bundle,
+        reader: &'e dyn Reader<'e>,
+        metadata: &'e BundleMetadata,
+        boundary: Boundary<'e>,
+        editor: ExtensionEditor<'e, 'a>,
     ) -> Self {
         Self {
             bundle,
@@ -311,14 +317,14 @@ impl<'a> RewriteContext<'a> {
     /// [`Bundle`](crate::bundle::Bundle) record. Edits made through
     /// [`editor`](Self::editor) do not show here; the next link sees them.
     #[must_use]
-    pub fn bundle(&self) -> &'a Bundle {
+    pub fn bundle(&self) -> &'e Bundle {
         self.bundle
     }
 
     /// The reader over the block bodies as this invocation received them:
     /// plaintext, or BCB-decrypted with the node's keys.
     #[must_use]
-    pub fn reader(&self) -> &'a dyn Reader<'a> {
+    pub fn reader(&self) -> &'e dyn Reader<'e> {
         self.reader
     }
 
@@ -330,30 +336,30 @@ impl<'a> RewriteContext<'a> {
     /// Rewriters run before the BPA writes this hop's Previous Node, Hop
     /// Count and Bundle Age, so both show those blocks as received.
     #[must_use]
-    pub fn metadata(&self) -> &'a BundleMetadata {
+    pub fn metadata(&self) -> &'e BundleMetadata {
         self.metadata
     }
 
     /// The boundary this invocation runs at, with any boundary-specific
     /// context.
     #[must_use]
-    pub fn boundary(&self) -> Boundary<'a> {
+    pub fn boundary(&self) -> Boundary<'e> {
         self.boundary
     }
 
     /// The scoped editor: insert, replace and remove extension blocks only.
     #[must_use]
-    pub fn editor(&mut self) -> &mut ExtensionEditor<'a> {
+    pub fn editor(&mut self) -> &mut ExtensionEditor<'e, 'a> {
         &mut self.editor
     }
 
-    // Hands the editor back to the engine, which materialises its edits.
-    pub(crate) fn into_editor(self) -> ExtensionEditor<'a> {
-        self.editor
+    // Whether the invocation edited, so the engine rebuilds its editor.
+    pub(crate) fn is_modified(&self) -> bool {
+        self.editor.is_modified()
     }
 }
 
-impl Debug for RewriteContext<'_> {
+impl Debug for RewriteContext<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RewriteContext")
             .field("bundle", &self.bundle.primary.id)
@@ -415,8 +421,8 @@ pub trait Classifier: Send + Sync {
 ///
 /// Its edits are confined to *extension* blocks — never the payload — and
 /// the reader decrypts any block it needs to inspect. Each Rewriter sees
-/// its predecessors' edits: the engine materialises every invocation's
-/// edits into the wire form before the next invocation reads it.
+/// its predecessors' edits: the engine rebuilds the editor an invocation's
+/// handle edited into the wire form before the next invocation reads it.
 ///
 /// At Egress the Rewriters run before the BPA's per-hop writes (RFC 9171
 /// §5.4), which supersede their edits to the blocks those writes cover: the
@@ -442,7 +448,7 @@ pub trait Rewriter: Send + Sync {
     /// [`boundary`](RewriteContext::boundary) says where it runs (and, at
     /// Egress, the resolved next hop). The engine materialises the
     /// accepted edits when it returns.
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>);
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>);
 }
 
 // Forwarding impls: a filter built from configuration is held as a boxed
@@ -472,13 +478,13 @@ impl<T: Classifier + ?Sized> Classifier for Arc<T> {
 }
 
 impl<T: Rewriter + ?Sized> Rewriter for Box<T> {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         (**self).rewrite(ctx)
     }
 }
 
 impl<T: Rewriter + ?Sized> Rewriter for Arc<T> {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         (**self).rewrite(ctx)
     }
 }

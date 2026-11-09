@@ -95,7 +95,7 @@ fn report_on_failure() -> BlockFlags {
 }
 
 impl Rewriter for FlaggedInserter {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let outcome = match ctx.editor().insert(
             INSERTED,
             self.flags.clone(),
@@ -292,7 +292,7 @@ struct SlotReader {
 }
 
 impl Rewriter for SlotReader {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let _ = self.seen_tx.send(ctx.metadata().slot(&MARK));
     }
 }
@@ -689,7 +689,7 @@ struct PerHopRemover {
 }
 
 impl Rewriter for PerHopRemover {
-    fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
         let targets: Vec<(u64, Type)> = ctx
             .bundle()
             .blocks

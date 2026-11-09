@@ -485,6 +485,11 @@ impl<'a> Editor<'a> {
         self
     }
 
+    /// The primary block as the staged edits leave it.
+    pub(crate) fn current_primary(&self) -> &primary_block::PrimaryBlock {
+        self.primary.as_ref().unwrap_or(&self.original.primary)
+    }
+
     fn primary_block(&mut self) -> Result<&mut primary_block::PrimaryBlock, Error> {
         // Refuse while a BIB still targets the primary block, judged by the
         // primary's current coverage rather than the BIB's template: an edit

@@ -28,7 +28,7 @@ use hardy_bpv7::{
         Decrypted, DecryptingReader, Roles, bcb,
         key::{KeySet, KeySource},
     },
-    editor::Chunk,
+    editor::{Chunk, Editor},
     eid::Eid,
     extension_editor::ExtensionEditor,
     parse::{Parsed, parse},
@@ -373,27 +373,33 @@ fn rewrite(
     let mut keys = derive_keys(&bcbs, &bundle.bpv7, &buf, key_provider);
 
     for entry in rewriters {
-        // The context, its reader and its editor are rebuilt per link
-        // because the wire view they lend is exactly what an accepted edit
-        // replaces (buf, block map, keys). The editor's edits are
-        // materialised before the context's borrows end. A Rewriter
-        // execution failure aborts: like a storage fault, an edit that was
-        // meant to work and has not leaves every subsequent processing step
-        // undefined — there is no error a caller could react to
-        // appropriately.
+        // The context, its reader and the editor its handle borrows are
+        // rebuilt per link because the wire view they lend is exactly what
+        // an accepted edit replaces (buf, block map, keys). The editor's
+        // edits are materialised before the context's borrows end. A
+        // Rewriter execution failure aborts: like a storage fault, an edit
+        // that was meant to work and has not leaves every subsequent
+        // processing step undefined — there is no error a caller could react
+        // to appropriately.
         let finished = {
             let reader = DecryptingReader::new(&bundle.bpv7.blocks, &buf, &bcbs, &*keys);
-            let mut ctx = RewriteContext::new(
-                &bundle.bpv7,
-                &reader,
-                &bundle.metadata,
-                boundary,
-                ExtensionEditor::new(&bundle.bpv7, &buf),
-            );
-            entry.rewriter.rewrite(&mut ctx);
-            ctx.into_editor()
-                .finish()
-                .unwrap_or_else(|e| rewriter_failed(&entry.label, "failed", e))
+            let mut editor = Editor::new(&bundle.bpv7, &buf);
+            let modified = {
+                let mut ctx = RewriteContext::new(
+                    &bundle.bpv7,
+                    &reader,
+                    &bundle.metadata,
+                    boundary,
+                    ExtensionEditor::new(&mut editor),
+                );
+                entry.rewriter.rewrite(&mut ctx);
+                ctx.is_modified()
+            };
+            modified.then(|| {
+                editor
+                    .rebuild_bundle()
+                    .unwrap_or_else(|e| rewriter_failed(&entry.label, "failed", e))
+            })
         };
         if let Some((new_bundle, chunks)) = finished {
             // Keep the (bundle, data) pair consistent for the next link: the
@@ -801,7 +807,7 @@ mod tests {
     struct BlockInserter;
 
     impl Rewriter for BlockInserter {
-        fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+        fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
             if let Boundary::Egress { next_hop } = ctx.boundary() {
                 assert_eq!(next_hop, &"ipn:2.0".parse::<Eid>().unwrap());
             }
@@ -907,7 +913,7 @@ mod tests {
     struct PayloadAttacker;
 
     impl Rewriter for PayloadAttacker {
-        fn rewrite(&self, ctx: &mut RewriteContext<'_>) {
+        fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
             let editor = ctx.editor();
             assert!(matches!(
                 editor.insert(
@@ -958,7 +964,7 @@ mod tests {
     struct NoopRewriter;
 
     impl Rewriter for NoopRewriter {
-        fn rewrite(&self, _ctx: &mut RewriteContext<'_>) {}
+        fn rewrite(&self, _ctx: &mut RewriteContext<'_, '_>) {}
     }
 
     struct PassVerifier;
