@@ -99,7 +99,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 
 Two findings carry the whole design:
 
-- **Payload and primary-block writes are exclusively fixed, spec-owned machinery** — the parser at ingress, BPSec at egress, decrypt at deliver, framing in the CLA; their ordering is RFC-mandated and none is a plausible external plug point. The one pluggable mutation point is the extension-block rewrite at ClaSend — where the pipeline already edits blocks per hop — and it is pluggable *by scope* (extension blocks only, via the Rewriter's editor handle), not by exception.
+- **Payload and primary-block writes are exclusively fixed, spec-owned machinery** — the parser and the destination's acceptance at ingress, BPSec at egress, framing in the CLA; their ordering is RFC-mandated and none is a plausible external plug point. The one pluggable mutation point is the extension-block rewrite at ClaSend — where the pipeline already edits blocks per hop — and it is pluggable *by scope* (extension blocks only, via the Rewriter's editor handle), not by exception.
 - **Every input-side hook is read + annotate.** Inputs never mutate wire bytes; the mutating hook capability exists only on the output side, where each hop's wire form is derived.
 
 ## The filter kinds
@@ -133,7 +133,7 @@ The Rewriter's execution model is **in-memory, per transmission attempt** — ex
 | **Ingress** | Ingest | pre-drain, pre-store (at the gate) | ✓ | ✓ | — |
 | **Originate** | Originate | pre-spool, pre-store (at the door's gate) | ✓ | ✓ | — |
 | **Egress** | ClaSend | after load, before the per-hop writes and BPSec | — | — | ✓ |
-| **Deliver** | Deliver | before payload decrypt | ✓ | — | ✓ (transport-block strip) |
+| **Deliver** | Deliver | after load, before the hand-off to the service | ✓ | — | ✓ (transport-block strip) |
 
 **Classifier is inputs-only.** Classification annotates metadata that the node's *own downstream* consumes — the traffic class whose properties drive dispatch weighting, egress contracts, and eviction, plus the routing inputs (table and key) and any annotation slots. There is no downstream inside the BPA past an output boundary, so an Egress or Deliver Classifier has nothing to feed.
 
@@ -187,7 +187,7 @@ The IPN legacy re-encode (3-element `ipn` EIDs re-encoded 2-element for peers th
 The fixed byte-owners elsewhere are unchanged:
 
 - **Ingress**: the parser — canonical rejection (a non-canonical encoding is refused, never re-encoded), BPSec verify/decrypt, and the RFC 9172 §5.1.1 removals, which CLA ingress applies to the headers with their BPSec cascade before the bundle is first stored; a bundle the raw service door originates leaves as its service built it.
-- **Deliver**: BCB payload decrypt — normal BPA functionality — and, on the raw-`Service` path, the deferred §5.1.1 removals.
+- **Deliver**: nothing of the payload's. Its operations were the destination's to accept at ingress, and it is handed over as stored.
 - **Re-targeting** (BIBE, tunnelling, overlays): RIB-selected **virtual CLAs**. The carrier gets a new destination, so the next lookup makes forward progress; chaining is the sequence of carrier destinations; loop protection is ordinary hop-count/age.
 
 There is no payload-rewriting egress Transform. The slot such a filter would reserve belongs to BPSec (a fixed seam), and its other tenants are payload operations with better homes: compression and framing are the CLA's, transcoding/redaction are rewriting gateways (components), aggregation is application-layer or BIBE-shaped encapsulation. The Rewriter is not a Transform — it is scoped to extension blocks, extends a stage that already mutates them, and its output remains subject to the fixed BPSec seam behind it.
@@ -233,7 +233,7 @@ The refined criterion:
 | BPSec, per-hop built-ins | same-target | rewrites | fixed egress sequence — never pluggable |
 | Compression, fragmentation, framing | same-target | rewrites payload/wire | CLA link adaptation |
 
-The residual case externalisation cannot reach — post-decrypt plaintext at Deliver, the one place ciphertext becomes plaintext inside the BPA — is the receiving application platform's concern (or a wrapper service owning the endpoint), milliseconds before the app sees the bytes anyway. It does not justify a public trait.
+The residual case externalisation cannot reach — the plaintext a destination stores once ingress accepts a payload's BCB, the one place ciphertext becomes plaintext inside the BPA — lies inside the node's own trust boundary and is the receiving application platform's concern (or a wrapper service owning the endpoint). It does not justify a public trait.
 
 ## Registration: packs, frozen at `build()`
 

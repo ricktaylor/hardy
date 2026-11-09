@@ -436,14 +436,6 @@ impl Dispatcher {
             }
         );
     }
-
-    fn key_source(
-        &self,
-        bundle: &hardy_bpv7::Bundle,
-        data: &[u8],
-    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
-        self.key_provider.key_source(bundle, data)
-    }
 }
 
 // The ingress rewrite of an admitted arrival's resident headers, before its
