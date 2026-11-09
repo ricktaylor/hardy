@@ -3,6 +3,7 @@
 //! the verification of the BIB operations over it.
 
 use hardy_bpv7::{block, bpsec, parse, reader::PlainReader};
+use trace_err::*;
 
 use crate::HashMap;
 
@@ -67,7 +68,7 @@ pub fn begin_payload_decryption(
     keys: &dyn bpsec::key::KeySource,
 ) -> Result<Option<bpsec::bcb::Decryptor>, hardy_bpv7::Error> {
     let blocks = &parsed.bundle.blocks;
-    let payload = blocks.get(&1).expect("the payload block exists");
+    let payload = blocks.get(&1).trace_expect("the payload block exists");
     let Some(bcb) = payload.bcb else {
         return Ok(None);
     };

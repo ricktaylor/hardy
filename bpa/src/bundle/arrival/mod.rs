@@ -28,6 +28,7 @@
 //! bundle so the caller can emit a status report.
 
 use core::{fmt, mem::take};
+use trace_err::*;
 
 use bytes::{Bytes, BytesMut};
 use hardy_bpv7::{
@@ -1102,7 +1103,7 @@ fn decode_decrypted<V: AsRef<[u8]>>(
     for (number, plaintext) in decrypted {
         let block = blocks
             .get(number)
-            .expect("a decrypted block is in the bundle");
+            .trace_expect("a decrypted block is in the bundle");
         per_hop.decode(block.block_type, plaintext.as_ref())?;
     }
     Ok(())

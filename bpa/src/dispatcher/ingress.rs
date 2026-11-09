@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
+use trace_err::*;
 
 use hardy_bpv7::{
     Error as Bpv7Error,
@@ -596,7 +597,7 @@ impl Dispatcher {
         let (bpv7, outcome, tail_rx) = match rewrite {
             Rewritten::Payload(rebuilt, chunks, trailer) => {
                 let stages =
-                    payload_stages.expect("a payload rewrite follows the payload's stages");
+                    payload_stages.trace_expect("a payload rewrite follows the payload's stages");
                 let mut tail_rx = ValidatingReceiver::new(
                     stream,
                     tail,

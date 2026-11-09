@@ -204,9 +204,10 @@ pub struct ValidatingReceiver<'a> {
 // for a bundle complete at its head, whose bytes run on through the
 // payload's CRC and the breaks.
 fn resident_payload<'h>(head: &'h [u8], payload: &Range<u64>) -> &'h [u8] {
-    let start = usize::try_from(payload.start).expect("parse bounds pre-payload offsets to usize");
-    let end =
-        usize::try_from(payload.end.min(head.len() as u64)).expect("bounded by the resident head");
+    let start =
+        usize::try_from(payload.start).trace_expect("parse bounds pre-payload offsets to usize");
+    let end = usize::try_from(payload.end.min(head.len() as u64))
+        .trace_expect("bounded by the resident head");
     &head[start..end]
 }
 
@@ -256,7 +257,7 @@ impl<'a> ValidatingReceiver<'a> {
             let header = rewrite
                 .head
                 .take()
-                .expect("a fresh rewrite holds its header region");
+                .trace_expect("a fresh rewrite holds its header region");
             this.out.push_back(Segment::Next(header));
         }
         this.hand_on(head.slice_ref(resident_payload(&head, &payload)));
@@ -314,7 +315,7 @@ impl<'a> ValidatingReceiver<'a> {
         }
         // The trailer ends the bundle; the rewrite's work is then done, but
         // it stays, marking the decorator as rewriting.
-        let rewrite = self.rewrite.as_mut().expect("only a rewrite ends");
+        let rewrite = self.rewrite.as_mut().trace_expect("only a rewrite ends");
         let trailer = rewrite.trailer.take().trace_expect("a rewrite ends once");
         self.out.push_back(Segment::Final(Bytes::from(
             trailer

@@ -525,7 +525,7 @@ fn edit_received<'a>(
         let block = bundle
             .blocks
             .get(&number)
-            .expect("an accepted block is in the bundle");
+            .trace_expect("an accepted block is in the bundle");
         accept_operations(&mut editor, number, block, services);
     }
     // RFC 9172 §5.1.1 discards a target whose ciphertext did not
