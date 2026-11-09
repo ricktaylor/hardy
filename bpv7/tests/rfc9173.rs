@@ -1,18 +1,23 @@
 use core::time::Duration;
 use hardy_bpv7::{
     Bundle,
-    block::{BibCoverage, Block, Type},
-    bpsec::{self, bcb, bib, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
-    builder::Builder,
-    checks,
+    block::{BibCoverage, Block, Flags, Type},
+    bpsec::{
+        self, Decrypted, SecurityService, bcb, bib, checks::Checked, edit::BPSecEditor, encryptor,
+        key, rfc9173::ScopeFlags, signer,
+    },
+    builder::{self, Builder},
+    crc,
     creation_timestamp::CreationTimestamp,
     editor::{self, Chunk, Editor},
     parse,
+    reader::PlainReader,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use zeroize::Zeroizing;
 
 mod common;
-use self::common::rand_k;
+use self::common::{accept_all, rand_k};
 // Helper function to count blocks of a specific type
 fn count_blocks_of_type(bundle: &Bundle, block_type: Type) -> usize {
     bundle
@@ -37,9 +42,11 @@ fn raw_of(bytes: &[u8]) -> Bundle {
 // bpv7-tools' `cmd::parse_with_keys` / `block_data` / `verify_block`, kept
 // local to this test.
 
-/// Structural parse + keyed BPSec validation (Sections A, B, C7).
-/// Returns the parser-owned `Bytes` plus the bundle and decoded
-/// BPSec OperationSets. NoKey is soft inside Section B / C7.
+/// Structural parse + keyed BPSec validation: §A, the composed keyed
+/// verification, then every BIB verified over the bundle as its destination
+/// reads it (every block's encryption removed with `keys`). Returns the
+/// parser-owned `Bytes` plus the bundle and decoded BPSec OperationSets of
+/// the structural parse. NoKey on a BIB is soft.
 #[allow(clippy::type_complexity)]
 fn validate_with_keys(
     data: &[u8],
@@ -53,47 +60,33 @@ fn validate_with_keys(
     ),
     hardy_bpv7::Error,
 > {
-    let parse::Parsed {
-        data,
-        mut bundle,
-        bcbs: bcb_ops,
-        bibs: mut bib_ops,
-    } = parse::parse(::bytes::Bytes::copy_from_slice(data))?;
+    let mut parsed = parse::parse(::bytes::Bytes::copy_from_slice(data))?;
 
-    // §A — classify (Unsupported errors propagate)
-    checks::classify_unsupported(&bundle.blocks, &bcb_ops, &bib_ops, &[])?;
-
-    // §B — decrypt + validate BCB-covered BIBs (NoKey is soft;
-    // DecryptionFailed is rejected — test helper is not a Verifier)
-    let mut decrypted = HashMap::new();
-    let no_updates = HashMap::new();
-    let failed_bibs = checks::decrypt_and_validate_covered_bibs(
-        &data,
-        keys,
-        &mut bundle.blocks,
-        &bcb_ops,
-        &mut bib_ops,
-        &mut decrypted,
-        &no_updates,
-    )?;
-    if !failed_bibs.is_empty() {
-        return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
+    // §A — classify: a block demanding the bundle's deletion is the error.
+    if let Some(error) = parsed.classification.delete_bundle.take() {
+        return Err(error);
     }
 
-    // §C7 — verify every BIB with the supplied keys (NoKey is soft).
-    // `verify_all_bibs` borrows the op-map, leaving `bib_ops` intact for the
-    // tests that inspect it.
-    let deferred = checks::verify_all_bibs(
-        &data,
-        keys,
-        &bundle.blocks,
-        &bib_ops,
-        &decrypted,
-        &no_updates,
-    )?;
-    assert!(deferred.is_empty(), "a complete buffer defers nothing");
+    // The composed keyed verification; the test helper is not a Verifier,
+    // so a failed decryption or integrity check is rejected.
+    let facts = common::verify_as_receiver(&mut parsed, keys, &HashSet::new())?;
+    let failed = |service| facts.targets_of(service, Checked::Failed).next().is_some();
+    if failed(SecurityService::Confidentiality) {
+        return Err(bpsec::Error::DecryptionFailed.into());
+    }
+    if failed(SecurityService::Integrity) {
+        return Err(bpsec::Error::IntegrityCheckFailed.into());
+    }
 
-    Ok((data, bundle, bcb_ops, bib_ops))
+    // Every BIB, an encrypted one included, verified over the plaintext.
+    let accepted = accept_all(&parsed, keys).map_err(|e| match e {
+        editor::Error::Bpsec(e) => e.into(),
+        editor::Error::Builder(builder::Error::InternalError(e)) => e,
+        e => panic!("removing the encryption failed outside BPSec: {e}"),
+    })?;
+    common::verify_all_bibs(&accepted.data, keys)?;
+
+    Ok((parsed.data, parsed.bundle, parsed.bcbs, parsed.bibs))
 }
 
 /// Per-block BIB verify. Returns `Ok(true)` when the block was
@@ -115,10 +108,10 @@ fn verify_block(
     let bib_block_number = match target.bib {
         hardy_bpv7::block::BibCoverage::Some(n) => n,
         hardy_bpv7::block::BibCoverage::None => return Ok(false),
+        // Every BIB the keys decrypt is plaintext by here, so a coverage
+        // still unresolved is a BIB the keys cannot decrypt.
         hardy_bpv7::block::BibCoverage::Maybe => {
-            return Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::MaybeHasBib(
-                block_number,
-            )));
+            return Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey));
         }
     };
     let opset = bib_ops
@@ -132,9 +125,9 @@ fn verify_block(
     op.verify(
         keys,
         bpsec::bib::OperationArgs {
-            bpsec_source: opset.source(),
+            source: opset.source(),
             target: block_number,
-            source: bib_block_number,
+            security_block: bib_block_number,
             blocks: &block_set,
         },
     )
@@ -157,14 +150,18 @@ fn block_data<'a>(
 
 #[test]
 fn rfc9173_appendix_a_1() {
-    // Original RFC9173 Appendix A.1.4 test vector
-    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
+    // RFC 9173 Appendix A.1.4's final bundle, with the Bundle Age block
+    // RFC 9171 §4.4.2 requires of its zero creation time inserted before the
+    // payload, where Appendix A.3 places one: no security result covers it,
+    // so every result is the RFC's. No CRC on the primary block: the BPA's
+    // gate checks that.
     let data = hex_literal::hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240850b0200
                 005856810101018202820201828201078203008181820158403bdc69b3a34a2b5d3a
                 8554368bd1e808f606219d2a10a846eae3886ae4ecc83c4ee550fdfb1cc636b904e2
-                f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
-                746f2067656e657261746520612033322d62797465207061796c6f6164ff"
+                f1a73e303dcd4b6ccece003e95e8164dcc89a156e185070300004319012c85010100
+                005823526561647920746f2067656e657261746520612033322d6279746520706179
+                6c6f6164ff"
     );
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [{
@@ -183,14 +180,17 @@ fn rfc9173_appendix_a_1() {
 
 #[test]
 fn rfc9173_appendix_a_2() {
-    // Original RFC9173 Appendix A.2.4 test vector
-    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
+    // RFC 9173 Appendix A.2.4's final bundle, with the Bundle Age block
+    // RFC 9171 §4.4.2 requires of its zero creation time inserted before the
+    // payload, where Appendix A.3 places one: no security result covers it,
+    // so every result is the RFC's. No CRC on the primary block: the BPA's
+    // gate checks that.
     let data = hex_literal::hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240850c0201
                 0058508101020182028202018482014c5477656c7665313231323132820201820358
                 1869c411276fecddc4780df42c8a2af89296fabf34d7fae7008204008181820150ef
-                a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
-                03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
+                a4b5ac0108e3816c5606479801bc0485070300004319012c850101000058233a09c1
+                e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e9aff"
     );
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [{
@@ -206,6 +206,90 @@ fn rfc9173_appendix_a_2() {
 
     let (data, raw, bcb_ops, _bib_ops) = validate_with_keys(&data, &keys).unwrap();
     block_data(1, &raw.blocks, &data, &bcb_ops, &keys).expect("Failed to decrypt");
+}
+
+// The payload's decrypt stage, begun on the headers alone and fed the
+// received payload in runs, recovers RFC 9173's plaintext from Appendix
+// A.2's bundle (a wrapped key, the tag carried as the BCB's result) and
+// A.4's (a direct key, one BCB over the payload and the encrypted BIB).
+#[test]
+fn rfc9173_payloads_decrypt_as_they_stream() {
+    // RFC 9173 Appendix A.1.1.2: "Ready to generate a 32-byte payload".
+    const PLAINTEXT: &[u8] = b"Ready to generate a 32-byte payload";
+    let a2 = hex_literal::hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240850c0201
+                0058508101020182028202018482014c5477656c7665313231323132820201820358
+                1869c411276fecddc4780df42c8a2af89296fabf34d7fae7008204008181820150ef
+                a4b5ac0108e3816c5606479801bc0485070300004319012c850101000058233a09c1
+                e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e9aff"
+    );
+    let a2_keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [{
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "A128KW",
+            "enc": "A128GCM",
+            "key_ops": ["unwrapKey", "decrypt"],
+            "k": "YWJjZGVmZ2hpamtsbW5vcA"
+        }]
+    }))
+    .unwrap();
+    let a4 = hex_literal::hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240850b0300
+                005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
+                420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
+                9b88029191850c0201005849820301020182028202018382014c5477656c76653132
+                313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
+                50d2c51cb2481792dae8b21d848cede99b85070400004319012c8501010000582390
+                eab6457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122
+                ff"
+    );
+    let a4_keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [{
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "enc": "A256GCM",
+            "key_ops": ["decrypt"],
+            "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g"
+        }]
+    }))
+    .unwrap();
+
+    for (name, data, keys) in [("A.2", &a2[..], a2_keys), ("A.4", &a4[..], a4_keys)] {
+        let parsed = parse::parse(::bytes::Bytes::copy_from_slice(data)).unwrap();
+        let payload = parsed.bundle.blocks[&1].payload_range();
+        let headers = &data[..usize::try_from(payload.start).unwrap()];
+        let received =
+            &data[usize::try_from(payload.start).unwrap()..usize::try_from(payload.end).unwrap()];
+
+        let bcb = parsed.bundle.blocks[&1]
+            .bcb
+            .expect("a BCB covers the payload");
+        let ops = &parsed.bcbs[&bcb];
+        let mut decryptor = ops.operations()[&1]
+            .begin_decrypt(
+                &keys,
+                &bcb::OperationArgs {
+                    source: ops.source(),
+                    target: 1,
+                    security_block: bcb,
+                    blocks: &PlainReader {
+                        blocks: &parsed.bundle.blocks,
+                        source_data: headers,
+                    },
+                },
+                received.len() as u64,
+            )
+            .unwrap_or_else(|e| panic!("{name}: the decryption begins: {e}"));
+        assert_eq!(decryptor.plaintext_len(), PLAINTEXT.len() as u64, "{name}");
+        for run in received.chunks(7) {
+            decryptor.update(run);
+        }
+        let plaintext = decryptor
+            .finish()
+            .unwrap_or_else(|e| panic!("{name}: the payload decrypts: {e}"));
+        assert_eq!(plaintext.as_ref(), PLAINTEXT, "{name}");
+    }
 }
 
 // The final bundle of RFC 9173 Appendix A.3: a BCB over the payload, and a
@@ -253,16 +337,20 @@ fn rfc9173_appendix_a_3() {
 
 #[test]
 fn rfc9173_appendix_a_4() {
-    // Original RFC9173 Appendix A.4.5 test vector
-    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
+    // RFC 9173 Appendix A.4.5's final bundle, with the Bundle Age block
+    // RFC 9171 §4.4.2 requires of its zero creation time inserted before the
+    // payload, where Appendix A.3 places one: no security result covers it,
+    // so every result is the RFC's. No CRC on the primary block: the BPA's
+    // gate checks that.
     let data = hex_literal::hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240850b0300
                 005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
                 420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
                 9b88029191850c0201005849820301020182028202018382014c5477656c76653132
                 313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
-                50d2c51cb2481792dae8b21d848cede99b8501010000582390eab6457593379298a8
-                724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
+                50d2c51cb2481792dae8b21d848cede99b85070400004319012c8501010000582390
+                eab6457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122
+                ff"
     );
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [
@@ -284,9 +372,19 @@ fn rfc9173_appendix_a_4() {
     }))
     .unwrap();
 
-    let (data, raw, bcb_ops, bib_ops) = validate_with_keys(&data, &keys).unwrap();
+    let (data, raw, bcb_ops, _) = validate_with_keys(&data, &keys).unwrap();
     block_data(1, &raw.blocks, &data, &bcb_ops, &keys).expect("Failed to decrypt");
-    verify_block(1, &raw.blocks, &data, &bcb_ops, &bib_ops, &keys).expect("Failed to verify");
+    // The payload's BIB is encrypted: it is verified as the destination reads it.
+    let accepted = accept_all(&parse::parse(data).unwrap(), &keys).unwrap();
+    verify_block(
+        1,
+        &accepted.bundle.blocks,
+        &accepted.data,
+        &accepted.bcbs,
+        &accepted.bibs,
+        &keys,
+    )
+    .expect("Failed to verify");
 }
 
 // LLR 2.2.4, 2.2.7: Wrapped Key Unwrap
@@ -462,33 +560,34 @@ fn test_sign_then_encrypt() {
     // println!("Bundle bytes: {:02x?}", encrypted_bytes);
 
     // 4. Decrypt and Verify
-    let (encrypted_bytes, parsed_enc, bcb_ops, bib_ops) =
+    let (encrypted_bytes, parsed_enc, bcb_ops, _) =
         validate_with_keys(&encrypted_bytes, &enc_keys).expect("Failed to parse encrypted bundle");
-    // println!("{:#?}", parsed_enc);
 
-    // Attempt to decrypt the BIB first to isolate decryption issues from verification issues
-    if let Some(bib_num) = parsed_enc.blocks.get(&1).and_then(|b| match b.bib {
-        hardy_bpv7::block::BibCoverage::Some(n) => Some(n),
-        _ => None,
-    }) {
-        // println!("Found BIB at block {bib_num}");
-        block_data(
-            bib_num,
-            &parsed_enc.blocks,
-            &encrypted_bytes,
-            &bcb_ops,
-            &enc_keys,
-        )
-        .expect("BIB Decryption failed");
-    }
-
-    // This should succeed if everything is working
-    verify_block(
-        1,
+    // Decrypt the BIB first, to isolate decryption issues from verification
+    // issues.
+    let bib_num = parsed_enc
+        .blocks
+        .iter()
+        .find_map(|(&n, b)| (b.block_type == Type::BlockIntegrity).then_some(n))
+        .expect("the BIB is present");
+    block_data(
+        bib_num,
         &parsed_enc.blocks,
         &encrypted_bytes,
         &bcb_ops,
-        &bib_ops,
+        &enc_keys,
+    )
+    .expect("BIB Decryption failed");
+
+    // The payload's BIB is encrypted: it is verified as the destination
+    // reads it.
+    let accepted = accept_all(&parse::parse(encrypted_bytes.clone()).unwrap(), &enc_keys).unwrap();
+    verify_block(
+        1,
+        &accepted.bundle.blocks,
+        &accepted.data,
+        &accepted.bcbs,
+        &accepted.bibs,
         &all_keys,
     )
     .expect("Verification failed");
@@ -499,8 +598,10 @@ fn test_sign_then_encrypt() {
     assert_eq!(payload.as_ref(), b"hello");
 }
 
+// Removing the payload's encryption removes the encryption of the BIB over
+// it too, all or none: the BIB stays, in plaintext, with its operation.
 #[test]
-fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
+fn test_rfc9173_decrypt_payload_takes_its_encrypted_bib() {
     // RFC 9173 BCB-AES-GCM behavior:
     // Due to the IV uniqueness requirement (RFC 9173 Section 4.3.1), BCB-AES-GCM
     // cannot have multiple targets in a single BCB. Each encryption operation
@@ -594,9 +695,11 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
     let bib_count = count_blocks_of_type(&parsed_enc, Type::BlockIntegrity);
     assert_eq!(bib_count, 1, "Should have 1 BIB block");
 
-    // 4. Remove BCB from payload only
+    // 4. Remove the payload's BCB
     let raw = raw_of(&encrypted_bytes);
-    let editor = bpsec::edit::remove_encryption(Editor::new(&raw, &encrypted_bytes), 1, &all_keys)
+    let editor = Editor::new(&raw, &encrypted_bytes)
+        .with_key_source(&all_keys)
+        .remove_encryption(1)
         .map_err(|(_, e)| e)
         .expect("Failed to remove BCB from payload");
     let decrypted_bytes = editor
@@ -607,20 +710,18 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
     let (decrypted_bytes, parsed_decrypted, _bcb_ops, _bib_ops) =
         validate_with_keys(&decrypted_bytes, &all_keys).expect("Failed to parse decrypted bundle");
 
-    // 5. Assert: 1 BCB remains (the BIB's BCB is still present)
-    // This is expected RFC 9173 behavior - separate BCBs mean separate operations
+    // 5. Assert: no BCB remains; the BIB's went with the payload's
     let bcb_count_after = count_blocks_of_type(&parsed_decrypted, Type::BlockSecurity);
-    assert_eq!(
-        bcb_count_after, 1,
-        "BIB's BCB should remain (RFC 9173 creates separate BCBs due to IV uniqueness)"
-    );
+    assert_eq!(bcb_count_after, 0, "the BIB's BCB goes with the payload's");
 
-    // 6. Assert: 1 BIB remains (still encrypted by its BCB)
-    let bib_count_after = count_blocks_of_type(&parsed_decrypted, Type::BlockIntegrity);
-    assert_eq!(
-        bib_count_after, 1,
-        "BIB should remain encrypted (RFC 9173 creates separate BCBs)"
-    );
+    // 6. Assert: the BIB remains, in plaintext, over the payload
+    let bib = parsed_decrypted
+        .blocks
+        .iter()
+        .find_map(|(&n, b)| (b.block_type == Type::BlockIntegrity).then_some(n))
+        .expect("the BIB remains");
+    assert!(parsed_decrypted.blocks[&bib].bcb.is_none());
+    assert_eq!(parsed_decrypted.blocks[&1].bib, BibCoverage::Some(bib));
 
     // 7. Verify payload is decrypted correctly
     let payload_block = parsed_decrypted
@@ -635,10 +736,12 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
         "Payload should be decrypted"
     );
 
-    // 8. Verify payload does NOT have CRC (BIB provides integrity protection)
-    assert!(
-        matches!(payload_block.crc_type, hardy_bpv7::crc::CrcType::None),
-        "Payload should not have CRC when BIB exists"
+    // 8. The payload keeps the CRC it was built with: no security operation
+    // changes a target's CRC.
+    assert_eq!(
+        payload_block.crc_type,
+        hardy_bpv7::crc::CrcType::CRC32_CASTAGNOLI,
+        "the payload keeps its CRC through signing, encryption and decryption"
     );
 }
 
@@ -829,12 +932,21 @@ fn test_encrypt_then_sign_fails() {
 
 #[test]
 fn test_signature_tamper_detection() {
-    // 1. Create and sign bundle
+    // 1. Create and sign bundle. The payload carries no CRC, as RFC 9173
+    // §3.8.1 leaves a signed target, so the tamper reaches the signature
+    // check rather than the CRC.
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_report_to("ipn:2.1".parse().unwrap())
             .with_lifetime(Duration::from_millis(1000))
-            .with_payload(b"original payload".as_slice().into())
+            .add_extension_block(Type::Payload)
+            .unwrap()
+            .with_flags(Flags {
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            })
+            .with_crc_type(crc::CrcType::None)
+            .build(b"original payload".as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
 
@@ -948,7 +1060,9 @@ fn test_bcb_without_bib_removal() {
 
     // 3. Remove BCB using Editor::remove_encryption
     let raw = raw_of(&encrypted_bytes);
-    let editor = bpsec::edit::remove_encryption(Editor::new(&raw, &encrypted_bytes), 1, &keys)
+    let editor = Editor::new(&raw, &encrypted_bytes)
+        .with_key_source(&keys)
+        .remove_encryption(1)
         .map_err(|(_, e)| e)
         .expect("Failed to remove BCB");
     let decrypted_bytes = editor
@@ -1009,7 +1123,9 @@ fn test_remove_encryption_fails_on_unencrypted_block() {
     let _ = bundle;
 
     // Attempt to remove encryption from payload block (which is not encrypted)
-    let result = bpsec::edit::remove_encryption(Editor::new(&raw, &bundle_bytes), 1, &keys);
+    let result = Editor::new(&raw, &bundle_bytes)
+        .with_key_source(&keys)
+        .remove_encryption(1);
 
     // Should fail with NotEncrypted error
     let Err((_, e)) = result else {
@@ -1190,12 +1306,12 @@ fn test_sign_primary_block_with_crc() {
         "Should have 1 BIB after signing primary block"
     );
 
-    // 5. RFC 9173 §3.8.1: signing removes the target's CRC — including the
-    // primary (RFC 9171 permits a primary with no CRC when a BIB targets it).
+    // 5. The primary block keeps its CRC: it is immutable (RFC 9171
+    // §4.3.1), so signing it leaves it as it was built.
     let signed_primary = parsed.blocks.get(&0).expect("Primary block missing");
-    assert!(
-        matches!(signed_primary.crc_type, hardy_bpv7::crc::CrcType::None),
-        "Primary block CRC must be removed by signing (RFC 9173 §3.8.1)"
+    assert_eq!(
+        signed_primary.crc_type, primary.crc_type,
+        "signing the primary keeps its CRC"
     );
 
     // 6. Verify the signature
@@ -1249,9 +1365,9 @@ fn test_sign_primary_block_with_crc_no_scope_flags() {
 }
 
 #[test]
-fn test_sign_removes_crc_from_target_block() {
-    // Test that signing a block properly removes the CRC from the target block
-    // (not just setting the type to None while keeping the CRC value)
+fn test_sign_keeps_the_crc_on_the_target_block() {
+    // Signing a block leaves its CRC as it stands, type and value: no
+    // security operation changes a target's CRC.
 
     // 1. Create a bundle with CRC on payload block
     let (bundle, bundle_bytes) =
@@ -1266,6 +1382,10 @@ fn test_sign_removes_crc_from_target_block() {
         !matches!(payload_block.crc_type, hardy_bpv7::crc::CrcType::None),
         "Payload block should have a CRC before signing"
     );
+    let extent = |block: &hardy_bpv7::block::Block| {
+        usize::try_from(block.extent.start).unwrap()..usize::try_from(block.extent.end).unwrap()
+    };
+    let before = &bundle_bytes[extent(payload_block)];
 
     // 2. Sign the payload block
     let sign_key: key::Key = serde_json::from_value(serde_json::json!({
@@ -1292,32 +1412,31 @@ fn test_sign_removes_crc_from_target_block() {
         .rebuild()
         .expect("Failed to rebuild bundle after signing");
 
-    // 3. Parse the signed bundle and verify CRC is removed from payload block
+    // 3. Parse the signed bundle: the payload block keeps its CRC type
     let keys = key::KeySet::new(vec![sign_key]);
     let (signed_bytes, parsed, bcb_ops, bib_ops) =
         validate_with_keys(&signed_bytes, &keys).expect("Failed to parse signed bundle");
 
     let signed_payload = parsed.blocks.get(&1).expect("Payload block missing");
-    assert!(
-        matches!(signed_payload.crc_type, hardy_bpv7::crc::CrcType::None),
-        "Payload block CRC type should be None after signing, got {:?}",
-        signed_payload.crc_type
+    assert_eq!(
+        signed_payload.crc_type, payload_block.crc_type,
+        "signing keeps the payload's CRC type"
     );
 
     // 4. Verify the signature still works
     verify_block(1, &parsed.blocks, &signed_bytes, &bcb_ops, &bib_ops, &keys)
         .expect("Failed to verify signature on payload block");
 
-    // 5. Verify the payload block has 5 elements (no CRC) by checking raw CBOR
-    // The payload block should be a CBOR array with 5 elements when CRC type is None
-    // Find the payload block extent and check its structure
-    let payload_extent = signed_payload.extent.start as usize..signed_payload.extent.end as usize;
-    let payload_cbor = &signed_bytes[payload_extent];
-
-    // First byte should be 0x85 (array of 5 elements) not 0x86 (array of 6 elements)
+    // 5. The payload block's bytes are unchanged, CRC field included: a
+    // CBOR array of 6 elements (0x86), not 5.
+    let payload_cbor = &signed_bytes[extent(signed_payload)];
     assert_eq!(
-        payload_cbor[0], 0x85,
-        "Payload block CBOR should be array of 5 elements (0x85), got 0x{:02x}",
+        payload_cbor, before,
+        "the payload block's bytes are unchanged"
+    );
+    assert_eq!(
+        payload_cbor[0], 0x86,
+        "Payload block CBOR should be an array of 6 elements (0x86), got 0x{:02x}",
         payload_cbor[0]
     );
 }
@@ -1588,9 +1707,9 @@ fn hs256_key() -> key::Key {
 
 // One session, two sources: one signs the primary, which carries a CRC,
 // the other the payload under the default scope, whose IPPT includes the
-// primary. Every CRC goes before any IPPT is computed, so both verify in
-// whichever order the groups are built; the session repeats so that both
-// orders occur with near certainty (64 draws of the group order).
+// primary. The primary keeps its CRC, so both verify in whichever order the
+// groups are built; the session repeats so that both orders occur with near
+// certainty (64 draws of the group order).
 #[test]
 fn two_groups_signing_a_crc_primary_verify_in_either_order() {
     let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
@@ -1642,12 +1761,11 @@ fn two_groups_signing_a_crc_primary_verify_in_either_order() {
     }
 }
 
-// Signing a primary that carries a CRC removes it (RFC 9173 §3.8.1), which
-// would break an operation already in the bundle whose scope includes the
-// primary: refused. Under a scope without the primary it is signed, and
-// both signatures verify.
+// Signing a primary that carries a CRC leaves the primary unchanged (RFC
+// 9171 §4.3.1), so an operation already in the bundle whose scope includes
+// the primary still verifies beside the new one, whatever that scope.
 #[test]
-fn signing_a_crc_primary_refused_over_a_primary_scoped_operation() {
+fn signing_a_crc_primary_keeps_a_primary_scoped_operation_valid() {
     let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
         .with_payload(b"later primary".as_slice().into())
         .build(CreationTimestamp::now())
@@ -1680,26 +1798,25 @@ fn signing_a_crc_primary_refused_over_a_primary_scoped_operation() {
             .map_err(|(_, e)| e)
     };
 
-    let (signed, signed_bytes) = sign_payload(ScopeFlags::default());
-    let hardy_bpv7::block::BibCoverage::Some(payload_bib) = signed.blocks[&1].bib else {
-        panic!("the payload is signed");
-    };
-    assert!(matches!(
-        sign_primary(&signed, &signed_bytes),
-        Err(signer::Error::Editor(editor::Error::PrimaryInSecurityScope(n))) if n == payload_bib
-    ));
-
-    let (signed, signed_bytes) = sign_payload(ScopeFlags {
-        include_primary_block: false,
-        ..ScopeFlags::default()
-    });
-    let both = sign_primary(&signed, &signed_bytes).expect("the primary is signed");
     let keys = key::KeySet::new(vec![sign_key.clone()]);
-    let (both, parsed, bcb_ops, bib_ops) =
-        validate_with_keys(&both, &keys).expect("the signed bundle validates");
-    for target in [0, 1] {
-        verify_block(target, &parsed.blocks, &both, &bcb_ops, &bib_ops, &keys)
-            .expect("each signature verifies");
+    for include_primary_block in [true, false] {
+        let (signed, signed_bytes) = sign_payload(ScopeFlags {
+            include_primary_block,
+            ..ScopeFlags::default()
+        });
+        let both = sign_primary(&signed, &signed_bytes).expect("the primary is signed");
+        let (both, parsed, bcb_ops, bib_ops) =
+            validate_with_keys(&both, &keys).expect("the signed bundle validates");
+        assert_eq!(parsed.primary.crc_type, raw.primary.crc_type);
+        for target in [0, 1] {
+            verify_block(target, &parsed.blocks, &both, &bcb_ops, &bib_ops, &keys).unwrap_or_else(
+                |e| {
+                    panic!(
+                        "block {target} verifies (primary in scope: {include_primary_block}): {e}"
+                    )
+                },
+            );
+        }
     }
 }
 
@@ -1932,4 +2049,166 @@ fn encrypting_under_a_bib_that_covers_the_primary_is_refused() {
         result,
         Err((_, encryptor::Error::BibCoversPrimary(n))) if n == bib
     ));
+}
+
+// A bundle whose payload is encrypted, and first signed when `sign` is set
+// (the BIB is then encrypted under a BCB of its own, RFC 9172 §3.9), with
+// the keys that made it: the signing key first when there is one.
+fn encrypted_payload(sign: bool) -> (Box<[u8]>, key::KeySet) {
+    let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+        .with_report_to("ipn:2.1".parse().unwrap())
+        .with_lifetime(Duration::from_millis(1000))
+        .with_payload(b"accepted at ingress".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let mut keys = Vec::new();
+
+    let mut bytes = bundle_bytes;
+    if sign {
+        let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "HS256",
+            "key_ops": ["sign", "verify"],
+            "k": rand_k(18)
+        }))
+        .unwrap();
+        let raw = raw_of(&bytes);
+        bytes = signer::Signer::new(&raw, &bytes)
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                "ipn:2.1".parse().unwrap(),
+                &sign_key,
+            )
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .rebuild()
+            .unwrap();
+        keys.push(sign_key);
+    }
+
+    let raw = raw_of(&bytes);
+    let encrypted = encryptor::Encryptor::new(&raw, &bytes)
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(ScopeFlags {
+                include_security_header: false,
+                ..ScopeFlags::default()
+            }),
+            "ipn:2.1".parse().unwrap(),
+            &enc_key,
+        )
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .rebuild()
+        .unwrap();
+    keys.push(enc_key);
+    (encrypted, key::KeySet::new(keys))
+}
+
+// The plaintext of each block in `numbers`, as an acceptor's earlier
+// decrypt holds it.
+fn plaintexts_of(
+    numbers: &[u64],
+    blocks: &HashMap<u64, Block>,
+    data: &[u8],
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    keys: &key::KeySet,
+) -> Decrypted {
+    let plaintext = numbers
+        .iter()
+        .map(|&n| {
+            let plaintext = block_data(n, blocks, data, bcb_ops, keys).expect("the block decrypts");
+            (n, Zeroizing::new(Box::from(plaintext.as_ref())))
+        })
+        .collect();
+    Decrypted {
+        plaintext,
+        ..Default::default()
+    }
+}
+
+/// Removing a block's encryption from plaintext an acceptor already holds
+/// writes the same bundle as decrypting it again.
+#[test]
+fn removing_encryption_from_supplied_plaintext_matches_decrypting() {
+    let (bytes, keys) = encrypted_payload(false);
+    let (bytes, parsed, bcb_ops, _) = validate_with_keys(&bytes, &keys).unwrap();
+    let plaintexts = plaintexts_of(&[1], &parsed.blocks, &bytes, &bcb_ops, &keys);
+
+    let decrypted = Editor::new(&parsed, &bytes)
+        .with_key_source(&keys)
+        .remove_encryption(1)
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &bytes))
+        .unwrap();
+    // No keys: the supplied plaintext is all the removal reads.
+    let supplied = Editor::new(&parsed, &bytes)
+        .with_decrypted(&plaintexts)
+        .remove_encryption(1)
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &bytes))
+        .unwrap();
+    assert_eq!(supplied, decrypted);
+
+    let after = raw_of(&supplied);
+    assert_eq!(count_blocks_of_type(&after, Type::BlockSecurity), 0);
+    assert_eq!(
+        after.blocks[&1].payload(&supplied).unwrap(),
+        b"accepted at ingress"
+    );
+}
+
+/// An acceptor of the BCB over a payload an encrypted BIB covers removes
+/// the BCB over the BIB with it, from plaintext it holds: the BIB is
+/// written in plaintext with its operation intact, and stripping the
+/// accepted operation removes it.
+#[test]
+fn accepting_an_encrypted_bib_and_its_target_from_plaintext_strips_both() {
+    let (bytes, keys) = encrypted_payload(true);
+    let (bytes, parsed, bcb_ops, _) = validate_with_keys(&bytes, &keys).unwrap();
+    let bib = parsed
+        .blocks
+        .iter()
+        .find_map(|(&n, b)| (b.block_type == Type::BlockIntegrity).then_some(n))
+        .expect("the BIB is present");
+    assert_eq!(parsed.blocks[&1].bib, BibCoverage::Maybe);
+    assert_eq!(count_blocks_of_type(&parsed, Type::BlockSecurity), 2);
+    let plaintexts = plaintexts_of(&[1, bib], &parsed.blocks, &bytes, &bcb_ops, &keys);
+
+    // No keys: the supplied plaintext is all the removal reads.
+    let editor = Editor::new(&parsed, &bytes)
+        .with_decrypted(&plaintexts)
+        .remove_encryption(1)
+        .map_err(|(_, e)| e)
+        .unwrap();
+    let accepted = editor
+        .remove_integrity(1)
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &bytes))
+        .unwrap();
+
+    let after = raw_of(&accepted);
+    assert_eq!(count_blocks_of_type(&after, Type::BlockSecurity), 0);
+    assert_eq!(count_blocks_of_type(&after, Type::BlockIntegrity), 0);
+    assert_eq!(
+        after.blocks[&1].payload(&accepted).unwrap(),
+        b"accepted at ingress"
+    );
 }

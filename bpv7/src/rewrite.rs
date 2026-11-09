@@ -4,7 +4,7 @@ structurally-parsed bundle, returning a fresh [`Bundle`]
 and the chunk plan describing the new wire bytes.
 
 This is the apply step that consumers reach for after composing the
-classification / decrypt / verify primitives in [`crate::checks`] to decide
+the parser's classification and the keyed check in [`crate::bpsec::checks`] to decide
 *what* to rewrite. The heavy lifting (the BPSec cascade through
 BCB-encrypted BIBs) lives in [`crate::editor`] / `bpsec::edit`.
 */
@@ -12,56 +12,47 @@ BCB-encrypted BIBs) lives in [`crate::editor`] / `bpsec::edit`.
 use alloc::vec::Vec;
 
 use crate::{
-    Bundle, Error, HashMap, HashSet,
-    bpsec::{self, edit::BPSecEditor},
-    editor::{Chunk, Editor},
+    Bundle, HashMap, HashSet,
+    bpsec::edit::BPSecEditor,
+    editor::{Chunk, Editor, Error},
 };
-/// Apply queued rewrites. Bulk-removes via
+
+/// Apply queued rewrites through `editor`. Bulk-removes via
 /// [`BPSecEditor::remove_blocks`] (which handles cascading
-/// through BCB-encrypted BIBs internally), then applies non-canonical
-/// re-emits.
+/// through BCB-encrypted BIBs internally, with the editor's key source and
+/// plaintext cache), then applies non-canonical re-emits.
 ///
 /// Returns `Some((new_bundle, chunks))` when at least one block was
-/// removed or re-emitted; returns `None` when the cascade silently
-/// pulled all requested targets back (no Encrypt key) and there were
-/// no re-emits — caller can return `Valid` instead of `Rewritten`.
+/// removed or re-emitted; returns `None` when the bundle holds none of the
+/// requested blocks and there are no re-emits — caller can return `Valid`
+/// instead of `Rewritten`.
 ///
 /// Caller is responsible for the "nothing to do" short-circuit on
 /// empty `to_update` + empty `to_remove`: don't call this in that case.
 ///
-/// **Precondition:** the bundle's BCB/BIB OperationSets must already have
-/// been validated — every in-tree caller runs [`crate::checks::verify`]
-/// first, which parses and accepts those OperationSets and decrypts every
-/// covered BIB. The editor operations below only re-parse those same
-/// (already-accepted) OperationSets and re-decrypt those same BIBs with the
-/// same `key_source`, so on a validated bundle they cannot fail; an editor
-/// error here is an unreachable invariant violation (a logic bug), and is
-/// surfaced as a panic carrying the underlying error rather than a
-/// recoverable `Err`.
+/// # Errors
+///
+/// The removal cascade's: a BCB-encrypted BIB it decrypts that does not
+/// parse or fails its checks, or one whose targets it must strip but
+/// cannot read, and its refusal of a request it cannot honour whole without
+/// encrypting a BIB again, orphaning a block an unreadable BIB may list, or
+/// breaking an operation that scopes the primary block
+/// ([`BPSecEditor::remove_blocks`]).
+///
+/// # Panics
+///
+/// Panics if `to_update` names a block the bundle does not hold.
 #[allow(clippy::result_large_err)]
-pub fn apply_rewrites<'a>(
-    data: &'a [u8],
-    bundle: &'a Bundle,
-    key_source: &dyn bpsec::key::KeySource,
+pub fn apply_rewrites(
+    mut editor: Editor<'_>,
     to_update: HashMap<u64, Vec<u8>>,
     to_remove: HashSet<u64>,
 ) -> Result<Option<(Bundle, Vec<Chunk>)>, Error> {
-    let mut editor = Editor::new(bundle, data);
-
-    // Bulk-remove with full BPSec cascade. Lenient: any covered BIB that
-    // would be partially shrunk without an available Encrypt key has its
-    // targets silently retained.
+    // Bulk-remove with full BPSec cascade.
     let removed_any = if to_remove.is_empty() {
         false
     } else {
-        // Unreachable on a validated bundle (see precondition): the cascade
-        // only re-parses already-accepted OperationSets and re-decrypts BIBs
-        // `checks::verify` already decrypted, so an error is a logic bug.
-        let (ed, removed) = editor
-            .remove_blocks(to_remove, key_source)
-            .unwrap_or_else(|(_, e)| {
-                panic!("remove_blocks on a validated bundle cannot fail (logic bug): {e}")
-            });
+        let (ed, removed) = editor.remove_blocks(&to_remove).map_err(|(_, e)| e)?;
         editor = ed;
         !removed.is_empty()
     };
@@ -70,14 +61,12 @@ pub fn apply_rewrites<'a>(
         return Ok(None);
     }
 
-    // Non-canonical re-emits. `block_number` comes from `to_update`, which
-    // only names existing blocks, so `update_block` cannot fail here.
+    // Non-canonical re-emits, of blocks the caller found in the bundle.
     for (block_number, payload) in to_update {
         editor = editor
             .update_block_inner(block_number)
-            .unwrap_or_else(|(_, e)| {
-                panic!("update_block on an existing block cannot fail (logic bug): {e}")
-            })
+            .map_err(|(_, e)| e)
+            .expect("to_update names blocks the bundle holds")
             .with_data(payload.into())
             .rebuild();
     }
@@ -85,6 +74,6 @@ pub fn apply_rewrites<'a>(
     // Re-serialising a bundle the editor just assembled cannot fail.
     let (new_bundle, chunks) = editor
         .rebuild_bundle()
-        .unwrap_or_else(|e| panic!("rebuild of a validated bundle cannot fail (logic bug): {e}"));
+        .expect("the editor rebuilds the bundle it assembled");
     Ok(Some((new_bundle, chunks)))
 }

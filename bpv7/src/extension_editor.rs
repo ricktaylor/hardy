@@ -19,23 +19,22 @@
 //! An edit that would make a malformed bundle is refused at call time
 //! instead of failing at [`finish`](ExtensionEditor::finish) or at the
 //! receiver's decoders. What the structural parser rejects — a
-//! `report_on_failure` flag the bundle forbids, an unrecognised CRC type —
-//! is refused with the parser's own error. Previous Node, Bundle Age, or
+//! `report_on_failure` flag the bundle forbids, an unrecognised CRC type,
+//! a bundle without a creation time losing its Bundle Age block (RFC 9171
+//! §4.4.2) — is refused with the parser's own error. Previous Node, Bundle Age, or
 //! Hop Count data that does not decode as its type is refused as
-//! [`UndecodableBody`](Error::UndecodableBody): the parser never decodes
-//! those bodies, but a receiving BPA does, with the same decoders.
+//! [`UndecodableBody`](Error::UndecodableBody), decoded as the parser
+//! decodes a received one.
 //!
 //! Receiver policy over a well-formed bundle is the caller's to decide, not
-//! refused here: RFC 9171 §4.4.2's Bundle Age requirement on a bundle
-//! without a clock, hop limits, and how a receiver treats blocks it does
-//! not support.
+//! refused here: hop limits, and how a receiver treats blocks it does not
+//! support.
 //!
 //! Edits accumulate in memory; nothing is materialised until
 //! [`finish`](ExtensionEditor::finish).
 
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 
-use hardy_cbor::decode::parse_exact;
 use thiserror::Error;
 
 // Aliased `Error`s: this module's own `Error` is the refusal enum below.
@@ -43,11 +42,9 @@ use crate::{
     Error as Bpv7Error,
     block::{BibCoverage, Flags, Type},
     bundle::Bundle,
-    bundle_age::BundleAge,
     crc::{CrcType, Error as CrcError},
     editor::{Chunk, Editor, Error as EditorError},
-    eid::Eid,
-    hop_info::HopInfo,
+    parse::PerHopFields,
 };
 
 /// Errors from scoped editing — each refused operation names its reason,
@@ -81,8 +78,7 @@ pub enum Error {
     Invalid(#[from] Bpv7Error),
 
     /// Previous Node, Bundle Age, or Hop Count data that does not decode as
-    /// its type. The structural parser never decodes these bodies; a
-    /// receiving BPA does, with the same decoders.
+    /// its type, which the parser rejects in a received block.
     #[error("{block_type:?} block data does not decode")]
     UndecodableBody {
         /// The well-known type the data was checked as.
@@ -110,9 +106,10 @@ pub struct ExtensionEditor<'a> {
     // operation. `None` only transiently inside an operation.
     editor: Option<Editor<'a>>,
     edited: bool,
-    // The primary block is out of scope, so its verdict is fixed at
+    // The primary block is out of scope, so its verdicts are fixed at
     // construction.
     report_on_failure_forbidden: bool,
+    bundle_age_required: bool,
 }
 
 impl<'a> ExtensionEditor<'a> {
@@ -122,6 +119,7 @@ impl<'a> ExtensionEditor<'a> {
             editor: Some(Editor::new(original, source_data)),
             edited: false,
             report_on_failure_forbidden: original.primary.forbids_report_on_failure(),
+            bundle_age_required: !original.primary.id.timestamp.is_clocked(),
         }
     }
 
@@ -229,12 +227,17 @@ impl<'a> ExtensionEditor<'a> {
     ///
     /// # Errors
     ///
-    /// [`ReservedBlock`](Error::ReservedBlock),
-    /// [`NoSuchBlock`](Error::NoSuchBlock),
-    /// [`ReservedType`](Error::ReservedType), or [`Covered`](Error::Covered)
-    /// for a target outside the scope.
+    /// - [`ReservedBlock`](Error::ReservedBlock),
+    ///   [`NoSuchBlock`](Error::NoSuchBlock),
+    ///   [`ReservedType`](Error::ReservedType), or
+    ///   [`Covered`](Error::Covered) for a target outside the scope.
+    /// - [`Invalid`](Error::Invalid) for the Bundle Age block of a bundle
+    ///   without a creation time, which RFC 9171 §4.4.2 requires.
     pub fn remove(&mut self, block_number: u64) -> Result<()> {
-        self.check_target(block_number)?;
+        let block_type = self.check_target(block_number)?;
+        if self.bundle_age_required && block_type == Type::BundleAge {
+            return Err(Bpv7Error::MissingBundleAge.into());
+        }
 
         let editor = self
             .editor
@@ -298,19 +301,14 @@ impl<'a> ExtensionEditor<'a> {
     }
 }
 
-// A well-known extension block's data must decode as its type, exactly as
-// the receive path decodes it: the structural parser never looks inside
-// these bodies, so a malformed one would otherwise ship. Other types are
-// opaque here.
+// A well-known extension block's data must decode as its type, as the
+// parser requires of a received one: a malformed body is refused here rather
+// than by the next node's parser. Other types are opaque here.
 fn check_body(block_type: Type, data: &[u8]) -> Result<()> {
-    let decoded = match block_type {
-        Type::PreviousNode => parse_exact::<Eid>(data).map(drop).map_err(Bpv7Error::from),
-        Type::BundleAge => parse_exact::<BundleAge>(data).map(drop),
-        Type::HopCount => parse_exact::<HopInfo>(data).map(drop),
-        _ => Ok(()),
-    };
-    decoded.map_err(|source| Error::UndecodableBody {
-        block_type,
-        source: Box::new(source),
-    })
+    PerHopFields::default()
+        .decode(block_type, data)
+        .map_err(|source| Error::UndecodableBody {
+            block_type,
+            source: Box::new(source),
+        })
 }

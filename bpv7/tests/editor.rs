@@ -8,12 +8,15 @@ use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use hardy_bpv7::{
     Bundle, block,
-    bpsec::{edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
-    builder, bundle, checks, crc, creation_timestamp,
+    bpsec::{
+        self, Decrypted, SecurityService, checks::Checked, edit::BPSecEditor, encryptor, key,
+        rfc9173::ScopeFlags, signer,
+    },
+    builder, bundle, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
     eid,
     extension_editor::{self, ExtensionEditor},
-    hop_info, parse,
+    hop_info, parse, reader,
 };
 // Aliased: the parser's error, beside the editor's `Error` imported above.
 use hardy_bpv7::Error as Bpv7Error;
@@ -504,6 +507,30 @@ fn flatten_inplace_remove_block() {
     assert_eq!(&*flattened, &*inplace);
 }
 
+// `flatten` is `flatten_head` with the break: a streamed rebuild's header
+// region, which the caller continues, is the flattened bundle up to its
+// end.
+#[test]
+fn flatten_is_flatten_head_with_the_break() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop_block = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("Should have hop count block");
+    let rebuild = || {
+        ok(Editor::new(&bundle, &data).remove_block(hop_block))
+            .rebuild()
+            .unwrap()
+    };
+
+    let mut head = Chunk::flatten_head(rebuild(), &data);
+    assert_eq!(head.first(), Some(&0x9F));
+    head.push(0xFF);
+    assert_eq!(Chunk::flatten(rebuild(), &data).as_ref(), head.as_slice());
+}
+
 #[test]
 fn flatten_inplace_mixed_shift() {
     let long: eid::Eid = "dtn://a-long-destination-endpoint.example.org/svc"
@@ -636,7 +663,6 @@ fn remove_integrity_releases_the_primary() {
     let parse::Parsed {
         data: edited,
         bundle: edited_bundle,
-        bibs,
         ..
     } = parse::parse(Bytes::copy_from_slice(&edited)).expect("parse the edited bundle");
     assert_eq!(edited_bundle.primary.destination, new_dest);
@@ -645,32 +671,26 @@ fn remove_integrity_releases_the_primary() {
         edited_bundle.blocks[&hop_count].bib,
         block::BibCoverage::Some(bib)
     );
-    let deferred = checks::verify_all_bibs(
-        &edited,
-        &key::KeySet::new(vec![key]),
-        &edited_bundle.blocks,
-        &bibs,
-        &HashMap::new(),
-        &HashMap::new(),
-    )
-    .expect("the Hop Count's operation verifies");
-    assert!(deferred.is_empty(), "every target is resident");
+    common::verify_all_bibs(&edited, &key::KeySet::new(vec![key]))
+        .expect("the Hop Count's operation verifies");
 }
 
 // Removing the BIB through `BPSecEditor::remove_blocks` releases the
-// primary block too, with no key: the BIB is not encrypted.
+// primary block too, with no key: the BIB is not encrypted. The primary
+// keeps the CRC it was built with, which signing left in place.
 #[test]
 fn removing_the_bib_releases_the_primary() {
     let (bundle, data, _, bib, _) = make_signed_hop_count(true, shared(false));
     let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
-    assert_eq!(
-        bundle.primary.crc_type,
+    let crc_type = bundle.primary.crc_type;
+    assert_ne!(
+        crc_type,
         crc::CrcType::None,
-        "precondition: signing the primary strips its CRC"
+        "precondition: signing the primary keeps its CRC"
     );
 
     let (edited, removed) = Editor::new(&bundle, &data)
-        .remove_blocks(HashSet::from([bib]), &key::KeySet::new(Vec::new()))
+        .remove_blocks(&HashSet::from([bib]))
         .map_err(|(_, e)| e)
         .expect("remove the BIB");
     assert_eq!(removed, HashSet::from([bib]));
@@ -680,8 +700,7 @@ fn removing_the_bib_releases_the_primary() {
         .expect("rebuild the edited bundle");
     let edited = reparse(&edited);
     assert_eq!(edited.primary.destination, new_dest);
-    // RFC 9171 §4.3.1: a primary no BIB targets carries a CRC.
-    assert_eq!(edited.primary.crc_type, crc::CrcType::CRC32_CASTAGNOLI);
+    assert_eq!(edited.primary.crc_type, crc_type);
 }
 
 // A primary edit is refused while an operation on another target has the
@@ -832,7 +851,7 @@ fn primary_edit_allowed_once_the_scoping_bib_is_removed() {
     let new_dest: eid::Eid = "ipn:9.0".parse().unwrap();
 
     let (editor, removed) = Editor::new(&signed, &signed_bytes)
-        .remove_blocks(HashSet::from([bib]), &key::KeySet::new(Vec::new()))
+        .remove_blocks(&HashSet::from([bib]))
         .map_err(|(_, e)| e)
         .expect("remove the BIB");
     assert_eq!(removed, HashSet::from([bib]));
@@ -845,39 +864,38 @@ fn primary_edit_allowed_once_the_scoping_bib_is_removed() {
     assert!(!edited.blocks.contains_key(&bib), "the BIB is gone");
 }
 
-// A strip that fails returns an editor that still holds the block: here a
-// keyed parse knows the hop count sits under an encrypted BIB, and this call
-// has no key to read the BIB's ciphertext.
+// A strip that fails returns an editor that still holds the block: here the
+// keyed verification knows the hop count sits under an encrypted BIB, having
+// decrypted the BIB because it holds the hop count's key, and this call has
+// no key to read the BIB's ciphertext.
 #[test]
 fn a_failed_strip_leaves_the_block_in_place() {
     let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false, ScopeFlags::default());
     let enc_key = aes_key();
     let (_, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
-    let parse::Parsed {
-        data,
-        mut bundle,
-        bcbs,
-        mut bibs,
-    } = parse::parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
-    let failed = checks::decrypt_and_validate_covered_bibs(
-        &data,
+    let mut parsed =
+        parse::parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
+    let facts = common::verify_as_receiver(
+        &mut parsed,
         &key::KeySet::new(vec![enc_key]),
-        &mut bundle.blocks,
-        &bcbs,
-        &mut bibs,
-        &mut HashMap::new(),
-        &HashMap::new(),
+        &HashSet::new(),
     )
-    .expect("the keyed pass decrypts and structurally checks the BIB");
-    assert!(failed.is_empty(), "the BIB must decrypt");
+    .expect("the keyed verification decrypts and checks the BIB");
+    let parse::Parsed { data, bundle, .. } = parsed;
+    assert!(
+        facts
+            .targets_of(SecurityService::Confidentiality, Checked::Failed)
+            .next()
+            .is_none(),
+        "the BIB must decrypt"
+    );
     assert_eq!(
         bundle.blocks[&hop].bib,
         block::BibCoverage::Some(bib),
-        "precondition: the keyed pass stamps the hop count's coverage"
+        "precondition: the keyed verification stamps the hop count's coverage"
     );
 
-    let Err((editor, error)) = Editor::new(&bundle, &data)
-        .remove_blocks(HashSet::from([hop]), &key::KeySet::new(Vec::new()))
+    let Err((editor, error)) = Editor::new(&bundle, &data).remove_blocks(&HashSet::from([hop]))
     else {
         panic!("the strip cannot read the BIB's ciphertext");
     };
@@ -923,29 +941,88 @@ fn an_encrypted_bib_refuses_primary_edits() {
     ));
 }
 
-// `remove_integrity(0)` restores the primary's CRC, which would break the
-// Hop Count's operation under the same BIB, whose scope includes the
-// primary: refused before any edit, so the editor comes back with the
-// primary still signed.
+// `remove_integrity(0)` leaves the primary block as it stands, so the Hop
+// Count's operation under the same BIB, whose scope includes the primary,
+// still verifies once the primary's operation is gone.
 #[test]
-fn remove_integrity_refused_while_another_operation_scopes_the_primary() {
-    let (bundle, data, _, bib, _) = make_signed_hop_count(true, shared(true));
-    let Err((editor, Error::PrimaryInSecurityScope(n))) =
-        Editor::new(&bundle, &data).remove_integrity(0)
-    else {
-        panic!("remove_integrity(0) is refused");
-    };
-    assert_eq!(n, bib);
-    assert!(matches!(
-        editor.with_destination("ipn:9.0".parse().unwrap()),
-        Err((_, Error::PrimaryBlockHasBib))
-    ));
+fn remove_integrity_on_the_primary_keeps_another_scope_valid() {
+    let (bundle, data, hop_count, bib, key) = make_signed_hop_count(true, shared(true));
+    let (edited_bundle, chunks) = ok(Editor::new(&bundle, &data).remove_integrity(0))
+        .rebuild_bundle()
+        .expect("rebuild the edited bundle");
+    let edited = Chunk::flatten(chunks, &data);
+    assert_eq!(edited_bundle.primary.crc_type, bundle.primary.crc_type);
+    assert_eq!(edited_bundle.blocks[&0].bib, block::BibCoverage::None);
+    assert_eq!(
+        edited_bundle.blocks[&hop_count].bib,
+        block::BibCoverage::Some(bib)
+    );
+    let parse::Parsed { data: edited, .. } =
+        parse::parse(Bytes::copy_from_slice(&edited)).expect("parse the edited bundle");
+    common::verify_all_bibs(&edited, &key::KeySet::new(vec![key]))
+        .expect("the Hop Count's operation verifies over the unchanged primary");
 }
 
-// `remove_blocks` retains the BIB over the primary block while another
-// operation's scope includes the primary, and does not report it removed.
+// A primary created without a CRC, as RFC 9171 §4.3.1 allows while a BIB
+// targets it, stays without one once that BIB goes, by `remove_integrity(0)`
+// or `remove_blocks`: no edit changes the primary block.
 #[test]
-fn remove_blocks_retains_the_primary_bib_under_another_scope() {
+fn a_crcless_primary_stays_crcless_once_its_bib_goes() {
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_crc_type(crc::CrcType::None)
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let bundle = reparse(&data);
+    let key: key::Key = serde_json::from_value(serde_json::json!({
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(32)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            0,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the primary")
+        .rebuild()
+        .expect("rebuild signed");
+    let signed = reparse(&signed_bytes);
+    assert_eq!(signed.primary.crc_type, crc::CrcType::None);
+    let block::BibCoverage::Some(bib) = signed.blocks[&0].bib else {
+        panic!("the primary is signed");
+    };
+
+    let by_integrity = ok(Editor::new(&signed, &signed_bytes).remove_integrity(0));
+    let (by_blocks, removed) = Editor::new(&signed, &signed_bytes)
+        .remove_blocks(&HashSet::from([bib]))
+        .map_err(|(_, e)| e)
+        .expect("remove_blocks");
+    assert_eq!(removed, HashSet::from([bib]));
+    for (how, editor) in [
+        ("remove_integrity", by_integrity),
+        ("remove_blocks", by_blocks),
+    ] {
+        let edited = editor
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &signed_bytes))
+            .expect("rebuild the edited bundle");
+        let edited = reparse(&edited);
+        assert_eq!(edited.blocks[&0].bib, block::BibCoverage::None, "{how}");
+        assert_eq!(edited.primary.crc_type, crc::CrcType::None, "{how}");
+    }
+}
+
+// `remove_blocks` removes the BIB over the primary block though another
+// operation's scope includes the primary: the primary is left as it
+// stands, so that operation still verifies.
+#[test]
+fn remove_blocks_removes_the_primary_bib_under_another_scope() {
     let (bundle, data) = make_bundle();
     let key: key::Key = serde_json::from_value(serde_json::json!({
         "kty": "oct",
@@ -985,14 +1062,27 @@ fn remove_blocks_retains_the_primary_bib_under_another_scope() {
     assert_ne!(primary_bib, payload_bib, "precondition: two BIBs");
 
     let (editor, removed) = Editor::new(&signed, &signed_bytes)
-        .remove_blocks(HashSet::from([primary_bib]), &key::KeySet::new(Vec::new()))
+        .remove_blocks(&HashSet::from([primary_bib]))
         .map_err(|(_, e)| e)
         .expect("remove_blocks");
-    assert!(removed.is_empty(), "the BIB over the primary is retained");
-    assert!(matches!(
-        editor.with_destination("ipn:9.0".parse().unwrap()),
-        Err((_, Error::PrimaryBlockHasBib))
-    ));
+    assert_eq!(removed, HashSet::from([primary_bib]));
+    let edited = editor
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &signed_bytes))
+        .expect("rebuild the edited bundle");
+    let parse::Parsed {
+        data: edited,
+        bundle: edited_bundle,
+        ..
+    } = parse::parse(Bytes::copy_from_slice(&edited)).expect("parse the edited bundle");
+    assert_eq!(edited_bundle.primary.crc_type, signed.primary.crc_type);
+    assert_eq!(edited_bundle.blocks[&0].bib, block::BibCoverage::None);
+    assert_eq!(
+        edited_bundle.blocks[&1].bib,
+        block::BibCoverage::Some(payload_bib)
+    );
+    common::verify_all_bibs(&edited, &key::KeySet::new(vec![key]))
+        .expect("the payload's operation verifies over the unchanged primary");
 }
 
 // Fragment info is exempt: no BIB or BCB is added to a fragment (RFC 9172
@@ -1027,20 +1117,11 @@ fn fragment_info_edits_are_exempt() {
     let parse::Parsed {
         data: whole,
         bundle: whole_bundle,
-        bibs,
         ..
     } = parse::parse(Bytes::copy_from_slice(&whole)).expect("parse the reassembled bundle");
     assert_eq!(whole_bundle.primary.id.fragment_info, None);
-    let deferred = checks::verify_all_bibs(
-        &whole,
-        &key::KeySet::new(vec![key]),
-        &whole_bundle.blocks,
-        &bibs,
-        &HashMap::new(),
-        &HashMap::new(),
-    )
-    .expect("the Hop Count's operation verifies over the restored primary");
-    assert!(deferred.is_empty(), "every target is resident");
+    common::verify_all_bibs(&whole, &key::KeySet::new(vec![key]))
+        .expect("the Hop Count's operation verifies over the restored primary");
 }
 
 // RFC 9171 §4.2.3-4/-5 against the final primary: the owner editor refuses
@@ -1415,6 +1496,46 @@ fn extension_editor_reserves_primary_and_payload_targets() {
     // The type refuses, not the mechanism: the full Editor replaces the
     // payload under its owner semantics.
     ok(Editor::new(&bundle, &data).update_block(1));
+}
+
+// RFC 9171 §4.4.2: a bundle without a creation time keeps its Bundle Age
+// block, so its removal is refused with the parser's own error; a clocked
+// bundle's Bundle Age may go.
+#[test]
+fn extension_editor_keeps_a_required_bundle_age() {
+    for (timestamp, required) in [
+        (creation_timestamp::CreationTimestamp::default(), true),
+        (creation_timestamp::CreationTimestamp::now(), false),
+    ] {
+        let (_, data) =
+            builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .add_extension_block(block::Type::BundleAge)
+                .unwrap()
+                .build(emit(&300u64).0.into())
+                .with_payload("Hello".as_bytes().into())
+                .build(timestamp)
+                .unwrap();
+        let bundle = reparse(&data);
+        let (&age, _) = bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == block::Type::BundleAge)
+            .expect("the Bundle Age is present");
+
+        let mut editor = ExtensionEditor::new(&bundle, &data);
+        let removed = editor.remove(age);
+        if required {
+            assert!(matches!(
+                removed,
+                Err(extension_editor::Error::Invalid(
+                    Bpv7Error::MissingBundleAge
+                ))
+            ));
+            assert!(!editor.is_modified(), "a refusal is not an edit");
+        } else {
+            removed.expect("a clocked bundle's Bundle Age may be removed");
+        }
+    }
 }
 
 #[test]
@@ -2137,9 +2258,7 @@ fn insert_block_replace_refuses_an_encrypted_bib() {
             result,
             Err((
                 _,
-                Error::Builder(builder::Error::InternalError(hardy_bpv7::Error::InvalidBPSec(
-                    hardy_bpv7::bpsec::Error::MaybeHasBib(n)
-                )))
+                Error::MaybeHasBib(n)
             )) if n == hop
         ),
         "replacing a block under an encrypted BIB must refuse, as update_block does"
@@ -2306,50 +2425,39 @@ fn encrypt_scoped(
 }
 
 #[test]
-fn insert_block_replace_refuses_a_verified_encrypted_bib() {
-    // A keyed node resolves the encrypted BIB's targets: the signed-then-
-    // encrypted hop count is stamped as covered by a BIB that is itself
+fn insert_block_replace_refuses_a_resolved_encrypted_bib() {
+    // An editor with a key source resolves the encrypted BIB's targets: the
+    // signed-then-encrypted hop count is covered by a BIB that is itself
     // BCB-encrypted, and the replace refuses with BibIsEncrypted — the
     // target cannot be stripped from the BIB's ciphertext.
     let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false, ScopeFlags::default());
     let enc_key = aes_key();
     let (_, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
 
-    let parse::Parsed {
-        data,
-        mut bundle,
-        bcbs,
-        mut bibs,
-    } = parse::parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
+    let parse::Parsed { data, bundle, .. } =
+        parse::parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
+    assert_eq!(bundle.blocks[&hop].bib, block::BibCoverage::Maybe);
+    assert!(
+        bundle.blocks[&bib].bcb.is_some(),
+        "the covering BIB is itself encrypted"
+    );
     // Decrypting the BIB is all it takes to learn its targets; the signing
     // key stays out, since KeySet serves the first key whose operations
     // match and the HS256+A128KW key would answer the BCB's unwrap.
     let keys = key::KeySet::new(vec![enc_key]);
-    let failed = checks::decrypt_and_validate_covered_bibs(
-        &data,
-        &keys,
-        &mut bundle.blocks,
-        &bcbs,
-        &mut bibs,
-        &mut HashMap::new(),
-        &HashMap::new(),
-    )
-    .expect("the keyed pass decrypts and structurally checks the BIB");
-    assert!(failed.is_empty(), "the BIB must decrypt");
-    assert_eq!(
-        bundle.blocks.get(&hop).unwrap().bib,
-        block::BibCoverage::Some(bib),
-        "the keyed pass stamps the hop count's real coverage"
-    );
-    assert!(
-        bundle.blocks.get(&bib).unwrap().bcb.is_some(),
-        "the covering BIB is itself encrypted"
-    );
 
-    assert!(matches!(
-        Editor::new(&bundle, &data).insert_block(block::Type::HopCount),
-        Err((_, Error::BibIsEncrypted(n))) if n == hop
-    ));
+    let Err((editor, Error::BibIsEncrypted(n))) = Editor::new(&bundle, &data)
+        .with_key_source(&keys)
+        .insert_block(block::Type::HopCount)
+    else {
+        panic!("the replace must refuse");
+    };
+    assert_eq!(n, hop);
+    // The editor keeps what it resolved.
+    let (rebuilt, _) = editor
+        .rebuild_bundle()
+        .expect("the refused editor rebuilds");
+    assert_eq!(rebuilt.blocks[&hop].bib, block::BibCoverage::Some(bib));
 }
 
 // RFC 9172 §5.1.1 removal of a signed-then-encrypted block by a node that
@@ -2361,9 +2469,11 @@ fn remove_blocks_drops_an_emptied_encrypted_bib() {
     let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false, ScopeFlags::default());
     let enc_key = aes_key();
     let (encrypted, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
+    let keys = key::KeySet::new(vec![enc_key]);
 
     let (editor, removed) = Editor::new(&encrypted, &encrypted_bytes)
-        .remove_blocks(HashSet::from([hop]), &key::KeySet::new(vec![enc_key]))
+        .with_key_source(&keys)
+        .remove_blocks(&HashSet::from([hop]))
         .map_err(|(_, e)| e)
         .expect("remove the hop count");
     assert_eq!(removed, HashSet::from([hop]));
@@ -2385,10 +2495,11 @@ fn remove_blocks_drops_an_emptied_encrypted_bib() {
 }
 
 // The same with a BIB shared by the payload and the hop count: removing the
-// hop count shrinks the BIB to the payload and re-encrypts it, so a keyed
-// reader finds the payload's operation alone, and it still verifies.
+// hop count would shrink the encrypted BIB, which only its BCB's security
+// source may encrypt again, so the removal is refused, even holding that
+// key, and the bundle is as it was.
 #[test]
-fn remove_blocks_shrinks_and_reencrypts_a_shared_encrypted_bib() {
+fn remove_blocks_refuses_to_shrink_a_shared_encrypted_bib() {
     let (bundle, data) = make_bundle_with_hop_count();
     let hop = bundle
         .blocks
@@ -2424,60 +2535,192 @@ fn remove_blocks_shrinks_and_reencrypts_a_shared_encrypted_bib() {
         .0;
     let enc_key = aes_key();
     let (encrypted, encrypted_bytes) = encrypt(&signed, &signed_bytes, hop, &enc_key);
+    let keys = key::KeySet::new(vec![enc_key]);
 
-    let (editor, removed) = Editor::new(&encrypted, &encrypted_bytes)
-        .remove_blocks(
-            HashSet::from([hop]),
-            &key::KeySet::new(vec![enc_key.clone()]),
+    let refused = Editor::new(&encrypted, &encrypted_bytes)
+        .with_key_source(&keys)
+        .remove_blocks(&HashSet::from([hop]))
+        .map(|_| ())
+        .map_err(|(_, e)| e);
+    assert!(
+        matches!(
+            refused,
+            Err(Error::ShrinksEncryptedBib { block, bib: b }) if block == hop && b == bib
+        ),
+        "{refused:?}"
+    );
+}
+
+// A Previous Node or Bundle Age block encrypted on its own never reads
+// `Maybe`, even once the payload is signed and encrypted with its BIB: no
+// valid bundle has an encrypted BIB over either, so a keyless editor
+// replaces the Previous Node, as a forwarder must. A Hop Count beside them
+// still reads `Maybe`, since a signature on one can stand.
+#[test]
+fn a_previous_node_or_bundle_age_is_never_maybe() {
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .add_extension_block(block::Type::PreviousNode)
+        .unwrap()
+        .build(emit(&"ipn:3.0".parse::<eid::Eid>().unwrap()).0.into())
+        .add_extension_block(block::Type::BundleAge)
+        .unwrap()
+        .build(emit(&5_000u64).0.into())
+        .with_hop_count(&hop_info::HopInfo {
+            limit: NonZeroU8::new(30).unwrap(),
+            count: 0,
+        })
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let mut bundle = reparse(&data);
+    let number = |bundle: &Bundle, block_type: block::Type| {
+        *bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == block_type)
+            .expect("the block is present")
+            .0
+    };
+    let (previous, age, hop) = (
+        number(&bundle, block::Type::PreviousNode),
+        number(&bundle, block::Type::BundleAge),
+        number(&bundle, block::Type::HopCount),
+    );
+
+    let enc_key = aes_key();
+    let mut data = data;
+    for target in [previous, age, hop] {
+        (bundle, data) = encrypt(&bundle, &data, target, &enc_key);
+    }
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
         )
         .map_err(|(_, e)| e)
-        .expect("remove the hop count");
-    assert_eq!(removed, HashSet::from([hop]));
-    let out = editor
+        .expect("sign the payload")
         .rebuild()
-        .map(|c| Chunk::flatten(c, &encrypted_bytes))
-        .expect("rebuild after the removal");
+        .expect("rebuild signed");
+    let (both, both_bytes) = encrypt(&reparse(&signed_bytes), &signed_bytes, 1, &enc_key);
 
-    let parse::Parsed {
-        data,
-        mut bundle,
-        bcbs,
-        mut bibs,
-    } = parse::parse(Bytes::copy_from_slice(&out)).expect("parse the shrunk bundle");
-    let mut decrypted = HashMap::new();
-    let failed = checks::decrypt_and_validate_covered_bibs(
-        &data,
-        &key::KeySet::new(vec![enc_key]),
-        &mut bundle.blocks,
-        &bcbs,
-        &mut bibs,
-        &mut decrypted,
-        &HashMap::new(),
-    )
-    .expect("the keyed pass decrypts and structurally checks the BIB");
-    assert!(failed.is_empty(), "the re-encrypted BIB decrypts");
-    assert_eq!(
-        bibs.get(&bib)
-            .expect("the shrunk BIB survives")
-            .operations()
-            .keys()
-            .copied()
-            .collect::<HashSet<_>>(),
-        HashSet::from([1]),
-        "the BIB keeps the payload's operation alone"
-    );
-    let deferred = checks::verify_all_bibs(
-        &data,
-        &key::KeySet::new(vec![sign_key]),
-        &bundle.blocks,
-        &bibs,
-        &decrypted,
-        &HashMap::new(),
-    )
-    .expect("the payload's signature still verifies");
+    assert_eq!(both.blocks[&previous].bib, block::BibCoverage::None);
+    assert_eq!(both.blocks[&age].bib, block::BibCoverage::None);
+    assert_eq!(both.blocks[&hop].bib, block::BibCoverage::Maybe);
+
+    let replaced = ok(Editor::new(&both, &both_bytes).insert_block(block::Type::PreviousNode))
+        .with_data(emit(&"ipn:4.0".parse::<eid::Eid>().unwrap()).0.into())
+        .rebuild()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &both_bytes))
+        .expect("a keyless editor replaces the Previous Node");
+    let replaced = reparse(&replaced);
     assert!(
-        deferred.is_empty(),
-        "the resident payload is checked, not deferred"
+        replaced.blocks[&previous].bcb.is_none(),
+        "the replacement is plaintext"
+    );
+}
+
+// A hop count encrypted on its own reads `Maybe` once the payload is signed
+// and encrypted with its BIB: a keyless editor refuses to replace it, and one
+// with the key that decrypts the BIB learns the BIB does not cover it, and
+// replaces it.
+#[test]
+fn a_key_source_resolves_maybe_coverage() {
+    let (bundle, data) = make_bundle_with_hop_count();
+    let hop = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+        .map(|(n, _)| *n)
+        .expect("the hop count block is present");
+    let enc_key = aes_key();
+    let (encrypted, encrypted_bytes) = encrypt(&bundle, &data, hop, &enc_key);
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(16)
+    }))
+    .unwrap();
+    let signed_bytes = signer::Signer::new(&encrypted, &encrypted_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("sign the payload")
+        .rebuild()
+        .expect("rebuild signed");
+    let (both, both_bytes) = encrypt(&reparse(&signed_bytes), &signed_bytes, 1, &enc_key);
+    assert_eq!(both.blocks[&hop].bib, block::BibCoverage::Maybe);
+
+    assert!(matches!(
+        Editor::new(&both, &both_bytes).insert_block(block::Type::HopCount),
+        Err((_, Error::MaybeHasBib(n)))
+            if n == hop
+    ));
+
+    let keys = key::KeySet::new(vec![enc_key]);
+    // No BIB covers it: removing its integrity has nothing to strip, and
+    // removing it strips only its BCB operation.
+    assert!(matches!(
+        Editor::new(&both, &both_bytes).remove_integrity(hop),
+        Err((_, Error::MaybeHasBib(n)))
+            if n == hop
+    ));
+    assert!(matches!(
+        Editor::new(&both, &both_bytes)
+            .with_key_source(&keys)
+            .remove_integrity(hop),
+        Err((_, Error::NotSigned))
+    ));
+    assert!(matches!(
+        Editor::new(&both, &both_bytes).remove_block(hop),
+        Err((_, Error::MaybeHasBib(n)))
+            if n == hop
+    ));
+    let (removed, _) = Editor::new(&both, &both_bytes)
+        .with_key_source(&keys)
+        .remove_block(hop)
+        .map_err(|(_, e)| e)
+        .expect("remove the hop count")
+        .rebuild_bundle()
+        .expect("rebuild without the hop count");
+    assert!(!removed.blocks.contains_key(&hop));
+
+    let new_body = emit(&hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 1,
+    })
+    .0;
+    let (rebuilt, chunks) = ok(Editor::new(&both, &both_bytes)
+        .with_key_source(&keys)
+        .insert_block(block::Type::HopCount))
+    .with_data(new_body.clone().into())
+    .rebuild()
+    .rebuild_bundle()
+    .expect("rebuild with fresh data");
+    assert_eq!(rebuilt.blocks[&hop].bib, block::BibCoverage::None);
+    let new_data = Chunk::flatten(chunks, &both_bytes);
+    let replaced = parse::parse(Bytes::copy_from_slice(&new_data))
+        .expect("the emitted wire form parses")
+        .bundle;
+    assert_eq!(
+        replaced.blocks[&hop].payload(&new_data),
+        Some(new_body.as_slice())
     );
 }
 
@@ -2702,7 +2945,7 @@ fn a_removed_bibs_target_reads_its_current_coverage() {
     let (signed, signed_bytes, hop, bib, _) = make_signed_hop_count(false, primary_excluded());
     let reused = || {
         let (editor, removed) = Editor::new(&signed, &signed_bytes)
-            .remove_blocks(HashSet::from([bib]), &key::KeySet::new(Vec::new()))
+            .remove_blocks(&HashSet::from([bib]))
             .map_err(|(_, e)| e)
             .expect("remove the BIB");
         assert_eq!(removed, HashSet::from([bib]));
@@ -2744,4 +2987,381 @@ fn a_removed_bibs_target_reads_its_current_coverage() {
 
     let removed = finish(ok(reused().remove_block(hop)));
     assert!(!removed.blocks.contains_key(&hop), "the hop count is gone");
+}
+
+// The headers of `data` alone, as a streaming receiver holds them before the
+// payload's data arrives, parsed: the payload block's extents over-claim.
+fn headers_only(data: &[u8]) -> (Bundle, Bytes) {
+    let parsed = headers_parsed(data);
+    (parsed.bundle, parsed.data)
+}
+
+// The headers-only parse of `data`, a bundle whose payload streams, as the
+// streaming parser hands it over at the payload.
+fn headers_parsed(data: &[u8]) -> parse::Parsed {
+    let mut parser = parse::BundleParser::new(256);
+    for chunk in data.chunks(64) {
+        match parser.push(Bytes::copy_from_slice(chunk)).unwrap() {
+            parse::ParserProgress::NeedMore(_) => {}
+            parse::ParserProgress::Partial { consumed, .. } => {
+                return parser.finish(consumed).unwrap();
+            }
+            parse::ParserProgress::Ready(_) => panic!("a payload this large is streamed"),
+        }
+    }
+    panic!("the parser never reached the payload");
+}
+
+// A generated HMAC key, its value immaterial.
+fn hmac_key() -> key::Key {
+    serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": rand_k(32)
+    }))
+    .unwrap()
+}
+
+// A bundle whose 4 KiB payload, with `signed` a BIB over it, its source then
+// encrypted, encrypting the BIB too (RFC 9172 §3.9): the bundle, its bytes,
+// the payload's plaintext and the keys.
+fn encrypted_payload(signed: bool) -> (Bundle, Box<[u8]>, Vec<u8>, key::KeySet) {
+    let plaintext: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(plaintext.as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let (mut bundle, mut data) = (reparse(&data), data);
+    let sign = hmac_key();
+    if signed {
+        data = signer::Signer::new(&bundle, &data)
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                "ipn:2.1".parse().unwrap(),
+                &sign,
+            )
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .rebuild()
+            .unwrap();
+        bundle = reparse(&data);
+    }
+    let enc = aes_key();
+    let (bundle, data) = encrypt(&bundle, &data, 1, &enc);
+    (bundle, data, plaintext, key::KeySet::new(vec![sign, enc]))
+}
+
+// The payload's plaintext, decrypted as it streams from the headers alone,
+// as its security acceptor's drain decrypts it.
+fn streamed_plaintext(full: &[u8], keys: &key::KeySet) -> zeroize::Zeroizing<Box<[u8]>> {
+    let (headers_bundle, headers) = headers_only(full);
+    let parsed = parse::parse(Bytes::copy_from_slice(full)).unwrap();
+    let bcb = parsed.bundle.blocks[&1].bcb.unwrap();
+    let ops = &parsed.bcbs[&bcb];
+    let data = &parsed.bundle.blocks[&1].data;
+    let mut decryptor = ops.operations()[&1]
+        .begin_decrypt(
+            keys,
+            &bpsec::bcb::OperationArgs {
+                source: ops.source(),
+                target: 1,
+                security_block: bcb,
+                blocks: &reader::PlainReader {
+                    blocks: &headers_bundle.blocks,
+                    source_data: &headers,
+                },
+            },
+            data.end - data.start,
+        )
+        .unwrap();
+    decryptor.update(parsed.bundle.blocks[&1].payload(&parsed.data).unwrap());
+    decryptor.finish().unwrap()
+}
+
+// The streamed rebuild framed around `plaintext`, fed to its trailer in
+// `run`-byte runs: the bundle as the store would hold it.
+fn assemble(
+    chunks: Vec<Chunk>,
+    source: &[u8],
+    plaintext: &[u8],
+    mut trailer: builder::PayloadTrailer,
+    run: usize,
+) -> Vec<u8> {
+    let mut out = Chunk::flatten(chunks, source).into_vec();
+    assert_eq!(
+        out.pop(),
+        Some(0xFF),
+        "the flattened headers end in the outer break"
+    );
+    for piece in plaintext.chunks(run) {
+        trailer.update(piece).unwrap();
+        out.extend_from_slice(piece);
+    }
+    out.extend(trailer.finish().unwrap());
+    out
+}
+
+// The streamed rebuild of the payload's acceptor, which holds only the
+// headers: the payload's encryption removed for a plaintext of
+// `plaintext_len` bytes that streams, with `plaintexts` for any coupled
+// block, and, where `accept_bib`, the payload's BIB too.
+fn streamed_rebuild(
+    headers_bundle: &Bundle,
+    headers: &[u8],
+    plaintext_len: u64,
+    plaintexts: Option<&HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>>,
+    keys: &key::KeySet,
+    accept_bib: bool,
+) -> (Bundle, Vec<Chunk>, builder::PayloadTrailer) {
+    let cache = plaintexts.map(|plaintext| Decrypted {
+        plaintext: plaintext.clone(),
+        ..Default::default()
+    });
+    let mut editor = Editor::new(headers_bundle, headers)
+        .with_streamed_payload(plaintext_len)
+        .with_key_source(keys);
+    if let Some(cache) = &cache {
+        editor = editor.with_decrypted(cache);
+    }
+    let mut editor = editor
+        .remove_encryption(1)
+        .map_err(|(_, e)| e)
+        .expect("remove the payload's encryption");
+    if accept_bib {
+        editor = ok(editor.remove_integrity(1));
+    }
+    editor.rebuild_streamed().unwrap()
+}
+
+// The payload's acceptor, holding only the headers, removes the payload's
+// encryption for a plaintext that streams: the rebuild frames the headers
+// and the payload's header for the plaintext's length, and the trailer ends
+// it. Assembled, however the plaintext is fed, it is the bundle with its
+// payload in plaintext, keeping the CRC its source gave it, computed over
+// the plaintext, and its index is the stored form's.
+#[test]
+fn a_streamed_payload_is_written_in_plaintext() {
+    let (_, full, plaintext, keys) = encrypted_payload(false);
+    let decrypted = streamed_plaintext(&full, &keys);
+    assert_eq!(decrypted.as_ref(), plaintext.as_slice());
+    let (headers_bundle, headers) = headers_only(&full);
+
+    for run in [1, 7, 4096] {
+        let (index, chunks, trailer) = streamed_rebuild(
+            &headers_bundle,
+            &headers,
+            decrypted.len() as u64,
+            None,
+            &key::KeySet::new(Vec::new()),
+            false,
+        );
+        let stored = assemble(chunks, &headers, &decrypted, trailer, run);
+        let parsed = parse::parse(Bytes::from(stored)).unwrap();
+        assert_eq!(
+            parsed.bundle.blocks[&1].payload(&parsed.data),
+            Some(plaintext.as_slice()),
+            "run {run}"
+        );
+        assert_eq!(parsed.bundle.blocks[&1].bcb, None);
+        assert_eq!(
+            parsed.bundle.blocks[&1].crc_type,
+            crc::CrcType::CRC32_CASTAGNOLI
+        );
+        assert!(
+            parsed.bcbs.is_empty(),
+            "the BCB is gone with its one target"
+        );
+        assert_eq!(
+            parsed.bundle.blocks, index.blocks,
+            "run {run}: the index is the stored form's"
+        );
+    }
+}
+
+// An encrypted BIB over the payload goes with the payload's BCB (RFC 9172
+// §3.9): the acceptor supplies the BIB's plaintext from its cache, and the
+// BIB is written in plaintext over the plaintext payload, where it
+// verifies; accepting the BIB too removes it, and the payload keeps its
+// CRC.
+#[test]
+fn a_streamed_payloads_encrypted_bib_goes_with_its_bcb() {
+    let (full_bundle, full, plaintext, keys) = encrypted_payload(true);
+    let decrypted = streamed_plaintext(&full, &keys);
+    // The acceptor's cache, as the receiver's keyed pass leaves it: the
+    // encrypted BIB over the payload, decrypted by necessity.
+    let mut parsed = headers_parsed(&full);
+    common::verify_as_receiver(&mut parsed, &keys, &HashSet::from([1])).unwrap();
+    let parse::Parsed {
+        data: headers,
+        bundle: headers_bundle,
+        decrypted: cache,
+        ..
+    } = parsed;
+    let bib = *full_bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::BlockIntegrity)
+        .unwrap()
+        .0;
+    assert!(
+        cache.plaintext.contains_key(&bib),
+        "the encrypted BIB is in the cache"
+    );
+
+    let (_, chunks, trailer) = streamed_rebuild(
+        &headers_bundle,
+        &headers,
+        decrypted.len() as u64,
+        Some(&cache.plaintext),
+        &key::KeySet::new(Vec::new()),
+        false,
+    );
+    let stored = assemble(chunks, &headers, &decrypted, trailer, 512);
+    let parsed = parse::parse(Bytes::from(stored)).unwrap();
+    assert_eq!(
+        parsed.bundle.blocks[&1].payload(&parsed.data),
+        Some(plaintext.as_slice())
+    );
+    assert!(parsed.bcbs.is_empty(), "both BCBs are gone");
+    assert_eq!(
+        parsed.bundle.blocks[&bib].bcb, None,
+        "the BIB is in plaintext"
+    );
+    common::verify_all_bibs(&parsed.data, &keys)
+        .expect("the BIB verifies over the plaintext payload");
+
+    let (_, chunks, trailer) = streamed_rebuild(
+        &headers_bundle,
+        &headers,
+        decrypted.len() as u64,
+        Some(&cache.plaintext),
+        &key::KeySet::new(Vec::new()),
+        true,
+    );
+    let stored = assemble(chunks, &headers, &decrypted, trailer, 512);
+    let parsed = parse::parse(Bytes::from(stored)).unwrap();
+    assert!(parsed.bibs.is_empty(), "the accepted BIB is removed");
+    assert_eq!(parsed.bundle.blocks[&1].bib, block::BibCoverage::None);
+    assert_eq!(
+        parsed.bundle.blocks[&1].crc_type,
+        crc::CrcType::CRC32_CASTAGNOLI
+    );
+    assert_eq!(
+        parsed.bundle.blocks[&1].payload(&parsed.data),
+        Some(plaintext.as_slice())
+    );
+}
+
+// A streamed rebuild needs the payload declared as streamed, and its
+// encryption removed for the stream: otherwise there is no payload to
+// frame.
+#[test]
+fn a_streamed_rebuild_needs_its_payload_accepted() {
+    let (_, full, _, _) = encrypted_payload(false);
+    let (headers_bundle, headers) = headers_only(&full);
+    assert!(matches!(
+        Editor::new(&headers_bundle, &headers).rebuild_streamed(),
+        Err(Error::Builder(builder::Error::NoBlockData))
+    ));
+    assert!(matches!(
+        Editor::new(&headers_bundle, &headers)
+            .with_streamed_payload(10)
+            .rebuild_streamed(),
+        Err(Error::Builder(builder::Error::NoBlockData))
+    ));
+}
+
+// Fed short, the trailer refuses to end the wire form: the declared length
+// framed the payload's header.
+#[test]
+fn a_streamed_payload_fed_short_is_refused() {
+    let (_, full, _, keys) = encrypted_payload(false);
+    let decrypted = streamed_plaintext(&full, &keys);
+    let (headers_bundle, headers) = headers_only(&full);
+    let (_, _, mut trailer) = streamed_rebuild(
+        &headers_bundle,
+        &headers,
+        decrypted.len() as u64,
+        None,
+        &key::KeySet::new(Vec::new()),
+        false,
+    );
+    trailer.update(&decrypted[..decrypted.len() - 1]).unwrap();
+    assert!(trailer.finish().is_err());
+}
+
+// The resident path keeps the payload's CRC too: removing the payload's
+// encryption and then its BIB in one editor leaves the CRC its source gave
+// it, computed over the plaintext.
+#[test]
+fn removing_encryption_then_integrity_keeps_the_crc() {
+    let (bundle, data, plaintext, keys) = encrypted_payload(true);
+    let editor = Editor::new(&bundle, &data)
+        .with_key_source(&keys)
+        .remove_encryption(1)
+        .map_err(|(_, e)| e)
+        .unwrap();
+    let rebuilt = ok(editor.remove_integrity(1))
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &data))
+        .unwrap();
+    let parsed = parse::parse(Bytes::from(rebuilt.into_vec())).unwrap();
+    assert_eq!(
+        parsed.bundle.blocks[&1].crc_type,
+        crc::CrcType::CRC32_CASTAGNOLI
+    );
+    assert_eq!(
+        parsed.bundle.blocks[&1].payload(&parsed.data),
+        Some(plaintext.as_slice())
+    );
+}
+
+// A payload received in plaintext streams as it stands: its acceptor, holding
+// only the headers, removes the BIB over it and the payload keeps its CRC,
+// framed for its received length.
+#[test]
+fn a_plaintext_payloads_accepted_bib_streams() {
+    let plaintext: Vec<u8> = (0..4096u32).map(|i| (i % 241) as u8).collect();
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(plaintext.as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let bundle = reparse(&data);
+    let sign = hmac_key();
+    let signed = signer::Signer::new(&bundle, &data)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &sign,
+        )
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .rebuild()
+        .unwrap();
+    let (headers_bundle, headers) = headers_only(&signed);
+    assert_eq!(
+        headers_bundle.blocks[&1].crc_type,
+        crc::CrcType::CRC32_CASTAGNOLI,
+        "signing leaves the payload's CRC"
+    );
+
+    let editor =
+        Editor::new(&headers_bundle, &headers).with_streamed_payload(plaintext.len() as u64);
+    let (index, chunks, trailer) = ok(editor.remove_integrity(1)).rebuild_streamed().unwrap();
+    let stored = assemble(chunks, &headers, &plaintext, trailer, 100);
+    let parsed = parse::parse(Bytes::from(stored)).unwrap();
+    assert!(parsed.bibs.is_empty(), "the accepted BIB is removed");
+    assert_eq!(
+        parsed.bundle.blocks[&1].crc_type,
+        crc::CrcType::CRC32_CASTAGNOLI
+    );
+    assert_eq!(
+        parsed.bundle.blocks[&1].payload(&parsed.data),
+        Some(plaintext.as_slice())
+    );
+    assert_eq!(parsed.bundle.blocks, index.blocks);
 }

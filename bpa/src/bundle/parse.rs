@@ -201,6 +201,7 @@ where
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(data)?;
     let key_source = keys_for(&bcb_ops, &bib_ops, key_provider, &bundle, &data);
 

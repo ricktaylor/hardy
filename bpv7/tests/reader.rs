@@ -2,14 +2,14 @@
 //! states, the lend (trait) / give (inherent) split and its consuming give,
 //! and the memoisation of decrypt outcomes.
 
-use core::cell::Cell;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 
 use bytes::Bytes;
 use hardy_bpv7::{
     Error,
     block::{Block, Payload},
-    bpsec::{self, DecryptingReader, encryptor, key, rfc9173::ScopeFlags},
+    bpsec::{self, Decrypted, DecryptingReader, encryptor, key, rfc9173::ScopeFlags},
     builder::Builder,
     creation_timestamp::CreationTimestamp,
     eid::Eid,
@@ -27,25 +27,25 @@ const PAYLOAD: &[u8] = b"reader memoisation plaintext";
 // deterministically: a memoised outcome must not consult the keys again.
 struct CountingKeys<'a> {
     inner: &'a key::KeySet,
-    hits: Cell<usize>,
+    hits: AtomicUsize,
 }
 
 impl<'a> CountingKeys<'a> {
     fn new(inner: &'a key::KeySet) -> Self {
         Self {
             inner,
-            hits: Cell::new(0),
+            hits: AtomicUsize::new(0),
         }
     }
 
     fn hits(&self) -> usize {
-        self.hits.get()
+        self.hits.load(Ordering::Relaxed)
     }
 }
 
 impl key::KeySource for CountingKeys<'_> {
     fn key<'k>(&'k self, source: &Eid, operations: &[key::Operation]) -> Option<&'k key::Key> {
-        self.hits.set(self.hits.get() + 1);
+        self.hits.fetch_add(1, Ordering::Relaxed);
         self.inner.key(source, operations)
     }
 }
@@ -180,6 +180,67 @@ fn covered_block_decrypts_once_and_lends() {
         after_first,
         "the consuming door moves the cached plaintext"
     );
+}
+
+/// A reader seeded with an earlier pass's outcomes over the same parse
+/// decrypts none of them again: a seeded plaintext lends without a key
+/// lookup, and the reader hands it back for the pass after.
+#[test]
+fn seeded_plaintext_is_never_decrypted_again() {
+    let key = enc_key();
+    let keys = key::KeySet::new(vec![key.clone()]);
+    let (data, blocks, bcbs) = encrypted_bundle(&key);
+
+    // An earlier pass decrypts the payload and hands its outcome on.
+    let first = DecryptingReader::new(&blocks, &data, &bcbs, &keys);
+    assert!(matches!(
+        first.block(1),
+        Some((_, Availability::Available(_)))
+    ));
+    let decrypted = first.into_decrypted();
+    assert_eq!(
+        decrypted.plaintext.get(&1).map(|p| p.as_ref()),
+        Some(PAYLOAD)
+    );
+
+    let counting = CountingKeys::new(&keys);
+    let reader = DecryptingReader::new(&blocks, &data, &bcbs, &counting).with_decrypted(decrypted);
+    let Some((_, Availability::Available(payload))) = reader.block(1) else {
+        panic!("the seeded plaintext lends");
+    };
+    assert_eq!(payload.as_ref(), PAYLOAD);
+    assert_eq!(counting.hits(), 0, "a seeded plaintext needs no key");
+    assert_eq!(
+        reader
+            .into_decrypted()
+            .plaintext
+            .get(&1)
+            .map(|p| p.as_ref()),
+        Some(PAYLOAD),
+        "the seeded plaintext is handed back"
+    );
+}
+
+/// A seeded failure replays through the lending door without another
+/// decrypt, and is handed back as a failure.
+#[test]
+fn seeded_failure_is_never_decrypted_again() {
+    let key = enc_key();
+    let keys = key::KeySet::new(vec![key.clone()]);
+    let (data, blocks, bcbs) = encrypted_bundle(&key);
+
+    let counting = CountingKeys::new(&keys);
+    let reader =
+        DecryptingReader::new(&blocks, &data, &bcbs, &counting).with_decrypted(Decrypted {
+            plaintext: HashMap::new(),
+            failed: [1].into_iter().collect(),
+        });
+    assert!(matches!(
+        reader.block(1),
+        Some((_, Availability::NotDecryptable))
+    ));
+    assert_eq!(counting.hits(), 0, "a seeded failure is not retried");
+    assert!(reader.into_decrypted().failed.contains(&1));
 }
 
 #[test]

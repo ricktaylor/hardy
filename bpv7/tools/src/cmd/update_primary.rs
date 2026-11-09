@@ -81,7 +81,7 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let mut editor = Editor::new(&raw, &data);
+        let mut editor = Editor::new(&raw, &data).with_key_source(&key_store);
 
         // Update lifetime if provided
         if let Some(lifetime) = self.lifetime {

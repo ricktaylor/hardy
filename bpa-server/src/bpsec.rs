@@ -681,6 +681,7 @@ mod tests {
             mut bundle,
             bcbs,
             mut bibs,
+            ..
         } = parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE)).expect("parse failed");
 
         let mut decrypted = HashMap::new();

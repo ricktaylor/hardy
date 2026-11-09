@@ -5,18 +5,6 @@ use thiserror::Error;
 use crate::bpsec::{Context, key};
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Block is not the target of a BCB")]
-    NotEncrypted,
-
-    #[error("Block is not the target of a BIB")]
-    NotSigned,
-
-    #[error("Block {0} may be protected by an encrypted BIB that couldn't be decrypted")]
-    MaybeHasBib(u64),
-
-    #[error("Cannot remove BCB {0} without also removing all of its targets")]
-    StrandsCiphertext(u64),
-
     #[error("Mismatch Target and Results arrays")]
     MismatchedTargetResult,
 
@@ -31,9 +19,6 @@ pub enum Error {
 
     #[error("Unrecognised BPSec context")]
     UnrecognisedContext(u64),
-
-    #[error("The target block has a CRC")]
-    CrcPresent,
 
     #[error("BCBs must not target other BCBs or the primary block")]
     InvalidBCBTarget,
@@ -73,6 +58,12 @@ pub enum Error {
 
     #[error("BIBs that target blocks that are targets of BCBs must also be encrypted")]
     BIBMustBeEncrypted,
+
+    /// An encrypted BIB carries an integrity operation on Previous Node or
+    /// Bundle Age block `n`, which no valid bundle does: see
+    /// [`Checked::Conflicting`](crate::bpsec::checks::Checked::Conflicting).
+    #[error("An encrypted BIB covers per-hop block {0}")]
+    EncryptedBibCoversPerHopBlock(u64),
 
     #[error(
         "The same security service must not be applied to a security target more than once in a bundle"

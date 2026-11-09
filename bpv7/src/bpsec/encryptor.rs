@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::bpsec::rfc9173;
 use crate::{
     HashMap, block,
-    bpsec::{self, bcb, key},
+    bpsec::{self, bcb, edit::EditorReader, key},
     bundle, crc,
     editor::{self, Chunk, Editor},
     eid,
@@ -48,7 +48,7 @@ impl From<crate::Error> for Error {
 
 impl From<bpsec::Error> for Error {
     fn from(e: bpsec::Error) -> Self {
-        crate::Error::from(e).into()
+        Error::Editor(e.into())
     }
 }
 
@@ -93,8 +93,10 @@ impl<'a> Encryptor<'a> {
     ///
     /// A BIB over the target is encrypted with it, as RFC 9172 §3.9
     /// requires, together with every other block that BIB covers, each under
-    /// its own BCB: the BIB is never split, since a split would make this
-    /// node the security source of the moved results.
+    /// its own BCB. The BIB is never split: moved results survive only where
+    /// its scope leaves out the security header, and would then have to keep
+    /// their original source, which RFC 9172 §3.6 does not let the new BIB
+    /// name.
     ///
     /// BCB-AES-GCM gives every target its own BCB, for its own IV. Under a
     /// context that lets targets share a BCB, targets queued with the same
@@ -135,12 +137,13 @@ impl<'a> Encryptor<'a> {
             return Err((self, Error::InvalidTarget(block_number)));
         }
 
-        /* RFC 9172 Section 3.9 states that BCBs targetting blocks with BIBs MUST also target the BIB
-         * We take the 'all-or-nothing' approach and encrypt all BIB targets, rather than splitting the BIB
-         * because splitting requires integrity keys */
+        // RFC 9172 §3.9: a BCB over a block a BIB covers must encrypt the
+        // BIB too. Every other target of that BIB is encrypted with it rather
+        // than the BIB split: the moved results would keep their original
+        // source, which §3.6 does not let the new BIB name.
         match block.bib {
             block::BibCoverage::Maybe => {
-                return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
+                return Err((self, editor::Error::MaybeHasBib(block_number).into()));
             }
             block::BibCoverage::Some(bib_block) => {
                 let Some(bib) = self.original.blocks.get(&bib_block) else {
@@ -274,28 +277,12 @@ impl<'a> Encryptor<'a> {
 
         let mut editor = Editor::new(self.original, self.source_data);
 
-        // Now build BCB blocks
+        // Now build BCB blocks. Every target keeps its CRC type as it
+        // stands, the CRC computed over the ciphertext as the block is
+        // emitted: no security operation changes a target's CRC, and the
+        // CRC is no part of the additional authenticated data (RFC 9173
+        // §4.7).
         for (bpsec_source, context, targets) in bcbs {
-            /* RFC 9173, Section 4.8.1 states:
-             * Prior to encryption, if a CRC value is present for the target block,
-             * then that CRC value MUST be removed.  This requires removing the CRC
-             * field from the target block and setting the CRC type field of the
-             * target block to "no CRC is present." */
-            for (target, _) in &targets {
-                let target_block = self
-                    .original
-                    .blocks
-                    .get(target)
-                    .expect("Missing target block");
-                if !matches!(target_block.crc_type, crc::CrcType::None) {
-                    editor = editor
-                        .update_block_inner(*target)
-                        .map_err(|(_, e)| e)?
-                        .with_crc_type(crc::CrcType::None)
-                        .rebuild();
-                }
-            }
-
             // Reserve a block number for the BCB block
             let b = editor
                 .alloc_block(block::Type::BlockSecurity)
@@ -306,18 +293,18 @@ impl<'a> Encryptor<'a> {
                     ..Default::default()
                 });
 
-            let source = b.block_number();
+            let security_block = b.block_number();
             editor = b.rebuild();
 
-            let mut editor_bs = editor::EditorReader { editor };
+            let mut editor_bs = EditorReader { editor };
             let mut operations = HashMap::with_capacity(targets.len());
             for (target, key) in targets {
                 let (op, data) = build_bcb_data(
                     context.clone(),
                     bcb::OperationArgs {
-                        bpsec_source: &bpsec_source,
+                        source: &bpsec_source,
                         target,
-                        source,
+                        security_block,
                         blocks: &editor_bs,
                     },
                     key,
@@ -340,7 +327,7 @@ impl<'a> Encryptor<'a> {
             // Rewrite the BCB with the real data
             editor = editor_bs
                 .editor
-                .update_block_inner(source)
+                .update_block_inner(security_block)
                 .map_err(|(_, e)| e)?
                 .with_data(
                     emit(&bcb::OperationSet {
@@ -353,7 +340,7 @@ impl<'a> Encryptor<'a> {
                 .rebuild();
 
             for target in target_blocks {
-                editor.set_bcb_target(target, source);
+                editor.set_bcb_target(target, security_block);
             }
         }
 

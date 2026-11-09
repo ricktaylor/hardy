@@ -113,7 +113,7 @@ impl Command {
 
         let block_type: block::Type = self.block_type.into();
 
-        let editor = Editor::new(&bundle, &data);
+        let editor = Editor::new(&bundle, &data).with_key_source(&key_store);
 
         // Try to add the block, if it fails due to duplicate and --force is set, replace it
         let block_builder = match editor.push_block(block_type) {

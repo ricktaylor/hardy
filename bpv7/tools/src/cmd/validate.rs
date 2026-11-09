@@ -35,11 +35,26 @@ impl Command {
         for input in self.files {
             let bytes = input.read_all()?;
 
-            // Structural parse + keyed BPSec validation, then check the
-            // known extension blocks for canonical encoding (the only
-            // other user-visible diagnostic this command reports).
+            // Structural parse + keyed BPSec validation, then every BIB the
+            // keys reach verified over the bundle as its destination reads
+            // it, then the known extension blocks checked for canonical
+            // encoding (the only other user-visible diagnostic this command
+            // reports).
             let result = parse_with_keys(bytes, &key_store)
-                .and_then(|parsed| known_blocks_canonical(&parsed.data, &parsed.bundle.blocks));
+                .map_err(anyhow::Error::from)
+                .and_then(|parsed| {
+                    let mut accepted = accepted_copy(&parsed, &key_store)?;
+                    let facts = accepted.check(
+                        &key_store,
+                        &HashMap::new(),
+                        Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+                    )?;
+                    if failed(&facts, SecurityService::Integrity) {
+                        return Err(bpsec::Error::IntegrityCheckFailed.into());
+                    }
+                    assert_nothing_deferred(&facts, &accepted.bundle);
+                    Ok(known_blocks_canonical(&parsed.data, &parsed.bundle.blocks)?)
+                });
 
             match result {
                 Err(e) => {

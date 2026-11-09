@@ -1,13 +1,19 @@
-use bytes::Bytes;
-use hardy_bpv7::{bpsec::key, checks, parse, rewrite};
-use serde_json::json;
 use std::collections::{HashMap, HashSet};
+
+use bytes::Bytes;
+use hardy_bpv7::{
+    bpsec::{Role, Roles, SecurityServices, edit::BPSecEditor, key},
+    editor::Editor,
+    parse, rewrite,
+};
+use serde_json::json;
+
 /// Local parse pipeline for the fuzz harness, exercising the bpv7 parser:
-/// classify A1/A2/A3 (with the §A delete-block list), `checks::verify`
-/// (§B decrypt-and-validate BCB-covered BIBs, §C8 decrypt BCB-protected
-/// extension blocks, §C7 verify all BIBs), §D decode the extension-block
-/// fields it can (skipping anything that didn't decrypt), then
-/// `apply_rewrites` (§E) for the rewrite chunks.
+/// classify A1/A2/A3 (with the §A delete-block list), the receiver's keyed
+/// pass (`Parsed::check`: §B decrypt-and-validate BCB-covered BIBs, §C8
+/// decrypt BCB-protected extension blocks, §C7 verify all BIBs), §D decode
+/// the extension-block fields it can (skipping anything
+/// that didn't decrypt), then `apply_rewrites` (§E) for the rewrite chunks.
 ///
 /// This is **not** a security acceptor: it enforces no NoKey /
 /// decrypt-failure policy. The goal is to drive the parse/decode paths and
@@ -19,49 +25,68 @@ use std::collections::{HashMap, HashSet};
 ///   flattens for the convergence replay.
 /// * `Ok(None)` when the bundle parsed cleanly with no rewrites needed.
 /// * `Err(err)` for any parse / validation failure.
-#[allow(clippy::result_large_err)]
 fn parse_and_rewrite(
     data: &[u8],
     keys: &key::KeySet,
-) -> Result<Option<Vec<hardy_bpv7::editor::Chunk>>, hardy_bpv7::Error> {
-    let parse::Parsed {
-        data,
-        mut bundle,
-        bcbs: bcb_ops,
-        bibs: mut bib_ops,
-    } = parse::parse(Bytes::copy_from_slice(data))?;
+) -> Result<Option<Vec<hardy_bpv7::editor::Chunk>>, Box<dyn std::error::Error>> {
+    let mut parsed = parse::parse(Bytes::copy_from_slice(data))?;
 
-    // §A — classify (Unsupported errors propagate); collect deletables.
-    let classification = checks::classify_unsupported(&bundle.blocks, &bcb_ops, &bib_ops, &[])?;
-    let mut to_remove: HashSet<u64> = HashSet::new();
-    to_remove.extend(classification.unrecognised_deletable);
-    for n in &classification.bib_deletable {
-        to_remove.insert(*n);
-        bib_ops.remove(n);
+    // §A — the parser's classification (a deletion verdict propagates);
+    // collect deletables.
+    if let Some(error) = parsed.classification.delete_bundle.take() {
+        return Err(error.into());
     }
+    let mut to_remove: HashSet<u64> = HashSet::new();
+    to_remove.extend(parsed.classification.unrecognised_deletable.iter().copied());
+    to_remove.extend(parsed.classification.bib_deletable.iter().copied());
 
-    // §B + §C8 + §C7 — composed keyed verification, to exercise the
-    // parser's decrypt/verify paths. The fuzzer is not a security acceptor,
-    // so it enforces no NoKey/decrypt-failure policy: the returned
-    // `VerifyFacts` (which blocks were NoKey / failed) are ignored, and
-    // anything that did decrypt lands in `decrypted` for §D to decode
-    // below. A genuine structural or BIB-verify error still propagates as a
-    // parse failure.
-    let mut decrypted = HashMap::new();
+    // The composed keyed verification, to exercise the parser's
+    // decrypt/verify paths. The fuzzer is not a security acceptor, so it
+    // enforces no NoKey/failure policy: the returned `Facts` are ignored,
+    // and anything that did decrypt lands in `decrypted` for §D to decode
+    // below. A genuine structural error still propagates as a parse
+    // failure.
     let to_update: HashMap<u64, Vec<u8>> = HashMap::new();
-    checks::verify(
-        &data,
+    let per_hop: HashMap<u64, Roles> = parsed
+        .bundle
+        .blocks
+        .iter()
+        .filter(|(_, b)| {
+            matches!(
+                b.block_type,
+                hardy_bpv7::block::Type::PreviousNode
+                    | hardy_bpv7::block::Type::BundleAge
+                    | hardy_bpv7::block::Type::HopCount
+            )
+        })
+        .map(|(&n, _)| (n, Roles::each(Role::Acceptor, SecurityServices::BOTH)))
+        .collect();
+    parsed.check(
         keys,
-        &mut bundle.blocks,
-        &bcb_ops,
-        &mut bib_ops,
-        &mut decrypted,
-        &to_update,
+        &per_hop,
+        Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
     )?;
+
+    // The destination's acceptance of every BCB, on a scratch copy, to
+    // exercise the decrypt path, the coupling and the checks a decrypted BIB
+    // gets; its failures are the bundle's, so they are ignored.
+    let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(keys);
+    for (&n, block) in &parsed.bundle.blocks {
+        if block.bcb.is_some() {
+            editor = match editor.remove_encryption(n) {
+                Ok(editor) | Err((editor, _)) => editor,
+            };
+        }
+    }
+    let _ = editor.rebuild();
 
     // §D — extension-field extraction + canonical re-emit queueing.
     let mut to_update = to_update;
-    for (n, payload) in extract_canonical_rewrites(&data, &bundle.blocks, &decrypted)? {
+    for (n, payload) in extract_canonical_rewrites(
+        &parsed.data,
+        &parsed.bundle.blocks,
+        &parsed.decrypted.plaintext,
+    )? {
         to_update.insert(n, payload);
     }
 
@@ -71,8 +96,12 @@ fn parse_and_rewrite(
 
     // §E — apply rewrites; discard the post-rewrite Bundle (fuzz only
     // needs the chunks for its convergence replay).
-    rewrite::apply_rewrites(&data, &bundle, keys, to_update, to_remove)
-        .map(|opt| opt.map(|(_b, chunks)| chunks))
+    Ok(rewrite::apply_rewrites(
+        Editor::new(&parsed.bundle, &parsed.data).with_key_source(keys),
+        to_update,
+        to_remove,
+    )?
+    .map(|(_, chunks)| chunks))
 }
 
 fn parse_exact<T>(data: &[u8], field: &'static str) -> Result<T, hardy_bpv7::Error>

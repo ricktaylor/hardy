@@ -10,7 +10,7 @@ use hardy_bpv7::{
     Bundle, block,
     bpsec::{self, edit::BPSecEditor, key, rfc9173::ScopeFlags, signer},
     builder::Builder,
-    checks, crc,
+    crc,
     creation_timestamp::CreationTimestamp,
     editor::Editor,
     parse,
@@ -34,12 +34,11 @@ fn reparse(
     (data, bundle, bibs)
 }
 
-// Signing the primary block must remove its CRC before generating the IPPT
-// (RFC 9173 §3.8.1 — the target's CRC MUST be removed; no primary exemption),
-// and the resulting signature must verify (sign and verify compute the IPPT over
-// the same CRC-removed canonical primary).
+// Signing the primary block leaves its CRC as it stands, the primary being
+// immutable (RFC 9171 §4.3.1), and the signature verifies over the primary
+// exactly as received: its bytes are unchanged.
 #[test]
-fn sign_primary_removes_crc_and_verifies() {
+fn sign_primary_keeps_its_crc_and_verifies() {
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_payload(b"sign-primary test".as_slice().into())
@@ -75,23 +74,17 @@ fn sign_primary_removes_crc_and_verifies() {
         .expect("Failed to rebuild");
 
     // Round-trip: the signature must verify.
-    let (data, signed, bibs) = reparse(&signed_bytes);
-    let deferred = checks::verify_all_bibs(
-        &data,
-        &keys,
-        &signed.blocks,
-        &bibs,
-        &HashMap::new(),
-        &HashMap::new(),
-    )
-    .expect("signed primary bundle must verify");
-    assert!(deferred.is_empty(), "a complete buffer defers nothing");
+    let (data, signed, _) = reparse(&signed_bytes);
+    common::verify_all_bibs(&data, &keys).expect("signed primary bundle must verify");
 
-    // §3.8.1: the primary's CRC must have been removed before signing.
     assert_eq!(
-        signed.blocks[&0].crc_type,
-        crc::CrcType::None,
-        "signing the primary must remove its CRC (RFC 9173 §3.8.1)"
+        signed.blocks[&0].crc_type, raw.blocks[&0].crc_type,
+        "signing the primary keeps its CRC"
+    );
+    assert_eq!(
+        signed.blocks[&0].payload(&data),
+        raw.blocks[&0].payload(&bundle_bytes),
+        "the primary's bytes are unchanged"
     );
     assert!(matches!(signed.blocks[&0].bib, block::BibCoverage::Some(_)));
 }
@@ -130,28 +123,18 @@ fn remove_integrity_clears_target_coverage() {
         .rebuild()
         .expect("Failed to rebuild");
 
-    let (data, signed, bibs) = reparse(&signed_bytes);
-    let deferred = checks::verify_all_bibs(
-        &data,
-        &keys,
-        &signed.blocks,
-        &bibs,
-        &HashMap::new(),
-        &HashMap::new(),
-    )
-    .expect("Failed to verify signed bundle");
-    assert!(deferred.is_empty(), "a complete buffer defers nothing");
+    let (data, signed, _) = reparse(&signed_bytes);
+    common::verify_all_bibs(&data, &keys).expect("Failed to verify signed bundle");
     assert!(
         matches!(signed.blocks[&1].bib, block::BibCoverage::Some(_)),
         "payload block should report BIB coverage after signing"
     );
-    // Default scope flags include the primary block in the IPPT, but the primary
-    // is not the BIB target here — RFC 9173 §3.8.1 removes only the *target's*
-    // CRC, so the primary retains its CRC (included as-is per §3.7 step 2).
+    // Default scope flags include the primary block in the IPPT: the primary
+    // keeps its CRC, included as it stands (§3.7), as every block does.
     assert_ne!(
         signed.blocks[&0].crc_type,
         crc::CrcType::None,
-        "primary is IPPT scope context, not a target, so its CRC is retained"
+        "the primary keeps its CRC"
     );
 
     // remove_integrity() takes the *target* block number, not the BIB's.
