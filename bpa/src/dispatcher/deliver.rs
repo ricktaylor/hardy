@@ -1,4 +1,4 @@
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{bpsec::key::KeySet, status_report::ReasonCode};
 
 use super::*;
 use crate::services::registry::{Service, ServiceImpl};
@@ -74,16 +74,21 @@ impl Dispatcher {
         // The Deliver Rewriters (transport-block strip) edit one editor over
         // the record's block index and the loaded bytes, rebuilt once, only
         // if a link edited; with no Rewriters, none is built. The keys are
-        // derived once, over the stored bundle, and serve the Verifiers too.
+        // derived once, over the stored bundle, and only when a stage reads
+        // through them: the Rewriters and the Verifiers do.
         let mut data = {
-            let keys = filter::output_keys(&bundle.bpv7, &data, &*self.key_provider);
-            let data = if !self.filters.has_deliver_rewriters() {
+            let editing = self.filters.has_deliver_rewriters();
+            let keys = (editing || self.filters.has_deliver_verifiers())
+                .then(|| filter::output_keys(&bundle.bpv7, &data, &*self.key_provider));
+            let no_keys = KeySet::EMPTY;
+            let keys = keys.as_deref().unwrap_or(&no_keys);
+            let data = if !editing {
                 data
             } else {
                 let mut editor = Editor::new(&bundle.bpv7, &data);
                 let rewritten = self
                     .filters
-                    .run_deliver(&mut editor, &bundle.metadata, &*keys);
+                    .run_deliver(&mut editor, &bundle.metadata, keys);
 
                 // The bytes were validated at ingress and every edit was
                 // checked when it was staged, so a failed rebuild is a BPA
@@ -103,7 +108,7 @@ impl Dispatcher {
             };
 
             // The Deliver Verifiers, over the bundle as it will be delivered.
-            if let Some(reason) = self.filters.verify_deliver(&bundle, &data, &*keys) {
+            if let Some(reason) = self.filters.verify_deliver(&bundle, &data, keys) {
                 return OfferOutcome::Dropped(bundle, reason);
             }
             data

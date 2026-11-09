@@ -266,6 +266,13 @@ impl FilterChains {
         )
     }
 
+    /// Whether the Egress chain has any registered Rewriters, for the
+    /// egress door's short-circuit: with none, no stage reads through the
+    /// attempt's keys, so it derives none.
+    pub fn has_egress_rewriters(&self) -> bool {
+        !self.egress.is_empty()
+    }
+
     /// Runs the Deliver Rewriters on the attempt's editor. Returns whether
     /// a link edited.
     pub(crate) fn run_deliver(
@@ -291,6 +298,13 @@ impl FilterChains {
     /// delivery door's short-circuit: with none, it builds no editor.
     pub fn has_deliver_rewriters(&self) -> bool {
         !self.deliver.rewriters.is_empty()
+    }
+
+    /// Whether the Deliver chain has any registered Verifiers, for the
+    /// delivery door's short-circuit: with none and no Rewriters, no stage
+    /// reads through the attempt's keys, so it derives none.
+    pub fn has_deliver_verifiers(&self) -> bool {
+        !self.deliver.verifiers.is_empty()
     }
 
     /// Runs the Deliver Verifiers over the bundle the Deliver Rewriters

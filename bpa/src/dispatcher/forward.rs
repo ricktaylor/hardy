@@ -1,9 +1,13 @@
 // `EditorError` keeps bpv7's editor error apart from this crate's `Error`,
 // in scope through the parent module.
-use hardy_bpv7::{editor::Error as EditorError, hop_info::HopInfo};
+use hardy_bpv7::{bpsec::key::KeySet, editor::Error as EditorError, hop_info::HopInfo};
 use hardy_cbor::encode::emit;
 
-use super::*;
+use super::{
+    output::{Resident, pull_headers},
+    *,
+};
+use crate::rebuilt_headers::RebuiltHeaders;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
@@ -25,10 +29,12 @@ impl Dispatcher {
         };
         let next_hop = next_hop.clone();
 
-        // Get bundle data from store, now we know we need it!
-        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
+        // Open the stored bundle, now we know we need it, and hold it until
+        // its headers are resident: the payload streams on to the CLA.
+        let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
             return;
         };
+        let resident = pull_headers(&bundle.bpv7, stream).await;
 
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).
@@ -67,7 +73,7 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Forward,
-            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, data, seen)
+            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, resident, seen)
                 .await,
         )
         .await
@@ -84,17 +90,23 @@ impl Dispatcher {
         lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
         next_hop: Eid,
-        mut bundle: bundle::Bundle,
-        data: Bytes,
+        bundle: bundle::Bundle,
+        mut resident: Resident,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
         // One editor serves the attempt, over the record's block index and
-        // the loaded bytes: the Egress Rewriters and the per-hop writes edit
-        // through it, and the bundle is rebuilt once. The keys are derived
-        // once, over the stored bundle.
-        let mut data = {
-            let keys = filter::output_keys(&bundle.bpv7, &data, &*self.key_provider);
-            let mut editor = Editor::new(&bundle.bpv7, &data);
+        // the resident bytes: the Egress Rewriters and the per-hop writes
+        // edit through it, and the bundle is rebuilt once. The keys are
+        // derived once, over the stored bundle, and only when a stage reads
+        // through them: the Rewriters do, the per-hop writes do not.
+        let (total_len, chunks) = {
+            let keys = self
+                .filters
+                .has_egress_rewriters()
+                .then(|| filter::output_keys(&bundle.bpv7, &resident.bytes, &*self.key_provider));
+            let no_keys = KeySet::EMPTY;
+            let keys = keys.as_deref().unwrap_or(&no_keys);
+            let mut editor = Editor::new(&bundle.bpv7, &resident.bytes);
 
             // Egress chain: the registered Rewriters, on the stored bundle.
             // Nothing at Egress drops a bundle.
@@ -104,7 +116,7 @@ impl Dispatcher {
             //   may route to a different peer, so Egress runs again with fresh
             //   context
             self.filters
-                .run_egress(&mut editor, &bundle.metadata, &next_hop, &*keys);
+                .run_egress(&mut editor, &bundle.metadata, &next_hop, keys);
 
             // The per-hop writes follow the Rewriters, so they supersede any
             // Rewriter edit to the blocks they write, and the BPSec blocks
@@ -122,25 +134,25 @@ impl Dispatcher {
                 );
             }
 
-            // The one rebuild. The edits shift block extents, so the rebuilt
-            // block map replaces the old one; the bytes were validated at
-            // the door and every edit was checked when it was staged, so a
-            // failure is a BPA or bpv7 bug, and fatal. It is in-memory only:
-            // parks persist status alone, and a re-dispatch re-enters from
-            // the persisted representation (see park_bundle), so no exit
-            // needs to restore the stored map.
+            // The one rebuild. Its bytes were validated at the door and every
+            // edit was checked when it was staged, so a failure is a BPA or
+            // bpv7 bug, and fatal. The rebuild is the attempt's alone: the
+            // record keeps the stored bundle's block index, so every exit
+            // below hands back a record that still indexes the stored bytes,
+            // and only the rebuilt index's encoded length is read from it.
             let (rebuilt, chunks) = editor
                 .rebuild_bundle()
                 .trace_expect("The egress rewrite failed to rebuild the bundle");
-            bundle.bpv7.blocks = rebuilt.blocks;
-            Chunk::flatten_bytes(chunks, data)
+            (rebuilt.encoded_len(), chunks)
         };
 
-        // And pass to CLA: the whole bundle is in hand, so it travels as a
-        // single Final segment.
-        let total_len = data.len() as u64;
+        // And pass to CLA: the rebuilt header region as one segment, then the
+        // stored payload block as it streams, and the rebuilt block index
+        // gives the exact length.
+        let head = resident.bytes.clone();
+        let mut stream = RebuiltHeaders::new(chunks, &head, &mut resident);
         match cla
-            .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
+            .forward(lane, cla_addr, bundle.id(), total_len, &mut stream)
             .await
         {
             Ok(cla::ForwardBundleResult::Sent) => OfferOutcome::Completed(bundle),
@@ -375,10 +387,10 @@ impl Dispatcher {
         // Config-driven legacy-EID re-encode: a next hop matching the
         // configured patterns requires 2-element IPN encoding, so Ipn
         // source/destination re-encode as LegacyIpn. Wire adaptation only:
-        // the caller installs the rebuilt block map (extents index the
-        // re-encoded bytes) but never the rebuilt primary — the record's
-        // primary, and with it the bundle id every store operation is keyed
-        // on, keeps the canonical encoding. The editor refuses the edit
+        // the re-encoded bytes travel to the CLA, and the record keeps its
+        // stored index and primary — with the latter the bundle id every
+        // store operation is keyed on, in the canonical encoding. The editor
+        // refuses the edit
         // while a BIB targets the primary or a remaining operation's scope
         // includes it, judged after the per-hop writes above have stripped
         // the blocks they rewrote from their BIBs: an operation the
