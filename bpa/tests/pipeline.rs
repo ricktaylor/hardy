@@ -7132,6 +7132,111 @@ async fn a_clockless_bundle_without_age_is_refused() {
     );
 }
 
+// A policy that assigns a bundle to a queue it does not have is a policy
+// bug: the peer clamps the assignment to queue 0, which always exists, and
+// the bundle reaches the CLA through it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_out_of_range_queue_is_clamped_to_queue_0() {
+    use hardy_bpa::policy;
+
+    // One queue, every bundle assigned to queue 1; reports the queue each
+    // bundle is forwarded from.
+    struct OutOfRangePolicy {
+        queue_tx: flume::Sender<u32>,
+    }
+
+    struct OutOfRangeController {
+        queue: Arc<dyn policy::EgressQueue>,
+        queue_tx: flume::Sender<u32>,
+    }
+
+    #[async_trait]
+    impl policy::FlowController for OutOfRangeController {
+        fn queue_for(&self) -> u32 {
+            1
+        }
+
+        async fn forward(&self, queue: u32, bundle: hardy_bpa::bundle::Bundle) {
+            let _ = self.queue_tx.send(queue);
+            self.queue.forward(bundle).await
+        }
+    }
+
+    #[async_trait]
+    impl policy::FlowControllerFactory for OutOfRangePolicy {
+        fn queue_count(&self) -> NonZeroU32 {
+            NonZeroU32::MIN
+        }
+
+        async fn new_controller(
+            &self,
+            queues: policy::EgressQueueSet,
+        ) -> Arc<dyn policy::FlowController> {
+            Arc::new(OutOfRangeController {
+                queue: queues.next_free,
+                queue_tx: self.queue_tx.clone(),
+            })
+        }
+    }
+
+    let bpa = Bpa::builder().build().await.unwrap();
+    bpa.start(false).await;
+
+    let (queue_tx, queue_rx) = flume::unbounded();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        Some(Arc::new(OutOfRangePolicy { queue_tx })),
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            from_ref(&remote_node),
+        )
+        .await
+        .unwrap();
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(91), app.clone())
+        .await
+        .unwrap();
+    let id = app
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.2.7".parse().unwrap(),
+            Bytes::from_static(b"clamped"),
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // the timeout only bounds a regression
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the forward")
+    .unwrap();
+    assert_eq!(parse(forwarded).unwrap().bundle.primary.id, id);
+    assert_eq!(queue_rx.try_recv(), Ok(0), "forwarded from queue 0");
+
+    bpa.shutdown().await;
+}
+
 // A peer removed while its construction is still in flight leaves nothing
 // behind (whole-codebase review #14): add_peer claims the address, builds
 // the peer complete, publishes, then re-checks its claim before installing

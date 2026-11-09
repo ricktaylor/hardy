@@ -10,9 +10,8 @@ use super::*;
 // 4. Avoids OS rwlock overhead on hot forwarding path
 
 pub struct Peer {
-    // The peer id every queue below is keyed under; `forward` composes
-    // each assignment record from it directly.
-    peer: u32,
+    // The id every queue below is keyed under.
+    id: u32,
     // One poller per policy queue, indexed by the queue index — queue 0
     // always exists (`FlowControllerFactory::queue_count` is non-zero).
     queues: Vec<storage::channel::Sender>,
@@ -62,7 +61,7 @@ impl Peer {
         }
 
         Arc::new(Self {
-            peer,
+            id: peer,
             queues,
             controller,
         })
@@ -126,7 +125,7 @@ impl Peer {
         // resolved adjacency, so the decision survives the channel's
         // storage spill.
         let status = bundle::BundleStatus::ForwardPending {
-            peer: self.peer,
+            peer: self.id,
             queue,
             next_hop,
         };
@@ -258,12 +257,6 @@ mod tests {
     // #[test]
     // fn test_queue_selection() {
     //     todo!("Verify the controller's queue_for() selects the peer queue");
-    // }
-
-    // // TODO: Implement test for 'Queue Fallback' (Verify an out-of-range queue index is clamped to queue 0)
-    // #[test]
-    // fn test_queue_fallback() {
-    //     todo!("Verify an out-of-range queue index is clamped to queue 0");
     // }
 
     use super::*;
