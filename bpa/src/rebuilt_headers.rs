@@ -26,6 +26,9 @@ pub struct RebuiltHeaders<'a> {
     // How many of the inner stream's bytes are still to be dropped: the region
     // the rebuilt head replaces.
     skip: usize,
+    // The rebuilt head's length, and the length of the region it replaces.
+    head_len: u64,
+    replaced: u64,
     // The bundle's bytes from its first byte.
     stream: &'a mut dyn Receiver<Segment>,
     // The inner stream's `Final` has been yielded.
@@ -55,12 +58,23 @@ impl<'a> RebuiltHeaders<'a> {
         let Some(Chunk::Unchanged(kept)) = chunks.pop() else {
             panic!("the rebuild keeps the payload block as it stands");
         };
+        let head = Chunk::flatten_head(chunks, resident);
         Self {
-            head: Some(Chunk::flatten_head(chunks, resident).into()),
+            head_len: head.len() as u64,
+            replaced: kept.start as u64,
+            head: Some(head.into()),
             skip: kept.start,
             stream,
             done: false,
         }
+    }
+
+    /// The length of the bundle this stream yields, given `stream_len`, the
+    /// length of the bundle the inner stream yields: the rebuilt header region
+    /// in place of the bytes before the kept payload block.
+    #[must_use]
+    pub fn total_len(&self, stream_len: u64) -> u64 {
+        self.head_len + (stream_len - self.replaced)
     }
 }
 
@@ -192,6 +206,7 @@ mod tests {
                 .unwrap();
             let mut stream = stream_of(&data, &[cut]).await;
             let mut rebuilt = RebuiltHeaders::new(chunks, &data, &mut stream);
+            assert_eq!(rebuilt.total_len(data.len() as u64), expected.len() as u64);
             assert_eq!(drain(&mut rebuilt).await, expected.as_ref(), "cut at {cut}");
         }
     }

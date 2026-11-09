@@ -183,24 +183,17 @@ impl Dispatcher {
 mod tests {
     #[cfg(feature = "rfc9173")]
     use hardy_bpv7::{
-        bpsec::{
-            encryptor::{Context, Encryptor},
-            key::{EncAlgorithm, Key, Operation, Type},
-        },
-        builder::Builder,
-        bundle::{Flags, Id},
-        creation_timestamp::CreationTimestamp,
+        bundle::Id,
         eid::{IpnNodeId, NodeId},
         status_report::AdministrativeRecord,
     };
-    #[cfg(feature = "rfc9173")]
-    use rand::{TryRng, rngs::SysRng};
 
     use super::*;
     #[cfg(feature = "rfc9173")]
     use crate::{
         bpa::{Bpa, BpaRegistration},
         bundle::Origin,
+        dispatcher::tests::encrypted_payload_to,
         node_ids::NodeIds,
         storage::{
             BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
@@ -294,49 +287,6 @@ mod tests {
         }
     }
 
-    // A bundle to this node's service 9, reporting to it, whose payload is
-    // under a BCB: the wire form of a record no door of this build stores.
-    #[cfg(feature = "rfc9173")]
-    fn encrypted_payload_to_service_9() -> (hardy_bpv7::Bundle, Bytes) {
-        let mut key_bytes = vec![0u8; 32];
-        SysRng.try_fill_bytes(&mut key_bytes).unwrap();
-        let key = Key {
-            key_type: Type::octet_sequence(key_bytes),
-            key_algorithm: None,
-            enc_algorithm: Some(EncAlgorithm::A256GCM),
-            operations: Some(
-                [Operation::Encrypt, Operation::Decrypt]
-                    .into_iter()
-                    .collect(),
-            ),
-            id: Some("ipn:2.1".into()),
-            key_use: None,
-        };
-        let (built, data) =
-            Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.9".parse().unwrap())
-                .with_report_to("ipn:0.1.9".parse().unwrap())
-                .with_flags(Flags {
-                    delete_report_requested: true,
-                    ..Default::default()
-                })
-                .with_lifetime(core::time::Duration::from_secs(3600))
-                .with_payload(b"secret".as_slice().into())
-                .build(CreationTimestamp::now())
-                .unwrap();
-        let mut encryptor = Encryptor::new(&built, &data);
-        encryptor
-            .encrypt_block(
-                1,
-                Context::AES_GCM(Default::default()),
-                "ipn:0.2.1".parse().unwrap(),
-                &key,
-            )
-            .expect("encrypt the payload");
-        let encrypted = Bytes::from(encryptor.rebuild().expect("rebuild the encrypted bundle"));
-        let parsed = hardy_bpv7::parse::parse(encrypted).expect("the encrypted bundle parses");
-        (parsed.bundle, parsed.data)
-    }
-
     // A stored record whose payload is still under a BCB, one written before
     // the destination accepted at ingress, is not handed to the application
     // as ciphertext and does not wait for a key: it is dropped as the gate
@@ -345,7 +295,7 @@ mod tests {
     #[cfg(feature = "rfc9173")]
     #[tokio::test]
     async fn a_payload_still_encrypted_at_delivery_is_dropped_unsupported() {
-        let (bpv7, data) = encrypted_payload_to_service_9();
+        let (bpv7, data) = encrypted_payload_to("ipn:0.1.9");
         let metadata_store = Arc::new(MetadataMemStorage::new(None));
         let (bundle_store, deleted_rx) = DeletingStore::new();
         let node_ids = NodeIds::try_from(

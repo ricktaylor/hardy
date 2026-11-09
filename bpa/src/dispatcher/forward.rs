@@ -4,7 +4,7 @@ use hardy_bpv7::{bpsec::key::KeySet, editor::Error as EditorError, hop_info::Hop
 use hardy_cbor::encode::emit;
 
 use super::{
-    output::{Resident, pull_headers},
+    output::{LoadedBundle, pull_headers},
     *,
 };
 use crate::rebuilt_headers::RebuiltHeaders;
@@ -34,7 +34,7 @@ impl Dispatcher {
         let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
             return;
         };
-        let resident = pull_headers(&bundle.bpv7, stream).await;
+        let loaded = pull_headers(&bundle.bpv7, stream).await;
 
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).
@@ -73,7 +73,7 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Forward,
-            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, resident, seen)
+            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, loaded, seen)
                 .await,
         )
         .await
@@ -91,40 +91,12 @@ impl Dispatcher {
         cla_addr: &cla::ClaAddress,
         next_hop: Eid,
         bundle: bundle::Bundle,
-        mut resident: Resident,
+        mut loaded: LoadedBundle,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // One editor serves the attempt, over the record's block index and
-        // the resident bytes: the Egress Rewriters and the per-hop writes
-        // edit through it, and the bundle is rebuilt once. The keys are
-        // derived once, over the stored bundle, and only when a stage reads
-        // through them: the Rewriters do, the per-hop writes do not.
-        let (total_len, chunks) = {
-            let keys = self
-                .filters
-                .has_egress_rewriters()
-                .then(|| filter::output_keys(&bundle.bpv7, &resident.bytes, &*self.key_provider));
-            let no_keys = KeySet::EMPTY;
-            let keys = keys.as_deref().unwrap_or(&no_keys);
-            let mut editor = Editor::new(&bundle.bpv7, &resident.bytes);
-
-            // Egress chain: the registered Rewriters, on the stored bundle.
-            // Nothing at Egress drops a bundle.
-            // - Runs after dequeue from ForwardPending, just before CLA send
-            // - Edits are in-memory only (like Deliver), NOT persisted
-            // - If send fails or peer goes down, bundle returns to Waiting and
-            //   may route to a different peer, so Egress runs again with fresh
-            //   context
-            self.filters
-                .run_egress(&mut editor, &bundle.metadata, &next_hop, keys);
-
-            // The per-hop writes follow the Rewriters, so they supersede any
-            // Rewriter edit to the blocks they write, and the BPSec blocks
-            // (BIB/BCB, possibly peer-specific) belong after them.
-            if let Err(ProtectedPrimary) =
-                self.update_extension_blocks(&bundle, &mut editor, &next_hop)
-            {
-                drop(editor);
+        let chunks = match self.rebuild_headers(&bundle, &loaded.resident, &next_hop) {
+            Ok(chunks) => chunks,
+            Err(ProtectedPrimary) => {
                 debug!(
                     "Legacy next hop {next_hop} needs a re-encoded primary, which a BPSec operation covers"
                 );
@@ -133,24 +105,15 @@ impl Dispatcher {
                     Some(ReasonCode::UnexpectedSecurityOperation),
                 );
             }
-
-            // The one rebuild. Its bytes were validated at the door and every
-            // edit was checked when it was staged, so a failure is a BPA or
-            // bpv7 bug, and fatal. The rebuild is the attempt's alone: the
-            // record keeps the stored bundle's block index, so every exit
-            // below hands back a record that still indexes the stored bytes,
-            // and only the rebuilt index's encoded length is read from it.
-            let (rebuilt, chunks) = editor
-                .rebuild_bundle()
-                .trace_expect("The egress rewrite failed to rebuild the bundle");
-            (rebuilt.encoded_len(), chunks)
         };
 
-        // And pass to CLA: the rebuilt header region as one segment, then the
-        // stored payload block as it streams, and the rebuilt block index
-        // gives the exact length.
-        let head = resident.bytes.clone();
-        let mut stream = RebuiltHeaders::new(chunks, &head, &mut resident);
+        // The rebuilt header region travels as one segment, then the stored
+        // payload block as it streams. The record keeps the stored bundle's
+        // block index, so every exit below hands back a record that still
+        // indexes the stored bytes.
+        let head = loaded.resident.clone();
+        let mut stream = RebuiltHeaders::new(chunks, &head, &mut loaded);
+        let total_len = stream.total_len(bundle.bpv7.encoded_len());
         match cla
             .forward(lane, cla_addr, bundle.id(), total_len, &mut stream)
             .await
@@ -263,9 +226,43 @@ impl Dispatcher {
         }
     }
 
-    // The per-hop writes, on the attempt's editor after the Egress
-    // Rewriters. The editor works over the record's block index, whose
-    // coverage stamps are the ones ingress derived. The bytes were validated
+    // The attempt's edits over the stored bundle's resident bytes: the Egress
+    // Rewriters, then the per-hop writes, on one editor over the record's
+    // block index, rebuilt once into the chunks `RebuiltHeaders` streams. The
+    // keys are derived only when a stage reads through them: the Rewriters
+    // do, the per-hop writes do not.
+    fn rebuild_headers(
+        &self,
+        bundle: &bundle::Bundle,
+        resident: &[u8],
+        next_hop: &Eid,
+    ) -> Result<Vec<Chunk>, ProtectedPrimary> {
+        let keys = self
+            .filters
+            .has_egress_rewriters()
+            .then(|| filter::output_keys(&bundle.bpv7, resident, &*self.key_provider));
+        let no_keys = KeySet::EMPTY;
+        let keys = keys.as_deref().unwrap_or(&no_keys);
+        let mut editor = Editor::new(&bundle.bpv7, resident);
+
+        // Nothing at Egress drops a bundle, and the edits are in-memory only,
+        // so a re-route runs the Egress chain again with fresh context.
+        self.filters
+            .run_egress(&mut editor, &bundle.metadata, next_hop, keys);
+
+        // The per-hop writes follow the Rewriters, so they supersede any
+        // Rewriter edit to the blocks they write.
+        self.update_extension_blocks(bundle, &mut editor, next_hop)?;
+
+        // The bytes were validated at the door and every edit was checked
+        // when it was staged, so a failed rebuild is a BPA or bpv7 bug, and
+        // fatal.
+        Ok(editor
+            .rebuild()
+            .trace_expect("The egress rewrite failed to rebuild the bundle"))
+    }
+
+    // The per-hop writes, on the attempt's editor. The bytes were validated
     // at the door, so any failure but the legacy re-encode's refusal is a
     // BPA bug or storage corruption, and fatal.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
@@ -388,12 +385,12 @@ impl Dispatcher {
         // the re-encoded bytes travel to the CLA, and the record keeps its
         // stored index and primary — with the latter the bundle id every
         // store operation is keyed on, in the canonical encoding. The editor
-        // refuses the edit
-        // while a BIB targets the primary or a remaining operation's scope
-        // includes it, judged after the per-hop writes above have stripped
-        // the blocks they rewrote from their BIBs: an operation the
-        // re-encode would break, so the bundle cannot go to this next hop.
-        // bpv7 answers for each security context; the BPA reads none.
+        // refuses the edit while a BIB targets the primary or a remaining
+        // operation's scope includes it, judged after the per-hop writes
+        // above have stripped the blocks they rewrote from their BIBs: an
+        // operation the re-encode would break, so the bundle cannot go to
+        // this next hop. bpv7 answers for each security context; the BPA
+        // reads none.
         if legacy {
             if let Eid::Ipn {
                 fqnn,
@@ -440,13 +437,23 @@ struct ProtectedPrimary;
 #[cfg(test)]
 mod tests {
     use core::num::NonZeroU64;
+    #[cfg(feature = "rfc9173")]
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
+    #[cfg(feature = "rfc9173")]
+    use hardy_bpv7::bpsec::key::KeySource;
     use hardy_bpv7::{bundle::Id, eid::NodeId};
 
     use super::*;
     use crate::{
         dispatcher::tests::dispatcher,
         storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
+    };
+    #[cfg(feature = "rfc9173")]
+    use crate::{
+        dispatcher::tests::{dispatcher_with, encrypted_payload_to},
+        filter::{RewriteContext, Rewriter, pack::FilterPack},
+        keys::KeyProvider,
     };
 
     struct RecordingCla {
@@ -542,5 +549,85 @@ mod tests {
             metadata_store.get(&bundle_id).await.unwrap().is_none(),
             "the expired bundle is resolved terminally as LifetimeExpired"
         );
+    }
+
+    // Counts the key sources it derives; holds no keys.
+    #[cfg(feature = "rfc9173")]
+    struct CountingKeys(AtomicUsize);
+
+    #[cfg(feature = "rfc9173")]
+    impl KeyProvider for CountingKeys {
+        fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Box::new(KeySet::EMPTY)
+        }
+    }
+
+    #[cfg(feature = "rfc9173")]
+    struct NoopRewriter;
+
+    #[cfg(feature = "rfc9173")]
+    impl Rewriter for NoopRewriter {
+        fn rewrite(&self, _ctx: &mut RewriteContext<'_, '_>) {}
+    }
+
+    // Two Egress Rewriters that edit nothing.
+    #[cfg(feature = "rfc9173")]
+    fn noop_egress_pack() -> FilterPack {
+        let mut pack = FilterPack::new("test");
+        pack.egress_rewriter("noop-a", NoopRewriter);
+        pack.egress_rewriter("noop-b", NoopRewriter);
+        pack
+    }
+
+    // The egress door derives the attempt's key source only when a stage
+    // reads through it: for a bundle carrying a BCB, none when no Egress
+    // Rewriter is registered, since the per-hop writes read no keys, and one
+    // for the whole Egress chain when there are Rewriters.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn egress_derives_keys_only_for_a_stage_that_reads_them() {
+        for (packs, derived) in [(Vec::new(), 0), (vec![noop_egress_pack()], 1)] {
+            let metadata_store = Arc::new(MetadataMemStorage::new(None));
+            let data_store = Arc::new(BundleMemStorage::new(None, None));
+            let keys = Arc::new(CountingKeys(AtomicUsize::new(0)));
+            let dispatcher = dispatcher_with(
+                metadata_store.clone(),
+                data_store.clone(),
+                keys.clone(),
+                packs,
+            )
+            .await;
+
+            let (bpv7, data) = encrypted_payload_to("ipn:0.3.2");
+            let storage_name = data_store.save(data).await.unwrap();
+            let mut metadata = bundle::BundleMetadata::originated();
+            metadata.storage_name = Some(storage_name);
+            let bundle = bundle::Bundle {
+                bpv7,
+                metadata,
+                status: bundle::BundleStatus::ForwardPending {
+                    peer: 7,
+                    queue: 0,
+                    next_hop: "ipn:0.3.0".parse().unwrap(),
+                },
+            };
+            let bundle_id = bundle.id().clone();
+            assert!(metadata_store.insert(&bundle).await.unwrap());
+
+            let (offers_tx, offers_rx) = flume::bounded(16);
+            dispatcher
+                .forward_bundle(
+                    &RecordingCla { offers_tx },
+                    7,
+                    None,
+                    &cla::ClaAddress::Private("peer".as_bytes().into()),
+                    bundle,
+                )
+                .await;
+
+            assert_eq!(offers_rx.try_recv(), Ok(bundle_id), "the bundle is offered");
+            assert_eq!(keys.0.load(Ordering::Relaxed), derived);
+        }
     }
 }

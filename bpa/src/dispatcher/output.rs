@@ -1,43 +1,35 @@
-//! The egress door's bytes: a stored bundle's load stream, held until its
-//! header region is resident, then replayed under the rebuilt headers.
-//!
-//! The egress door opens the stored bundle with `Store::load_stream` and
-//! pulls it until the bytes held reach the payload's data ([`pull_headers`]).
-//! Every header precedes it, since the payload is the last block (RFC 9171
-//! §4.1), so every block the output stages edit is resident; a Rewriter reads
-//! the payload only while it is. The stages run on one editor over those
-//! resident bytes and rebuild once, and a
-//! [`RebuiltHeaders`](crate::rebuilt_headers::RebuiltHeaders) over the
-//! [`Resident`] stream carries the rebuilt header region to the CLA, then the
-//! stored payload block as it stands: the resident part, then the rest of the
-//! load stream as it arrives. Nothing on this path flattens the whole bundle,
-//! and the payload passes through untouched.
+//! The egress door's hold on a stored bundle: [`pull_headers`] pulls the load
+//! stream until the bytes held reach the payload's data, and the
+//! [`LoadedBundle`] it returns replays the stored bundle from its first byte
+//! for [`RebuiltHeaders`](crate::rebuilt_headers::RebuiltHeaders). The payload
+//! is the last block (RFC 9171 §4.1), so every block the output stages edit is
+//! then resident.
 
 use super::*;
-use crate::stream::{Receiver, RecvError, Segment};
+use crate::stream::RecvError;
 
-/// A stored bundle as the egress door holds it: `bytes`, a prefix of the
-/// stored bundle that covers every header, and the rest of the load stream,
-/// held until its `Final` is in hand.
+/// A stored bundle as the egress door holds it: `resident`, a prefix of the
+/// stored bundle that reaches the payload's data, and the rest of the load
+/// stream, until its `Final` is in hand.
 ///
 /// As a [`Receiver`] it yields the stored bundle from its first byte: the
-/// held prefix as one segment, then the rest of the load stream.
-pub struct Resident {
-    pub bytes: Bytes,
+/// resident prefix as one segment, then the rest of the load stream.
+pub struct LoadedBundle {
+    pub resident: Bytes,
     rest: Option<Box<dyn Receiver<Segment>>>,
-    // The held prefix has been yielded.
+    // The resident prefix has been yielded.
     replayed: bool,
 }
 
 #[async_trait]
-impl Receiver<Segment> for Resident {
+impl Receiver<Segment> for LoadedBundle {
     async fn recv(&mut self) -> Result<Segment, RecvError> {
         if !self.replayed {
             self.replayed = true;
-            let bytes = self.bytes.clone();
+            let resident = self.resident.clone();
             return Ok(match self.rest {
-                Some(_) => Segment::Next(bytes),
-                None => Segment::Final(bytes),
+                Some(_) => Segment::Next(resident),
+                None => Segment::Final(resident),
             });
         }
         let Some(rest) = self.rest.as_mut() else {
@@ -51,17 +43,20 @@ impl Receiver<Segment> for Resident {
     }
 }
 
-/// Pulls `stream` until the bytes held reach `bundle`'s payload data, or the
-/// stream's `Final`. When the first segment covers the header region, as a
-/// whole-buffer load's one `Final` does, it is held as-is; only a header
-/// region split across segments is concatenated.
+/// Pulls `stream` until the bytes held reach `bundle`'s payload data. When
+/// the first segment gets there, as a whole-buffer load's one `Final` does,
+/// it is held as-is; only a header region split across segments is gathered
+/// into one buffer.
 ///
 /// # Panics
 ///
-/// Panics if the stream ends before the header region is resident: the store
-/// holds only bundles validated at a door or built by the BPA, so a short
-/// load is storage corruption.
-pub async fn pull_headers(bundle: &Bpv7Bundle, mut stream: Box<dyn Receiver<Segment>>) -> Resident {
+/// Panics if the stream ends before the bytes held reach the payload's data:
+/// the store holds only bundles validated at a door or built by the BPA, so
+/// a short load is storage corruption.
+pub async fn pull_headers(
+    bundle: &Bpv7Bundle,
+    mut stream: Box<dyn Receiver<Segment>>,
+) -> LoadedBundle {
     let payload_start = bundle
         .blocks
         .get(&1)
@@ -70,8 +65,8 @@ pub async fn pull_headers(bundle: &Bpv7Bundle, mut stream: Box<dyn Receiver<Segm
         .start;
 
     let mut first: Option<Bytes> = None;
-    let mut concat: Option<BytesMut> = None;
-    let last = loop {
+    let mut gathered: Option<BytesMut> = None;
+    let loaded = loop {
         let (data, last) = match stream
             .recv()
             .await
@@ -81,15 +76,21 @@ pub async fn pull_headers(bundle: &Bpv7Bundle, mut stream: Box<dyn Receiver<Segm
             Segment::Final(data) => (data, true),
         };
 
-        let held = if let Some(current) = concat.as_mut() {
+        let held = if let Some(current) = gathered.as_mut() {
             current.extend_from_slice(&data);
             current.len()
         } else if let Some(head) = first.take() {
-            let mut current = BytesMut::with_capacity(head.len() + data.len());
-            current.extend_from_slice(&head);
+            let mut current = match head.try_into_mut() {
+                Ok(head) => head,
+                Err(head) => {
+                    let mut current = BytesMut::with_capacity(head.len() + data.len());
+                    current.extend_from_slice(&head);
+                    current
+                }
+            };
             current.extend_from_slice(&data);
             let held = current.len();
-            concat = Some(current);
+            gathered = Some(current);
             held
         } else {
             let held = data.len();
@@ -97,29 +98,31 @@ pub async fn pull_headers(bundle: &Bpv7Bundle, mut stream: Box<dyn Receiver<Segm
             held
         };
 
-        if last || held as u64 >= payload_start {
-            break last;
+        if held as u64 >= payload_start {
+            let resident = match (first, gathered) {
+                (Some(bytes), None) => bytes,
+                (None, Some(buffer)) => buffer.freeze(),
+                _ => unreachable!("exactly one accumulator holds the pulled bytes"),
+            };
+            break Some(LoadedBundle {
+                resident,
+                rest: (!last).then_some(stream),
+                replayed: false,
+            });
+        }
+        if last {
+            break None;
         }
     };
-
-    let bytes = match (first, concat) {
-        (Some(bytes), None) => bytes,
-        (None, Some(buffer)) => buffer.freeze(),
-        _ => unreachable!("exactly one accumulator holds the pulled bytes"),
-    };
-    Resident {
-        bytes: Some(bytes)
-            .filter(|bytes| bytes.len() as u64 >= payload_start)
-            .trace_expect("The stored bundle ends before its headers"),
-        rest: (!last).then_some(stream),
-        replayed: false,
-    }
+    loaded.trace_expect("The stored bundle ends before its headers")
 }
 
 #[cfg(test)]
 mod tests {
+    use hardy_async::channel::bounded;
     use hardy_bpv7::{
         block::Type,
+        bpsec::{DecryptingReader, key::KeySet},
         builder::Builder,
         creation_timestamp::CreationTimestamp,
         editor::{Chunk, Editor},
@@ -130,7 +133,7 @@ mod tests {
     use super::*;
     use crate::rebuilt_headers::RebuiltHeaders;
 
-    // A stored bundle carrying `payload`, with its block index.
+    // A stored bundle carrying `payload`, and its block index.
     fn stored(payload: &[u8]) -> (Bpv7Bundle, Bytes) {
         let (bundle, data) =
             Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.2".parse().unwrap())
@@ -146,7 +149,7 @@ mod tests {
 
     // The stored bundle's load stream, cut at `splits`, ending in its Final.
     async fn load(data: &Bytes, splits: &[usize]) -> Box<dyn Receiver<Segment>> {
-        let (tx, rx) = hardy_async::channel::bounded(splits.len() + 1);
+        let (tx, rx) = bounded(splits.len() + 1);
         let mut start = 0;
         for &split in splits {
             tx.send(Segment::Next(data.slice(start..split)))
@@ -160,7 +163,7 @@ mod tests {
 
     // An output attempt's one rebuild: a Previous Node insert, so the chunks
     // mix new bytes with kept extents.
-    fn rebuild(bundle: &Bpv7Bundle, source: &[u8]) -> (Bpv7Bundle, Vec<Chunk>) {
+    fn rebuild(bundle: &Bpv7Bundle, source: &[u8]) -> Vec<Chunk> {
         let node: Eid = "ipn:0.9.0".parse().unwrap();
         let mut editor = Editor::new(bundle, source);
         editor
@@ -168,10 +171,9 @@ mod tests {
             .unwrap()
             .with_data(emit(&node).0.into())
             .rebuild();
-        editor.rebuild_bundle().unwrap()
+        editor.rebuild().unwrap()
     }
 
-    // Pulls segments until the Final, inclusive.
     async fn drain(stream: &mut dyn Receiver<Segment>) -> Vec<Segment> {
         let mut segments = Vec::new();
         loop {
@@ -191,55 +193,67 @@ mod tests {
             .collect()
     }
 
-    // The rebuild's segments over the bytes `pull_headers` held, as the
-    // egress door streams them.
-    async fn output(bundle: &Bpv7Bundle, mut resident: Resident) -> (u64, Vec<Segment>) {
-        let (rebuilt, chunks) = rebuild(bundle, &resident.bytes);
-        let total_len = rebuilt.encoded_len();
-        let head = resident.bytes.clone();
-        let mut stream = RebuiltHeaders::new(chunks, &head, &mut resident);
+    // The rebuild's length and segments over the bytes `pull_headers` held.
+    async fn output(bundle: &Bpv7Bundle, mut loaded: LoadedBundle) -> (u64, Vec<Segment>) {
+        let chunks = rebuild(bundle, &loaded.resident);
+        let head = loaded.resident.clone();
+        let mut stream = RebuiltHeaders::new(chunks, &head, &mut loaded);
+        let total_len = stream.total_len(bundle.encoded_len());
         (total_len, drain(&mut stream).await)
     }
 
     #[tokio::test]
     async fn a_whole_buffer_load_is_held_as_is() {
         let (bundle, data) = stored(b"held as loaded");
-        let resident = pull_headers(&bundle, Box::new(data.clone())).await;
-        assert_eq!(resident.bytes.as_ptr(), data.as_ptr());
-        assert_eq!(resident.bytes.len(), data.len());
-        assert!(resident.rest.is_none());
+        let loaded = pull_headers(&bundle, Box::new(data.clone())).await;
+        assert_eq!(loaded.resident.as_ptr(), data.as_ptr());
+        assert_eq!(loaded.resident.len(), data.len());
+        assert!(loaded.rest.is_none());
     }
 
     // Wherever the load is cut, the pull holds through the headers and the
     // segments carry the bytes the flattened rebuild of the whole bundle
-    // would: inside the header region (the head concatenated), exactly at
-    // the payload's data, and inside it.
+    // would: a header region split across two and three segments (gathered),
+    // a cut exactly at the payload's data and inside it, and an empty Final
+    // after the whole bundle.
     #[tokio::test]
     async fn every_cut_streams_the_flattened_rebuild() {
         let (bundle, data) = stored(&[0x5A; 64]);
         let start = payload_start(&bundle);
-        let (_, whole) = rebuild(&bundle, &data);
-        let expected = Chunk::flatten(whole, &data);
+        let expected = Chunk::flatten(rebuild(&bundle, &data), &data);
 
         for (splits, held, shared) in [
             (vec![], data.len(), true),
             (vec![10, start + 10], start + 10, false),
+            (vec![5, 10, start + 10], start + 10, false),
             (vec![start], start, true),
             (vec![start + 3], start + 3, true),
+            (vec![data.len()], data.len(), true),
         ] {
-            let resident = pull_headers(&bundle, load(&data, &splits).await).await;
-            assert_eq!(resident.bytes.len(), held, "cut at {splits:?}");
+            let loaded = pull_headers(&bundle, load(&data, &splits).await).await;
+            assert_eq!(loaded.resident.len(), held, "cut at {splits:?}");
             assert_eq!(
-                resident.bytes.as_ptr() == data.as_ptr(),
+                loaded.resident.as_ptr() == data.as_ptr(),
                 shared,
-                "cut at {splits:?}: only a split header region is concatenated"
+                "cut at {splits:?}: only a split header region is gathered"
             );
-            assert_eq!(resident.rest.is_some(), !splits.is_empty());
+            assert_eq!(loaded.rest.is_some(), !splits.is_empty());
 
-            let (total_len, segments) = output(&bundle, resident).await;
+            let (total_len, segments) = output(&bundle, loaded).await;
             assert_eq!(concat(&segments), &*expected, "cut at {splits:?}");
-            assert_eq!(total_len, expected.len() as u64);
+            assert_eq!(total_len, expected.len() as u64, "cut at {splits:?}");
         }
+    }
+
+    // Past its Final, a loaded bundle reports the stream ended, as a channel
+    // whose sender is gone does.
+    #[tokio::test]
+    async fn a_loaded_bundle_ends_after_its_final() {
+        let (bundle, data) = stored(b"replayed once");
+        let start = payload_start(&bundle);
+        let mut loaded = pull_headers(&bundle, load(&data, &[start]).await).await;
+        assert_eq!(concat(&drain(&mut loaded).await), &*data);
+        assert!(matches!(loaded.recv().await, Err(RecvError)));
     }
 
     // The rebuilt header region travels as one segment, and the kept payload
@@ -247,8 +261,8 @@ mod tests {
     #[tokio::test]
     async fn the_payload_shares_the_stored_allocation() {
         let (bundle, data) = stored(b"zero-copy payload");
-        let resident = pull_headers(&bundle, Box::new(data.clone())).await;
-        let (_, segments) = output(&bundle, resident).await;
+        let loaded = pull_headers(&bundle, Box::new(data.clone())).await;
+        let (_, segments) = output(&bundle, loaded).await;
         let [Segment::Next(head), Segment::Final(payload)] = segments.as_slice() else {
             panic!("the rebuilt headers, then the payload block: {segments:?}");
         };
@@ -260,20 +274,25 @@ mod tests {
         assert!(stored_range.contains(&payload.as_ptr()));
     }
 
-    // The attempt's editor, as a Rewriter reads through it, sees the payload
-    // only while it is resident.
+    // A Rewriter, reading through the decrypting reader over the attempt's
+    // editor, sees the payload only while it is resident.
     #[tokio::test]
     async fn a_payload_past_the_resident_end_reads_not_resident() {
         let (bundle, data) = stored(&[0xA5; 64]);
         let start = payload_start(&bundle);
+        let no_bcbs = HashMap::new();
+        let no_keys = KeySet::EMPTY;
         for (splits, resident_payload) in [
             (vec![], true),
             (vec![start], false),
             (vec![start + 3], false),
         ] {
-            let resident = pull_headers(&bundle, load(&data, &splits).await).await;
-            let editor = Editor::new(&bundle, &resident.bytes);
-            let (_, availability) = Reader::block(&editor, 1).unwrap();
+            let loaded = pull_headers(&bundle, load(&data, &splits).await).await;
+            let editor = Editor::new(&bundle, &loaded.resident);
+            let current = editor.current_bundle();
+            let reader =
+                DecryptingReader::over_editor(&current.blocks, &editor, &no_bcbs, &no_keys);
+            let (_, availability) = reader.block(1).unwrap();
             if resident_payload {
                 assert!(
                     matches!(availability, Availability::Available(_)),
@@ -291,10 +310,9 @@ mod tests {
     #[tokio::test]
     async fn an_empty_payload_streams() {
         let (bundle, data) = stored(b"");
-        let (_, whole) = rebuild(&bundle, &data);
-        let expected = Chunk::flatten(whole, &data);
-        let resident = pull_headers(&bundle, Box::new(data.clone())).await;
-        let (total_len, segments) = output(&bundle, resident).await;
+        let expected = Chunk::flatten(rebuild(&bundle, &data), &data);
+        let loaded = pull_headers(&bundle, Box::new(data.clone())).await;
+        let (total_len, segments) = output(&bundle, loaded).await;
         assert_eq!(concat(&segments), &*expected);
         assert_eq!(total_len, expected.len() as u64);
     }
@@ -310,7 +328,7 @@ mod tests {
     #[should_panic(expected = "ended before its headers")]
     async fn a_load_lost_before_the_headers_is_fatal() {
         let (bundle, data) = stored(b"lost");
-        let (tx, rx) = hardy_async::channel::bounded(1);
+        let (tx, rx) = bounded(1);
         tx.send(Segment::Next(data.slice(..10))).await.unwrap();
         drop(tx);
         pull_headers(&bundle, Box::new(rx)).await;

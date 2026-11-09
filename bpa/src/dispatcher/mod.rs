@@ -703,18 +703,50 @@ fn stored_name(bundle: &bundle::Bundle) -> &str {
 #[cfg(test)]
 pub mod tests {
     use hardy_bpv7::eid::{IpnNodeId, NodeId};
+    #[cfg(feature = "rfc9173")]
+    use hardy_bpv7::{
+        bpsec::{
+            encryptor::{Context, Encryptor},
+            key::{EncAlgorithm, Key, Operation, Type},
+        },
+        builder::Builder,
+        bundle::Flags,
+        creation_timestamp::CreationTimestamp,
+        parse::parse,
+    };
+    #[cfg(feature = "rfc9173")]
+    use rand::{TryRng, rngs::SysRng};
 
     use super::*;
     use crate::{
+        filter::pack::FilterPack,
+        keys::{KeyProvider, NullKeyProvider},
         node_ids::NodeIds,
         storage::{BundleMemStorage, MetadataMemStorage},
     };
 
-    // A dispatcher over the given stores, with no filters, no legacy peers
-    // and no status reports.
+    // A dispatcher over the given stores, with no filters, no keys, no
+    // legacy peers and no status reports.
     pub async fn dispatcher(
         metadata_store: Arc<MetadataMemStorage>,
         data_store: Arc<BundleMemStorage>,
+    ) -> Arc<Dispatcher> {
+        dispatcher_with(
+            metadata_store,
+            data_store,
+            Arc::new(NullKeyProvider),
+            Vec::new(),
+        )
+        .await
+    }
+
+    // A dispatcher over the given stores, key provider and filter packs, with
+    // no legacy peers and no status reports.
+    pub async fn dispatcher_with(
+        metadata_store: Arc<MetadataMemStorage>,
+        data_store: Arc<BundleMemStorage>,
+        key_provider: Arc<dyn KeyProvider>,
+        packs: Vec<FilterPack>,
     ) -> Arc<Dispatcher> {
         let store = Arc::new(storage::store::Store::new(
             NonZeroUsize::new(16).unwrap(),
@@ -735,7 +767,7 @@ pub mod tests {
             .build(node_ids.clone(), store.clone())
             .await
             .unwrap();
-        let filters = crate::filter::pack::chains::FilterChains::freeze(Vec::new());
+        let filters = FilterChains::freeze(packs);
         let (dispatcher, _start) = Dispatcher::new(
             Config {
                 status_reports: false,
@@ -748,9 +780,52 @@ pub mod tests {
             node_ids,
             store,
             rib,
-            Arc::new(crate::keys::NullKeyProvider),
+            key_provider,
             filters,
         );
         dispatcher
+    }
+
+    // A bundle to `destination`, reporting to it, whose payload is under a
+    // BCB, under a key generated per the no-literal-keys rule.
+    #[cfg(feature = "rfc9173")]
+    pub fn encrypted_payload_to(destination: &str) -> (hardy_bpv7::Bundle, Bytes) {
+        let mut key_bytes = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(key_bytes),
+            key_algorithm: None,
+            enc_algorithm: Some(EncAlgorithm::A256GCM),
+            operations: Some(
+                [Operation::Encrypt, Operation::Decrypt]
+                    .into_iter()
+                    .collect(),
+            ),
+            id: Some("ipn:2.1".into()),
+            key_use: None,
+        };
+        let destination: Eid = destination.parse().unwrap();
+        let (built, data) = Builder::new("ipn:0.2.1".parse().unwrap(), destination.clone())
+            .with_report_to(destination)
+            .with_flags(Flags {
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_lifetime(core::time::Duration::from_secs(3600))
+            .with_payload(b"secret".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
+            .encrypt_block(
+                1,
+                Context::AES_GCM(Default::default()),
+                "ipn:0.2.1".parse().unwrap(),
+                &key,
+            )
+            .expect("encrypt the payload");
+        let encrypted = Bytes::from(encryptor.rebuild().expect("rebuild the encrypted bundle"));
+        let parsed = parse(encrypted).expect("the encrypted bundle parses");
+        (parsed.bundle, parsed.data)
     }
 }
