@@ -26,10 +26,18 @@ use zeroize::Zeroizing;
 use crate::{
     Error, HashMap, HashSet, block,
     bpsec::{self, Role, Roles, SecurityService},
+    eid::Eid,
     error::CaptureFieldErr,
     parse::Parsed,
     reader::{Availability, PlainReader, Reader},
 };
+
+// Whether `block` is one every forwarder replaces (RFC 9171 §5.4), a
+// Previous Node or Bundle Age block, which no valid bundle has under an
+// encrypted BIB. Compared by encoding, so an alias of either type counts.
+fn always_replaced(block: &block::Block) -> bool {
+    block.block_type == block::Type::PreviousNode || block.block_type == block::Type::BundleAge
+}
 
 // A reader over the bundle's resident bytes that serves a BCB-covered
 // block's plaintext from the arrival's cache, where an earlier pass
@@ -223,9 +231,16 @@ impl Parsed {
     ///    this node cannot read that may cover it
     ///    ([`Maybe`](block::BibCoverage::Maybe)). An encrypted BIB is
     ///    decrypted by necessity, when an accepted block is BCB-covered
-    ///    beside one, which may cover it, and the coverage it reveals is
-    ///    stamped on the parse's blocks; one whose ciphertext does not
-    ///    authenticate is recorded `Failed`. An integrity operation on a
+    ///    beside one that may cover it: one under a BCB from the same
+    ///    security source as the block's own, since the node that encrypts
+    ///    a signed block encrypts its BIB too (RFC 9172 §3.9), so no BIB
+    ///    under another source's BCB covers it in a valid bundle. The
+    ///    coverage it reveals is stamped on the parse's blocks, and one
+    ///    whose ciphertext does not authenticate is recorded `Failed`. None
+    ///    is read on a Previous Node's or Bundle Age's account, since no
+    ///    valid bundle has an encrypted BIB over a block every forwarder
+    ///    replaces (RFC 9171 §5.4); the Hop Count, which may validly be
+    ///    under one, reads its own source's. An integrity operation on a
     ///    Previous Node or Bundle Age block among them inside an encrypted
     ///    BIB is a combination no valid bundle carries, which the block's
     ///    acceptor cannot accept: one this pass decrypted is recorded
@@ -362,21 +377,29 @@ impl Parsed {
         // BCB-covered block, the payload among them, may cover it: decrypted
         // by necessity, so the coverage read below is known, and the BIB
         // over an encrypted payload is there for its acceptor to verify
-        // against the plaintext. One whose ciphertext does not authenticate
-        // is recorded, and the coverage it hides stays unknown.
-        let covered = acceptors
+        // against the plaintext. The BIB that covers a block lies under a
+        // BCB from the same security source as the block's own, since the
+        // node that encrypts a signed block encrypts its BIB too (RFC 9172
+        // §3.9), so only those sources' BIBs are read, and none on a
+        // Previous Node's or Bundle Age's account, which no valid bundle
+        // has under an encrypted BIB. One whose ciphertext does not
+        // authenticate is recorded, and the coverage it hides stays
+        // unknown.
+        let sources: HashSet<&Eid> = acceptors
             .iter()
-            .any(|n| blocks.get(n).is_some_and(|b| b.bcb.is_some()));
-        let encrypted_bib = blocks
-            .values()
-            .any(|b| b.block_type == block::Type::BlockIntegrity && b.bcb.is_some());
-        if covered && encrypted_bib {
+            .filter_map(|n| blocks.get(n))
+            .filter(|b| !always_replaced(b))
+            .filter_map(|b| b.bcb)
+            .filter_map(|bcb| bcb_ops.get(&bcb).map(|ops| &ops.source))
+            .collect();
+        if !sources.is_empty() {
             let failed = decrypt_and_validate_covered_bibs(
                 data,
                 key_source,
                 blocks,
                 bcb_ops,
                 bib_ops,
+                &sources,
                 &mut decrypted.plaintext,
             )?;
             for (bcb, bib) in failed {
@@ -630,9 +653,10 @@ impl Parsed {
 
 // ===== Section B — decrypt-and-validate BCB-encrypted BIBs =====
 
-/// §B: For every BCB-encrypted BIB, decrypt the body, parse the
-/// `bib::OperationSet`, run §3.8 / §3.9 structural checks, stamp BIB
-/// coverage on every target, stash the plaintext into `decrypted`, and
+/// §B: For every BCB-encrypted BIB under a BCB from one of `sources`, the
+/// security sources of the BCBs over the accepted blocks, decrypt the body,
+/// parse the `bib::OperationSet`, run §3.8 / §3.9 structural checks, stamp
+/// BIB coverage on every target, stash the plaintext into `decrypted`, and
 /// insert the freshly-decoded OperationSet into `bib_ops`.
 ///
 /// Returns the BIBs whose ciphertext did not authenticate
@@ -641,13 +665,15 @@ impl Parsed {
 /// (schedule for removal); for a strict acceptor, reject the bundle.
 ///
 /// A BIB already in `decrypted` (decrypted by an earlier pass over the same
-/// parse) is not decrypted again. `NoKey` on any individual BIB is a soft
-/// skip (loop continues; that BIB's `BibCoverage::Maybe` markers are left in
-/// place), as is an unsupported BCB operation over it, which
-/// the parser's classification has recorded
+/// parse) is not decrypted again. One under a BCB from a source not in
+/// `sources` is left unread, since the BIB that covers a block lies under a
+/// BCB from the same security source as the block's own (RFC 9172 §3.9).
+/// `NoKey` on any individual BIB is a soft skip (loop continues; that BIB's
+/// `BibCoverage::Maybe` markers are left in place), as is an unsupported
+/// BCB operation over it, which the parser's classification has recorded
 /// ([`Classification`](crate::parse::Classification)). Any non-NoKey,
-/// non-`DecryptionFailed` BPSec error fails the whole call. When all
-/// covered BIBs decrypted with no failures, residual `BibCoverage::Maybe`
+/// non-`DecryptionFailed` BPSec error fails the whole call. When every
+/// covered BIB was read and authenticated, residual `BibCoverage::Maybe`
 /// markers are collapsed to `None` before returning.
 fn decrypt_and_validate_covered_bibs(
     data: &[u8],
@@ -655,9 +681,10 @@ fn decrypt_and_validate_covered_bibs(
     blocks: &mut HashMap<u64, block::Block>,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
+    sources: &HashSet<&Eid>,
     decrypted: &mut HashMap<u64, Zeroizing<Box<[u8]>>>,
 ) -> Result<SmallVec<[(u64, u64); 4]>, Error> {
-    let mut had_nokey = false;
+    let mut unread = false;
     let mut failed: SmallVec<[(u64, u64); 4]> = SmallVec::new();
 
     // Snapshot the encrypted-BIB block-number list up front so the loop
@@ -683,6 +710,12 @@ fn decrypt_and_validate_covered_bibs(
         let bcb_op_set = bcb_ops
             .get(&bcb_block_number)
             .expect("BCB referenced by an encrypted BIB must be in bcb_ops");
+        // A BIB under another source's BCB covers no accepted block in a
+        // valid bundle: left unread, as one this node holds no key for is.
+        if !sources.contains(&bcb_op_set.source) {
+            unread = true;
+            continue;
+        }
 
         // Scope the reader so its `blocks` borrow ends before we mutate
         // for coverage stamping.
@@ -699,7 +732,7 @@ fn decrypt_and_validate_covered_bibs(
             // An unsupported security context leaves the BIB opaque, as a
             // missing key does: the BCB is the classification's.
             if bcb_op.is_unsupported() {
-                had_nokey = true;
+                unread = true;
                 continue;
             }
             match bcb_op.decrypt(
@@ -713,7 +746,7 @@ fn decrypt_and_validate_covered_bibs(
             ) {
                 Ok(p) => p,
                 Err(bpsec::Error::NoKey) => {
-                    had_nokey = true;
+                    unread = true;
                     continue;
                 }
                 Err(bpsec::Error::DecryptionFailed) => {
@@ -761,9 +794,9 @@ fn decrypt_and_validate_covered_bibs(
     }
 
     // Collapse residual Maybe markers only when every covered BIB both
-    // decrypted and authenticated. A NoKey BIB may still claim any Maybe
+    // decrypted and authenticated. An unread BIB may still claim any Maybe
     // target; a failed BIB leaves its targets unknown until it is dropped.
-    if !had_nokey && failed.is_empty() {
+    if !unread && failed.is_empty() {
         for block in blocks.values_mut() {
             if matches!(block.bib, block::BibCoverage::Maybe) {
                 block.bib = block::BibCoverage::None;
@@ -824,10 +857,10 @@ fn decrypt_target(
 // since its increment is a SHOULD (RFC 9171 §4.4.3): a signature on a count
 // no node has incremented can stand.
 //
-// Two facts prove the operation. A BIB the acceptors' decryption read, by
-// necessity, stamps
-// the block's coverage with it: those are recorded `Conflicting`, as (BIB,
-// target). Without the key, the structure proves it when every BCB-covered
+// Two facts prove the operation. A BIB read by necessity, on another
+// accepted block's account or by an earlier pass, stamps the block's
+// coverage with it: those are recorded `Conflicting`, as (BIB, target).
+// Without the BIB read, the structure proves it when every BCB-covered
 // block other than a BIB is a Previous Node or Bundle Age block: an
 // encrypted BIB must target a BCB-covered block (RFC 9172 §3.8) and cannot
 // target a BIB or a BCB (§3.7), so it covers one of them. Those are recorded
@@ -842,16 +875,12 @@ fn per_hop_integrity_in_encrypted_bibs(
     decrypted: &HashMap<u64, Zeroizing<Box<[u8]>>>,
     facts: &mut Facts,
 ) {
-    // Compared by encoding, so an alias of either type counts.
-    let per_hop = |b: &block::Block| {
-        b.block_type == block::Type::PreviousNode || b.block_type == block::Type::BundleAge
-    };
     let encrypted_bib =
         |b: &block::Block| b.block_type == block::Type::BlockIntegrity && b.bcb.is_some();
 
     let mut conflicting: SmallVec<[(u64, u64); 2]> = blocks
         .iter()
-        .filter(|(n, b)| acceptors.contains(*n) && per_hop(b))
+        .filter(|(n, b)| acceptors.contains(*n) && always_replaced(b))
         .filter_map(|(&n, b)| match b.bib {
             block::BibCoverage::Some(bib) if blocks.get(&bib).is_some_and(encrypted_bib) => {
                 Some((bib, n))
@@ -875,7 +904,11 @@ fn per_hop_integrity_in_encrypted_bibs(
         .map(|(&n, _)| n)
         .collect();
     let mut possibly: SmallVec<[(u64, u64); 4]> = SmallVec::new();
-    if !covered.is_empty() && covered.iter().all(|n| blocks.get(n).is_some_and(per_hop)) {
+    if !covered.is_empty()
+        && covered
+            .iter()
+            .all(|n| blocks.get(n).is_some_and(always_replaced))
+    {
         for (&bib, _) in blocks
             .iter()
             .filter(|(n, b)| encrypted_bib(b) && !decrypted.contains_key(*n))

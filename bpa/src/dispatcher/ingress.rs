@@ -438,7 +438,9 @@ impl Dispatcher {
         // Their operations are processed now, before anything is spooled,
         // for the rewrite below to remove what is accepted; a designated
         // block must carry an operation of the service this arrival checked,
-        // and one that does not meets its fate.
+        // and one that does not meets its fate. At the destination a Hop
+        // Count this node cannot accept meets its fate too, there being no
+        // node downstream to pass it to.
         let mut verify_payload_ciphertext = false;
         if !gate_roles.is_empty() {
             match check_announced(
@@ -448,6 +450,7 @@ impl Dispatcher {
                 &*keys,
                 &verified,
                 !deferred_verifiers.is_empty(),
+                local,
             ) {
                 Ok(outcome) => {
                     report |= outcome.fate.report;

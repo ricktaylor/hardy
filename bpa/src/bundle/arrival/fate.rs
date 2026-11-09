@@ -313,8 +313,11 @@ pub struct Announced {
 /// too). A block whose BCB operation went with an accepted block's and
 /// failed meets its fate too, as does one whose BIB fails, as does
 /// ciphertext that does not authenticate ("Failed security operation"). A
-/// Hop Count whose acceptance cannot be completed is no failure: its
-/// increment is a SHOULD (RFC 9171 §4.4.3), and it stays as received. A
+/// Hop Count whose acceptance cannot be completed is no failure where this
+/// node forwards the bundle: its increment is a SHOULD (RFC 9171 §4.4.3),
+/// and it stays as received for a node downstream that may be its acceptor;
+/// at the `destination`, the acceptor of every operation (RFC 9172 §1.4),
+/// it meets its fate like any block. A
 /// block that carries no operation of a service policy `expected` on it, to
 /// accept or to verify, as against the blocks the destination accepts of
 /// itself, is discarded, as RFC 9172 §5.1.1 and §5.1.2 recommend of a
@@ -328,6 +331,7 @@ pub fn check_announced(
     keys: &dyn bpsec::key::KeySource,
     verified: &HashSet<u64>,
     payload_verifying: bool,
+    destination: bool,
 ) -> Result<Announced, Rejected> {
     let blocks = &parsed.bundle.blocks;
     // The roles the check takes. A verifier of the payload's confidentiality
@@ -412,7 +416,8 @@ pub fn check_announced(
     // A missing key for a BIB operation is a failed acceptance or
     // verification only where the block's integrity is this node's to
     // accept or verify, a verifier's skip otherwise; an incomplete or
-    // unreadable Hop Count is no failure, its increment being a SHOULD.
+    // unreadable Hop Count is no failure where the bundle is forwarded, its
+    // increment being a SHOULD, and is one at the destination.
     let findings = Findings {
         bcb_failed: facts
             .targets_of(SecurityService::Confidentiality, Checked::Failed)
@@ -435,7 +440,7 @@ pub fn check_announced(
                     .iter()
                     .copied()
                     .chain(unreadable.iter().copied())
-                    .filter(|&n| !has_type(blocks, n, block::Type::HopCount)),
+                    .filter(|&n| destination || !has_type(blocks, n, block::Type::HopCount)),
             )
             .chain(unresolved.iter().copied())
             .chain(facts.targets(Checked::Unsupported))

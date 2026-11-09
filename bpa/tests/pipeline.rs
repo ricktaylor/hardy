@@ -9434,11 +9434,10 @@ async fn a_local_destination_deletes_a_payload_that_fails_its_check() {
 
 // A bundle from ipn:0.2.1 to node 1 whose source signed then encrypted its
 // payload, as `with_protected_payload` does, and whose previous node,
-// ipn:0.2.0, then encrypted the Previous Node block it added: the header
-// pass, accepting the Previous Node, decrypts the encrypted BIB over the
-// payload by necessity. The bundle and the keys.
+// ipn:0.2.0, then encrypted the Previous Node block it added, under
+// `previous_node_scope`. The bundle and the keys.
 #[cfg(feature = "rfc9173")]
-fn with_protected_payload_and_previous_node() -> (Bytes, Vec<Key>) {
+fn with_protected_payload_and_previous_node(previous_node_scope: ScopeFlags) -> (Bytes, Vec<Key>) {
     let source: Eid = "ipn:0.2.1".parse().unwrap();
     let previous: Eid = "ipn:0.2.0".parse().unwrap();
     let plaintext: Vec<u8> = (0..6144u32).map(|i| (i % 239) as u8).collect();
@@ -9486,7 +9485,7 @@ fn with_protected_payload_and_previous_node() -> (Bytes, Vec<Key>) {
     encryptor
         .encrypt_block(
             previous_node,
-            EncryptContext::AES_GCM(ScopeFlags::default()),
+            EncryptContext::AES_GCM(previous_node_scope),
             previous,
             &enc_key,
         )
@@ -9560,16 +9559,17 @@ async fn a_local_destination_accepts_a_block_signed_with_the_payload() {
     }
 }
 
-// The encrypted BIB over an encrypted payload, which the header pass
-// decrypted by necessity, is checked against the payload's plaintext all
-// the same: the bundle is stored with the payload in plaintext and no
-// security block, and a BIB that fails under another key deletes it.
+// The encrypted BIB over an encrypted payload, which the gate decrypts by
+// necessity as the payload's acceptor, is checked against the payload's
+// plaintext all the same: the bundle is stored with the payload in
+// plaintext and no security block, and a BIB that fails under another key
+// deletes it.
 #[cfg(feature = "rfc9173")]
 #[tokio::test]
-async fn a_local_destination_checks_a_payload_bib_the_header_pass_decrypted() {
+async fn a_local_destination_checks_a_payload_bib_the_gate_decrypted() {
     let source: Eid = "ipn:0.2.1".parse().unwrap();
     for segments in [1, 3] {
-        let (inbound, keys) = with_protected_payload_and_previous_node();
+        let (inbound, keys) = with_protected_payload_and_previous_node(ScopeFlags::default());
         let (bpa, saved_rx, _, _) = keyed_node_receiving_in(keys, None, inbound, segments).await;
         let stored = stored_from(&saved_rx, &source).await;
         assert!(
@@ -9578,7 +9578,7 @@ async fn a_local_destination_checks_a_payload_bib_the_header_pass_decrypted() {
         );
         bpa.shutdown().await;
 
-        let (inbound, mut keys) = with_protected_payload_and_previous_node();
+        let (inbound, mut keys) = with_protected_payload_and_previous_node(ScopeFlags::default());
         keys[0] = generated_keys().0;
         let (bpa, saved_rx, deleted_rx, sent_rx) =
             keyed_node_receiving_in(keys, None, inbound, segments).await;
@@ -10141,6 +10141,54 @@ async fn a_fragments_per_hop_blocks_are_accepted_as_any_bundles() {
         );
         bpa.shutdown().await;
     }
+}
+
+// Fragment 0 of a bundle whose source signed then encrypted its payload,
+// and whose previous node encrypted the Previous Node block under a scope
+// that leaves the primary block out, at the destination: the Previous Node
+// is accepted and stored in plaintext, and the source's encrypted BIB, under
+// the source's BCB, is read on no per-hop block's account, so it rides the
+// fragment untouched to reassembly, where its BCB can authenticate again.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_fragments_source_bib_is_not_read_on_a_per_hop_blocks_account() {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (inbound, keys) = with_protected_payload_and_previous_node(ScopeFlags {
+        include_primary_block: false,
+        ..ScopeFlags::default()
+    });
+    let received = parse(inbound.clone()).unwrap();
+    let bib = *received
+        .bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::BlockIntegrity)
+        .expect("the source's BIB is present")
+        .0;
+    let fragment = as_fragment(inbound);
+    let (bpa, saved_rx, _) = keyed_node_receiving(keys, None, fragment).await;
+
+    let stored = stored_from(&saved_rx, &source).await;
+    assert!(stored.bundle.primary.id.fragment_info.is_some());
+    let previous_node = stored
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::PreviousNode)
+        .expect("the Previous Node is accepted and kept");
+    assert!(
+        previous_node.bcb.is_none(),
+        "the Previous Node is stored in plaintext"
+    );
+    assert!(
+        stored.bundle.blocks[&bib].bcb.is_some(),
+        "the source's BIB rides the fragment encrypted"
+    );
+    assert!(
+        stored.bundle.blocks[&1].bcb.is_some(),
+        "the payload rides the fragment encrypted"
+    );
+    bpa.shutdown().await;
 }
 
 // A transit fragment is forwarded as any bundle is: its Previous Node

@@ -24,7 +24,7 @@ The §-sections, in execution order:
 | § | Stage | Keys? | What it establishes |
 |---|---|---|---|
 | A1 / A2 / A3 | classify unrecognised blocks / unsupported BCBs / unsupported BIBs | no | which blocks this node cannot process (delete/report facts; a hard error on `delete_bundle_on_failure`). An unrecognised block (A1) is every receiver's; an unsupported security operation (A2, A3) is its acceptor's, which `check` records as `Unsupported` outcomes, never processed, and which elsewhere travels untouched |
-| B | decrypt & validate BCB-encrypted BIBs | yes | the real targets of encrypted BIBs, replacing "maybe" coverage |
+| B | decrypt & validate the BCB-encrypted BIBs under a BCB from an accepted block's security source | yes | the real targets of those BIBs, replacing "maybe" coverage |
 | B6 | resolve residual "maybe" coverage | no | finalised coverage, once every encrypted BIB is accounted for |
 | C8 | decrypt the blocks the consumer accepts, the per-hop blocks at a receiver | yes | plaintext block bodies in the cache (or NoKey / decrypt-failed) |
 | C7 | verify every BIB | yes | the integrity of each covered block |

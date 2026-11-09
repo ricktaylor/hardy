@@ -1872,54 +1872,46 @@ async fn keyless_relay_replaces_a_previous_node_an_encrypted_bib_may_cover() {
     );
 }
 
-// With the payload encrypted too, only a key holder sees that the encrypted
-// BIB covers the Previous Node block: an integrity operation no valid bundle
-// carries, which it cannot accept, so the block's flags decide as a failed
-// acceptance's do. Unflagged, the block is discarded with the BIB, whole,
-// and the relay forwards the bundle with its own Previous Node, the payload
-// keeping its ciphertext under the BCB the three shared; flagged to delete
-// the bundle, the bundle is deleted as a conflicting security operation.
+// With the payload encrypted too, the structure proves nothing, and a relay
+// holding the key reads no BIB on a Previous Node's account: no valid bundle
+// has an encrypted BIB over one, so the block reads as covered by none, as a
+// keyless relay reads it. The relay accepts the block's BCB operation,
+// whatever the block's flags, and forwards the bundle with its own Previous
+// Node, the encrypted BIB travelling as received for an acceptance under the
+// source's BCB to read, and the payload keeping its ciphertext.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn key_holding_relay_discards_a_previous_node_under_an_encrypted_bib() {
+async fn key_holding_relay_reads_no_bib_on_a_previous_nodes_account() {
     let enc_key = enc_key();
-    let received = per_hop_under_encrypted_bib(
-        block::Type::PreviousNode,
+    for flags in [
         block::Flags::default(),
-        CreationTimestamp::now(),
-        true,
-        &sign_key(),
-        &enc_key,
-    );
-    let out = relay(&received.data, vec![enc_key.clone()]).await;
-    assert_previous_node_replaced(&received, &out);
-    assert!(
-        !out.bundle
-            .blocks
-            .values()
-            .any(|b| b.block_type == block::Type::BlockIntegrity),
-        "the encrypted BIB goes whole"
-    );
-    assert!(
-        extension(&out, block::Type::Payload).bcb.is_some(),
-        "the payload keeps its BCB operation"
-    );
-
-    let received = per_hop_under_encrypted_bib(
-        block::Type::PreviousNode,
         block::Flags {
             delete_bundle_on_failure: true,
             ..Default::default()
         },
-        CreationTimestamp::now(),
-        true,
-        &sign_key(),
-        &enc_key,
-    );
-    assert_eq!(
-        relay_refusal(&received, vec![enc_key]).await,
-        ReasonCode::ConflictingSecurityOperation
-    );
+    ] {
+        let received = per_hop_under_encrypted_bib(
+            block::Type::PreviousNode,
+            flags,
+            CreationTimestamp::now(),
+            true,
+            &sign_key(),
+            &enc_key,
+        );
+        let out = relay(&received.data, vec![enc_key.clone()]).await;
+        assert_previous_node_replaced(&received, &out);
+        assert!(
+            out.bundle
+                .blocks
+                .values()
+                .any(|b| b.block_type == block::Type::BlockIntegrity && b.bcb.is_some()),
+            "the encrypted BIB travels as received"
+        );
+        assert!(
+            extension(&out, block::Type::Payload).bcb.is_some(),
+            "the payload keeps its BCB operation"
+        );
+    }
 }
 
 // A bundle from ipn:1.3.1 whose Previous Node its source signed with the
@@ -1980,15 +1972,14 @@ fn previous_node_signed_with_the_payload(sign_key: &Key, enc_key: &Key) -> Parse
     .unwrap()
 }
 
-// A relay holding every key can check the operations on the Previous Node,
-// and still cannot accept them: the integrity operation is inside an
-// encrypted BIB, which no valid bundle carries. The block is discarded with
-// that BIB, whole, and the payload loses the BIB's operation on it, keeping
-// its ciphertext under its own BCB; the relay forwards the bundle with its
-// own Previous Node.
+// A relay holding every key reads no BIB on the Previous Node's account
+// either, and with the payload encrypted too the structure proves nothing:
+// the block reads as covered by none, its BCB operation is accepted, and the
+// relay forwards the bundle with its own Previous Node, the encrypted BIB
+// and the payload travelling as received under their BCBs.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_key_holding_relay_discards_a_previous_node_under_an_encrypted_bib() {
+async fn every_key_holding_relay_reads_no_bib_on_a_previous_nodes_account() {
     let (sign_key, enc_key) = (sign_key(), enc_key());
     let received = previous_node_signed_with_the_payload(&sign_key, &enc_key);
 
@@ -2002,11 +1993,15 @@ async fn every_key_holding_relay_discards_a_previous_node_under_an_encrypted_bib
             .filter(|b| b.block_type == block_type)
             .count()
     };
-    assert_eq!(count(block::Type::BlockIntegrity), 0, "the BIB goes whole");
+    assert_eq!(
+        count(block::Type::BlockIntegrity),
+        1,
+        "the BIB travels as received"
+    );
     assert_eq!(
         count(block::Type::BlockSecurity),
-        1,
-        "the BIB's BCB goes with it, and the payload's stays"
+        2,
+        "the BIB's BCB and the payload's stay; the Previous Node's goes"
     );
 }
 

@@ -447,17 +447,19 @@ fn pics_2_5_source_sign_then_encrypt_both() {
 // The PICS 2.6 and 2.8 vectors sign and then encrypt a Bundle Age block
 // (block 2) together with the payload: an integrity operation on a per-hop
 // block inside an encrypted BIB, which no valid bundle carries, and which
-// the next node cannot accept. Hardy's receiver's pass records the
-// operation conflicting, for the caller's floor, which deletes a bundle
-// without a creation time for it, since it cannot do without the block.
-// The PICS item itself, an acceptor that decrypts and then verifies, is
-// exercised through the primitives that pass is built from: the encryption
-// of every block removed as the bundle's destination removes it, then every
-// BIB verified over the plaintext. Returns the structural parse, for the
-// caller's own acceptance.
+// the next node cannot accept. Hardy's receiver's pass, accepting the
+// payload as the bundle's destination does, reads the BIB under the
+// payload's source's BCB and records the operation conflicting, for the
+// caller's floor, which deletes a bundle without a creation time for it,
+// since it cannot do without the block; a per-hop acceptor alone reads no
+// BIB on the Bundle Age's account. The PICS item itself, an acceptor that
+// decrypts and then verifies, is exercised through the primitives that
+// pass is built from: the encryption of every block removed as the bundle's
+// destination removes it, then every BIB verified over the plaintext.
+// Returns the structural parse, for the caller's own acceptance.
 fn acceptor_decrypts_then_verifies(incoming: &[u8], keys: &key::KeySet) -> parse::Parsed {
     let mut received = parse::parse(Bytes::copy_from_slice(incoming)).expect("structural parse");
-    let facts = verify_as_receiver(&mut received, keys, &HashSet::new())
+    let facts = verify_as_receiver(&mut received, keys, &HashSet::from([1]))
         .expect("the receiver's pass records the operation");
     assert_eq!(
         found_targets(&facts, Checked::Conflicting),

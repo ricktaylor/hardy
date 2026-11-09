@@ -2710,8 +2710,10 @@ fn the_structure_proves_an_encrypted_bib_over_a_per_hop_block() {
 }
 
 // With the payload encrypted too, a keyless node cannot tell which block the
-// encrypted BIB covers, and reports nothing; a keyed pass that decrypts the
-// BIB resolves the coverage and proves it.
+// encrypted BIB covers, and reports nothing. Nor does a keyed pass that
+// accepts the per-hop block alone: no BIB is read on a Previous Node's
+// account. A pass that accepts the payload, under a BCB from the same
+// security source, reads the BIB, resolves the coverage and proves it.
 #[test]
 fn a_keyed_pass_proves_an_encrypted_bib_over_a_per_hop_block() {
     let (mut parsed, target, enc_key) = signed_then_encrypted(block::Type::PreviousNode, true);
@@ -2724,10 +2726,162 @@ fn a_keyed_pass_proves_an_encrypted_bib_over_a_per_hop_block() {
     );
 
     let mut parsed = signed_then_encrypted_again(&parsed);
-    let facts =
-        verify_with(&mut parsed, vec![enc_key]).expect("the keyed pass reports the operation");
+    let facts = verify_with(&mut parsed, vec![enc_key.clone()])
+        .expect("a per-hop acceptor reads no BIB on its account");
+    assert!(
+        found(&facts, Checked::Conflicting).is_empty()
+            && found(&facts, Checked::PossiblyConflicting).is_empty()
+    );
+    assert!(
+        !parsed.decrypted.plaintext.contains_key(&bib),
+        "the BIB is not read on the Previous Node's account"
+    );
+
+    let mut parsed = signed_then_encrypted_again(&parsed);
+    let facts = common::verify_as_receiver(
+        &mut parsed,
+        &bpsec::key::KeySet::new(vec![enc_key]),
+        &HashSet::from([1]),
+    )
+    .expect("the payload's acceptor reads the BIB and reports the operation");
     assert_eq!(found(&facts, Checked::Conflicting), vec![(bib, target)]);
     assert!(found(&facts, Checked::PossiblyConflicting).is_empty());
+}
+
+// A keyed pass reads an encrypted BIB only on the account of an accepted
+// block under a BCB from the same security source, since the node that
+// encrypts a signed block encrypts its BIB too (RFC 9172 §3.9), and never on
+// a Previous Node's or Bundle Age's. The source's encrypted BIB over its
+// payload, which no per-hop acceptor has reason to read, stays unread, on
+// fragment 0, where its BCB cannot authenticate against the fragment's
+// primary block, as on the whole bundle; the previous hop's BIB over the Hop
+// Count it encrypted is read, and the Hop Count verified under it.
+#[test]
+fn a_per_hop_acceptor_reads_only_its_sources_encrypted_bibs() {
+    use bpsec::{encryptor, rfc9173::ScopeFlags, signer};
+    use core::num::NonZeroU8;
+    use hardy_bpv7::hop_info::HopInfo;
+    use hardy_cbor::encode::emit;
+
+    let source: eid::Eid = "ipn:1.3.1".parse().unwrap();
+    let previous: eid::Eid = "ipn:1.3.0".parse().unwrap();
+    let (sign_key, enc_key) = generated_keys();
+    let (_, data) = builder::Builder::new(source.clone(), "ipn:1.2.99".parse().unwrap())
+        .add_extension_block(block::Type::PreviousNode)
+        .expect("add the Previous Node")
+        .build(emit(&previous).0.into())
+        .add_extension_block(block::Type::HopCount)
+        .expect("add the Hop Count")
+        .build(
+            emit(&HopInfo {
+                limit: NonZeroU8::new(64).unwrap(),
+                count: 1,
+            })
+            .0
+            .into(),
+        )
+        .with_payload(b"per-hop".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let built = parse::parse(Bytes::from(data)).unwrap();
+    let previous_node = block_number(&built, block::Type::PreviousNode);
+    let hop_count = block_number(&built, block::Type::HopCount);
+
+    // The source signs its payload and encrypts it, its BIB with it, the
+    // primary block in both scopes.
+    let mut signer = signer::Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .expect("sign the payload");
+    let signed = parse::parse(Bytes::from(signer.rebuild().expect("rebuild signed"))).unwrap();
+    let sources_bib = the_bib(&signed);
+    let mut encryptor = encryptor::Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(ScopeFlags::default()),
+            source,
+            &enc_key,
+        )
+        .expect("encrypt the payload");
+    let protected =
+        parse::parse(Bytes::from(encryptor.rebuild().expect("rebuild encrypted"))).unwrap();
+
+    // The previous hop signs the Hop Count and encrypts it, its BIB with
+    // it, and encrypts the Previous Node, each under a scope that leaves
+    // the primary block out, so its operations survive fragmentation.
+    let scope = ScopeFlags {
+        include_primary_block: false,
+        ..ScopeFlags::default()
+    };
+    let mut signer = signer::Signer::new(&protected.bundle, &protected.data);
+    signer
+        .sign_block(
+            hop_count,
+            signer::Context::HMAC_SHA2(scope.clone()),
+            previous.clone(),
+            &sign_key,
+        )
+        .expect("sign the Hop Count");
+    let signed = parse::parse(Bytes::from(signer.rebuild().expect("rebuild signed"))).unwrap();
+    let mut encryptor = encryptor::Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            hop_count,
+            encryptor::Context::AES_GCM(scope.clone()),
+            previous.clone(),
+            &enc_key,
+        )
+        .expect("encrypt the Hop Count, and so its BIB");
+    encryptor
+        .encrypt_block(
+            previous_node,
+            encryptor::Context::AES_GCM(scope),
+            previous,
+            &enc_key,
+        )
+        .expect("encrypt the Previous Node");
+    let whole = parse::parse(Bytes::from(encryptor.rebuild().expect("rebuild encrypted"))).unwrap();
+    let hop_counts_bib = *whole
+        .bundle
+        .blocks
+        .iter()
+        .find(|(n, b)| b.block_type == block::Type::BlockIntegrity && **n != sources_bib)
+        .expect("the previous hop's BIB is present")
+        .0;
+
+    for (case, mut parsed) in [
+        ("the whole bundle", signed_then_encrypted_again(&whole)),
+        ("fragment 0", as_fragment(&whole)),
+    ] {
+        let facts = verify_with(&mut parsed, vec![sign_key.clone(), enc_key.clone()])
+            .expect("the receiver's pass reports");
+        assert!(
+            facts.outcomes.iter().all(|o| o.target != sources_bib),
+            "{case}: the source's BIB is read on no per-hop block's account: {:?}",
+            facts.outcomes
+        );
+        assert!(
+            !parsed.decrypted.plaintext.contains_key(&sources_bib)
+                && parsed.decrypted.failed.is_empty(),
+            "{case}: the source's BIB stays unread"
+        );
+        let mut expected = vec![previous_node, hop_count, hop_count, hop_counts_bib];
+        expected.sort_unstable();
+        assert_eq!(
+            found_targets(&facts, Checked::Verified),
+            expected,
+            "{case}: {:?}",
+            facts.outcomes
+        );
+        assert_eq!(facts.outcomes.len(), 4, "{case}: {:?}", facts.outcomes);
+        assert!(facts.incomplete.is_empty(), "{case}");
+    }
 }
 
 // The Hop Count is exempt: its increment is a SHOULD, so a signature on a
@@ -3077,9 +3231,11 @@ fn encrypted_payload_bib(encrypted_age: bool) -> (Parsed, Vec<bpsec::key::Key>) 
 
 // RFC 9172 §3.9: only the acceptor of the BCB over an encrypted BIB decrypts
 // it. Holding every key, `check` leaves the BIB over an encrypted payload
-// encrypted when nothing it accepts is BCB-covered beside it, and decrypts it
-// beside an encrypted Bundle Age, whose operations this node accepts and on
-// which the BIB may carry one.
+// encrypted when nothing it accepts under the same security source's BCB is
+// beside it: an encrypted Bundle Age, whose operations this node accepts,
+// is no account to read it on, since no valid bundle has an encrypted BIB
+// over a block every forwarder replaces. The payload's acceptor, under that
+// source's BCB, reads it.
 #[test]
 fn an_encrypted_bib_is_decrypted_only_by_necessity() {
     for encrypted_age in [false, true] {
@@ -3090,21 +3246,31 @@ fn an_encrypted_bib_is_decrypted_only_by_necessity() {
             .iter()
             .find(|(_, b)| b.block_type == block::Type::BlockIntegrity)
             .expect("the payload's BIB is present");
-        common::verify_as_receiver(&mut parsed, &bpsec::key::KeySet::new(keys), &HashSet::new())
+        let keys = bpsec::key::KeySet::new(keys);
+        common::verify_as_receiver(&mut parsed, &keys, &HashSet::new())
             .unwrap_or_else(|e| panic!("encrypted_age {encrypted_age}: the bundle verifies: {e}"));
-        assert_eq!(
-            parsed.decrypted.plaintext.contains_key(&bib),
-            encrypted_age,
-            "the BIB is decrypted only beside an accepted per-hop block"
+        assert!(
+            !parsed.decrypted.plaintext.contains_key(&bib),
+            "encrypted_age {encrypted_age}: the BIB is read on no per-hop block's account"
         );
         assert_eq!(
             parsed.bundle.blocks[&1].bib,
-            if encrypted_age {
-                block::BibCoverage::Some(bib)
-            } else {
-                block::BibCoverage::Maybe
-            },
-            "the payload's coverage resolves only when the BIB is read"
+            block::BibCoverage::Maybe,
+            "encrypted_age {encrypted_age}: the payload's coverage stays unresolved"
+        );
+
+        let mut parsed = signed_then_encrypted_again(&parsed);
+        common::verify_as_receiver(&mut parsed, &keys, &HashSet::from([1])).unwrap_or_else(|e| {
+            panic!("encrypted_age {encrypted_age}: the payload's acceptor verifies: {e}")
+        });
+        assert!(
+            parsed.decrypted.plaintext.contains_key(&bib),
+            "encrypted_age {encrypted_age}: the payload's acceptor reads the BIB"
+        );
+        assert_eq!(
+            parsed.bundle.blocks[&1].bib,
+            block::BibCoverage::Some(bib),
+            "encrypted_age {encrypted_age}: the coverage resolves once the BIB is read"
         );
     }
 }
