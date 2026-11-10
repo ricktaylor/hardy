@@ -7,7 +7,6 @@ use hardy_bpv7::{
     block::{self, BibCoverage},
     bpsec::{Role, Roles, SecurityServices, bcb, bib, key::KeySource},
     builder::PayloadTrailer,
-    crc::CrcType,
     editor::Chunk,
     eid::NodeId,
     parse::Parsed,
@@ -850,13 +849,8 @@ impl Dispatcher {
     pub(super) fn rfc9171_gate_reason(&self, hv: &Headers) -> Option<ReasonCode> {
         // RFC 9171 §4.3.1: "A CRC SHALL be present in the primary block
         // unless the bundle includes a BPSec Block Integrity Block whose
-        // target is the primary block". `Maybe` coverage (undecryptable
-        // BIBs) counts as protected, as the block-editing paths assume.
-        if self.primary_block_integrity
-            && let Some(primary_block) = hv.parsed.bundle.blocks.get(&0)
-            && matches!(hv.parsed.bundle.primary.crc_type, CrcType::None)
-            && matches!(primary_block.bib, BibCoverage::None)
-        {
+        // target is the primary block".
+        if self.primary_block_integrity && !hv.parsed.bundle.primary_has_integrity() {
             debug!("Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)");
             return Some(ReasonCode::BlockUnintelligible);
         }

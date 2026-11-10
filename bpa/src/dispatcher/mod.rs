@@ -726,8 +726,21 @@ pub mod tests {
         storage::{BundleMemStorage, MetadataMemStorage},
     };
 
-    // A dispatcher over the given stores, with no filters, no keys, no
-    // legacy peers and no status reports.
+    // The test dispatcher's configuration: no status reports, no size cap, no
+    // primary-integrity requirement and no legacy peers.
+    pub fn config() -> Config {
+        Config {
+            status_reports: false,
+            poll_channel_depth: NonZeroUsize::new(16).unwrap(),
+            processing_pool_size: NonZeroUsize::new(4).unwrap(),
+            max_bundle_size: None,
+            primary_block_integrity: false,
+            ipn_legacy_peers: Vec::new(),
+        }
+    }
+
+    // A dispatcher over the given stores, configured by `config`, with no
+    // filters and no keys.
     pub async fn dispatcher(
         metadata_store: Arc<MetadataMemStorage>,
         data_store: Arc<BundleMemStorage>,
@@ -735,17 +748,19 @@ pub mod tests {
         dispatcher_with(
             metadata_store,
             data_store,
+            config(),
             Arc::new(NullKeyProvider),
             Vec::new(),
         )
         .await
     }
 
-    // A dispatcher over the given stores, key provider and filter packs, with
-    // no legacy peers and no status reports.
+    // A dispatcher over the given stores, configuration, key provider and
+    // filter packs.
     pub async fn dispatcher_with(
         metadata_store: Arc<MetadataMemStorage>,
         data_store: Arc<BundleMemStorage>,
+        config: Config,
         key_provider: Arc<dyn KeyProvider>,
         packs: Vec<FilterPack>,
     ) -> Arc<Dispatcher> {
@@ -769,21 +784,8 @@ pub mod tests {
             .await
             .unwrap();
         let filters = FilterChains::freeze(packs);
-        let (dispatcher, _start) = Dispatcher::new(
-            Config {
-                status_reports: false,
-                poll_channel_depth: NonZeroUsize::new(16).unwrap(),
-                processing_pool_size: NonZeroUsize::new(4).unwrap(),
-                max_bundle_size: None,
-                primary_block_integrity: false,
-                ipn_legacy_peers: Vec::new(),
-            },
-            node_ids,
-            store,
-            rib,
-            key_provider,
-            filters,
-        );
+        let (dispatcher, _start) =
+            Dispatcher::new(config, node_ids, store, rib, key_provider, filters);
         dispatcher
     }
 

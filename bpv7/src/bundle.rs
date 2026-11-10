@@ -43,6 +43,18 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    /// Whether the primary block has integrity protection: a CRC, or a BIB
+    /// that targets it or may (an encrypted BIB whose targets cannot be
+    /// read). RFC 9171 §4.3.1 requires one of them.
+    #[must_use]
+    pub fn primary_has_integrity(&self) -> bool {
+        !matches!(self.primary.crc_type, crc::CrcType::None)
+            || self
+                .blocks
+                .get(&0)
+                .is_some_and(|primary| !matches!(primary.bib, block::BibCoverage::None))
+    }
+
     /// The exact byte length of the bundle's encoded form, derived from
     /// the block index alone.
     ///

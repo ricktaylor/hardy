@@ -265,7 +265,7 @@ This controls a SHOULD-level requirement from RFC 9171 that can be relaxed for i
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `primary-block-integrity` | `true`, `false` | `true` | Require the primary block to be protected by CRC or BIB. Set `false` for interop with dtn7-rs and other implementations that omit CRCs. |
+| `primary-block-integrity` | `true`, `false` | `true` | Require the primary block to be protected by CRC or BIB, on arrival and when forwarding. Set `false` for interop with dtn7-rs and other implementations that omit CRCs. |
 
 ## `ipn-legacy-nodes` — IPN Legacy Re-encode
 

@@ -96,7 +96,7 @@ impl Dispatcher {
     ) -> OfferOutcome {
         let chunks = match self.rebuild_headers(&bundle, &loaded.resident, &next_hop) {
             Ok(chunks) => chunks,
-            Err(ProtectedPrimary) => {
+            Err(Refusal::ProtectedPrimary) => {
                 debug!(
                     "Legacy next hop {next_hop} needs a re-encoded primary, which a BPSec operation covers"
                 );
@@ -104,6 +104,12 @@ impl Dispatcher {
                     bundle,
                     Some(ReasonCode::UnexpectedSecurityOperation),
                 );
+            }
+            Err(Refusal::UnprotectedPrimary) => {
+                debug!(
+                    "Refusing to forward bundle: its primary block would leave with no CRC and no BIB"
+                );
+                return OfferOutcome::Dropped(bundle, Some(ReasonCode::BlockUnintelligible));
             }
         };
 
@@ -237,7 +243,7 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         resident: &[u8],
         next_hop: &Eid,
-    ) -> Result<Vec<Chunk>, ProtectedPrimary> {
+    ) -> Result<Vec<Chunk>, Refusal> {
         let keys = self
             .filters
             .has_egress_rewriters()
@@ -254,6 +260,14 @@ impl Dispatcher {
         // The per-hop writes follow the Rewriters, so they supersede any
         // Rewriter edit to the blocks they write.
         self.update_extension_blocks(bundle, &mut editor, next_hop)?;
+
+        // RFC 9171 §4.3.1, judged on the primary as it would leave: a CRC,
+        // or a BIB targeting it. No stage here changes the primary's CRC, so
+        // a primary left with neither, its BIB accepted at ingress, is
+        // refused rather than given one.
+        if self.primary_block_integrity && !editor.primary_has_integrity() {
+            return Err(Refusal::UnprotectedPrimary);
+        }
 
         // The bytes were validated at the door and every edit was checked
         // when it was staged, so a failed rebuild is a BPA or bpv7 bug, and
@@ -272,7 +286,7 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         editor: &mut Editor<'_>,
         next_hop: &Eid,
-    ) -> Result<(), ProtectedPrimary> {
+    ) -> Result<(), Refusal> {
         // We read the cached per-hop fields (`hop_count` / `bundle_age` from
         // `metadata.per_hop`) to rebuild the wire blocks, but never write the
         // bumped values back: the rewrite is per-attempt and in-memory only, and
@@ -404,7 +418,7 @@ impl Dispatcher {
                 }) {
                     Err(
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
-                    ) => return Err(ProtectedPrimary),
+                    ) => return Err(Refusal::ProtectedPrimary),
                     result => result.trace_expect("The legacy re-encode of the source failed"),
                 }
             }
@@ -419,7 +433,7 @@ impl Dispatcher {
                 }) {
                     Err(
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
-                    ) => return Err(ProtectedPrimary),
+                    ) => return Err(Refusal::ProtectedPrimary),
                     result => result.trace_expect("The legacy re-encode of the destination failed"),
                 }
             }
@@ -429,11 +443,16 @@ impl Dispatcher {
     }
 }
 
-/// The per-hop rewrite produced no bundle for this attempt: the next hop
-/// needs legacy IPN encoding, and a BPSec operation covers the primary block
-/// the re-encode would change, as its target or through its scope.
-/// Deterministic for this next hop.
-struct ProtectedPrimary;
+/// Why the egress rewrite produced no bundle for this attempt.
+enum Refusal {
+    /// The next hop needs legacy IPN encoding, and a BPSec operation covers
+    /// the primary block the re-encode would change, as its target or
+    /// through its scope. Deterministic for this next hop.
+    ProtectedPrimary,
+    /// The primary block would leave with neither a CRC nor a BIB targeting
+    /// it (RFC 9171 §4.3.1). Deterministic for every next hop.
+    UnprotectedPrimary,
+}
 
 #[cfg(test)]
 mod tests {
@@ -443,18 +462,22 @@ mod tests {
 
     #[cfg(feature = "rfc9173")]
     use hardy_bpv7::bpsec::key::KeySource;
-    use hardy_bpv7::{bundle::Id, eid::NodeId};
+    use hardy_bpv7::{
+        builder::Builder, bundle::Id, crc::CrcType, creation_timestamp::CreationTimestamp,
+        eid::NodeId,
+    };
 
     use super::*;
-    use crate::{
-        dispatcher::tests::dispatcher,
-        storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
-    };
     #[cfg(feature = "rfc9173")]
     use crate::{
-        dispatcher::tests::{dispatcher_with, encrypted_payload_to},
+        dispatcher::tests::encrypted_payload_to,
         filter::{RewriteContext, Rewriter, pack::FilterPack},
         keys::KeyProvider,
+    };
+    use crate::{
+        dispatcher::tests::{config, dispatcher, dispatcher_with},
+        keys::NullKeyProvider,
+        storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     };
 
     struct RecordingCla {
@@ -595,6 +618,7 @@ mod tests {
             let dispatcher = dispatcher_with(
                 metadata_store.clone(),
                 data_store.clone(),
+                config(),
                 keys.clone(),
                 packs,
             )
@@ -629,6 +653,72 @@ mod tests {
 
             assert_eq!(offers_rx.try_recv(), Ok(bundle_id), "the bundle is offered");
             assert_eq!(keys.0.load(Ordering::Relaxed), derived);
+        }
+    }
+
+    // A bundle whose primary block would leave with neither a CRC nor a BIB,
+    // here one stored that way, is refused at the egress door when the node
+    // requires primary integrity: dropped, never offered. Without the
+    // requirement it travels as stored.
+    #[tokio::test]
+    async fn egress_refuses_a_primary_with_no_integrity() {
+        for (primary_block_integrity, offered) in [(true, false), (false, true)] {
+            let metadata_store = Arc::new(MetadataMemStorage::new(None));
+            let data_store = Arc::new(BundleMemStorage::new(None, None));
+            let dispatcher = dispatcher_with(
+                metadata_store.clone(),
+                data_store.clone(),
+                Config {
+                    primary_block_integrity,
+                    ..config()
+                },
+                Arc::new(NullKeyProvider),
+                Vec::new(),
+            )
+            .await;
+
+            let (bpv7, data) =
+                Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.2".parse().unwrap())
+                    .with_crc_type(CrcType::None)
+                    .with_payload(b"unprotected".to_vec().into())
+                    .build(CreationTimestamp::now())
+                    .unwrap();
+            assert!(!bpv7.primary_has_integrity(), "precondition");
+            let storage_name = data_store.save(Bytes::from(data)).await.unwrap();
+            let mut metadata = bundle::BundleMetadata::originated();
+            metadata.storage_name = Some(storage_name);
+            let bundle = bundle::Bundle {
+                bpv7,
+                metadata,
+                status: bundle::BundleStatus::ForwardPending {
+                    peer: 7,
+                    queue: 0,
+                    next_hop: "ipn:0.3.0".parse().unwrap(),
+                },
+            };
+            let bundle_id = bundle.id().clone();
+            assert!(metadata_store.insert(&bundle).await.unwrap());
+
+            let (offers_tx, offers_rx) = flume::bounded(16);
+            dispatcher
+                .forward_bundle(
+                    &RecordingCla { offers_tx },
+                    7,
+                    None,
+                    &cla::ClaAddress::Private("peer".as_bytes().into()),
+                    bundle,
+                )
+                .await;
+
+            assert_eq!(
+                offers_rx.try_recv().is_ok(),
+                offered,
+                "integrity required: {primary_block_integrity}"
+            );
+            assert!(
+                metadata_store.get(&bundle_id).await.unwrap().is_none(),
+                "the bundle is resolved, refused or sent"
+            );
         }
     }
 }

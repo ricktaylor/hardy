@@ -490,6 +490,18 @@ impl<'a> Editor<'a> {
         self.primary.as_ref().unwrap_or(&self.original.primary)
     }
 
+    /// Whether the primary block, as the staged edits leave it, has
+    /// integrity protection, judged as
+    /// [`Bundle::primary_has_integrity`](bundle::Bundle::primary_has_integrity)
+    /// judges a parsed one, with the block's current coverage.
+    #[must_use]
+    pub fn primary_has_integrity(&self) -> bool {
+        !matches!(self.current_primary().crc_type, crc::CrcType::None)
+            || self
+                .current_coverage(0)
+                .is_some_and(|(bib, _)| !matches!(bib, block::BibCoverage::None))
+    }
+
     /// The bundle as the staged edits leave it: the current primary block
     /// and the block headers, each with its current BIB and BCB coverage.
     /// A copy of the headers alone, for reading while the editor goes on

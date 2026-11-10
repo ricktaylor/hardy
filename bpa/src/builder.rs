@@ -203,10 +203,11 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets whether the pre-drain gate requires the primary block to carry
-    /// integrity protection (a CRC, or BIB coverage). RFC 9171 §4.3.1;
-    /// strict by default. Disable for interoperability with peers that add
-    /// neither.
+    /// Sets whether the primary block must carry integrity protection (a CRC,
+    /// or BIB coverage): the pre-drain gate refuses a bundle that arrives
+    /// without it, and the egress door one that would leave without it.
+    /// RFC 9171 §4.3.1; strict by default. Disable for interoperability with
+    /// peers that add neither.
     pub fn primary_block_integrity(mut self, enabled: bool) -> Self {
         self.primary_block_integrity = enabled;
         self

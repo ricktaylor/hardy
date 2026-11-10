@@ -1114,6 +1114,33 @@ fn remove_blocks_removes_the_primary_bib_under_another_scope() {
         .expect("the payload's operation verifies over the unchanged primary");
 }
 
+// The primary block has integrity protection with a CRC, or under a BIB that
+// targets it or may: a parsed bundle and an editor over it judge alike, the
+// editor by the primary as its edits leave it.
+#[test]
+fn primary_integrity_is_a_crc_or_a_bib() {
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_crc_type(crc::CrcType::None)
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let mut bundle = reparse(&data);
+    assert!(!bundle.primary_has_integrity());
+    {
+        let mut editor = Editor::new(&bundle, &data);
+        assert!(!editor.primary_has_integrity());
+        editor
+            .set_bundle_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+            .expect("no BIB covers the primary");
+        assert!(editor.primary_has_integrity(), "a staged CRC protects it");
+    }
+
+    // An encrypted BIB that may target the primary counts as protection.
+    bundle.blocks.get_mut(&0).unwrap().bib = block::BibCoverage::Maybe;
+    assert!(bundle.primary_has_integrity());
+    assert!(Editor::new(&bundle, &data).primary_has_integrity());
+}
+
 // The fragment flag follows the fragment info through both setters, so the
 // current bundle's primary agrees with what the rebuild emits; the staged
 // primary's header indexes no bytes.
