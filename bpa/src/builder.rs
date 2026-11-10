@@ -215,14 +215,16 @@ impl BpaBuilder {
 
     /// Sets the peers that require legacy 2-element IPN EID encoding: a
     /// bundle forwarded to a next hop matching any of `patterns` has its
-    /// `Ipn` source and destination re-encoded as `LegacyIpn` in the
-    /// per-hop rewrite stage. Wire adaptation only — the stored bundle and
-    /// its id are untouched. A bundle carrying a BPSec operation that covers
-    /// the primary block, as its target or through its scope (an encrypted
-    /// BIB counts whatever its scope, its ciphertext hiding it), cannot
-    /// survive the re-encode: it is deleted at such a next hop, not
-    /// re-routed, with `UnexpectedSecurityOperation` as the reason for any
-    /// deletion report.
+    /// `Ipn` source, destination and report-to re-encoded as `LegacyIpn` in
+    /// the per-hop rewrite stage, which writes an `Ipn` Previous Node as
+    /// `LegacyIpn` too. Only an EID with a non-default allocator changes: a
+    /// default-allocator `Ipn` EID is 2-element already. Wire adaptation
+    /// only — the stored bundle and its id are untouched. A bundle whose
+    /// primary block needs the re-encode and carries a BPSec operation that
+    /// covers it, as its target or through its scope (an encrypted BIB
+    /// counts whatever its scope, its ciphertext hiding it), cannot survive
+    /// the re-encode: it is deleted at such a next hop, not re-routed, with
+    /// `UnexpectedSecurityOperation` as the reason for any deletion report.
     pub fn ipn_legacy_peers(mut self, patterns: Vec<EidPattern>) -> Self {
         self.ipn_legacy_peers = patterns;
         self

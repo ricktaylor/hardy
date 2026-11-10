@@ -309,7 +309,18 @@ impl Dispatcher {
         // protected one, so a stored bundle's blocks meet no operation here
         // and the editor refuses neither write. A refusal is a BPA bug.
 
-        // Previous Node Block
+        // Previous Node Block: this node's administrative endpoint in the
+        // destination's scheme. A legacy next hop reads ipn EIDs only in the
+        // 2-element encoding (RFC 9758 §7.2), so it goes out in that form, as
+        // the primary block's EIDs do below.
+        let admin_endpoint = self
+            .node_ids
+            .get_admin_endpoint(&bundle.primary().destination);
+        let previous_node = if legacy {
+            legacy_ipn(&admin_endpoint).unwrap_or(admin_endpoint)
+        } else {
+            admin_endpoint
+        };
         editor
             .insert_block(block::Type::PreviousNode)
             .trace_expect("The per-hop rewrite's Previous Node write was refused")
@@ -317,15 +328,7 @@ impl Dispatcher {
                 report_on_failure,
                 ..Default::default()
             })
-            .with_data(
-                emit(
-                    &self
-                        .node_ids
-                        .get_admin_endpoint(&bundle.primary().destination),
-                )
-                .0
-                .into(),
-            )
+            .with_data(emit(&previous_node).0.into())
             .rebuild();
 
         // Increment the Hop Count, where this node is the acceptor of the
@@ -395,51 +398,67 @@ impl Dispatcher {
         }
 
         // Config-driven legacy-EID re-encode: a next hop matching the
-        // configured patterns requires 2-element IPN encoding, so Ipn
-        // source/destination re-encode as LegacyIpn. Wire adaptation only:
-        // the re-encoded bytes travel to the CLA, and the record keeps its
-        // stored index and primary — with the latter the bundle id every
-        // store operation is keyed on, in the canonical encoding. The editor
-        // refuses the edit while a BIB targets the primary or a remaining
-        // operation's scope includes it, judged after the per-hop writes
-        // above have stripped the blocks they rewrote from their BIBs: an
-        // operation the re-encode would break, so the bundle cannot go to
-        // this next hop. bpv7 answers for each security context; the BPA
-        // reads none.
+        // configured patterns requires 2-element IPN encoding, and a
+        // 3-element EID anywhere in the primary makes the whole block
+        // undecodable to it (RFC 9758 §7.2), so the source, destination and
+        // report-to each re-encode as LegacyIpn where that changes their
+        // bytes (see legacy_ipn). A primary with no such EID goes out as it
+        // is. Wire adaptation only: the re-encoded bytes travel to the CLA,
+        // and the record keeps its stored index and primary — with the
+        // latter the bundle id every store operation is keyed on, in the
+        // canonical encoding. The editor refuses an edit while a BIB targets
+        // the primary or a remaining operation's scope includes it, judged
+        // after the per-hop writes above have stripped the blocks they
+        // rewrote from their BIBs: an operation the re-encode would break,
+        // so the bundle cannot go to this next hop. bpv7 answers for each
+        // security context; the BPA reads none.
         if legacy {
-            if let Eid::Ipn {
-                fqnn,
-                service_number,
-            } = &bundle.id().source
-            {
-                match editor.set_source(Eid::LegacyIpn {
-                    fqnn: *fqnn,
-                    service_number: *service_number,
-                }) {
+            if let Some(source) = legacy_ipn(&bundle.id().source) {
+                match editor.set_source(source) {
                     Err(
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
                     ) => return Err(Refusal::ProtectedPrimary),
                     result => result.trace_expect("The legacy re-encode of the source failed"),
                 }
             }
-            if let Eid::Ipn {
-                fqnn,
-                service_number,
-            } = &bundle.primary().destination
-            {
-                match editor.set_destination(Eid::LegacyIpn {
-                    fqnn: *fqnn,
-                    service_number: *service_number,
-                }) {
+            if let Some(destination) = legacy_ipn(&bundle.primary().destination) {
+                match editor.set_destination(destination) {
                     Err(
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
                     ) => return Err(Refusal::ProtectedPrimary),
                     result => result.trace_expect("The legacy re-encode of the destination failed"),
                 }
             }
+            if let Some(report_to) = legacy_ipn(&bundle.primary().report_to) {
+                match editor.set_report_to(report_to) {
+                    Err(
+                        EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
+                    ) => return Err(Refusal::ProtectedPrimary),
+                    result => result.trace_expect("The legacy re-encode of the report-to failed"),
+                }
+            }
         }
 
         Ok(())
+    }
+}
+
+/// The 2-element `LegacyIpn` form of `eid` for a legacy next hop, where it
+/// changes the wire bytes: an `ipn` EID with a non-default allocator. bpv7
+/// writes a default-allocator `ipn` EID 2-element already (RFC 9758
+/// §6.1.2), and its parser refuses the 3-element form of one as
+/// non-canonical, so such an EID needs no edit, and leaves no BPSec
+/// operation over the primary block to break.
+fn legacy_ipn(eid: &Eid) -> Option<Eid> {
+    match eid {
+        Eid::Ipn {
+            fqnn,
+            service_number,
+        } if fqnn.allocator_id != 0 => Some(Eid::LegacyIpn {
+            fqnn: *fqnn,
+            service_number: *service_number,
+        }),
+        _ => None,
     }
 }
 

@@ -16,7 +16,7 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     cla::{self, Cla, ClaInit},
-    services,
+    services::{self, SendOptions},
     stream::{Receiver, Segment},
 };
 #[cfg(feature = "rfc9173")]
@@ -27,6 +27,7 @@ use hardy_bpa::{
 use hardy_bpv7::{
     block,
     eid::{Eid, IpnNodeId, NodeId},
+    parse::Parsed,
 };
 #[cfg(feature = "rfc9173")]
 use hardy_bpv7::{
@@ -43,7 +44,7 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     dtn_time::DtnTime,
     hop_info::HopInfo,
-    parse::Parsed,
+    parse::parse,
     reader::ReaderExt,
     status_report::{AdministrativeRecord, ReasonCode},
 };
@@ -279,6 +280,24 @@ async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
         .await
         .expect("Timed out waiting for CLA event")
         .expect("CLA event channel closed")
+}
+
+// The block of `block_type` in `parsed`.
+fn extension(parsed: &Parsed, block_type: block::Type) -> &block::Block {
+    parsed
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == block_type)
+        .expect("the block is present")
+}
+
+// The EID in the Previous Node block of `parsed`, as decoded from the wire.
+fn previous_node(parsed: &Parsed) -> Eid {
+    extension(parsed, block::Type::PreviousNode)
+        .extract::<Eid>(&parsed.data)
+        .expect("the previous node decodes")
+        .expect("the previous node is resident")
 }
 
 /// Sends `payload` to ipn:0.2.99 via `app`, returning the destination EID.
@@ -656,7 +675,10 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Rec
 }
 
 /// A next hop matching a configured legacy-peer pattern receives the bundle
-/// with `Ipn` source and destination re-encoded as `LegacyIpn` on the wire.
+/// with its `Ipn` source, destination and report-to re-encoded as
+/// `LegacyIpn` on the wire, and this node's Previous Node written as
+/// `LegacyIpn` too. The deletion-report request gives the bundle this
+/// node's administrative endpoint as its report-to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_receives_two_element_encoding() {
     let (bpa, app, events_rx, _) = legacy_fixture(&["ipn:1.2.*"]).await;
@@ -669,7 +691,10 @@ async fn legacy_peer_receives_two_element_encoding() {
             dest,
             Bytes::from_static(b"legacy"),
             core::time::Duration::from_secs(3600),
-            None,
+            Some(SendOptions {
+                notify_deletion: true,
+                ..Default::default()
+            }),
         )
         .await
         .unwrap();
@@ -688,13 +713,32 @@ async fn legacy_peer_receives_two_element_encoding() {
         "destination must be re-encoded 2-element, got {:?}",
         parsed.bundle.primary.destination
     );
+    // This node's administrative endpoint, ipn:1.1.0, in the 2-element form.
+    let admin_endpoint = Eid::LegacyIpn {
+        fqnn: IpnNodeId {
+            allocator_id: 1,
+            node_number: 1,
+        },
+        service_number: 0,
+    };
+    assert_eq!(
+        parsed.bundle.primary.report_to, admin_endpoint,
+        "the report-to must be re-encoded 2-element"
+    );
+    assert_eq!(
+        previous_node(&parsed),
+        admin_endpoint,
+        "the Previous Node must be written 2-element"
+    );
 
     assert!(events_rx.is_empty());
     bpa.shutdown().await;
 }
 
 /// A next hop matching no configured pattern receives the canonical
-/// 3-element encoding untouched.
+/// 3-element encoding untouched, the report-to included, and this node's
+/// Previous Node in it. The deletion-report request gives the bundle this
+/// node's administrative endpoint as its report-to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_legacy_peer_keeps_canonical_encoding() {
     let (bpa, app, events_rx, source_eid) = legacy_fixture(&["ipn:9.9.*"]).await;
@@ -707,7 +751,10 @@ async fn non_legacy_peer_keeps_canonical_encoding() {
             dest.clone(),
             Bytes::from_static(b"canonical"),
             core::time::Duration::from_secs(3600),
-            None,
+            Some(SendOptions {
+                notify_deletion: true,
+                ..Default::default()
+            }),
         )
         .await
         .unwrap();
@@ -718,13 +765,31 @@ async fn non_legacy_peer_keeps_canonical_encoding() {
     let parsed = hardy_bpv7::parse::parse(data).expect("Failed to parse forwarded bundle");
     assert_eq!(parsed.bundle.primary.id.source, source_eid);
     assert_eq!(parsed.bundle.primary.destination, dest);
+    // This node's administrative endpoint, ipn:1.1.0, in the 3-element form.
+    let admin_endpoint = Eid::Ipn {
+        fqnn: IpnNodeId {
+            allocator_id: 1,
+            node_number: 1,
+        },
+        service_number: 0,
+    };
+    assert_eq!(
+        parsed.bundle.primary.report_to, admin_endpoint,
+        "the report-to must keep the 3-element encoding"
+    );
+    assert_eq!(
+        previous_node(&parsed),
+        admin_endpoint,
+        "the Previous Node must keep the 3-element encoding"
+    );
 
     assert!(events_rx.is_empty());
     bpa.shutdown().await;
 }
 
-// A relay on allocator 1 whose one peer, ipn:1.2, needs legacy IPN
-// encoding, with status reports on so that a drop's reason reaches the peer.
+// A relay on allocator 1 whose peers, ipn:1.2 and the default-allocator
+// ipn:2, need legacy IPN encoding, with status reports on so that a drop's
+// reason reaches the peer.
 #[cfg(feature = "rfc9173")]
 async fn legacy_relay() -> (Bpa, Arc<BufferedCla>, flume::Receiver<Event>) {
     legacy_relay_holding(Vec::new()).await
@@ -738,7 +803,10 @@ async fn legacy_relay_holding(keys: Vec<Key>) -> (Bpa, Arc<BufferedCla>, flume::
             hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice())
                 .unwrap(),
         )
-        .ipn_legacy_peers(vec!["ipn:1.2.*".parse().unwrap()])
+        .ipn_legacy_peers(vec![
+            "ipn:1.2.*".parse().unwrap(),
+            "ipn:2.*".parse().unwrap(),
+        ])
         .key_provider(Arc::new(FixedKeys(keys)))
         .status_reports(true)
         .build()
@@ -755,6 +823,15 @@ async fn legacy_relay_holding(keys: Vec<Key>) -> (Bpa, Arc<BufferedCla>, flume::
         .add_peer(
             cla::ClaAddress::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(relay_node(2))],
+        )
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("default-allocator peer".as_bytes().into()),
+            &[remote_node(2)],
         )
         .await
         .unwrap();
@@ -833,10 +910,10 @@ async fn assert_dropped_as_unexpected(
     assert!(events_rx.is_empty());
 }
 
-// The bundle itself, not a deletion report, reaches the peer re-encoded for
-// it, both EIDs in the two-element legacy form.
+// The bundle itself, not a deletion report, reaches the peer, and leaves
+// the node once.
 #[cfg(feature = "rfc9173")]
-async fn assert_forwarded_legacy(
+async fn assert_forwarded(
     bpa: Bpa,
     events_rx: flume::Receiver<Event>,
     received: &Parsed,
@@ -854,6 +931,32 @@ async fn assert_forwarded_legacy(
         forwarded.bundle.primary.id.timestamp, received.bundle.primary.id.timestamp,
         "the forwarded bundle is the received one"
     );
+    // shutdown() joins the pools. The bundle leaves once; the deletion
+    // report its completed forward sends (it requests one) follows it
+    // unless shutdown() unregisters the CLA first.
+    bpa.shutdown().await;
+    for event in events_rx.drain() {
+        let Event::Forward(data) = event else {
+            panic!("only the bundle and its reports leave the node");
+        };
+        let report = hardy_bpv7::parse::parse(data).expect("the report parses");
+        assert!(
+            report.bundle.primary.flags.is_admin_record,
+            "the bundle leaves once"
+        );
+    }
+    forwarded
+}
+
+// As assert_forwarded, the bundle re-encoded for the peer: its source,
+// destination, report-to and Previous Node in the two-element legacy form.
+#[cfg(feature = "rfc9173")]
+async fn assert_forwarded_legacy(
+    bpa: Bpa,
+    events_rx: flume::Receiver<Event>,
+    received: &Parsed,
+) -> Parsed {
+    let forwarded = assert_forwarded(bpa, events_rx, received).await;
     // The re-encode keeps the node and service numbers.
     let legacy = |eid: &Eid| match eid {
         Eid::Ipn {
@@ -873,20 +976,18 @@ async fn assert_forwarded_legacy(
         forwarded.bundle.primary.destination,
         legacy(&received.bundle.primary.destination)
     );
-    // shutdown() joins the pools. The bundle leaves once; the deletion
-    // report its completed forward sends (it requests one) follows it
-    // unless shutdown() unregisters the CLA first.
-    bpa.shutdown().await;
-    for event in events_rx.drain() {
-        let Event::Forward(data) = event else {
-            panic!("only the bundle and its reports leave the node");
-        };
-        let report = hardy_bpv7::parse::parse(data).expect("the report parses");
-        assert!(
-            report.bundle.primary.flags.is_admin_record,
-            "the bundle leaves once"
-        );
-    }
+    assert_eq!(
+        forwarded.bundle.primary.report_to,
+        legacy(&received.bundle.primary.report_to)
+    );
+    assert_eq!(
+        previous_node(&forwarded),
+        Eid::LegacyIpn {
+            fqnn: relay_node(1),
+            service_number: 0,
+        },
+        "the relay names itself in the two-element form"
+    );
     forwarded
 }
 
@@ -954,6 +1055,46 @@ async fn legacy_peer_drops_a_bundle_whose_bib_scopes_the_primary() {
 
     receive(&cla, &received).await;
     assert_dropped_as_unexpected(bpa, events_rx, &received).await;
+}
+
+/// A default-allocator bundle's ipn EIDs are 2-element already, so its
+/// primary needs no re-encode, and a payload BIB whose scope includes the
+/// primary (RFC 9173's default) does not stand in the way: the bundle goes
+/// to the legacy peer with its EIDs as received, and the signature still
+/// verifies.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_peer_takes_a_default_allocator_bundle_whose_bib_scopes_the_primary() {
+    let (bpa, cla, events_rx) = legacy_relay().await;
+    let (_, data) = Builder::new("ipn:3.1".parse().unwrap(), "ipn:2.99".parse().unwrap())
+        .with_flags(BundleFlags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_report_to("ipn:2.9".parse().unwrap())
+        .with_payload(b"default allocator".as_slice().into())
+        .build(CreationTimestamp::now())
+        .expect("build the bundle");
+    let built = parse(Bytes::from(data)).unwrap();
+    let key = sign_key();
+    let received = signed(&built, &[1], ScopeFlags::default(), &key);
+
+    receive(&cla, &received).await;
+    let forwarded = assert_forwarded(bpa, events_rx, &received).await;
+    assert_eq!(
+        forwarded.bundle.primary.id.source,
+        received.bundle.primary.id.source
+    );
+    assert_eq!(
+        forwarded.bundle.primary.destination,
+        received.bundle.primary.destination
+    );
+    assert_eq!(
+        forwarded.bundle.primary.report_to,
+        received.bundle.primary.report_to
+    );
+    common::verify_all_bibs(&forwarded.data, &KeySet::new(vec![key]))
+        .expect("the payload's signature, over the primary, verifies at the peer");
 }
 
 /// A payload BIB whose scope leaves the primary out survives the re-encode:
@@ -1313,17 +1454,6 @@ async fn relay_with(
     bpa.shutdown().await;
     assert!(events_rx.is_empty());
     hardy_bpv7::parse::parse(forwarded).expect("the forwarded bundle parses")
-}
-
-// The block of `block_type` in `parsed`.
-#[cfg(feature = "rfc9173")]
-fn extension(parsed: &Parsed, block_type: block::Type) -> &block::Block {
-    parsed
-        .bundle
-        .blocks
-        .values()
-        .find(|b| b.block_type == block_type)
-        .expect("the block is present")
 }
 
 // Every BCB-covered or security block of `received` leaves the relay
