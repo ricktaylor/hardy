@@ -334,12 +334,13 @@ flowchart TD
 ### Store (Two-Phase Atomic)
 
 ```
-1. save_data(bytes)
+1. save(stream, max_size)
+   → concat_stream(stream, max_size) → bytes
    → bundle_storage.save(bytes) → returns storage_name
    → cache if size < max_cached_bundle_size
 
 2. store(bundle, data)
-   → save_data(data) → storage_name
+   → save(data, its length) → storage_name
    → bundle.metadata.storage_name = storage_name
    → metadata_storage.insert(bundle)
    → if insert fails (duplicate): delete_data(storage_name)
@@ -348,8 +349,8 @@ flowchart TD
 ### Load
 
 ```
-load_data(storage_name)
-   → bundle_storage.load(storage_name)
+load(storage_name)
+   → bundle_storage.load(storage_name), yielded as a one-segment stream
       (CachedBundleStorage: pop a cached copy, else the inner backend's load)
 ```
 

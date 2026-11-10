@@ -7,7 +7,7 @@
 //! incremental [`bib::Verifier`] per deferred payload BIB. An input
 //! door — CLA ingress, or the raw originate door — marries those to the
 //! arrival's segment stream through a [`ValidatingReceiver`], then drains it
-//! through `Store::save_stream`: the validation is invisible downstream,
+//! through `Store::save`: the validation is invisible downstream,
 //! surfacing only as a pull that fails when the bytes are bad, with the
 //! categorised verdict settled by `finish` once the drain returns and mapped
 //! by each door to its own surface (status reports at ingress, a
@@ -172,7 +172,7 @@ impl Rewrite {
 // block-type-specific data prefix passes the decrypt stage into the Verify
 // stage, before the segment flows onward —
 // one receiver carries the whole bundle, ready to drive
-// `Store::save_stream`. The validation is invisible downstream, surfacing
+// `Store::save`. The validation is invisible downstream, surfacing
 // only as a pull that fails when the bytes are bad, with the categorised
 // verdict settled by `finish` once the drain returns.
 pub struct ValidatingReceiver<'a> {

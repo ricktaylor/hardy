@@ -14,6 +14,7 @@ use crate::{
     Arc, Bytes, HashMap,
     bundle::{Bundle, BundleStatus, Origin},
     otel_metrics::status_label,
+    stream::concat_stream,
 };
 
 pub enum ReassemblyResult {
@@ -207,7 +208,7 @@ impl Store {
 
         let bundle = self.get_metadata(&first.0).await?;
         let old_data = self
-            .load_data(
+            .load_whole(
                 bundle
                     .metadata
                     .storage_name
@@ -326,7 +327,7 @@ impl Store {
                 return None;
             };
 
-            let data = self.load_data(storage_name).await?;
+            let data = self.load_whole(storage_name).await?;
             // As for fragment 0: the extent was validated against these
             // bytes at the door.
             let adu = data
@@ -376,8 +377,24 @@ impl Store {
         // Write the rewritten bundle now for safety. Zero-copy when
         // `old_data` uniquely owns; otherwise allocates a fresh buffer.
         let new_data = Chunk::flatten_bytes(chunks, old_data);
-        let new_storage_name = self.save_data(new_data.clone()).await;
+        let (new_storage_name, _) = self
+            .save(&mut new_data.clone(), new_data.len())
+            .await
+            .trace_expect("A whole buffer saves within its own length");
         Some((new_storage_name, new_data))
+    }
+
+    // INTERIM BUFFERING: reassembly merges whole fragments, so it gathers
+    // each stored bundle's load into one buffer. The store holds only bundles
+    // bounded and validated at a door, and its load never fails, so the
+    // gather neither caps nor errs.
+    async fn load_whole(&self, storage_name: &str) -> Option<Bytes> {
+        let mut stream = self.load(storage_name).await?;
+        Some(
+            concat_stream(&mut *stream, usize::MAX)
+                .await
+                .trace_expect("A stored bundle's load ends in its Final"),
+        )
     }
 }
 
@@ -410,7 +427,11 @@ mod tests {
     }
 
     async fn store_bytes(store: &Store, data: &[u8]) -> Arc<str> {
-        store.save_data(Bytes::from(data.to_vec())).await
+        store
+            .save(&mut Bytes::from(data.to_vec()), data.len())
+            .await
+            .unwrap()
+            .0
     }
 
     /// Structural parse into the `hardy_bpv7::bundle::Bundle` the BPA wrapper

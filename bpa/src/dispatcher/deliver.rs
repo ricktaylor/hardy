@@ -16,7 +16,7 @@ impl Dispatcher {
     pub(super) async fn deliver_bundle(&self, service: Arc<Service>, bundle: bundle::Bundle) {
         // Open the stored bundle and hold it until its headers are resident:
         // what the service receives streams on from the store.
-        let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
+        let Some((mut bundle, stream)) = self.load_or_drop(bundle).await else {
             return;
         };
         let loaded = pull_headers(&bundle.bpv7, stream, self.filters.deliver.peek).await;

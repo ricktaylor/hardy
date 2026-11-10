@@ -1,6 +1,7 @@
 use hardy_bpv7::parse::parse;
 
 use super::{ingress::Received, *};
+use crate::stream::concat_stream;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
@@ -9,12 +10,18 @@ impl Dispatcher {
         storage_name: Arc<str>,
         file_time: time::OffsetDateTime,
     ) {
-        let Some(mut data) = self.store.load_data(&storage_name).await else {
+        let Some(mut stream) = self.store.load(&storage_name).await else {
             // Data has gone while we were restarting — the reaper hasn't started,
             // so this is data loss. Safe because metadata recovery will report it
             // if the bundle is in the metadata store.
             return;
         };
+        // INTERIM BUFFERING: restart re-parses the whole stored bundle. Its
+        // load never fails, and the bundle was bounded at the door it entered
+        // by, so the gather neither caps nor errs.
+        let mut data = concat_stream(&mut *stream, usize::MAX)
+            .await
+            .trace_expect("A stored bundle's load ends in its Final");
 
         // Re-check the stored bytes with the structural parse alone — CRCs and
         // the per-hop blocks included, as egress parses them — and no keys:

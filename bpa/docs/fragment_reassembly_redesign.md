@@ -35,8 +35,8 @@ CLA ingress door (process_received_bundle)
     ├─ Some(status: ReassemblyPending) → MERGE PATH (no chain, no route):
     │    range already covered / total_adu_length mismatch → drop
     │    reception report, acquire the ADU's merge permit, then ONE PULL
-    │    CHAIN into the store: save_stream(new object) ← Splice(headers,
-    │    payload ranges from {the raw fragment stream | load_stream(partial)
+    │    CHAIN into the store: save(new object) ← Splice(headers,
+    │    payload ranges from {the raw fragment stream | load(partial)
     │    | ZeroReceiver}, CRC trailer) → update_reassembled(new ledger, new
     │    storage_name) → delete the superseded object → Accepted only after
     │    the commit. No streaming validation on this
@@ -48,7 +48,7 @@ CLA ingress door (process_received_bundle)
            as-is; locally-destined + declined → drop at the gate (a raw
            fragment must never reach a service)
          effective flag true  → FIRST-FRAGMENT PATH: same pull chain with no
-           partial source → save_stream mints its storage_name →
+           partial source → save mints its storage_name →
            insert_metadata (no-remember variant); an insert refusal
            (tombstone) settles a post-delivery straggler as a duplicate
 ```
@@ -83,7 +83,7 @@ The funnel is the door-driven merge machinery in the new `adu_reassembly` module
 4. **Ledger write.** `update_reassembled` with the new `ReassemblyState`, the new object's `storage_name` (+ refreshed `extensions` cache when the headers changed); once it commits, the superseded object is deleted. Its CAS on `status == ReassemblyPending` is the reap-race arbiter: a CAS loss means the reaper tombstoned mid-merge — the merge deletes the object it just wrote and settles the fragment as disposed. Only after data commit + ledger write does the door return `Accepted`: a crash earlier was never acked, and the peer's retransmit lands in an idempotent overlay. This is the whole crash story: a crash between the new object's commit and the ledger write leaves the new object unreferenced, and one between the ledger write and the delete leaves the superseded one, and recovery's orphan sweep removes either; there are no fragment blobs to orphan.
 5. **Completion check, still under the permit.** Ledger complete ⇒ run the completion inline as described above.
 
-**First-fragment variant:** the same sequence where the under-permit re-read still finds `None` (a racing sibling that won the permit first makes this a normal merge instead), the splice has no partial source, the chain has already run (the divert decision), `save_stream` mints the stable name, and the insert uses the no-`remember()` variant.
+**First-fragment variant:** the same sequence where the under-permit re-read still finds `None` (a racing sibling that won the permit first makes this a normal merge instead), the splice has no partial source, the chain has already run (the divert decision), `save` mints the stable name, and the insert uses the no-`remember()` variant.
 
 ## Data model
 
@@ -95,7 +95,7 @@ The funnel is the door-driven merge machinery in the new `adu_reassembly` module
 
 **`MetadataStorage::update_reassembled(&Id, &Bundle) -> bool`** — CAS on `status == ReassemblyPending`, atomically rewriting blob + status. This is the **one scoped exception to the metadata-write-once contract**, single-writer (the permit holder), covering both write shapes: a merge (updated `ReassemblyState`, status unchanged) and the completion (state cleared, completion-chain deltas persisted, status → `Dispatching` — durable because restart treats `Dispatching` as chain-complete). Implemented in all three metadata backends. `Store::insert_metadata` gains the no-LRU variant for the partial's birth.
 
-**Store streaming seams**, mirroring `save_stream`'s seam discipline (target streaming signature now, interim resident body, the storage tranche swaps the body with no caller changing): `Store::load_stream(storage_name)` (interim: resident `load_data` — `Bytes` already implements `Receiver<Segment>`) reads the current partial, and the merged partial is written as a new object through `Store::save_stream`, whose storage name `update_reassembled` swaps in under its CAS before the superseded object is deleted. Nothing is rewritten in place, so no replace primitive is needed, and a reader of the superseded object sees it whole until it is deleted. New stream primitives: `ZeroReceiver` and the `Splice` decorator. Memory is bounded by `max_bundle_size` — the same profile as the ingress accumulator — until the storage tranche makes both ends truly streaming.
+**Store streaming seams** (target streaming signature now, interim resident body, the storage tranche swaps the body with no caller changing): `Store::load(storage_name)` reads the current partial, and the merged partial is written as a new object through `Store::save`, whose storage name `update_reassembled` swaps in under its CAS before the superseded object is deleted. Nothing is rewritten in place, so no replace primitive is needed, and a reader of the superseded object sees it whole until it is deleted. New stream primitives: `ZeroReceiver` and the `Splice` decorator. Memory is bounded by `max_bundle_size` — the same profile as the ingress accumulator — until the storage tranche makes both ends truly streaming.
 
 ### The partial assembler
 
@@ -131,7 +131,7 @@ Its own tranche, sequenced after the streamed originate doors; the usual train d
 
 - **P1 — bpv7:** built: `Parsed::check` defers every operation on a fragment, the ingress door puts a fragment aside unchecked, and the stitcher restores the payload under its operations (`Editor::restore_block`), with pipeline tests: a fragment carrying a payload BIB is stored and forwarded as received; the reassembled whole verifies; a tampered fragment fails at the completion re-run.
 - **P2 — bpa data model (dormant):** `Coverage` + hardening, ported with its tests from PR #507's `bpa/src/fragmentation/coverage.rs`; `ReassemblyState` on `BundleMetadata`; `ReassemblyPending` unit variant + backend codecs and migrations; `update_reassembled` in all three backends; `status_label` + metrics; reaper/restart arms. Gates green with no producers.
-- **P3 — assembler + seams:** `hardy-async` prep (`AsyncMutex`, `channel::Receiver::try_recv`); `ZeroReceiver`, `Splice`, the partial assembler; the `Store::load_stream` shim. Unit tests: byte-identity oracle against a `Builder`-built original; every intermediate re-parses cleanly.
+- **P3 — assembler + seams:** `hardy-async` prep (`AsyncMutex`, `channel::Receiver::try_recv`); `ZeroReceiver`, `Splice`, the partial assembler; the `Store::load` seam, already landed. Unit tests: byte-identity oracle against a `Builder`-built original; every intermediate re-parses cleanly.
 - **P4 — the door + merge + completion; deletions:** `MetadataDelta.reassemble` (built; it becomes the door's alone, unpersisted); the fragment path probe order; the permit registry; the direct-streaming merge; inline completion; delete the old machinery. Feature gate wired; feature-off drop-at-gate behaviour.
 - **P5 — docs:** fold into `streaming_pipeline_design.md`, CHANGELOG BREAKING bullets (status enum, storage trait, migrations), close the `refactor_plan.md` reassembly entries (silent too-large death, restart orphan, hostile sibling), ledger the streaming-merge and `storage::channel` follow-ups, retire this draft.
 
@@ -144,6 +144,6 @@ Its own tranche, sequenced after the streamed originate doors; the usual train d
 | 1 — §5.9 overlapping fragments | Resolved: the `Coverage` ledger merges overlaps, and an arriving fragment contributes only its material extents, so the bytes already received stand (decision 8). Overlap stops being a failure mode. |
 | 2 — deletion reports on reassembly failure | Mostly dissolves: fragments are never held as bundles, so there is nothing to report per-fragment; the failure modes shrink to door-side drops of individual arrivals. The partial itself reports its own deletion when the reaper expires it, flag-gated as any bundle. |
 | 3 — fragment payload-BIBs rejected at ingress | Resolved: fragment-aware verify defers payload-BIB verification past reassembly; the completion re-run verifies over the whole ADU. |
-| 4 — full-materialisation island | Resolved in shape: one pull chain, no staged intermediate, memory bounded by `max_bundle_size` behind the `load_stream`/`save_stream` seams; the storage tranche swaps the interim resident bodies for true streaming with no caller changes. |
+| 4 — full-materialisation island | Resolved in shape: one pull chain, no staged intermediate, memory bounded by `max_bundle_size` behind the `Store::load`/`Store::save` seams; the storage tranche swaps the interim resident bodies for true streaming with no caller changes. |
 | 5 — quadratic sibling polling | Resolved: `poll_adu_fragments` is deleted; the per-record ledger is the incremental extent tracker item 5 asked for. |
 | 6 — re-entry repeats reception | Open: the completion re-run as written above crosses the gates and the chain as an arrival, so item 6's list applies to it (a reception report, the per-hop acceptance and the gate's expectation on a per-hop block); it takes the shape item 6 decides, the reassembly pass being the one that fits it. |

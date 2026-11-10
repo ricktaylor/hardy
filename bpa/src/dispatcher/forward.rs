@@ -31,7 +31,7 @@ impl Dispatcher {
 
         // Open the stored bundle, now we know we need it, and hold it until
         // its headers are resident: the payload streams on to the CLA.
-        let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
+        let Some((mut bundle, stream)) = self.load_or_drop(bundle).await else {
             return;
         };
         let loaded = pull_headers(&bundle.bpv7, stream, 0).await;

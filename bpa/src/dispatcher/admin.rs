@@ -1,5 +1,7 @@
-use super::*;
 use hardy_bpv7::status_report::AdministrativeRecord;
+
+use super::*;
+use crate::stream::concat_stream;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
@@ -17,9 +19,15 @@ impl Dispatcher {
                 .await;
         }
 
-        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
+        let Some((mut bundle, mut stream)) = self.load_or_drop(bundle).await else {
             return;
         };
+        // INTERIM BUFFERING: an administrative record is parsed whole. The
+        // store holds only bundles bounded and validated at a door, and its
+        // load never fails, so the gather neither caps nor errs.
+        let data = concat_stream(&mut *stream, usize::MAX)
+            .await
+            .trace_expect("A stored bundle's load ends in its Final");
 
         // The record as stored. Its security operations were accepted at
         // the door it entered by, where this node decrypted the payload

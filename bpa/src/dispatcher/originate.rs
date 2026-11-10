@@ -446,7 +446,7 @@ impl Dispatcher {
         // Drain the whole wire form into the store, bounded by
         // `max_bundle_size` as the defensive backstop.
         let max_size = self.max_bundle_size_mem();
-        let outcome = self.store.save_stream(&mut stream, max_size).await;
+        let outcome = self.store.save(&mut stream, max_size).await;
 
         // Settle the door's stream verdict against the save: a save the
         // verdict rejects was staged before the verdict settled — the
@@ -582,7 +582,7 @@ impl LengthViolation {
 // a [`Builder::build_stream`] output — the wire prefix, the caller's
 // payload stream, and the trailer continuation — as one
 // `Receiver<Segment>` carrying the whole wire form, ready to drain through
-// `Store::save_stream`. The payload block's CRC is applied at the point of
+// `Store::save`. The payload block's CRC is applied at the point of
 // origination: each payload run feeds the [`PayloadTrailer`] digest as it
 // flows, and the trailer's bytes (the CRC field, then the outer break) are
 // yielded as the stream's `Final` segment.

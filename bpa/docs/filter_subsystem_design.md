@@ -63,7 +63,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Raw-door admission: source check, fragment rejection, lifetime / hop exhaustion (`gate_reason`) + the config-gated RFC 9171 checks (`rfc9171_gate_reason`), early duplicate probe | read (reject) | no — spec/config |
 | **★ Originate hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (pre-spool, pre-store, on the resident prefix with the declared peek held, at the raw and ADU doors alike; a Drop returns its reason to the originating service) |
 | Route lookup at the door — the decision of record (an explicit Drop route rejects to the caller) | read (reject) | already — RoutingAgent |
-| Spool (`Store::save_stream`; the raw door's `ValidatingReceiver` settles the stream verdict) | write (accumulate), read (reject) | no |
+| Spool (`Store::save`; the raw door's `ValidatingReceiver` settles the stream verdict) | write (accumulate), read (reject) | no |
 | Single metadata write + dedup (`insert_metadata`) | write | no |
 | Execute the routing decision, decided again if the table changed during the drain (the admin-endpoint arm queues for the processing pool) | queue op | no |
 

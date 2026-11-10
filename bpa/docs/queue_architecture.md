@@ -29,7 +29,7 @@ graph LR
 
 ### Processing blocks
 
-- **Ingest** — drive `Sink::dispatch(peer_node, peer_addr, &mut dyn Receiver<Segment>)` from the CLA, stream bytes through the parser, the pre-drain gate, and the Ingress filter chain (a single pass — there is no late ingress pass, see [filter_subsystem_design.md](filter_subsystem_design.md)), run the route lookup (the routing decision of record), spool through `Store::save_stream()`, write the metadata record once, and execute the routing decision, decided again if the table changed during the spool (the admin-endpoint and fragment arms queue for the dispatch pool). (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
+- **Ingest** — drive `Sink::dispatch(peer_node, peer_addr, &mut dyn Receiver<Segment>)` from the CLA, stream bytes through the parser, the pre-drain gate, and the Ingress filter chain (a single pass — there is no late ingress pass, see [filter_subsystem_design.md](filter_subsystem_design.md)), run the route lookup (the routing decision of record), spool through `Store::save()`, write the metadata record once, and execute the routing decision, decided again if the table changed during the spool (the admin-endpoint and fragment arms queue for the dispatch pool). (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
 - **Originate** — receive from local service, run originate filters, checkpoint to storage
 - **Dispatch** — RIB lookup, fan-out to deliver/admin/reassemble/wait queues. For forwarding, enqueues to a per-peer queue
 - **EgressController** — consumer of per-peer queue. Classifies bundles, rate-limits and reorders by traffic class (HTB scheduling), enqueues to a per-peer CLA queue
@@ -145,7 +145,7 @@ This pattern works because:
 
 - `BundleStorage` is the coordination point — no locks needed, the data is either there or it isn't
 - The reaper owns the status report for expired bundles — processing blocks defer to it
-- Processing blocks already handle `load() → None` in the current code (`load_data_or_drop`, used by `forward.rs`, `deliver.rs` and `admin.rs`)
+- Processing blocks already handle `load() → None` in the current code (`load_or_drop`, used by `forward.rs`, `deliver.rs` and `admin.rs`)
 
 In a distributed architecture, the reaper becomes a storage-level maintenance job per storage shard, independent of processing nodes. The same ground-truth coordination applies.
 

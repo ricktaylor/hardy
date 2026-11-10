@@ -219,35 +219,17 @@ impl Dispatcher {
         self.tasks.shutdown().await;
     }
 
-    /// Load bundle data, dropping the bundle with `DepletedStorage` if the
-    /// data is missing and the bundle has not yet expired. Expired-and-missing
-    /// bundles are left for the reaper to handle (it will drop them with
-    /// `LifetimeExpired`).
+    /// Open bundle data as a segment stream, dropping the bundle with
+    /// `DepletedStorage` if the data is missing and the bundle has not yet
+    /// expired. Expired-and-missing bundles are left for the reaper to handle
+    /// (it will drop them with `LifetimeExpired`).
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn load_data_or_drop(&self, bundle: bundle::Bundle) -> Option<(bundle::Bundle, Bytes)> {
-        let data = self.store.load_data(stored_name(&bundle)).await;
-        self.loaded_or_drop(bundle, data).await
-    }
-
-    /// Open bundle data as a segment stream, dropping the bundle as
-    /// [`load_data_or_drop`](Self::load_data_or_drop) does when the data is
-    /// missing.
-    #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn load_stream_or_drop(
+    async fn load_or_drop(
         &self,
         bundle: bundle::Bundle,
     ) -> Option<(bundle::Bundle, Box<dyn Receiver<Segment>>)> {
-        let stream = self.store.load_stream(stored_name(&bundle)).await;
-        self.loaded_or_drop(bundle, stream).await
-    }
-
-    async fn loaded_or_drop<T>(
-        &self,
-        bundle: bundle::Bundle,
-        loaded: Option<T>,
-    ) -> Option<(bundle::Bundle, T)> {
-        match loaded {
-            Some(loaded) => Some((bundle, loaded)),
+        match self.store.load(stored_name(&bundle)).await {
+            Some(stream) => Some((bundle, stream)),
             None => {
                 if !bundle.has_expired() {
                     // Bundle data was deleted while queued - not reaped

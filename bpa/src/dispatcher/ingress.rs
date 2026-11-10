@@ -332,7 +332,7 @@ impl Dispatcher {
         // resident head may include payload bytes, or the whole bundle, so
         // there is one store path, not a resident/streamed fork. The door
         // owns the validation: a `ValidatingReceiver` decorates the arrival
-        // and `Store::save_stream` is the validation-blind drain. For a
+        // and `Store::save` is the validation-blind drain. For a
         // complete-at-head arrival the decorator yields the head as the
         // stream's `Final` and settles from it alone: the header pass already
         // took the arrival's `Final`, so the inner stream is not pulled again.
@@ -620,7 +620,7 @@ impl Dispatcher {
                         trailer,
                     )),
                 );
-                let outcome = self.store.save_stream(&mut tail_rx, max_size).await;
+                let outcome = self.store.save(&mut tail_rx, max_size).await;
                 (rebuilt, outcome, tail_rx)
             }
             Rewritten::Headers(rebuilt, chunks) => {
@@ -635,7 +635,7 @@ impl Dispatcher {
                 );
                 let outcome = {
                     let mut rebuilt_rx = RebuiltHeaders::new(chunks, &resident, &mut tail_rx);
-                    self.store.save_stream(&mut rebuilt_rx, max_size).await
+                    self.store.save(&mut rebuilt_rx, max_size).await
                 };
                 (rebuilt, outcome, tail_rx)
             }
@@ -649,7 +649,7 @@ impl Dispatcher {
                     payload_data,
                     None,
                 );
-                let outcome = self.store.save_stream(&mut tail_rx, max_size).await;
+                let outcome = self.store.save(&mut tail_rx, max_size).await;
                 (received, outcome, tail_rx)
             }
         };
