@@ -501,6 +501,7 @@ mod tests {
             vec![start + 3, end - 2],
             vec![end],
             vec![start, end + 2],
+            vec![data.len()],
         ] {
             let loaded = pull_headers(&bundle, load(&data, &splits).await, 0).await;
             let mut stream = PayloadReceiver::new(&bundle, loaded);
@@ -531,6 +532,21 @@ mod tests {
             2,
             "the headers' segment and the data's rest, nothing after"
         );
+    }
+
+    // Past its Final, a payload stream reports the stream ended, as a loaded
+    // bundle does.
+    #[tokio::test]
+    async fn a_payload_stream_ends_after_its_final() {
+        let (bundle, data) = stored(b"streamed once");
+        let start = payload_start(&bundle);
+        let loaded = pull_headers(&bundle, load(&data, &[start + 2]).await, 0).await;
+        let mut stream = PayloadReceiver::new(&bundle, loaded);
+        assert_eq!(
+            concat(&drain(&mut stream).await),
+            bundle.blocks[&1].payload(&data).unwrap()
+        );
+        assert!(matches!(stream.recv().await, Err(RecvError)));
     }
 
     #[tokio::test]

@@ -1031,6 +1031,83 @@ async fn a_deliver_verifier_reads_its_declared_peek() {
     bpa.shutdown().await;
 }
 
+// Passes a bundle only if it reads the inserted block back through its
+// reader; drops the rest silently, signalling each drop.
+struct InsertedExpecter {
+    dropped_tx: flume::Sender<()>,
+}
+
+impl Verifier for InsertedExpecter {
+    fn verify(&self, ctx: &VerifyContext<'_>) -> Verdict {
+        let inserted = ctx
+            .bundle()
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == INSERTED)
+            .map(|(&n, _)| n);
+        if let Some(n) = inserted
+            && let Some((_, Availability::Available(body))) = ctx.reader().block(n)
+            && body.as_ref() == b"inserted"
+        {
+            return Verdict::Continue(());
+        }
+        let _ = self.dropped_tx.send(());
+        Verdict::Drop(None)
+    }
+}
+
+// A BPA whose Deliver chain is an `InsertedExpecter` behind a Rewriter
+// inserting the block when `inserting`: (bpa, cla, drops).
+async fn expecting_setup(inserting: bool) -> (Bpa, Arc<CapturingCla>, flume::Receiver<()>) {
+    let (dropped_tx, dropped_rx) = flume::unbounded();
+    let mut pack = FilterPack::new("test");
+    if inserting {
+        pack.deliver_rewriter(
+            "inserter",
+            FlaggedInserter {
+                flags: BlockFlags::default(),
+                outcomes: Arc::new(Mutex::new(Vec::new())),
+            },
+        );
+    }
+    pack.deliver_verifier("expecter", InsertedExpecter { dropped_tx });
+    let (bpa, cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+    (bpa, cla, dropped_rx)
+}
+
+/// A Deliver Rewriter's insert reaches the Deliver Verifier after it, which
+/// reads the block back through its reader, and the raw service receives
+/// the rebuilt bundle with the block in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deliver_rewriters_insert_reaches_the_verifier_and_the_service() {
+    let (bpa, cla, dropped_rx) = expecting_setup(true).await;
+    let (_service, delivered_rx) = register_service(&bpa).await;
+
+    arrive(&cla, SOURCE, BundleFlags::default(), LOCAL).await;
+    assert!(
+        next_carries_inserted(&delivered_rx).await,
+        "the service receives the bundle with the insert"
+    );
+
+    bpa.shutdown().await;
+    assert!(dropped_rx.is_empty(), "the Verifier read the insert");
+}
+
+/// Without the Rewriter the same Verifier drops the bundle: the drop is the
+/// Verifier's verdict, not an artefact of the rebuild.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deliver_verifier_drops_what_no_rewriter_inserted() {
+    let (bpa, cla, dropped_rx) = expecting_setup(false).await;
+    let (_service, delivered_rx) = register_service(&bpa).await;
+
+    arrive(&cla, SOURCE, BundleFlags::default(), LOCAL).await;
+    next(&dropped_rx).await;
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(delivered_rx.is_empty(), "a dropped bundle is not delivered");
+}
+
 // What an Ingress Verifier finds of the payload: available or not.
 struct PayloadWitness {
     available_tx: flume::Sender<bool>,
