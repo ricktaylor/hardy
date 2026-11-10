@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- `editor::Editor::is_modified()`: whether the editor holds any staged edit, so a caller asks the editor whether to rebuild rather than thread a flag beside it.
 - `bundle::Bundle::primary_has_integrity` and `editor::Editor::primary_has_integrity`: whether the primary block carries a CRC or a BIB that targets it or may (RFC 9171 §4.3.1), the editor's judged on the primary and coverage as its staged edits leave them.
 - `editor::Error::StagedPayload`: `Editor::rebuild_streamed` refuses a payload whose data was staged, rather than streaming the caller's bytes in its place and dropping the staged data.
 - `editor::Editor::generation()`: the number of edits staged so far, so a caller asks the editor whether anything changed rather than keeping a flag beside it; `extension_editor::ExtensionEditor::is_modified` reads it.

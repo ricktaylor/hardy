@@ -7,7 +7,7 @@ use super::{
     output::{LoadedBundle, pull_headers},
     *,
 };
-use crate::rebuilt_headers::RebuiltHeaders;
+use crate::{keys::derive_keys, rebuilt_headers::RebuiltHeaders};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
@@ -247,7 +247,7 @@ impl Dispatcher {
         let keys = self
             .filters
             .has_egress_rewriters()
-            .then(|| filter::output_keys(&bundle.bpv7, resident, &*self.key_provider));
+            .then(|| derive_keys(&bundle.bpv7, resident, &*self.key_provider));
         let no_keys = KeySet::EMPTY;
         let keys = keys.as_deref().unwrap_or(&no_keys);
         let mut editor = Editor::new(&bundle.bpv7, resident);
@@ -255,7 +255,7 @@ impl Dispatcher {
         // Nothing at Egress drops a bundle, and the edits are in-memory only,
         // so a re-route runs the Egress chain again with fresh context.
         self.filters
-            .run_egress(&mut editor, &bundle.metadata, next_hop, keys);
+            .rewrite_egress(&mut editor, &bundle.metadata, next_hop, keys);
 
         // The per-hop writes follow the Rewriters, so they supersede any
         // Rewriter edit to the blocks they write.

@@ -97,8 +97,6 @@ use crate::{Arc, HashMap, bundle::BundleMetadata};
 
 mod engine;
 
-pub(crate) use self::engine::output_keys;
-
 pub mod pack;
 pub mod slots;
 
@@ -459,9 +457,7 @@ pub trait Classifier: Send + Sync {
 ///
 /// Its edits are confined to *extension* blocks — never the payload — and
 /// the reader decrypts any block it needs to inspect. Each Rewriter sees
-/// its predecessors' edits: they all edit the attempt's one editor, and each
-/// reads the bundle as the links before it left it. Nothing is materialised
-/// until the output door rebuilds the bundle, once.
+/// its predecessors' edits (see [reading the bundle](self#reading-the-bundle)).
 ///
 /// At Egress the Rewriters run before the BPA's per-hop writes (RFC 9171
 /// §5.4), which supersede their edits to the blocks those writes cover: the
@@ -479,9 +475,7 @@ pub trait Classifier: Send + Sync {
 /// A Rewriter has no verdict: it edits the bundle or leaves it as it is,
 /// and never drops it. An [`ExtensionEditor`] refusal is the Rewriter's
 /// no-match path. A block the Rewriter inserted is a valid target for its
-/// own later `replace` or `remove` in the same invocation. The editor checks
-/// every edit when it is staged, so an accepted edit materialises (see the
-/// [failure contract](self#failure-and-drop-contract)).
+/// own later `replace` or `remove` in the same invocation.
 pub trait Rewriter: Send + Sync {
     /// Edit extension blocks through the context's
     /// [`editor`](RewriteContext::editor) — insert/replace/remove only,
@@ -489,8 +483,7 @@ pub trait Rewriter: Send + Sync {
     /// under existing BPSec coverage. The context's bundle and reader show
     /// the bundle as the preceding links left it, and its
     /// [`boundary`](RewriteContext::boundary) says where it runs (and, at
-    /// Egress, the resolved next hop). The accepted edits stay staged in the
-    /// attempt's editor, which the output door rebuilds.
+    /// Egress, the resolved next hop).
     fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>);
 }
 

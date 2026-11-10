@@ -471,6 +471,13 @@ impl<'a> Editor<'a> {
         self.generation
     }
 
+    /// Whether the editor holds any staged edit: a block inserted, updated,
+    /// restored or removed, or a primary field set.
+    #[must_use]
+    pub fn is_modified(&self) -> bool {
+        self.generation > 0
+    }
+
     /// Declare that the payload's data streams past the editor, as the
     /// source bytes hold only the headers, and that its plaintext is
     /// `plaintext_len` bytes long: the payload's security acceptor decrypts

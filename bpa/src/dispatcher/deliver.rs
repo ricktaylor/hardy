@@ -5,6 +5,8 @@ use super::{
     *,
 };
 use crate::{
+    filter::Verdict,
+    keys::derive_keys,
     rebuilt_headers::RebuiltHeaders,
     services::registry::{Service, ServiceImpl},
 };
@@ -181,18 +183,17 @@ impl Dispatcher {
         if !self.filters.has_deliver_rewriters() && !self.filters.has_deliver_verifiers() {
             return Ok(None);
         }
-        let keys = filter::output_keys(&bundle.bpv7, data, &*self.key_provider);
+        let keys = derive_keys(&bundle.bpv7, data, &*self.key_provider);
         let mut editor = Editor::new(&bundle.bpv7, data);
-        let edited = self
-            .filters
-            .run_deliver(&mut editor, &bundle.metadata, &*keys);
-        if let Some(reason) = self
-            .filters
-            .verify_deliver(&editor, data, &bundle.metadata, &*keys)
+        self.filters
+            .rewrite_deliver(&mut editor, &bundle.metadata, &*keys);
+        if let Verdict::Drop(reason) =
+            self.filters
+                .verify_deliver(&editor, data, &bundle.metadata, &*keys)
         {
             return Err(reason);
         }
-        Ok(edited.then(|| {
+        Ok(editor.is_modified().then(|| {
             editor
                 .rebuild()
                 .trace_expect("The delivery rewrite failed to rebuild the bundle")

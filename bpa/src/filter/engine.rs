@@ -7,11 +7,7 @@
 //! allocated.
 //!
 //! The output hooks' Rewriters edit through handles on the attempt's one
-//! editor, which the output door owns and rebuilds once, after its own
-//! stages. A Rewriter reads its predecessors' edits from a header-sized
-//! copy of the editor's current bundle, re-taken after each link that
-//! edits, and a decrypting reader over the editor: nothing is materialised
-//! per link.
+//! editor; see the [filter module docs](super#reading-the-bundle).
 //!
 //! Every input runner hands its verdict back to the door that holds the
 //! arrival, and every output runner edits the door's editor, so a claimed
@@ -28,12 +24,9 @@ use core::{fmt::Debug, mem::take, ops::ControlFlow};
 
 // Aliased: the wire bundle, beside the record `Bundle`.
 use hardy_bpv7::{
-    Bundle as Bpv7Bundle,
+    Bundle as Bpv7Bundle, Error as Bpv7Error,
     block::{Block, Type},
-    bpsec::{
-        Decrypted, DecryptingReader, Roles, bcb,
-        key::{KeySet, KeySource},
-    },
+    bpsec::{Decrypted, DecryptingReader, Roles, bcb, key::KeySource},
     editor::Editor,
     eid::Eid,
     parse::Parsed,
@@ -50,7 +43,7 @@ use super::{
 use crate::{
     HashMap,
     bundle::{BundleMetadata, arrival::peekable_payload},
-    keys::KeyProvider,
+    keys::{KeyProvider, derive_keys},
 };
 
 // One spelling per hook, shared by the metric labels and diagnostics.
@@ -58,39 +51,6 @@ const INGRESS: &str = "ingress";
 const ORIGINATE: &str = "originate";
 const EGRESS: &str = "egress";
 const DELIVER: &str = "deliver";
-
-// The key source for one pass. A bundle without a BCB never consults keys —
-// decrypted reads exist only for blocks under a BCB, and no stage adds one —
-// so it skips the provider round-trip. One helper for every pass, so the
-// input and output paths cannot diverge.
-fn derive_keys(
-    has_bcb: bool,
-    bundle: &Bpv7Bundle,
-    buf: &[u8],
-    key_provider: &dyn KeyProvider,
-) -> Box<dyn KeySource> {
-    if has_bcb {
-        key_provider.key_source(bundle, buf)
-    } else {
-        Box::new(KeySet::EMPTY)
-    }
-}
-
-/// The key source for one output attempt, derived once over the stored
-/// bundle's block index and bytes. No output stage adds a BCB — a Rewriter
-/// cannot, and the per-hop writes only remove operations — so these keys
-/// serve every read the attempt makes.
-pub fn output_keys(
-    bundle: &Bpv7Bundle,
-    data: &[u8],
-    key_provider: &dyn KeyProvider,
-) -> Box<dyn KeySource> {
-    let has_bcb = bundle
-        .blocks
-        .values()
-        .any(|block| block.block_type == Type::BlockSecurity);
-    derive_keys(has_bcb, bundle, data, key_provider)
-}
 
 // The payload's resident prefix, for the contexts' `payload_peek`: none for a
 // payload with no peekable prefix (`peekable_payload`). Compared in u64 first:
@@ -107,21 +67,21 @@ fn resident_payload_prefix<'a>(bundle: &Bpv7Bundle, buf: &'a [u8]) -> Option<&'a
     buf.get(start..end)
 }
 
-/// The engine's one spelling of the Verifier pass, returning the first
-/// Drop verdict's reason (`None` = every Verifier passed).
+/// The engine's one spelling of the Verifier pass: the first Drop verdict,
+/// or `Continue` when every Verifier passed.
 fn check_verifiers(
     verifiers: &[VerifierEntry],
     hook: &'static str,
     ctx: &VerifyContext<'_>,
-) -> Option<Option<ReasonCode>> {
+) -> Verdict {
     for entry in verifiers {
         if let Verdict::Drop(reason) = entry.verifier.verify(ctx) {
             debug!("Verifier '{}' dropped bundle: {reason:?}", entry.label);
             metrics::counter!("bpa.filter.filtered", "hook" => hook).increment(1);
-            return Some(reason);
+            return Verdict::Drop(reason);
         }
     }
-    None
+    Verdict::Continue(())
 }
 
 // An output chain's BCB operation sets failing to decode: their bytes were
@@ -135,8 +95,8 @@ fn output_undecodable(hook: &str, e: impl Debug) -> ! {
     panic!("The {hook} chain's bytes do not decode: {e:?}")
 }
 
-// The BCB operation sets of the BCB blocks `blocks` locates, decoded from
-// the bodies `bodies` reads for them: the output chains parse nothing else.
+// The BCB operation sets of the BCB blocks `blocks` locates, read through
+// `bodies`: the output chains parse nothing but these.
 fn decode_bcbs<'r>(
     hook: &str,
     blocks: &HashMap<u64, Block>,
@@ -149,7 +109,7 @@ fn decode_bcbs<'r>(
             let body = bodies
                 .block(number)
                 .and_then(|(_, availability)| availability.available())
-                .unwrap_or_else(|| output_undecodable(hook, "a BCB body is not resident"));
+                .unwrap_or_else(|| output_undecodable(hook, Bpv7Error::Altered));
             let opset = parse_exact::<bcb::OperationSet>(body.as_ref())
                 .unwrap_or_else(|e| output_undecodable(hook, e));
             (number, opset)
@@ -220,7 +180,7 @@ impl FilterChains {
         if self.originate.verifiers.is_empty() && self.originate.classifiers.is_empty() {
             return ControlFlow::Continue(());
         }
-        let keys = derive_keys(!bcbs.is_empty(), bundle, head, key_provider);
+        let keys = derive_keys(bundle, head, key_provider);
         // A source accepts nothing, so the blocks its Classifiers announce
         // are passed over.
         self.run_input_decoded(
@@ -245,16 +205,16 @@ impl FilterChains {
 
     /// Runs the Egress Rewriters on the attempt's editor, before the
     /// per-hop writes, which the output door applies to the same editor.
-    /// Nothing at Egress drops a bundle. Returns whether a link edited.
-    pub(crate) fn run_egress(
+    /// Nothing at Egress drops a bundle.
+    pub fn rewrite_egress(
         &self,
         editor: &mut Editor<'_>,
         metadata: &BundleMetadata,
         next_hop: &Eid,
         keys: &dyn KeySource,
-    ) -> bool {
+    ) {
         if self.egress.is_empty() {
-            return false;
+            return;
         }
         rewrite(
             &self.egress,
@@ -266,23 +226,20 @@ impl FilterChains {
         )
     }
 
-    /// Whether the Egress chain has any registered Rewriters, for the
-    /// egress door's short-circuit: with none, no stage reads through the
-    /// attempt's keys, so it derives none.
+    /// Whether any Rewriter is registered at Egress.
     pub fn has_egress_rewriters(&self) -> bool {
         !self.egress.is_empty()
     }
 
-    /// Runs the Deliver Rewriters on the attempt's editor. Returns whether
-    /// a link edited.
-    pub(crate) fn run_deliver(
+    /// Runs the Deliver Rewriters on the attempt's editor.
+    pub fn rewrite_deliver(
         &self,
         editor: &mut Editor<'_>,
         metadata: &BundleMetadata,
         keys: &dyn KeySource,
-    ) -> bool {
+    ) {
         if self.deliver.rewriters.is_empty() {
-            return false;
+            return;
         }
         rewrite(
             &self.deliver.rewriters,
@@ -294,15 +251,12 @@ impl FilterChains {
         )
     }
 
-    /// Whether the Deliver chain has any registered Rewriters, for the
-    /// delivery door's short-circuit: with none, it builds no editor.
+    /// Whether any Rewriter is registered at Deliver.
     pub fn has_deliver_rewriters(&self) -> bool {
         !self.deliver.rewriters.is_empty()
     }
 
-    /// Whether the Deliver chain has any registered Verifiers, for the
-    /// delivery door's short-circuit: with none and no Rewriters, no stage
-    /// reads through the attempt's keys, so it derives none.
+    /// Whether any Verifier is registered at Deliver.
     pub fn has_deliver_verifiers(&self) -> bool {
         !self.deliver.verifiers.is_empty()
     }
@@ -311,17 +265,16 @@ impl FilterChains {
     /// leaves it, after the Deliver Rewriters: its current bundle and a
     /// decrypting reader over it, with the payload's resident prefix in
     /// `data`, the bytes the editor works over, as their peek. Nothing is
-    /// materialised. `Some` carries the dropping Verifier's reason, `None`
-    /// means every Verifier passed.
+    /// materialised.
     pub fn verify_deliver(
         &self,
         editor: &Editor<'_>,
         data: &[u8],
         metadata: &BundleMetadata,
         keys: &dyn KeySource,
-    ) -> Option<Option<ReasonCode>> {
+    ) -> Verdict {
         if self.deliver.verifiers.is_empty() {
-            return None;
+            return Verdict::Continue(());
         }
         let current = editor.current_bundle();
         let bcbs = decode_bcbs(DELIVER, &current.blocks, editor);
@@ -365,7 +318,7 @@ impl FilterChains {
             DecryptingReader::new(&bundle.blocks, buf, bcbs, keys).with_decrypted(take(decrypted));
         let peek = resident_payload_prefix(bundle, buf);
 
-        if let Some(reason) = check_verifiers(
+        if let Verdict::Drop(reason) = check_verifiers(
             &chain.verifiers,
             hook,
             &VerifyContext::new(bundle, &reader, metadata, peek),
@@ -402,7 +355,7 @@ impl FilterChains {
 // before it left it: a header-sized copy of the editor's current bundle,
 // re-taken after a link that edits, and a decrypting reader over the
 // editor, taken on demand. The BCB operation sets are decoded once: no
-// Rewriter can add, remove or edit a BCB. Returns whether any link edited.
+// Rewriter can add, remove or edit a BCB.
 fn rewrite(
     rewriters: &[RewriterEntry],
     hook: &'static str,
@@ -410,10 +363,9 @@ fn rewrite(
     editor: &mut Editor<'_>,
     metadata: &BundleMetadata,
     keys: &dyn KeySource,
-) -> bool {
+) {
     let mut current = editor.current_bundle();
     let bcbs = decode_bcbs(hook, &current.blocks, &*editor);
-    let mut edited = false;
     for entry in rewriters {
         let modified = {
             let mut ctx =
@@ -424,11 +376,9 @@ fn rewrite(
         if modified {
             debug!("Rewriter '{}' edited the bundle", entry.label);
             metrics::counter!("bpa.filter.modified", "hook" => hook).increment(1);
-            edited = true;
             current = editor.current_bundle();
         }
     }
-    edited
 }
 
 #[cfg(test)]
@@ -441,6 +391,7 @@ mod tests {
 
     use hardy_bpv7::{
         block,
+        bpsec::key::KeySet,
         builder::Builder,
         crc::CrcType,
         creation_timestamp::CreationTimestamp,
@@ -804,7 +755,7 @@ mod tests {
                 &bundle.metadata,
                 &KeySet::EMPTY
             ),
-            None,
+            Verdict::Continue(()),
             "the shared Verifier passes at Deliver"
         );
         assert_eq!(shared.0.load(Ordering::Relaxed), 2);
@@ -869,15 +820,13 @@ mod tests {
     // The Deliver Rewriters on an editor over the record's block index, the
     // Deliver Verifiers over its edits, then a rebuild when a link edited,
     // so the test can read what reached the wire.
-    fn deliver(
-        chains: &FilterChains,
-        mut bundle: Bundle,
-        data: Bytes,
-    ) -> (Bundle, Bytes, Option<Option<ReasonCode>>) {
+    fn deliver(chains: &FilterChains, mut bundle: Bundle, data: Bytes) -> (Bundle, Bytes, Verdict) {
         let mut editor = Editor::new(&bundle.bpv7, &data);
-        let edited = chains.run_deliver(&mut editor, &bundle.metadata, &KeySet::EMPTY);
+        chains.rewrite_deliver(&mut editor, &bundle.metadata, &KeySet::EMPTY);
         let verdict = chains.verify_deliver(&editor, &data, &bundle.metadata, &KeySet::EMPTY);
-        let rebuilt = edited.then(|| editor.rebuild_bundle().unwrap());
+        let rebuilt = editor
+            .is_modified()
+            .then(|| editor.rebuild_bundle().unwrap());
         let data = match rebuilt {
             Some((rebuilt, chunks)) => {
                 bundle.bpv7.blocks = rebuilt.blocks;
@@ -898,7 +847,8 @@ mod tests {
         let (bundle, data, _) = test_bundle();
         let (bundle, data, verdict) = deliver(&chains, bundle, data);
         assert_eq!(
-            verdict, None,
+            verdict,
+            Verdict::Continue(()),
             "the verifier must have seen the inserted block"
         );
 
@@ -925,7 +875,8 @@ mod tests {
         let (bundle, data, _) = test_bundle();
         let next_hop: Eid = "ipn:2.0".parse().unwrap();
         let mut editor = Editor::new(&bundle.bpv7, &data);
-        assert!(chains.run_egress(&mut editor, &bundle.metadata, &next_hop, &KeySet::EMPTY));
+        chains.rewrite_egress(&mut editor, &bundle.metadata, &next_hop, &KeySet::EMPTY);
+        assert!(editor.is_modified(), "the Rewriter edited");
         let (rebuilt, chunks) = editor.rebuild_bundle().unwrap();
         let data = Chunk::flatten_bytes(chunks, data.clone());
 
@@ -1053,7 +1004,7 @@ mod tests {
 
         let (bundle, data, _) = test_bundle();
         let (_, out, verdict) = deliver(&chains, bundle, data.clone());
-        assert_eq!(verdict, None, "a Rewriter has no verdict");
+        assert_eq!(verdict, Verdict::Continue(()), "a Rewriter has no verdict");
         // Nothing was edited: the bytes pass through unchanged.
         assert_eq!(out, data);
     }
@@ -1101,15 +1052,16 @@ mod tests {
         data: &Bytes,
         provider: &dyn KeyProvider,
     ) {
-        let keys = output_keys(&bundle.bpv7, data, provider);
+        let keys = derive_keys(&bundle.bpv7, data, provider);
         let mut editor = Editor::new(&bundle.bpv7, data);
+        chains.rewrite_deliver(&mut editor, &bundle.metadata, &*keys);
         assert!(
-            !chains.run_deliver(&mut editor, &bundle.metadata, &*keys),
+            !editor.is_modified(),
             "the non-editing links leave the editor as it was"
         );
         assert_eq!(
             chains.verify_deliver(&editor, data, &bundle.metadata, &*keys),
-            None
+            Verdict::Continue(())
         );
     }
 
@@ -1229,7 +1181,7 @@ mod tests {
         let (bundle, data) = undecodable_bcb_bundle();
         let next_hop: Eid = "ipn:2.0".parse().unwrap();
         let mut editor = Editor::new(&bundle.bpv7, &data);
-        chains.run_egress(&mut editor, &bundle.metadata, &next_hop, &KeySet::EMPTY);
+        chains.rewrite_egress(&mut editor, &bundle.metadata, &next_hop, &KeySet::EMPTY);
     }
 
     #[cfg(feature = "rfc9173")]
