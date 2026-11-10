@@ -222,9 +222,9 @@ fn insert_new_block_type() {
     assert!(reparsed.blocks.contains_key(&2));
 }
 
-/// Asserts that the Bundle returned by `rebuild_bundle()` matches a fresh
-/// parse of the same data — same block set, same extents, same primary
-/// block fields.
+// Asserts that the Bundle returned by `rebuild_bundle()` matches a fresh
+// parse of the same data — same block set, same extents, same primary
+// block fields.
 fn assert_rebuild_matches_parse(bundle: &Bundle, data: &[u8]) {
     let reparsed = reparse(data);
 

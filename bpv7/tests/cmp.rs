@@ -4,7 +4,7 @@
 use bytes::Bytes;
 use hardy_bpv7::parse;
 use hex_literal::hex;
-/// Parse both inputs and compare their bundles for semantic equivalence.
+// Parse both inputs and compare their bundles for semantic equivalence.
 fn eq(a: &[u8], b: &[u8]) -> bool {
     let a = parse::parse(Bytes::copy_from_slice(a)).expect("parse a");
     let b = parse::parse(Bytes::copy_from_slice(b)).expect("parse b");

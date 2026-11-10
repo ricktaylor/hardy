@@ -711,8 +711,8 @@ mod tests {
         make_rib_from(make_store())
     }
 
-    /// A complete `Service` for route entries: `Service::new` demands the
-    /// delivery queue and canonical EID, so the test wires a real channel.
+    // A complete `Service` for route entries: `Service::new` demands the
+    // delivery queue and canonical EID, so the test wires a real channel.
     fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Service> {
         let eid: Eid = eid.parse().unwrap();
         let (tx, _rx) = store.channel(

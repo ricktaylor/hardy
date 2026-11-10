@@ -62,14 +62,14 @@ mod common;
 // ---------------------------------------------------------------------------
 
 enum Event {
-    /// The buffering CLA assembled the whole bundle.
+    // The buffering CLA assembled the whole bundle.
     Forward(Bytes),
-    /// The streaming CLA pulled the stream to completion.
+    // The streaming CLA pulled the stream to completion.
     Streamed {
         segments: Vec<Segment>,
         total_len: u64,
     },
-    /// The forward attempt failed.
+    // The forward attempt failed.
     Failed,
 }
 
@@ -77,11 +77,11 @@ enum Event {
 // Mock CLAs
 // ---------------------------------------------------------------------------
 
-/// Consumes the stream segment by segment, recording every segment it pulls.
+// Consumes the stream segment by segment, recording every segment it pulls.
 struct StreamingCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
     events_tx: flume::Sender<Event>,
-    /// When set, the first `forward` call fails without pulling.
+    // When set, the first `forward` call fails without pulling.
     flaky: AtomicBool,
 }
 
@@ -147,8 +147,8 @@ impl cla::Cla for StreamingCla {
     }
 }
 
-/// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
-/// — the shape every whole-buffer CLA takes on the streamed-only door.
+// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
+// — the shape every whole-buffer CLA takes on the streamed-only door.
 struct BufferedCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
     events_tx: flume::Sender<Event>,
@@ -256,8 +256,8 @@ fn build_bundle(
     (bundle, Bytes::from(data))
 }
 
-/// A pre-filled segment stream. The sender is dropped on return, so a
-/// sequence not ending in `Final` reads as a truncated stream.
+// A pre-filled segment stream. The sender is dropped on return, so a
+// sequence not ending in `Final` reads as a truncated stream.
 async fn feed(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment> {
     let (tx, rx) = hardy_async::channel::bounded(segments.len().max(1));
     for segment in segments {
@@ -300,7 +300,7 @@ fn previous_node(parsed: &Parsed) -> Eid {
         .expect("the previous node is resident")
 }
 
-/// Sends `payload` to ipn:0.2.99 via `app`, returning the destination EID.
+// Sends `payload` to ipn:0.2.99 via `app`, returning the destination EID.
 async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
     app.sink
@@ -321,10 +321,10 @@ async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
 // Full-path tests: dispatcher -> forward
 // ---------------------------------------------------------------------------
 
-/// A streaming CLA receives the rebuilt bundle as segments — the rebuilt
-/// header region, then the stored payload block — ending in a `Final`, with
-/// an exact `total_len`; the bundle carries this node's Previous Node and the
-/// payload as stored.
+// A streaming CLA receives the rebuilt bundle as segments — the rebuilt
+// header region, then the stored payload block — ending in a `Final`, with
+// an exact `total_len`; the bundle carries this node's Previous Node and the
+// payload as stored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_cla_receives_the_rebuild_as_segments() {
     let bpa = Bpa::builder().build().await.unwrap();
@@ -401,8 +401,8 @@ async fn streaming_cla_receives_the_rebuild_as_segments() {
     bpa.shutdown().await;
 }
 
-/// A CLA that buffers via `stream::buffer_stream` still receives the whole
-/// bundle.
+// A CLA that buffers via `stream::buffer_stream` still receives the whole
+// bundle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_cla_receives_whole_bundle() {
     let bpa = Bpa::builder().build().await.unwrap();
@@ -444,8 +444,8 @@ async fn buffered_cla_receives_whole_bundle() {
     bpa.shutdown().await;
 }
 
-/// A failed streamed attempt takes the established requeue path: the bundle
-/// returns to Waiting and a routing change re-dispatches it.
+// A failed streamed attempt takes the established requeue path: the bundle
+// returns to Waiting and a routing change re-dispatches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_forward_is_requeued_and_retried() {
     let bpa = Bpa::builder().build().await.unwrap();
@@ -527,7 +527,7 @@ fn direct_call_fixture() -> (
     (cla, events_rx, bundle, data, addr)
 }
 
-/// The buffering path reassembles a multi-segment stream.
+// The buffering path reassembles a multi-segment stream.
 #[tokio::test]
 async fn buffering_cla_concats_multi_segment_stream() {
     let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
@@ -546,7 +546,7 @@ async fn buffering_cla_concats_multi_segment_stream() {
     assert_eq!(received, data);
 }
 
-/// A single-`Final` stream passes through the buffering path zero-copy.
+// A single-`Final` stream passes through the buffering path zero-copy.
 #[tokio::test]
 async fn buffering_cla_is_zero_copy_for_single_final() {
     let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
@@ -562,8 +562,8 @@ async fn buffering_cla_is_zero_copy_for_single_final() {
     assert_eq!(received.as_ptr(), data.as_ptr());
 }
 
-/// A truncated stream is an error, and no partial bundle reaches the
-/// transport.
+// A truncated stream is an error, and no partial bundle reaches the
+// transport.
 #[tokio::test]
 async fn buffering_cla_truncated_stream_is_cancelled() {
     let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
@@ -579,8 +579,8 @@ async fn buffering_cla_truncated_stream_is_cancelled() {
     assert!(events_rx.is_empty());
 }
 
-/// A stream completing with fewer bytes than the declared `total_len` is
-/// rejected — no short transfer reaches the transport.
+// A stream completing with fewer bytes than the declared `total_len` is
+// rejected — no short transfer reaches the transport.
 #[tokio::test]
 async fn buffering_cla_rejects_under_delivering_stream() {
     let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
@@ -601,7 +601,7 @@ async fn buffering_cla_rejects_under_delivering_stream() {
     assert!(events_rx.is_empty());
 }
 
-/// A stream exceeding the declared `total_len` is rejected.
+// A stream exceeding the declared `total_len` is rejected.
 #[tokio::test]
 async fn buffering_cla_rejects_stream_exceeding_total_len() {
     let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
@@ -624,9 +624,9 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
 // Legacy IPN re-encode built-in (the per-hop rewrite stage)
 // ---------------------------------------------------------------------------
 
-/// Builds a BPA on an allocator-1 node — its 3-element IPN EIDs change bytes
-/// under the legacy re-encode — with the given legacy-peer patterns, wired
-/// to a buffering CLA and a send-only application.
+// Builds a BPA on an allocator-1 node — its 3-element IPN EIDs change bytes
+// under the legacy re-encode — with the given legacy-peer patterns, wired
+// to a buffering CLA and a send-only application.
 async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Receiver<Event>, Eid) {
     let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
@@ -674,11 +674,11 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Rec
     (bpa, app, events_rx, source_eid)
 }
 
-/// A next hop matching a configured legacy-peer pattern receives the bundle
-/// with its `Ipn` source, destination and report-to re-encoded as
-/// `LegacyIpn` on the wire, and this node's Previous Node written as
-/// `LegacyIpn` too. The deletion-report request gives the bundle this
-/// node's administrative endpoint as its report-to.
+// A next hop matching a configured legacy-peer pattern receives the bundle
+// with its `Ipn` source, destination and report-to re-encoded as
+// `LegacyIpn` on the wire, and this node's Previous Node written as
+// `LegacyIpn` too. The deletion-report request gives the bundle this
+// node's administrative endpoint as its report-to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_receives_two_element_encoding() {
     let (bpa, app, events_rx, _) = legacy_fixture(&["ipn:1.2.*"]).await;
@@ -735,10 +735,10 @@ async fn legacy_peer_receives_two_element_encoding() {
     bpa.shutdown().await;
 }
 
-/// A next hop matching no configured pattern receives the canonical
-/// 3-element encoding untouched, the report-to included, and this node's
-/// Previous Node in it. The deletion-report request gives the bundle this
-/// node's administrative endpoint as its report-to.
+// A next hop matching no configured pattern receives the canonical
+// 3-element encoding untouched, the report-to included, and this node's
+// Previous Node in it. The deletion-report request gives the bundle this
+// node's administrative endpoint as its report-to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_legacy_peer_keeps_canonical_encoding() {
     let (bpa, app, events_rx, source_eid) = legacy_fixture(&["ipn:9.9.*"]).await;
@@ -1012,12 +1012,12 @@ fn signed(bundle: &Parsed, targets: &[u64], scope: ScopeFlags, key: &Key) -> Par
     .unwrap()
 }
 
-/// A legacy next hop needs a re-encoded primary block, and a BIB signs the
-/// primary, so the signature could not survive: the bundle is dropped with
-/// `UnexpectedSecurityOperation`. The one BIB also covers the Hop Count,
-/// which the relay, without the key, leaves as received: the primary stays
-/// signed regardless. The scope leaves the security header out, so the two
-/// targets share the BIB.
+// A legacy next hop needs a re-encoded primary block, and a BIB signs the
+// primary, so the signature could not survive: the bundle is dropped with
+// `UnexpectedSecurityOperation`. The one BIB also covers the Hop Count,
+// which the relay, without the key, leaves as received: the primary stays
+// signed regardless. The scope leaves the security header out, so the two
+// targets share the BIB.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_drops_a_bundle_with_a_signed_primary() {
@@ -1044,8 +1044,8 @@ async fn legacy_peer_drops_a_bundle_with_a_signed_primary() {
     assert_dropped_as_unexpected(bpa, events_rx, &received).await;
 }
 
-/// No BIB targets the primary, but the payload's BIB has the primary in its
-/// scope (RFC 9173's default), so the re-encode would break it: dropped.
+// No BIB targets the primary, but the payload's BIB has the primary in its
+// scope (RFC 9173's default), so the re-encode would break it: dropped.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_drops_a_bundle_whose_bib_scopes_the_primary() {
@@ -1057,11 +1057,11 @@ async fn legacy_peer_drops_a_bundle_whose_bib_scopes_the_primary() {
     assert_dropped_as_unexpected(bpa, events_rx, &received).await;
 }
 
-/// A default-allocator bundle's ipn EIDs are 2-element already, so its
-/// primary needs no re-encode, and a payload BIB whose scope includes the
-/// primary (RFC 9173's default) does not stand in the way: the bundle goes
-/// to the legacy peer with its EIDs as received, and the signature still
-/// verifies.
+// A default-allocator bundle's ipn EIDs are 2-element already, so its
+// primary needs no re-encode, and a payload BIB whose scope includes the
+// primary (RFC 9173's default) does not stand in the way: the bundle goes
+// to the legacy peer with its EIDs as received, and the signature still
+// verifies.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_takes_a_default_allocator_bundle_whose_bib_scopes_the_primary() {
@@ -1097,8 +1097,8 @@ async fn legacy_peer_takes_a_default_allocator_bundle_whose_bib_scopes_the_prima
         .expect("the payload's signature, over the primary, verifies at the peer");
 }
 
-/// A payload BIB whose scope leaves the primary out survives the re-encode:
-/// the bundle goes to the legacy peer, and the signature still verifies.
+// A payload BIB whose scope leaves the primary out survives the re-encode:
+// the bundle goes to the legacy peer, and the signature still verifies.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_takes_a_bundle_whose_bib_leaves_the_primary_out() {
@@ -1122,8 +1122,8 @@ async fn legacy_peer_takes_a_bundle_whose_bib_leaves_the_primary_out() {
         .expect("the payload's signature verifies after the re-encode");
 }
 
-/// A BCB whose AAD scope includes the primary (RFC 9173's default) counts
-/// the same way: dropped.
+// A BCB whose AAD scope includes the primary (RFC 9173's default) counts
+// the same way: dropped.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_drops_a_bundle_whose_bcb_scopes_the_primary() {
@@ -1148,8 +1148,8 @@ async fn legacy_peer_drops_a_bundle_whose_bcb_scopes_the_primary() {
     assert_dropped_as_unexpected(bpa, events_rx, &received).await;
 }
 
-/// A BCB whose AAD scope leaves the primary out survives the re-encode: the
-/// bundle goes to the legacy peer, and its payload still decrypts.
+// A BCB whose AAD scope leaves the primary out survives the re-encode: the
+// bundle goes to the legacy peer, and its payload still decrypts.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_takes_a_bundle_whose_bcb_leaves_the_primary_out() {
@@ -1188,11 +1188,11 @@ async fn legacy_peer_takes_a_bundle_whose_bcb_leaves_the_primary_out() {
     assert_eq!(payload.as_ref(), b"legacy bound");
 }
 
-/// A default-scope BIB over the Hop Count alone, whose key the relay holds:
-/// ingress accepts the operation and strips the emptied BIB, so nothing is
-/// left for the re-encode to break, and the bundle goes to the peer. Without
-/// the key the relay is not the operation's acceptor, so the BIB stays, its
-/// scope covering the primary, and the bundle is dropped.
+// A default-scope BIB over the Hop Count alone, whose key the relay holds:
+// ingress accepts the operation and strips the emptied BIB, so nothing is
+// left for the re-encode to break, and the bundle goes to the peer. Without
+// the key the relay is not the operation's acceptor, so the BIB stays, its
+// scope covering the primary, and the bundle is dropped.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_takes_a_bundle_whose_only_bib_ingress_removes() {
@@ -2392,10 +2392,10 @@ fn with_encrypted_bundle_age(enc_key: &Key, timestamp: CreationTimestamp) -> Par
     .unwrap()
 }
 
-/// A relay without the key to a clockless bundle's encrypted Bundle Age block
-/// cannot process the bundle, and deletes it for the reason RFC 9171 §5.6
-/// Step 4 gives a block the node cannot process, "Block unsupported", not the
-/// malformed block's "Block unintelligible" (Step 3).
+// A relay without the key to a clockless bundle's encrypted Bundle Age block
+// cannot process the bundle, and deletes it for the reason RFC 9171 §5.6
+// Step 4 gives a block the node cannot process, "Block unsupported", not the
+// malformed block's "Block unintelligible" (Step 3).
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn keyless_relay_reports_an_unreadable_bundle_age_as_unsupported() {

@@ -48,15 +48,15 @@ use std::{
 // ---------------------------------------------------------------------------
 
 enum Event {
-    /// The buffering service assembled the whole bundle.
+    // The buffering service assembled the whole bundle.
     Received(Id, Bytes),
-    /// The streaming service pulled the stream to completion.
+    // The streaming service pulled the stream to completion.
     Streamed {
         bundle_id: Id,
         segments: Vec<Segment>,
         total_len: u64,
     },
-    /// The delivery failed.
+    // The delivery failed.
     Failed,
 }
 
@@ -64,11 +64,11 @@ enum Event {
 // Mock services
 // ---------------------------------------------------------------------------
 
-/// Consumes the stream segment by segment, recording every segment it pulls.
+// Consumes the stream segment by segment, recording every segment it pulls.
 struct StreamingService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     events_tx: flume::Sender<Event>,
-    /// When set, every `on_deliver` call fails without pulling.
+    // When set, every `on_deliver` call fails without pulling.
     failing: AtomicBool,
 }
 
@@ -138,8 +138,8 @@ impl services::Service for StreamingService {
     }
 }
 
-/// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
-/// — the shape every whole-buffer service takes on the streamed-only door.
+// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
+// — the shape every whole-buffer service takes on the streamed-only door.
 struct BufferedService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     events_tx: flume::Sender<Event>,
@@ -191,9 +191,9 @@ impl services::Service for BufferedService {
     }
 }
 
-/// Holds every delivery open until released, then either drains the stream
-/// and completes `Ok` or defers with an error: a delivery deliberately
-/// still in flight across the bundle's expiry.
+// Holds every delivery open until released, then either drains the stream
+// and completes `Ok` or defers with an error: a delivery deliberately
+// still in flight across the bundle's expiry.
 struct HoldingService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     failing: bool,
@@ -317,8 +317,8 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
     Bytes::from(data)
 }
 
-/// The identity of a bundle built by [`build_bundle`], for direct
-/// `on_deliver` calls.
+// The identity of a bundle built by [`build_bundle`], for direct
+// `on_deliver` calls.
 fn bundle_id_of(data: &Bytes) -> Id {
     parse(data.clone())
         .expect("Failed to parse built bundle")
@@ -327,8 +327,8 @@ fn bundle_id_of(data: &Bytes) -> Id {
         .id
 }
 
-/// A pre-filled segment stream. The sender is dropped on return, so a
-/// sequence not ending in `Final` reads as a truncated stream.
+// A pre-filled segment stream. The sender is dropped on return, so a
+// sequence not ending in `Final` reads as a truncated stream.
 async fn feed(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment> {
     let (tx, rx) = hardy_async::channel::bounded(segments.len().max(1));
     for segment in segments {
@@ -347,8 +347,8 @@ async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
         .expect("Service event channel closed")
 }
 
-/// Builds a BPA as node ipn:0.1 with an ingress CLA, and dispatches an
-/// inbound bundle from ipn:0.2.1 addressed to the local service ipn:0.1.7.
+// Builds a BPA as node ipn:0.1 with an ingress CLA, and dispatches an
+// inbound bundle from ipn:0.2.1 addressed to the local service ipn:0.1.7.
 async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
@@ -471,8 +471,8 @@ fn assemble(segments: &[Segment]) -> Bytes {
         .into()
 }
 
-/// A streaming service receives the stored bundle, unedited, ending in a
-/// `Final`, with an exact `total_len`.
+// A streaming service receives the stored bundle, unedited, ending in a
+// `Final`, with an exact `total_len`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_service_receives_the_stored_bundle() {
     let (bundle_id, segments, total_len, inbound) = stream_to_service(Bpa::builder()).await;
@@ -503,10 +503,10 @@ impl Rewriter for Inserter {
     }
 }
 
-/// A Deliver Rewriter's edit reaches a raw service as the rebuilt header
-/// region, then the stored payload block: several segments ending in a
-/// `Final`, with an exact `total_len`, the insert among the blocks and the
-/// payload intact.
+// A Deliver Rewriter's edit reaches a raw service as the rebuilt header
+// region, then the stored payload block: several segments ending in a
+// `Final`, with an exact `total_len`, the insert among the blocks and the
+// payload intact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_service_receives_a_rewritten_bundle_as_segments() {
     let mut pack = FilterPack::new("test");
@@ -532,8 +532,8 @@ async fn streaming_service_receives_a_rewritten_bundle_as_segments() {
     );
 }
 
-/// A service that buffers via `stream::buffer_stream` still receives the
-/// whole bundle.
+// A service that buffers via `stream::buffer_stream` still receives the
+// whole bundle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_service_receives_whole_bundle() {
     let (bpa, _inbound) = bpa_with_inbound(b"pong").await;
@@ -556,8 +556,8 @@ async fn buffered_service_receives_whole_bundle() {
     bpa.shutdown().await;
 }
 
-/// A failed streamed delivery parks the bundle as WaitingForService, and a
-/// subsequent registration on the same EID re-delivers it.
+// A failed streamed delivery parks the bundle as WaitingForService, and a
+// subsequent registration on the same EID re-delivers it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_delivery_parks_and_redelivers() {
     let (bpa, _inbound) = bpa_with_inbound(b"park me").await;
@@ -588,7 +588,7 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     bpa.shutdown().await;
 }
 
-/// Decode the status report carried by a captured report bundle.
+// Decode the status report carried by a captured report bundle.
 fn decode_report(segments: &[Segment]) -> BundleStatusReport {
     let Some(Segment::Final(report)) = segments.last() else {
         panic!("Expected a whole report bundle");
@@ -606,19 +606,19 @@ fn decode_report(segments: &[Segment]) -> BundleStatusReport {
     status
 }
 
-/// Shared rig for the mid-delivery expiry tests: node ipn:0.1 with report
-/// capture at ipn:0.1.9; bundle A (ipn:0.2.1 → ipn:0.1.7, 2 s lifetime,
-/// deletion report requested) fails a first delivery — parking it as
-/// WaitingForService, on the reaper's watch — and is then re-delivered to a
-/// [`HoldingService`] that holds it open across its expiry. A companion
-/// bundle B (ipn:0.2.2 → ipn:0.1.6, same lifetime, created after A) has no
-/// service at all, so it parks as WaitingForService at dispatch and is
-/// reaped normally: B's LifetimeExpired deletion report is the
-/// deterministic signal that the reaper's expiry pass has run past A's
-/// (earlier) expiry — and popped A's watch entry — while A was verifiably
-/// still held. Had the reaper wrongly reaped in-flight A, A expires first,
-/// so A's report would arrive *before* B's and fail the first source
-/// assertion.
+// Shared rig for the mid-delivery expiry tests: node ipn:0.1 with report
+// capture at ipn:0.1.9; bundle A (ipn:0.2.1 → ipn:0.1.7, 2 s lifetime,
+// deletion report requested) fails a first delivery — parking it as
+// WaitingForService, on the reaper's watch — and is then re-delivered to a
+// [`HoldingService`] that holds it open across its expiry. A companion
+// bundle B (ipn:0.2.2 → ipn:0.1.6, same lifetime, created after A) has no
+// service at all, so it parks as WaitingForService at dispatch and is
+// reaped normally: B's LifetimeExpired deletion report is the
+// deterministic signal that the reaper's expiry pass has run past A's
+// (earlier) expiry — and popped A's watch entry — while A was verifiably
+// still held. Had the reaper wrongly reaped in-flight A, A expires first,
+// so A's report would arrive *before* B's and fail the first source
+// assertion.
 async fn expiry_mid_delivery_rig(
     holding_fails: bool,
 ) -> (
@@ -744,12 +744,12 @@ async fn expiry_mid_delivery_rig(
     (bpa, metadata_store, reports_rx, release_tx)
 }
 
-/// Assert that shutdown leaves no further reports and no live metadata.
-/// shutdown() is the barrier: it joins the pools, so by the time it
-/// returns a wrongly-emitted extra report has either been delivered
-/// (visible on reports_rx) or persisted-then-stranded when the dispatch
-/// channel closed (visible as live metadata). Both are asserted empty; no
-/// quiet window is involved.
+// Assert that shutdown leaves no further reports and no live metadata.
+// shutdown() is the barrier: it joins the pools, so by the time it
+// returns a wrongly-emitted extra report has either been delivered
+// (visible on reports_rx) or persisted-then-stranded when the dispatch
+// channel closed (visible as live metadata). Both are asserted empty; no
+// quiet window is involved.
 async fn assert_fully_resolved(
     bpa: Bpa,
     metadata_store: &MetadataMemStorage,
@@ -772,13 +772,13 @@ async fn assert_fully_resolved(
     );
 }
 
-/// A bundle that expires while its delivery is in flight is resolved
-/// exactly once — by the delivery. Once a delivery has commenced the BPA
-/// is committed: the service consumes the bundle, so a "deleted: lifetime
-/// expired" report would be a lie. The reaper defers the in-flight bundle,
-/// and the released completion wins the terminal claim, reporting the
-/// deletion as a completed delivery (NoAdditionalInformation) — never
-/// LifetimeExpired.
+// A bundle that expires while its delivery is in flight is resolved
+// exactly once — by the delivery. Once a delivery has commenced the BPA
+// is committed: the service consumes the bundle, so a "deleted: lifetime
+// expired" report would be a lie. The reaper defers the in-flight bundle,
+// and the released completion wins the terminal claim, reporting the
+// deletion as a completed delivery (NoAdditionalInformation) — never
+// LifetimeExpired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expiry_mid_delivery_resolves_once() {
     let (bpa, metadata_store, reports_rx, release_tx) = expiry_mid_delivery_rig(false).await;
@@ -801,10 +801,10 @@ async fn expiry_mid_delivery_resolves_once() {
     assert_fully_resolved(bpa, &metadata_store, &reports_rx).await;
 }
 
-/// Deferral does not launder expiry: when the held delivery is instead
-/// *failed* by the service, nothing was consumed — the park from
-/// DeliveryAckPending wins, re-arms the expiry watch, and the reaper then
-/// resolves the expired bundle honestly with LifetimeExpired.
+// Deferral does not launder expiry: when the held delivery is instead
+// *failed* by the service, nothing was consumed — the park from
+// DeliveryAckPending wins, re-arms the expiry watch, and the reaper then
+// resolves the expired bundle honestly with LifetimeExpired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_delivery_expires_honestly() {
     let (bpa, metadata_store, reports_rx, release_tx) = expiry_mid_delivery_rig(true).await;
@@ -832,7 +832,7 @@ fn expiry() -> time::OffsetDateTime {
     time::OffsetDateTime::now_utc() + time::Duration::hours(1)
 }
 
-/// The buffering path reassembles a multi-segment stream.
+// The buffering path reassembles a multi-segment stream.
 #[tokio::test]
 async fn buffering_service_concats_multi_segment_stream() {
     let (svc, events_rx) = BufferedService::new();
@@ -861,7 +861,7 @@ async fn buffering_service_concats_multi_segment_stream() {
     assert_eq!(received, data);
 }
 
-/// A single-`Final` stream passes through the buffering path zero-copy.
+// A single-`Final` stream passes through the buffering path zero-copy.
 #[tokio::test]
 async fn buffering_service_is_zero_copy_for_single_final() {
     let (svc, events_rx) = BufferedService::new();
@@ -889,8 +889,8 @@ async fn buffering_service_is_zero_copy_for_single_final() {
     assert_eq!(received.as_ptr(), data.as_ptr());
 }
 
-/// A truncated stream is an error, and no partial bundle reaches the
-/// service's consumer.
+// A truncated stream is an error, and no partial bundle reaches the
+// service's consumer.
 #[tokio::test]
 async fn buffering_service_truncated_stream_is_cancelled() {
     let (svc, events_rx) = BufferedService::new();
@@ -916,8 +916,8 @@ async fn buffering_service_truncated_stream_is_cancelled() {
     assert!(events_rx.is_empty());
 }
 
-/// A stream completing with fewer bytes than the declared `total_len` is
-/// rejected — no short bundle reaches the service's consumer.
+// A stream completing with fewer bytes than the declared `total_len` is
+// rejected — no short bundle reaches the service's consumer.
 #[tokio::test]
 async fn buffering_service_rejects_under_delivering_stream() {
     let (svc, events_rx) = BufferedService::new();
@@ -948,7 +948,7 @@ async fn buffering_service_rejects_under_delivering_stream() {
     assert!(events_rx.is_empty());
 }
 
-/// A stream exceeding the declared `total_len` is rejected.
+// A stream exceeding the declared `total_len` is rejected.
 #[tokio::test]
 async fn buffering_service_rejects_stream_exceeding_total_len() {
     let (svc, events_rx) = BufferedService::new();
@@ -971,7 +971,7 @@ async fn buffering_service_rejects_stream_exceeding_total_len() {
     assert!(events_rx.is_empty());
 }
 
-/// A key provider that hands out one fixed key.
+// A key provider that hands out one fixed key.
 #[cfg(feature = "rfc9173")]
 struct OneKey(Key);
 
@@ -982,10 +982,10 @@ impl KeyProvider for OneKey {
     }
 }
 
-/// A service receives an encrypted payload in plaintext: the destination
-/// accepted the payload's BCB at ingress, so the stored bundle it is
-/// delivered carries the plaintext and no BCB, and delivery decrypts
-/// nothing.
+// A service receives an encrypted payload in plaintext: the destination
+// accepted the payload's BCB at ingress, so the stored bundle it is
+// delivered carries the plaintext and no BCB, and delivery decrypts
+// nothing.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_service_receives_an_accepted_payload_in_plaintext() {

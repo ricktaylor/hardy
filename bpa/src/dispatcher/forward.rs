@@ -528,12 +528,12 @@ mod tests {
         }
     }
 
-    /// `forward_bundle` never commences a transfer for an expired bundle:
-    /// the pre-claim expiry checkpoint resolves it as `LifetimeExpired`
-    /// before the CLA sees an offer. Driven as a direct call because this
-    /// is exactly the egress fast path's shape — a bundle that expired
-    /// while queued arrives here from the in-memory buffer, bypassing the
-    /// storage poller's expiry filter.
+    // `forward_bundle` never commences a transfer for an expired bundle:
+    // the pre-claim expiry checkpoint resolves it as `LifetimeExpired`
+    // before the CLA sees an offer. Driven as a direct call because this
+    // is exactly the egress fast path's shape — a bundle that expired
+    // while queued arrives here from the in-memory buffer, bypassing the
+    // storage poller's expiry filter.
     #[tokio::test]
     async fn expired_queued_bundle_is_never_offered() {
         let metadata_store = Arc::new(MetadataMemStorage::new(None));

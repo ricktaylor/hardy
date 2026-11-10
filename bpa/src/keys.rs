@@ -73,7 +73,7 @@ pub(crate) mod tests {
 
     use super::KeyProvider;
 
-    /// A [`KeyProvider`] of fixed keys, for a pass that needs them.
+    // A [`KeyProvider`] of fixed keys, for a pass that needs them.
     pub(crate) struct Keys(pub(crate) Vec<Key>);
 
     impl KeyProvider for Keys {

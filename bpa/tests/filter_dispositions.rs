@@ -568,9 +568,9 @@ async fn dropping_setup(
     (bpa, cla, forwarded_rx, dropped_rx, storage, metadata)
 }
 
-/// CRIT-1 at Egress: a transit bundle with only `is_admin_record` set — no
-/// local registration involved — forbids the Rewriter's flag. The insert is
-/// refused with the parser's error and the bundle is forwarded unedited.
+// CRIT-1 at Egress: a transit bundle with only `is_admin_record` set — no
+// local registration involved — forbids the Rewriter's flag. The insert is
+// refused with the parser's error and the bundle is forwarded unedited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_rewriter_meets_a_refusal_on_an_admin_record() {
     let outcomes = Arc::new(Mutex::new(Vec::new()));
@@ -602,9 +602,9 @@ async fn egress_rewriter_meets_a_refusal_on_an_admin_record() {
     );
 }
 
-/// CRIT-1 at Deliver: an anonymous (null-source) bundle forbids the
-/// Rewriter's flag. The insert is refused with the parser's error and the
-/// bundle is delivered unedited.
+// CRIT-1 at Deliver: an anonymous (null-source) bundle forbids the
+// Rewriter's flag. The insert is refused with the parser's error and the
+// bundle is delivered unedited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deliver_rewriter_meets_a_refusal_on_a_null_source() {
     let outcomes = Arc::new(Mutex::new(Vec::new()));
@@ -638,8 +638,8 @@ async fn deliver_rewriter_meets_a_refusal_on_a_null_source() {
     );
 }
 
-/// Deliver `Drop(Some(reason))`: one deletion report carrying the filter's
-/// reason; the bundle is not delivered and its record is gone.
+// Deliver `Drop(Some(reason))`: one deletion report carrying the filter's
+// reason; the bundle is not delivered and its record is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deliver_drop_with_a_reason_reports_once() {
     let (bpa, cla, forwarded_rx, _dropped_rx, storage, metadata) =
@@ -663,8 +663,8 @@ async fn deliver_drop_with_a_reason_reports_once() {
     assert!(metadata.get(&id).await.unwrap().is_none());
 }
 
-/// Deliver `Drop(None)`: silent even though the bundle requests deletion
-/// reports; the bundle is not delivered and its record is gone.
+// Deliver `Drop(None)`: silent even though the bundle requests deletion
+// reports; the bundle is not delivered and its record is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deliver_drop_without_a_reason_is_silent() {
     let (bpa, cla, forwarded_rx, dropped_rx, storage, metadata) =
@@ -705,10 +705,10 @@ impl Rewriter for PerHopRemover {
     }
 }
 
-/// The per-hop writes follow the Egress Rewriters and supersede their edits
-/// to the blocks they write: a Rewriter removes a bundle's Bundle Age and
-/// its Hop Count, and the transmitted bundle carries both again, as this
-/// hop writes them.
+// The per-hop writes follow the Egress Rewriters and supersede their edits
+// to the blocks they write: a Rewriter removes a bundle's Bundle Age and
+// its Hop Count, and the transmitted bundle carries both again, as this
+// hop writes them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn per_hop_writes_supersede_an_egress_rewriter() {
     let removed = Arc::new(Mutex::new(Vec::new()));
@@ -809,9 +809,9 @@ fn reception_and_deletion_requested() -> BundleFlags {
     }
 }
 
-/// Ingress `Drop(Some(reason))`: disposed of at the pre-drain gate — the
-/// arrival is never stored — with one combined reception + deletion report
-/// carrying the filter's reason.
+// Ingress `Drop(Some(reason))`: disposed of at the pre-drain gate — the
+// arrival is never stored — with one combined reception + deletion report
+// carrying the filter's reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_drop_with_a_reason_reports_before_storing() {
     let (bpa, cla, forwarded_rx, _dropped_rx, storage, _metadata) =
@@ -834,9 +834,9 @@ async fn ingress_drop_with_a_reason_reports_before_storing() {
     );
 }
 
-/// Ingress `Drop(None)`: no deletion assertion even though the bundle asks
-/// for one, but a requested reception report is still sent; the arrival is
-/// never stored.
+// Ingress `Drop(None)`: no deletion assertion even though the bundle asks
+// for one, but a requested reception report is still sent; the arrival is
+// never stored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_drop_without_a_reason_reports_reception_only() {
     let (bpa, cla, forwarded_rx, _dropped_rx, storage, _metadata) =
@@ -861,9 +861,9 @@ async fn ingress_drop_without_a_reason_reports_reception_only() {
     );
 }
 
-/// Originate `Drop(Some(reason))`: the reason returns to the sender as
-/// `services::Error::Dropped`; nothing is stored and no report is sent,
-/// though the send requested them.
+// Originate `Drop(Some(reason))`: the reason returns to the sender as
+// `services::Error::Dropped`; nothing is stored and no report is sent,
+// though the send requested them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originate_drop_with_a_reason_returns_it_to_the_sender() {
     let (bpa, _cla, forwarded_rx, _dropped_rx, storage, _metadata) =
@@ -884,8 +884,8 @@ async fn originate_drop_with_a_reason_returns_it_to_the_sender() {
     );
 }
 
-/// Originate `Drop(None)`: the sender gets `services::Error::Dropped(None)`;
-/// nothing is stored and no report is sent.
+// Originate `Drop(None)`: the sender gets `services::Error::Dropped(None)`;
+// nothing is stored and no report is sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originate_drop_without_a_reason_returns_none_to_the_sender() {
     let (bpa, _cla, forwarded_rx, _dropped_rx, storage, _metadata) =
@@ -906,9 +906,9 @@ async fn originate_drop_without_a_reason_returns_none_to_the_sender() {
     );
 }
 
-/// A slot an Ingress Classifier writes is persisted with the record and read
-/// by an Egress filter after the store checkpoint: the bundle parks for want
-/// of a route, so the Egress hook can only see what the store kept.
+// A slot an Ingress Classifier writes is persisted with the record and read
+// by an Egress filter after the store checkpoint: the bundle parks for want
+// of a route, so the Egress hook can only see what the store kept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_slot_reaches_egress_across_the_store() {
     let mut pack = FilterPack::new("test");
@@ -957,10 +957,10 @@ async fn ingress_slot_reaches_egress_across_the_store() {
     bpa.shutdown().await;
 }
 
-/// `report_on_failure`'s bit carried in the raw `unrecognised` mask is the
-/// flag it encodes: on an anonymous bundle the insert is refused like the
-/// named flag, and the bundle is delivered unedited — never the abort an
-/// unmasked encoder once produced.
+// `report_on_failure`'s bit carried in the raw `unrecognised` mask is the
+// flag it encodes: on an anonymous bundle the insert is refused like the
+// named flag, and the bundle is delivered unedited — never the abort an
+// unmasked encoder once produced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deliver_rewriter_meets_a_refusal_on_the_raw_report_bit() {
     let outcomes = Arc::new(Mutex::new(Vec::new()));
@@ -1007,9 +1007,9 @@ impl Verifier for PeekRecorder {
     }
 }
 
-/// A Deliver Verifier that declares a peek reads at least that much of the
-/// payload, held from the store before it runs, and the bundle then reaches
-/// its service.
+// A Deliver Verifier that declares a peek reads at least that much of the
+// payload, held from the store before it runs, and the bundle then reaches
+// its service.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deliver_verifier_reads_its_declared_peek() {
     let (peek_tx, peek_rx) = flume::unbounded();
@@ -1075,9 +1075,9 @@ async fn expecting_setup(inserting: bool) -> (Bpa, Arc<CapturingCla>, flume::Rec
     (bpa, cla, dropped_rx)
 }
 
-/// A Deliver Rewriter's insert reaches the Deliver Verifier after it, which
-/// reads the block back through its reader, and the raw service receives
-/// the rebuilt bundle with the block in it.
+// A Deliver Rewriter's insert reaches the Deliver Verifier after it, which
+// reads the block back through its reader, and the raw service receives
+// the rebuilt bundle with the block in it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deliver_rewriters_insert_reaches_the_verifier_and_the_service() {
     let (bpa, cla, dropped_rx) = expecting_setup(true).await;
@@ -1093,8 +1093,8 @@ async fn a_deliver_rewriters_insert_reaches_the_verifier_and_the_service() {
     assert!(dropped_rx.is_empty(), "the Verifier read the insert");
 }
 
-/// Without the Rewriter the same Verifier drops the bundle: the drop is the
-/// Verifier's verdict, not an artefact of the rebuild.
+// Without the Rewriter the same Verifier drops the bundle: the drop is the
+// Verifier's verdict, not an artefact of the rebuild.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deliver_verifier_drops_what_no_rewriter_inserted() {
     let (bpa, cla, dropped_rx) = expecting_setup(false).await;
@@ -1131,10 +1131,10 @@ impl Receiver<Segment> for Segments {
     }
 }
 
-/// The Ingress chain reads the payload whenever its body is resident at the
-/// header pass, its CRC checked or not: a bundle that arrived whole shows it,
-/// as does one whose CRC is still to come, while one whose body is cut short
-/// reads as not resident.
+// The Ingress chain reads the payload whenever its body is resident at the
+// header pass, its CRC checked or not: a bundle that arrived whole shows it,
+// as does one whose CRC is still to come, while one whose body is cut short
+// reads as not resident.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_reads_the_payload_whenever_resident() {
     let (available_tx, available_rx) = flume::unbounded();
@@ -1299,9 +1299,9 @@ async fn peek_through(
     arrive_peeked(cla, peek_rx, forwarded_rx, data, &mut peek_segments(data)).await
 }
 
-/// An Ingress Classifier reads the payload's first bytes through its declared
-/// peek: the gate holds them though the payload is still arriving. With no
-/// peek declared, the gate holds none of it.
+// An Ingress Classifier reads the payload's first bytes through its declared
+// peek: the gate holds them though the payload is still arriving. With no
+// peek declared, the gate holds none of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_ingress_classifier_reads_its_declared_peek() {
     let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
@@ -1348,8 +1348,8 @@ async fn an_ingress_classifier_reads_its_declared_peek() {
     }
 }
 
-/// Each input hook holds its own peek: an Originate registration's peek
-/// leaves the Ingress gate holding nothing past the payload block's header.
+// Each input hook holds its own peek: an Originate registration's peek
+// leaves the Ingress gate holding nothing past the payload block's header.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_originate_peek_holds_nothing_at_ingress() {
     let (_, data) = Builder::new(SOURCE.parse().unwrap(), REMOTE.parse().unwrap())
@@ -1372,8 +1372,8 @@ async fn an_originate_peek_holds_nothing_at_ingress() {
     bpa.shutdown().await;
 }
 
-/// A fragment past the payload's start has no peek, as its bytes are not the
-/// payload's prefix; the first fragment's peek is the payload's first bytes.
+// A fragment past the payload's start has no peek, as its bytes are not the
+// payload's prefix; the first fragment's peek is the payload's first bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_a_first_fragment_has_a_peek() {
     use hardy_bpv7::{
@@ -1414,9 +1414,9 @@ async fn only_a_first_fragment_has_a_peek() {
     }
 }
 
-/// A payload BIB the header pass defers is fed the held peek: the bytes the
-/// peek holds are body bytes the verifier has not yet seen, and the bundle
-/// forwards only if it verifies over them and the streamed rest.
+// A payload BIB the header pass defers is fed the held peek: the bytes the
+// peek holds are body bytes the verifier has not yet seen, and the bundle
+// forwards only if it verifies over them and the streamed rest.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_held_peek_reaches_the_deferred_payload_bib() {
@@ -1489,7 +1489,7 @@ async fn a_held_peek_reaches_the_deferred_payload_bib() {
     bpa.shutdown().await;
 }
 
-/// A BCB-covered payload has no peek: no filter reads an encrypted payload.
+// A BCB-covered payload has no peek: no filter reads an encrypted payload.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_encrypted_payload_has_no_peek() {
@@ -1540,10 +1540,10 @@ async fn an_encrypted_payload_has_no_peek() {
     bpa.shutdown().await;
 }
 
-/// The Originate chain reads the payload whenever its body is resident at
-/// the header pass, as the Ingress chain does: a raw bundle sent whole shows
-/// it, as does one whose CRC is still to come, while one whose body is cut
-/// short reads as not resident.
+// The Originate chain reads the payload whenever its body is resident at
+// the header pass, as the Ingress chain does: a raw bundle sent whole shows
+// it, as does one whose CRC is still to come, while one whose body is cut
+// short reads as not resident.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originate_reads_the_payload_whenever_resident() {
     let (available_tx, available_rx) = flume::unbounded();
@@ -1592,9 +1592,9 @@ async fn originate_reads_the_payload_whenever_resident() {
     bpa.shutdown().await;
 }
 
-/// An Originate Classifier reads the payload's first bytes through its
-/// declared peek at the raw door, as at the Ingress gate: the door holds them
-/// though the payload is still arriving. With no peek declared, it holds none.
+// An Originate Classifier reads the payload's first bytes through its
+// declared peek at the raw door, as at the Ingress gate: the door holds them
+// though the payload is still arriving. With no peek declared, it holds none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_originate_classifier_reads_its_declared_peek() {
     let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
@@ -1654,10 +1654,10 @@ async fn an_originate_classifier_reads_its_declared_peek() {
     }
 }
 
-/// An Originate Classifier reads its declared peek at the ADU doors too: the
-/// streamed door holds the app's first payload bytes before the gate, and the
-/// resident door's payload is a one-segment stream. The bytes are the app's
-/// own plaintext, which the Originate chain may read.
+// An Originate Classifier reads its declared peek at the ADU doors too: the
+// streamed door holds the app's first payload bytes before the gate, and the
+// resident door's payload is a one-segment stream. The bytes are the app's
+// own plaintext, which the Originate chain may read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_adu_doors_hold_the_declared_peek() {
     let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();

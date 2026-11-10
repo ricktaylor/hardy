@@ -182,9 +182,9 @@ fn covered_block_decrypts_once_and_lends() {
     );
 }
 
-/// A reader seeded with an earlier pass's outcomes over the same parse
-/// decrypts none of them again: a seeded plaintext lends without a key
-/// lookup, and the reader hands it back for the pass after.
+// A reader seeded with an earlier pass's outcomes over the same parse
+// decrypts none of them again: a seeded plaintext lends without a key
+// lookup, and the reader hands it back for the pass after.
 #[test]
 fn seeded_plaintext_is_never_decrypted_again() {
     let key = enc_key();
@@ -221,8 +221,8 @@ fn seeded_plaintext_is_never_decrypted_again() {
     );
 }
 
-/// A seeded failure replays through the lending door without another
-/// decrypt, and is handed back as a failure.
+// A seeded failure replays through the lending door without another
+// decrypt, and is handed back as a failure.
 #[test]
 fn seeded_failure_is_never_decrypted_again() {
     let key = enc_key();

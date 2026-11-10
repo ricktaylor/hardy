@@ -43,8 +43,8 @@ fn found_targets(facts: &checks::Facts, checked: Checked) -> Vec<u64> {
     targets
 }
 
-/// Adapter: drive the public `parse::parse` and expose the legacy 4-tuple
-/// shape the pipeline tests are written against.
+// Adapter: drive the public `parse::parse` and expose the legacy 4-tuple
+// shape the pipeline tests are written against.
 #[allow(clippy::type_complexity)]
 fn raw_parse_tuple(
     data: Bytes,

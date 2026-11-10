@@ -374,8 +374,8 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 // INT-BPA-01: App-to-CLA Routing
 // ---------------------------------------------------------------------------
 
-/// A locally-originated bundle addressed to a remote node is forwarded
-/// to the correct CLA peer.
+// A locally-originated bundle addressed to a remote node is forwarded
+// to the correct CLA peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_to_cla_routing() {
     let bpa = Bpa::builder().build().await.unwrap();
@@ -2709,9 +2709,9 @@ fn with_deletable_unknown(base: &Bytes) -> Bytes {
     Bytes::from(modified)
 }
 
-/// Records whether it was handed a block scheduled for removal (type 999),
-/// then inserts a block of its own, which the editor numbers from the lowest
-/// free block number — the removed block's, when the removal came first.
+// Records whether it was handed a block scheduled for removal (type 999),
+// then inserts a block of its own, which the editor numbers from the lowest
+// free block number — the removed block's, when the removal came first.
 struct ScheduledBlockObserver {
     saw_scheduled: Arc<AtomicBool>,
 }
@@ -2756,10 +2756,10 @@ fn assert_insert_survives(data: Bytes) {
     assert_eq!(inserted.payload(&out.data), Some(emit(&42u64).0.as_slice()));
 }
 
-/// The scheduled removals, applied before the bundle is stored, precede the
-/// Egress chain: a Rewriter never sees a block scheduled for removal, and
-/// the block it inserts travels, where a removal applied after it could
-/// delete an insert that took the removed block's number.
+// The scheduled removals, applied before the bundle is stored, precede the
+// Egress chain: a Rewriter never sees a block scheduled for removal, and
+// the block it inserts travels, where a removal applied after it could
+// delete an insert that took the removed block's number.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scheduled_removal_precedes_the_egress_rewriters() {
     let saw_scheduled = Arc::new(AtomicBool::new(false));
@@ -2841,10 +2841,10 @@ async fn scheduled_removal_precedes_the_egress_rewriters() {
     bpa.shutdown().await;
 }
 
-/// The Deliver twin: the scheduled removals, applied before the bundle is
-/// stored, precede the Deliver chain, so a Deliver Rewriter never sees a
-/// block scheduled for removal, and the raw-bundle service receives its
-/// insert.
+// The Deliver twin: the scheduled removals, applied before the bundle is
+// stored, precede the Deliver chain, so a Deliver Rewriter never sees a
+// block scheduled for removal, and the raw-bundle service receives its
+// insert.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scheduled_removal_precedes_the_deliver_chain() {
     let saw_scheduled = Arc::new(AtomicBool::new(false));
@@ -2920,8 +2920,8 @@ async fn scheduled_removal_precedes_the_deliver_chain() {
 // INT-BPA-02: Echo Round-Trip
 // ---------------------------------------------------------------------------
 
-/// A bundle dispatched via CLA to the echo service is reflected back
-/// and forwarded out via the CLA with source/destination swapped.
+// A bundle dispatched via CLA to the echo service is reflected back
+// and forwarded out via the CLA with source/destination swapped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn echo_round_trip() {
     let node_id = IpnNodeId {
@@ -3065,9 +3065,9 @@ async fn streamed_originate_setup_with(
     (bpa, svc, forwarded_rx, "ipn:0.1.7".parse().unwrap())
 }
 
-/// A bundle streamed through `ServiceSink::send` in several segments
-/// originates identically to a whole-buffer `send`: the returned id matches
-/// the built bundle, and the bundle is forwarded to the CLA peer.
+// A bundle streamed through `ServiceSink::send` in several segments
+// originates identically to a whole-buffer `send`: the returned id matches
+// the built bundle, and the bundle is forwarded to the CLA peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_originate_forwards() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -3113,8 +3113,8 @@ async fn service_streamed_originate_forwards() {
     bpa.shutdown().await;
 }
 
-/// Dropping the producer before `Final` cancels the send: the caller gets
-/// `StreamCancelled` and nothing enters custody (nothing is forwarded).
+// Dropping the producer before `Final` cancels the send: the caller gets
+// `StreamCancelled` and nothing enters custody (nothing is forwarded).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_cancel_stores_nothing() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -3149,9 +3149,9 @@ async fn service_streamed_cancel_stores_nothing() {
     bpa.shutdown().await;
 }
 
-/// Unregistering a service wakes its in-flight sends immediately: a consumer
-/// parked behind a stalled producer fails with `StreamCancelled` the moment
-/// the registration dies, without waiting for the producer's next segment.
+// Unregistering a service wakes its in-flight sends immediately: a consumer
+// parked behind a stalled producer fails with `StreamCancelled` the moment
+// the registration dies, without waiting for the producer's next segment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_unregister_cancels_parked_send() {
     let (bpa, svc, _forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -3191,9 +3191,9 @@ async fn service_unregister_cancels_parked_send() {
     bpa.shutdown().await;
 }
 
-/// The raw service door carries a bundle as its service built it: a block
-/// CLA ingress would remove is the receiving nodes' to handle by its flags,
-/// so it is stored and forwarded.
+// The raw service door carries a bundle as its service built it: a block
+// CLA ingress would remove is the receiving nodes' to handle by its flags,
+// so it is stored and forwarded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originate_raw_carries_the_bundle_as_built() {
     let (saved, saved_rx) = SavedBundles::new();
@@ -3236,8 +3236,8 @@ async fn originate_raw_carries_the_bundle_as_built() {
     bpa.shutdown().await;
 }
 
-/// The source-spoof check holds on the streamed path: a bundle whose source
-/// is not the registered service endpoint is rejected.
+// The source-spoof check holds on the streamed path: a bundle whose source
+// is not the registered service endpoint is rejected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_send_rejects_spoofed_source() {
     let (bpa, svc, _forwarded_rx, _source_eid) = streamed_originate_setup().await;
@@ -3294,8 +3294,8 @@ async fn originate_raw_and_forward(
     parse(forwarded).expect("the forwarded bundle parses")
 }
 
-/// Origination is not a hop: a bundle this node originates leaves with the
-/// Hop Count it was built with, and the next node makes the first increment.
+// Origination is not a hop: a bundle this node originates leaves with the
+// Hop Count it was built with, and the next node makes the first increment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originated_bundle_leaves_with_its_built_hop_count() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -3323,9 +3323,9 @@ async fn originated_bundle_leaves_with_its_built_hop_count() {
     bpa.shutdown().await;
 }
 
-/// Origination refuses a Hop Count block a BCB covers: this node's egress
-/// rewrites the block at once, so no security operation on it could reach
-/// its acceptor.
+// Origination refuses a Hop Count block a BCB covers: this node's egress
+// rewrites the block at once, so no security operation on it could reach
+// its acceptor.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_send_refuses_a_protected_hop_count() {
@@ -3378,8 +3378,8 @@ async fn service_streamed_send_refuses_a_protected_hop_count() {
     bpa.shutdown().await;
 }
 
-/// Origination refuses a Previous Node block: an originated bundle has no
-/// previous node (RFC 9171 §4.4.1).
+// Origination refuses a Previous Node block: an originated bundle has no
+// previous node (RFC 9171 §4.4.1).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_send_refuses_a_previous_node() {
     let (bpa, svc, _forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -3404,8 +3404,8 @@ async fn service_streamed_send_refuses_a_previous_node() {
 // INT-BPA-03: Local Delivery
 // ---------------------------------------------------------------------------
 
-/// A bundle dispatched via CLA addressed to a local application is
-/// delivered to that application's on_deliver callback.
+// A bundle dispatched via CLA addressed to a local application is
+// delivered to that application's on_deliver callback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_delivery() {
     let node_id = IpnNodeId {
@@ -3834,9 +3834,9 @@ async fn a_destination_reports_an_unknown_security_operation_it_accepts() {
 // INT-BPA-12: Streamed CLA ingress
 // ---------------------------------------------------------------------------
 
-/// A bundle dispatched through `Sink::dispatch` in several segments
-/// ingresses identically to the whole-buffer `dispatch`: the reassembled
-/// bundle reaches its local application.
+// A bundle dispatched through `Sink::dispatch` in several segments
+// ingresses identically to the whole-buffer `dispatch`: the reassembled
+// bundle reaches its local application.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_streamed_ingress_delivers() {
     let node_id = IpnNodeId {
@@ -3907,9 +3907,9 @@ async fn cla_streamed_ingress_delivers() {
     bpa.shutdown().await;
 }
 
-/// Unregistering a CLA wakes its in-flight streams immediately: a consumer
-/// parked behind a stalled producer fails with `StreamCancelled` the moment
-/// the registration dies, without waiting for the producer's next segment.
+// Unregistering a CLA wakes its in-flight streams immediately: a consumer
+// parked behind a stalled producer fails with `StreamCancelled` the moment
+// the registration dies, without waiting for the producer's next segment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_unregister_cancels_parked_stream() {
     let node_id = IpnNodeId {
@@ -3969,9 +3969,9 @@ async fn cla_unregister_cancels_parked_stream() {
     bpa.shutdown().await;
 }
 
-/// A producer that dies before `Final` is a truncation: the sink refuses
-/// acceptance (so a CLA withholds its transfer ack) and nothing is
-/// delivered.
+// A producer that dies before `Final` is a truncation: the sink refuses
+// acceptance (so a CLA withholds its transfer ack) and nothing is
+// delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_streamed_ingress_truncation_is_refused() {
     let node_id = IpnNodeId {
@@ -4077,9 +4077,9 @@ async fn dispatch_abandoned(cla: &PipelineCla, segments: Vec<Segment>) -> cla::A
         .unwrap()
 }
 
-/// A whole bundle sent in `Segment::Next` whose producer then dies before
-/// `Final` is an abandoned transfer: the sink refuses it (so a CLA withholds
-/// its transfer ack) and nothing is delivered.
+// A whole bundle sent in `Segment::Next` whose producer then dies before
+// `Final` is an abandoned transfer: the sink refuses it (so a CLA withholds
+// its transfer ack) and nothing is delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_complete_at_head_without_final_is_refused() {
     let (bpa, _app, app_rx, cla) = abandoned_transfer_setup().await;
@@ -4098,9 +4098,9 @@ async fn cla_complete_at_head_without_final_is_refused() {
     assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
 }
 
-/// The same for a bundle segmented past its outer break: the
-/// producer dies after the last byte but before `Final`, and the sink refuses
-/// the transfer.
+// The same for a bundle segmented past its outer break: the
+// producer dies after the last byte but before `Final`, and the sink refuses
+// the transfer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_segmented_without_final_is_refused() {
     let (bpa, _app, app_rx, cla) = abandoned_transfer_setup().await;
@@ -5671,8 +5671,8 @@ async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
 // PERF-01: Throughput (REQ-13: >1000 bundles/sec)
 // ---------------------------------------------------------------------------
 
-/// Measures bundle forwarding throughput through the BPA pipeline.
-/// Dispatches bundles via CLA, routes to a peer, signals on the other side.
+// Measures bundle forwarding throughput through the BPA pipeline.
+// Dispatches bundles via CLA, routes to a peer, signals on the other side.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn throughput() {
     print_system_info();
@@ -5778,8 +5778,8 @@ async fn throughput() {
 // PERF-LAT-01: Forwarding Latency
 // ---------------------------------------------------------------------------
 
-/// Measures per-bundle forwarding latency through the BPA pipeline.
-/// Unidirectional: CLA dispatch → BPA route → CLA forward.
+// Measures per-bundle forwarding latency through the BPA pipeline.
+// Unidirectional: CLA dispatch → BPA route → CLA forward.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forwarding_latency() {
     print_system_info();
@@ -5888,11 +5888,11 @@ async fn forwarding_latency() {
 // The block type the extent-checking Rewriter inserts.
 const INSERTED: Type = Type::Unrecognised(200);
 
-/// Records any divergence between the Bundle's block extents and the wire
-/// data it is handed alongside, observed through the reader's extent-based
-/// block access: a stale block map over the bytes reads back shifted
-/// garbage. Then inserts a block, shifting the payload extent the per-hop
-/// rewrite works over next.
+// Records any divergence between the Bundle's block extents and the wire
+// data it is handed alongside, observed through the reader's extent-based
+// block access: a stale block map over the bytes reads back shifted
+// garbage. Then inserts a block, shifting the payload extent the per-hop
+// rewrite works over next.
 struct ExtentCheckRewriter {
     mismatch: Arc<Mutex<Option<String>>>,
 }
@@ -5925,10 +5925,10 @@ impl Rewriter for ExtentCheckRewriter {
     }
 }
 
-/// The Egress Rewriters see the stored (bundle, data) pair consistently, and
-/// hand the per-hop rewrite a consistent rewritten pair: the transmitted
-/// bundle carries the Rewriter's insert, this node's Previous Node and the
-/// payload, each decoding from its own extent.
+// The Egress Rewriters see the stored (bundle, data) pair consistently, and
+// hand the per-hop rewrite a consistent rewritten pair: the transmitted
+// bundle carries the Rewriter's insert, this node's Previous Node and the
+// payload, each decoding from its own extent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_filter_sees_consistent_extents() {
     let mismatch = Arc::new(Mutex::new(None));
@@ -6035,9 +6035,9 @@ async fn egress_filter_sees_consistent_extents() {
     bpa.shutdown().await;
 }
 
-/// Keys traffic for the unrouted ipn:0.3 node onto ipn:0.2.1 — the
-/// SR-shaped per-bundle override, honouring the skip-self discipline by
-/// keying only a foreign destination.
+// Keys traffic for the unrouted ipn:0.3 node onto ipn:0.2.1 — the
+// SR-shaped per-bundle override, honouring the skip-self discipline by
+// keying only a foreign destination.
 struct KeyingClassifier;
 
 impl Classifier for KeyingClassifier {
@@ -6052,10 +6052,10 @@ impl Classifier for KeyingClassifier {
     }
 }
 
-/// A Classifier-written route_key persists in the record's metadata and
-/// drives the RIB lookup: a bundle whose destination has no route forwards
-/// via the route for its key. Without the key threading the bundle parks
-/// Waiting forever, so the forward event is the proof.
+// A Classifier-written route_key persists in the record's metadata and
+// drives the RIB lookup: a bundle whose destination has no route forwards
+// via the route for its key. Without the key threading the bundle parks
+// Waiting forever, so the forward event is the proof.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn classifier_route_key_drives_the_lookup() {
     let mut pack = FilterPack::new("test");
@@ -6115,8 +6115,8 @@ async fn classifier_route_key_drives_the_lookup() {
     bpa.shutdown().await;
 }
 
-/// Keys traffic for the unregistered local service ipn:0.1.77 onto
-/// ipn:0.2.1: a foreign key for a local destination.
+// Keys traffic for the unregistered local service ipn:0.1.77 onto
+// ipn:0.2.1: a foreign key for a local destination.
 struct LocalKeyingClassifier;
 
 impl Classifier for LocalKeyingClassifier {
@@ -6214,9 +6214,9 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
 
 struct FailingApp {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
-    /// Fires once on_deliver completes (after constructing the Err), so a
-    /// waiter observes the point at which the dispatcher's Err-handling
-    /// branch is about to run rather than the point at which it started.
+    // Fires once on_deliver completes (after constructing the Err), so a
+    // waiter observes the point at which the dispatcher's Err-handling
+    // branch is about to run rather than the point at which it started.
     completed_tx: flume::Sender<()>,
 }
 
@@ -6269,12 +6269,12 @@ impl services::Application for FailingApp {
 // INT-BPA-05: dispatcher tolerates on_deliver returning Err
 // ---------------------------------------------------------------------------
 
-/// When `on_deliver` returns `Err`, the dispatcher must preserve the bundle
-/// as `WaitingForService`, not report it delivered and delete it. Proven
-/// end-to-end: after the failing receiver rejects the bundle, a fresh working
-/// receiver registered on the same service id must have it re-delivered. A
-/// regression to the old drop-on-error behaviour makes the re-delivery time
-/// out.
+// When `on_deliver` returns `Err`, the dispatcher must preserve the bundle
+// as `WaitingForService`, not report it delivered and delete it. Proven
+// end-to-end: after the failing receiver rejects the bundle, a fresh working
+// receiver registered on the same service id must have it re-delivered. A
+// regression to the old drop-on-error behaviour makes the re-delivery time
+// out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatcher_handles_on_deliver_err() {
     let bpa = Bpa::builder().build().await.unwrap();
@@ -6462,9 +6462,9 @@ async fn expect_no_offer(rx: &flume::Receiver<Id>) {
 // INT-BPA-07: deferred outcome — Failed re-enters dispatch per-bundle
 // ---------------------------------------------------------------------------
 
-/// A transfer answered `Accepted` whose outcome is reported `Failed` gets a
-/// fresh routing decision and is re-offered to the CLA; the bundle is never
-/// dropped.
+// A transfer answered `Accepted` whose outcome is reported `Failed` gets a
+// fresh routing decision and is re-offered to the CLA; the bundle is never
+// dropped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_failed_redispatches() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
@@ -6503,9 +6503,9 @@ async fn deferred_outcome_failed_redispatches() {
 // INT-BPA-08: deferred outcome — Completed resolves the transfer
 // ---------------------------------------------------------------------------
 
-/// A transfer answered `Accepted` whose outcome is reported `Completed` is
-/// complete: no re-offer, a late duplicate outcome is ignored, and a
-/// re-arrival of the same bundle is dropped as a duplicate.
+// A transfer answered `Accepted` whose outcome is reported `Completed` is
+// complete: no re-offer, a late duplicate outcome is ignored, and a
+// re-arrival of the same bundle is dropped as a duplicate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_completed_resolves() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
@@ -6551,9 +6551,9 @@ async fn deferred_outcome_completed_resolves() {
 // INT-BPA-09: deferred outcome — peer removal resolves outcome-unknown
 // ---------------------------------------------------------------------------
 
-/// Removing the peer while a transfer awaits its outcome resolves it as
-/// outcome-unknown: the bundle returns to Waiting and is re-offered when the
-/// peer comes back.
+// Removing the peer while a transfer awaits its outcome resolves it as
+// outcome-unknown: the bundle returns to Waiting and is re-offered when the
+// peer comes back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_peer_removal_resolves_unknown() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
@@ -6601,9 +6601,9 @@ async fn deferred_outcome_peer_removal_resolves_unknown() {
 // INT-BPA-10: deferred outcome — only the owning CLA may resolve a transfer
 // ---------------------------------------------------------------------------
 
-/// An outcome reported by a CLA that does not own the transfer's peer is
-/// ignored; the owning CLA's subsequent outcome is still honoured. Outcomes
-/// for unknown bundles are ignored without error.
+// An outcome reported by a CLA that does not own the transfer's peer is
+// ignored; the owning CLA's subsequent outcome is still honoured. Outcomes
+// for unknown bundles are ignored without error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_ignores_wrong_cla() {
     let (bpa, cla_a, offers_a) = deferring_setup(1, 2).await;
@@ -6756,11 +6756,11 @@ impl cla::Cla for BlockingCla {
     }
 }
 
-/// A route event that lands while a transfer is in flight is not missed:
-/// the event's poll cannot see the bundle (claimed ForwardAckPending), but
-/// the synchronous failure's park re-checks the routing snapshot captured
-/// when the flight began and re-enters dispatch — the only path to the
-/// second offer, since no further route events occur.
+// A route event that lands while a transfer is in flight is not missed:
+// the event's poll cannot see the bundle (claimed ForwardAckPending), but
+// the synchronous failure's park re-checks the routing snapshot captured
+// when the flight began and re-enters dispatch — the only path to the
+// second offer, since no further route events occur.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_park_recheck_redispatches() {
     let bpa = Bpa::builder().build().await.unwrap();
@@ -6840,16 +6840,16 @@ async fn forward_failure_park_recheck_redispatches() {
     bpa.shutdown().await;
 }
 
-/// A synchronous forward failure must not resurrect a bundle that was
-/// resolved while its transfer was in flight: the failure's Waiting park is
-/// conditional and loses against the terminal claim.
+// A synchronous forward failure must not resurrect a bundle that was
+// resolved while its transfer was in flight: the failure's Waiting park is
+// conditional and loses against the terminal claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_never_resurrects_resolved_bundle() {
     assert_failure_never_resurrects(transfer_failed).await;
 }
 
-/// A cancelled transfer does not resurrect a bundle that was resolved while
-/// it was in flight.
+// A cancelled transfer does not resurrect a bundle that was resolved while
+// it was in flight.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_transfer_never_resurrects_resolved_bundle() {
     assert_failure_never_resurrects(|| cla::Error::StreamCancelled).await;
@@ -6965,10 +6965,10 @@ async fn assert_failure_never_resurrects(failure: fn() -> cla::Error) {
     );
 }
 
-/// A cancellation's re-dispatch yields to a live status another resolver
-/// set while the transfer was in flight: with the peer's in-flight transfers
-/// reset to Waiting, the re-claim from the status in hand loses, and the
-/// bundle stays Waiting rather than being offered again.
+// A cancellation's re-dispatch yields to a live status another resolver
+// set while the transfer was in flight: with the peer's in-flight transfers
+// reset to Waiting, the re-claim from the status in hand loses, and the
+// bundle stays Waiting rather than being offered again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_transfer_yields_to_a_live_status_change() {
     let InFlight {
@@ -7005,7 +7005,7 @@ async fn cancelled_transfer_yields_to_a_live_status_change() {
 // The config-gated RFC 9171 validity checks at the pre-drain gate
 // ---------------------------------------------------------------------------
 
-/// Feeds `data` to the BPA through the CLA sink as one Final segment.
+// Feeds `data` to the BPA through the CLA sink as one Final segment.
 async fn dispatch_inbound(cla: &PipelineCla, data: Bytes) {
     let (tx, mut rx) = hardy_async::channel::bounded(1);
     let producer = tokio::spawn(async move {
@@ -7025,8 +7025,8 @@ async fn dispatch_inbound(cla: &PipelineCla, data: Bytes) {
     producer.await.unwrap();
 }
 
-/// Builds a strict-or-relaxed BPA around a local application at ipn:0.1.42,
-/// returning the delivery channel.
+// Builds a strict-or-relaxed BPA around a local application at ipn:0.1.42,
+// returning the delivery channel.
 async fn gate_fixture(
     configure: impl FnOnce(hardy_bpa::builder::BpaBuilder) -> hardy_bpa::builder::BpaBuilder,
 ) -> (Bpa, Arc<PipelineCla>, flume::Receiver<(Eid, Bytes)>) {
@@ -7079,8 +7079,8 @@ fn clockless_ageless_bundle() -> Bytes {
     Bytes::from(data)
 }
 
-/// RFC 9171 §4.3.1: with the default strict config, a primary block with
-/// neither CRC nor BIB coverage is rejected at the pre-drain gate.
+// RFC 9171 §4.3.1: with the default strict config, a primary block with
+// neither CRC nor BIB coverage is rejected at the pre-drain gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_rejects_unprotected_primary_block() {
     let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
@@ -7096,8 +7096,8 @@ async fn gate_rejects_unprotected_primary_block() {
     );
 }
 
-/// `primary_block_integrity(false)` relaxes the §4.3.1 check: the same
-/// bundle is admitted and delivered.
+// `primary_block_integrity(false)` relaxes the §4.3.1 check: the same
+// bundle is admitted and delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relaxed_gate_admits_unprotected_primary_block() {
     let (bpa, cla, app_rx) = gate_fixture(|b| b.primary_block_integrity(false)).await;
@@ -7115,8 +7115,8 @@ async fn relaxed_gate_admits_unprotected_primary_block() {
     bpa.shutdown().await;
 }
 
-/// RFC 9171 §4.4.2: a clockless bundle without a Bundle Age block is
-/// malformed, and its parse refuses it.
+// RFC 9171 §4.4.2: a clockless bundle without a Bundle Age block is
+// malformed, and its parse refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_clockless_bundle_without_age_is_refused() {
     let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
@@ -7508,8 +7508,8 @@ async fn early_route_drop_never_awaits_the_payload() {
     );
 }
 
-/// A routing agent that hands its sink to the test, which installs and
-/// withdraws routes at chosen moments.
+// A routing agent that hands its sink to the test, which installs and
+// withdraws routes at chosen moments.
 struct SinkAgent {
     sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
 }
@@ -7675,8 +7675,8 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
     assert!(old_rx.is_empty(), "the withdrawn route carries nothing");
 }
 
-/// An application whose status notifications block until the test releases
-/// them, announcing each as it begins.
+// An application whose status notifications block until the test releases
+// them, announcing each as it begins.
 struct BlockingNotifyApp {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
     entered_tx: flume::Sender<()>,
@@ -7806,12 +7806,12 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
 // error surface
 // ---------------------------------------------------------------------------
 
-/// Routing is decided at the originate door: a destination resolving to an
-/// explicit Drop route rejects the send before its payload is drained — the
-/// stream is left unconsumed and nothing spools. Unlike the CLA gate there
-/// is never a status report, report flags notwithstanding: the error return
-/// is the originator's notification, and even a reasonless (silent) Drop
-/// route surfaces as `Dropped(None)`.
+// Routing is decided at the originate door: a destination resolving to an
+// explicit Drop route rejects the send before its payload is drained — the
+// stream is left unconsumed and nothing spools. Unlike the CLA gate there
+// is never a status report, report flags notwithstanding: the error return
+// is the originator's notification, and even a reasonless (silent) Drop
+// route surfaces as `Dropped(None)`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originate_route_drop_never_awaits_the_payload() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -7933,12 +7933,12 @@ async fn adu_originate_refuses_a_zero_lifetime() {
     assert!(forwarded_rx.is_empty(), "nothing was admitted");
 }
 
-/// The raw door carries the validation the ADU door doesn't: hop-exhausted
-/// service bytes trip the lifetime/hop admission check, and the
-/// config-gated RFC 9171 validity checks (strict by default) now apply to
-/// raw sends at the same seat — each surfacing as `Dropped(reason)` to the
-/// caller, with nothing admitted. A clockless bundle without a Bundle Age
-/// block is malformed, and the parse refuses it as `InvalidBundle`.
+// The raw door carries the validation the ADU door doesn't: hop-exhausted
+// service bytes trip the lifetime/hop admission check, and the
+// config-gated RFC 9171 validity checks (strict by default) now apply to
+// raw sends at the same seat — each surfacing as `Dropped(reason)` to the
+// caller, with nothing admitted. A clockless bundle without a Bundle Age
+// block is malformed, and the parse refuses it as `InvalidBundle`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_applies_the_admission_gates() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -7991,10 +7991,10 @@ async fn raw_originate_applies_the_admission_gates() {
     assert!(forwarded_rx.is_empty(), "nothing was admitted");
 }
 
-/// A service-built fragment is rejected at the raw door: fragmentation is
-/// a forwarding-time action (RFC 9171 §5.8), so a source never emits
-/// fragments — the send surfaces `FragmentedBundle` and nothing is
-/// admitted.
+// A service-built fragment is rejected at the raw door: fragmentation is
+// a forwarding-time action (RFC 9171 §5.8), so a source never emits
+// fragments — the send surfaces `FragmentedBundle` and nothing is
+// admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_rejects_a_fragment() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -8028,9 +8028,9 @@ async fn raw_originate_rejects_a_fragment() {
     assert!(forwarded_rx.is_empty(), "the fragment must not be admitted");
 }
 
-/// A duplicate raw send surfaces `DuplicateBundle` to the caller — service
-/// bundles carry service-authored ids, so the door cannot retry for them —
-/// and the first copy is unaffected: forwarded exactly once.
+// A duplicate raw send surfaces `DuplicateBundle` to the caller — service
+// bundles carry service-authored ids, so the door cannot retry for them —
+// and the first copy is unaffected: forwarded exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_duplicate_surfaces_to_the_caller() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -8251,12 +8251,12 @@ async fn a_duplicate_after_a_restart_is_refused_at_the_insert() {
     );
 }
 
-/// An origination declaring more than `max_bundle_size` is refused before a
-/// byte spools, at both doors: the raw door from its headers' declared size
-/// (the header pass), the ADU door from its declared payload. Both payload
-/// sources park after their first segments, so a refusal returning at all
-/// proves the door never drained the payload, and each refusal reports a
-/// declared size rather than a count of bytes taken.
+// An origination declaring more than `max_bundle_size` is refused before a
+// byte spools, at both doors: the raw door from its headers' declared size
+// (the header pass), the ADU door from its declared payload. Both payload
+// sources park after their first segments, so a refusal returning at all
+// proves the door never drained the payload, and each refusal reports a
+// declared size rather than a count of bytes taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_originate_refuses_before_the_payload() {
     let node_ids = NodeIds::try_from(
@@ -8410,9 +8410,9 @@ async fn adu_originate_refuses_headers_over_the_cap() {
     bpa.shutdown().await;
 }
 
-/// A builder-configured CLA goes live at `start`, not at `build`: activation
-/// waits for storage recovery, so the quiescent-store contract covers the
-/// configuration path exactly as it covers dynamic registrations.
+// A builder-configured CLA goes live at `start`, not at `build`: activation
+// waits for storage recovery, so the quiescent-store contract covers the
+// configuration path exactly as it covers dynamic registrations.
 #[tokio::test]
 async fn configured_endpoints_activate_at_start() {
     struct ProbeCla {
@@ -8470,11 +8470,11 @@ async fn configured_endpoints_activate_at_start() {
 // The streamed ADU door: ApplicationSink::send_streamed
 // ---------------------------------------------------------------------------
 
-/// A payload streamed through `send_streamed` originates a bundle
-/// wire-equivalent to the whole-buffer `send` of the same payload: same
-/// source, destination, flags, and payload bytes (the ids differ only by
-/// creation timestamp), and the streamed form parses canonically — the CRC
-/// computed as the payload flowed is the CRC a resident build writes.
+// A payload streamed through `send_streamed` originates a bundle
+// wire-equivalent to the whole-buffer `send` of the same payload: same
+// source, destination, flags, and payload bytes (the ids differ only by
+// creation timestamp), and the streamed form parses canonically — the CRC
+// computed as the payload flowed is the CRC a resident build writes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_send_streamed_matches_whole_buffer_send() {
     let node_ids = NodeIds::try_from(
@@ -8595,8 +8595,8 @@ async fn app_send_streamed_matches_whole_buffer_send() {
     bpa.shutdown().await;
 }
 
-/// A producer that goes away before its final segment cancels the streamed
-/// ADU send: `StreamCancelled`, nothing originated.
+// A producer that goes away before its final segment cancels the streamed
+// ADU send: `StreamCancelled`, nothing originated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_send_streamed_producer_drop_cancels() {
     let node_ids = NodeIds::try_from(
@@ -8663,10 +8663,10 @@ async fn app_send_streamed_producer_drop_cancels() {
     );
 }
 
-/// The declared-length contract is enforced with nothing persisted: an
-/// over-delivering producer is rejected `PayloadTooLarge`, an
-/// under-delivering one `PayloadUnderrun`, each carrying the declared
-/// total.
+// The declared-length contract is enforced with nothing persisted: an
+// over-delivering producer is rejected `PayloadTooLarge`, an
+// under-delivering one `PayloadUnderrun`, each carrying the declared
+// total.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_send_streamed_enforces_the_declared_length() {
     let node_ids = NodeIds::try_from(
@@ -8770,9 +8770,9 @@ async fn app_send_streamed_enforces_the_declared_length() {
     assert!(forwarded_rx.is_empty(), "nothing was originated");
 }
 
-/// The trait's provided `send_streamed` buffers and delegates to `send`
-/// with the same error surface, so third-party sinks (the gRPC bridge
-/// included) get the streamed API without implementing it.
+// The trait's provided `send_streamed` buffers and delegates to `send`
+// with the same error surface, so third-party sinks (the gRPC bridge
+// included) get the streamed API without implementing it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_send_streamed_default_buffers_and_delegates() {
     struct RecordingSink(flume::Sender<Bytes>);

@@ -19,8 +19,8 @@ fn next_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-/// A minimal valid bpv7 bundle for storage fixtures: explicit identity and
-/// lifetime, defaults for the fields the storage layer never reads.
+// A minimal valid bpv7 bundle for storage fixtures: explicit identity and
+// lifetime, defaults for the fields the storage layer never reads.
 fn make_bpv7(id: Id, lifetime: Duration) -> Bpv7Bundle {
     Bpv7Bundle {
         primary: PrimaryBlock {
@@ -35,9 +35,9 @@ fn make_bpv7(id: Id, lifetime: Duration) -> Bpv7Bundle {
     }
 }
 
-/// Create a bundle received from a peer CLA, with every persisted metadata
-/// group populated: an `Origin::Ingress` provenance and decoded extension
-/// fields. Exercises the exact blob shape the SQL backends serialize.
+// Create a bundle received from a peer CLA, with every persisted metadata
+// group populated: an `Origin::Ingress` provenance and decoded extension
+// fields. Exercises the exact blob shape the SQL backends serialize.
 pub fn ingress_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
@@ -69,7 +69,7 @@ pub fn ingress_bundle() -> bundle::Bundle {
     }
 }
 
-/// Create a bundle with a unique ID, status `Waiting`, and a 1-hour lifetime.
+// Create a bundle with a unique ID, status `Waiting`, and a 1-hour lifetime.
 pub fn random_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
@@ -89,7 +89,7 @@ pub fn random_bundle() -> bundle::Bundle {
     }
 }
 
-/// Create a bundle with a specific status and received_at timestamp.
+// Create a bundle with a specific status and received_at timestamp.
 pub fn bundle_with_status(
     status: BundleStatus,
     received_at: time::OffsetDateTime,
@@ -112,10 +112,10 @@ pub fn bundle_with_status(
     }
 }
 
-/// Create a bundle with a controlled expiry.
-///
-/// Expiry = creation_time + lifetime.  We set the BPv7 creation timestamp
-/// to `creation_time` and use the given `lifetime`.
+// Create a bundle with a controlled expiry.
+//
+// Expiry = creation_time + lifetime.  We set the BPv7 creation timestamp
+// to `creation_time` and use the given `lifetime`.
 pub fn bundle_with_expiry(
     status: BundleStatus,
     creation_time: time::OffsetDateTime,
@@ -142,7 +142,7 @@ pub fn bundle_with_expiry(
     }
 }
 
-/// Create a bundle with fragment info and the given AduFragment status.
+// Create a bundle with fragment info and the given AduFragment status.
 pub fn bundle_with_fragment(
     status: BundleStatus,
     offset: u64,
@@ -169,7 +169,7 @@ pub fn bundle_with_fragment(
     }
 }
 
-/// Generate deterministic payload data of a given size.
+// Generate deterministic payload data of a given size.
 pub fn random_payload(size: usize) -> Bytes {
     let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
     Bytes::from(data)

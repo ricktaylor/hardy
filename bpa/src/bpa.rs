@@ -400,20 +400,20 @@ mod tests {
         stream::{Receiver, Segment, buffer_stream},
     };
 
-    /// How a [`FailingCla`] answers `forward`.
+    // How a [`FailingCla`] answers `forward`.
     enum Failure {
-        /// Every attempt fails with an internal error.
+        // Every attempt fails with an internal error.
         Always,
-        /// The first attempt is cancelled; every later one is buffered whole,
-        /// handed to `sent_tx`, and answered `Sent`.
+        // The first attempt is cancelled; every later one is buffered whole,
+        // handed to `sent_tx`, and answered `Sent`.
         CancelFirst {
             cancelled: AtomicBool,
             sent_tx: flume::Sender<Bytes>,
         },
     }
 
-    /// Answers every `forward` call as its [`Failure`] says, recording the
-    /// bundle each attempt was for.
+    // Answers every `forward` call as its [`Failure`] says, recording the
+    // bundle each attempt was for.
     struct FailingCla {
         sink: Once<Box<dyn cla::Sink>>,
         attempts_tx: flume::Sender<Id>,
@@ -455,7 +455,7 @@ mod tests {
         }
     }
 
-    /// Originates bundles; never has any delivered.
+    // Originates bundles; never has any delivered.
     struct SendOnlyApp {
         sink: Once<Box<dyn services::ApplicationSink>>,
     }
@@ -490,10 +490,10 @@ mod tests {
         }
     }
 
-    /// A started BPA forwarding through `cla` to its one peer, node 2, with a
-    /// send-only application on service 42. Each registration is a routing
-    /// change that wakes the Waiting poller, so the polls are let finish:
-    /// no routing event is pending when the fixture returns.
+    // A started BPA forwarding through `cla` to its one peer, node 2, with a
+    // send-only application on service 42. Each registration is a routing
+    // change that wakes the Waiting poller, so the polls are let finish:
+    // no routing event is pending when the fixture returns.
     async fn one_peer_bpa(cla: Arc<FailingCla>) -> (Bpa, Arc<SendOnlyApp>) {
         let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false).await;
@@ -520,10 +520,10 @@ mod tests {
         (bpa, app)
     }
 
-    /// A synchronous per-transfer failure parks only that bundle, with no
-    /// inline retry: a deterministic failure must not spin dispatch →
-    /// forward → fail, so exactly one attempt occurs until the next routing
-    /// or link event.
+    // A synchronous per-transfer failure parks only that bundle, with no
+    // inline retry: a deterministic failure must not spin dispatch →
+    // forward → fail, so exactly one attempt occurs until the next routing
+    // or link event.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_forward_does_not_retry_inline() {
         let (attempts_tx, attempts_rx) = flume::unbounded();
@@ -566,9 +566,9 @@ mod tests {
         );
     }
 
-    /// A cancelled transfer is a failed acceptance the bundle can retry: it
-    /// re-enters dispatch at once, with no routing or link event, and the
-    /// second offer sends it intact.
+    // A cancelled transfer is a failed acceptance the bundle can retry: it
+    // re-enters dispatch at once, with no routing or link event, and the
+    // second offer sends it intact.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_forward_redispatches_at_once() {
         let (attempts_tx, attempts_rx) = flume::unbounded();

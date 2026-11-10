@@ -42,11 +42,11 @@ fn raw_of(bytes: &[u8]) -> Bundle {
 // bpv7-tools' `cmd::parse_with_keys` / `block_data` / `verify_block`, kept
 // local to this test.
 
-/// Structural parse + keyed BPSec validation: §A, the composed keyed
-/// verification, then every BIB verified over the bundle as its destination
-/// reads it (every block's encryption removed with `keys`). Returns the
-/// parser-owned `Bytes` plus the bundle and decoded BPSec OperationSets of
-/// the structural parse. NoKey on a BIB is soft.
+// Structural parse + keyed BPSec validation: §A, the composed keyed
+// verification, then every BIB verified over the bundle as its destination
+// reads it (every block's encryption removed with `keys`). Returns the
+// parser-owned `Bytes` plus the bundle and decoded BPSec OperationSets of
+// the structural parse. NoKey on a BIB is soft.
 #[allow(clippy::type_complexity)]
 fn validate_with_keys(
     data: &[u8],
@@ -89,11 +89,11 @@ fn validate_with_keys(
     Ok((parsed.data, parsed.bundle, parsed.bcbs, parsed.bibs))
 }
 
-/// Per-block BIB verify. Returns `Ok(true)` when the block was
-/// BIB-covered and verified, `Ok(false)` when it had no BIB, and
-/// `Err(_)` for any verify failure (including `NoKey`). Handles
-/// BCB-encrypted targets transparently via `DecryptingReader`'s
-/// on-demand decryption — RFC 9172 §3.10 sign-before-encrypt.
+// Per-block BIB verify. Returns `Ok(true)` when the block was
+// BIB-covered and verified, `Ok(false)` when it had no BIB, and
+// `Err(_)` for any verify failure (including `NoKey`). Handles
+// BCB-encrypted targets transparently via `DecryptingReader`'s
+// on-demand decryption — RFC 9172 §3.10 sign-before-encrypt.
 fn verify_block(
     block_number: u64,
     blocks: &HashMap<u64, Block>,
@@ -135,7 +135,7 @@ fn verify_block(
     .map_err(hardy_bpv7::Error::InvalidBPSec)
 }
 
-/// Per-block plaintext: slice when unencrypted, BCB-decrypt when not.
+// Per-block plaintext: slice when unencrypted, BCB-decrypt when not.
 fn block_data<'a>(
     block_number: u64,
     blocks: &'a HashMap<u64, Block>,
@@ -2126,8 +2126,8 @@ fn plaintexts_of(
     }
 }
 
-/// Removing a block's encryption from plaintext an acceptor already holds
-/// writes the same bundle as decrypting it again.
+// Removing a block's encryption from plaintext an acceptor already holds
+// writes the same bundle as decrypting it again.
 #[test]
 fn removing_encryption_from_supplied_plaintext_matches_decrypting() {
     let (bytes, keys) = encrypted_payload(false);
@@ -2151,10 +2151,10 @@ fn removing_encryption_from_supplied_plaintext_matches_decrypting() {
     );
 }
 
-/// An acceptor of the BCB over a payload an encrypted BIB covers removes
-/// the BCB over the BIB with it, from plaintext it holds: the BIB is
-/// written in plaintext with its operation intact, and stripping the
-/// accepted operation removes it.
+// An acceptor of the BCB over a payload an encrypted BIB covers removes
+// the BCB over the BIB with it, from plaintext it holds: the BIB is
+// written in plaintext with its operation intact, and stripping the
+// accepted operation removes it.
 #[test]
 fn accepting_an_encrypted_bib_and_its_target_from_plaintext_strips_both() {
     let (bytes, keys) = encrypted_payload(true);
