@@ -62,6 +62,7 @@ impl Command {
             bundle: raw,
             bcbs: bcb_ops,
             bibs: bib_ops,
+            ..
         } = parse_with_keys(bundle_data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 

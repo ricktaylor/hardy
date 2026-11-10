@@ -420,7 +420,7 @@ impl<'a> Editor<'a> {
             self.bib_overrides
                 .get(&block_number)
                 .cloned()
-                .unwrap_or_else(|| block.bib.clone()),
+                .unwrap_or(block.bib),
             self.bcb_overrides
                 .get(&block_number)
                 .copied()
@@ -902,7 +902,7 @@ impl<'a> Editor<'a> {
                 // source bytes are ciphertext even after a strip.
                 let (bib, bcb) = self
                     .current_coverage(block_number)
-                    .unwrap_or_else(|| (block.bib.clone(), block.bcb));
+                    .unwrap_or((block.bib, block.bcb));
                 tmpl.block.bib = bib;
                 tmpl.block.bcb = bcb;
                 (false, tmpl)
@@ -1250,7 +1250,7 @@ impl<'a> Editor<'a> {
         // Apply security metadata overrides from Signer/Encryptor
         for (block_number, bib) in &self.bib_overrides {
             if let Some(block) = blocks_out.get_mut(block_number) {
-                block.bib = bib.clone();
+                block.bib = *bib;
             }
         }
         for (block_number, bcb) in &self.bcb_overrides {

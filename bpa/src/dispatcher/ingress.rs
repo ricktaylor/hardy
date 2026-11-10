@@ -518,10 +518,10 @@ impl Dispatcher {
         Some(Admitted { bundle, decision })
     }
 
-    // The config-gated RFC 9171 validity checks: policy requirements beyond
-    // structural validity, checked pre-drain — everything they read is
+    // The config-gated RFC 9171 validity check: a policy requirement beyond
+    // structural validity, checked pre-drain — everything it reads is
     // header material the keyed verify pass has already established. Both
-    // input doors apply them (the originate raw door at its own gate).
+    // input doors apply it (the originate raw door at its own gate).
     pub(super) fn rfc9171_gate_reason(&self, hv: &HeaderVerify) -> Option<ReasonCode> {
         // RFC 9171 §4.3.1: "A CRC SHALL be present in the primary block
         // unless the bundle includes a BPSec Block Integrity Block whose
@@ -534,16 +534,6 @@ impl Dispatcher {
         {
             debug!("Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)");
             return Some(ReasonCode::BlockUnintelligible);
-        }
-
-        // RFC 9171 §4.4.2: "If the bundle's creation time is zero, then the
-        // bundle MUST contain exactly one (1) occurrence of [Bundle Age]".
-        if self.bundle_age_required
-            && !hv.bundle.primary.id.timestamp.is_clocked()
-            && hv.extensions.age.is_none()
-        {
-            debug!("Rejecting bundle: no clock in creation timestamp and no Bundle Age block");
-            return Some(ReasonCode::LifetimeExpired);
         }
 
         None

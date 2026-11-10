@@ -858,6 +858,7 @@ fn a_failed_strip_leaves_the_block_in_place() {
         mut bundle,
         bcbs,
         mut bibs,
+        ..
     } = parse::parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
     let failed = checks::decrypt_and_validate_covered_bibs(
         &data,
@@ -1415,6 +1416,46 @@ fn extension_editor_reserves_primary_and_payload_targets() {
     // The type refuses, not the mechanism: the full Editor replaces the
     // payload under its owner semantics.
     ok(Editor::new(&bundle, &data).update_block(1));
+}
+
+// RFC 9171 §4.4.2: a bundle without a creation time keeps its Bundle Age
+// block, so its removal is refused with the parser's own error; a clocked
+// bundle's Bundle Age may go.
+#[test]
+fn extension_editor_keeps_a_required_bundle_age() {
+    for (timestamp, required) in [
+        (creation_timestamp::CreationTimestamp::default(), true),
+        (creation_timestamp::CreationTimestamp::now(), false),
+    ] {
+        let (_, data) =
+            builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .add_extension_block(block::Type::BundleAge)
+                .unwrap()
+                .build(emit(&300u64).0.into())
+                .with_payload("Hello".as_bytes().into())
+                .build(timestamp)
+                .unwrap();
+        let bundle = reparse(&data);
+        let (&age, _) = bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == block::Type::BundleAge)
+            .expect("the Bundle Age is present");
+
+        let mut editor = ExtensionEditor::new(&bundle, &data);
+        let removed = editor.remove(age);
+        if required {
+            assert!(matches!(
+                removed,
+                Err(extension_editor::Error::Invalid(
+                    Bpv7Error::MissingBundleAge
+                ))
+            ));
+            assert!(!editor.is_modified(), "a refusal is not an edit");
+        } else {
+            removed.expect("a clocked bundle's Bundle Age may be removed");
+        }
+    }
 }
 
 #[test]
@@ -2320,6 +2361,7 @@ fn insert_block_replace_refuses_a_verified_encrypted_bib() {
         mut bundle,
         bcbs,
         mut bibs,
+        ..
     } = parse::parse(Bytes::copy_from_slice(&encrypted_bytes)).expect("parse encrypted");
     // Decrypting the BIB is all it takes to learn its targets; the signing
     // key stays out, since KeySet serves the first key whose operations
@@ -2443,6 +2485,7 @@ fn remove_blocks_shrinks_and_reencrypts_a_shared_encrypted_bib() {
         mut bundle,
         bcbs,
         mut bibs,
+        ..
     } = parse::parse(Bytes::copy_from_slice(&out)).expect("parse the shrunk bundle");
     let mut decrypted = HashMap::new();
     let failed = checks::decrypt_and_validate_covered_bibs(

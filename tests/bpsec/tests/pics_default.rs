@@ -481,6 +481,7 @@ fn pics_2_6_acceptor_decrypt_then_verify_both() {
         bundle: mut raw,
         bcbs,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse");
 
     // Acceptor: confirm every protected target authenticates. This decrypts
@@ -636,6 +637,7 @@ fn pics_2_8_acceptor_decrypt_and_verify_interleaved() {
         bundle: mut raw,
         bcbs,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse");
 
     // Acceptor: confirm every protected target authenticates. This decrypts
@@ -945,6 +947,7 @@ fn pics_26_1_tampered_block_flags_must_fail() {
         bundle: mut raw,
         bcbs,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse succeeds");
 
     // MUST FAIL: BIB verification fails because payload block flags were tampered
@@ -1097,6 +1100,7 @@ fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
         bundle: mut raw,
         bcbs,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse succeeds");
     let mut decrypted = HashMap::new();
     let no_updates = HashMap::new();
@@ -1223,23 +1227,25 @@ fn pics_48_1_missing_required_bib_on_payload_must_fail() {
 
 #[test]
 fn pics_49_1_missing_required_bib_on_extension_removes_target() {
+    // The bundle has no creation time, so its Bundle Age block (2) must stay
+    // (RFC 9171 §4.4.2); the unprotected target is its Hop Count block (3).
     let incoming = hex_literal::hex!(
         "9F88070000820282010282028202018202820201820018281A000F4240850702000041"
-        "0085010100005823526561647920746F2067656E657261746520612033322D62797465"
-        "207061796C6F6164FF"
+        "00850A0300004482181E0085010100005823526561647920746F2067656E6572617465"
+        "20612033322D62797465207061796C6F6164FF"
     );
 
     let parsed =
         parse::parse(Bytes::copy_from_slice(&incoming)).expect("Should parse successfully");
 
     assert_eq!(
-        check_required_bib(&parsed.bundle, 2),
-        PolicyAction::RemoveBlock(2),
-        "Policy should remove bundle-age: no BIB on non-payload target"
+        check_required_bib(&parsed.bundle, 3),
+        PolicyAction::RemoveBlock(3),
+        "Policy should remove the hop count: no BIB on non-payload target"
     );
 
     let result = Editor::new(&parsed.bundle, &incoming)
-        .remove_block(2)
+        .remove_block(3)
         .map_err(|(_, e)| e)
         .unwrap()
         .rebuild()
@@ -1248,8 +1254,8 @@ fn pics_49_1_missing_required_bib_on_extension_removes_target() {
 
     let reparsed = parse::parse(Bytes::copy_from_slice(&result)).expect("Should re-parse");
     assert!(
-        !reparsed.bundle.blocks.contains_key(&2),
-        "Bundle-age block should have been removed"
+        !reparsed.bundle.blocks.contains_key(&3),
+        "Hop count block should have been removed"
     );
 }
 
@@ -1266,6 +1272,7 @@ fn pics_54_1_verifier_keeps_bib() {
         bundle: mut raw,
         bcbs,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse");
     let mut decrypted = HashMap::new();
     let no_updates = HashMap::new();

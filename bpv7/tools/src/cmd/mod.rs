@@ -185,6 +185,7 @@ pub(crate) fn full_rewrite(
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(data)?;
 
     // §A — classify; collect deletables.

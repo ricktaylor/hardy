@@ -29,6 +29,7 @@ fn parse_and_rewrite(
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(Bytes::copy_from_slice(data))?;
 
     // §A — classify (Unsupported errors propagate); collect deletables.

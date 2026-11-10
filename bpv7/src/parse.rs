@@ -2,9 +2,11 @@
 The streaming wire parser for BPv7 bundles ([RFC 9171]). [`BundleParser`]
 drives the structural decode incrementally; [`parse()`] is the one-shot
 convenience over it. Both yield a [`Parsed`] — the authoritative byte
-buffer, the structural [`Bundle`], and the decoded
-BPSec OperationSets. Keyed BPSec validation is layered on top by composing
-[`crate::checks`] and [`crate::rewrite`].
+buffer, the structural [`Bundle`], the decoded BPSec OperationSets, the
+values of the per-hop blocks and the classification of the blocks this node
+cannot process ([`Parsed::classification`], by their flags). Keyed BPSec
+validation is layered on top by composing [`crate::checks`] and
+[`crate::rewrite`].
 
 [RFC 9171]: https://www.rfc-editor.org/rfc/rfc9171.html
 */
@@ -12,10 +14,17 @@ BPSec OperationSets. Keyed BPSec validation is layered on top by composing
 use super::*;
 
 use bytes::{Bytes, BytesMut};
-use hardy_cbor::decode::{Error as CborError, Head, Marker, Untagged};
+use hardy_cbor::decode::{Error as CborError, Head, Marker, Untagged, parse_exact};
 use smallvec::SmallVec;
 
-use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock, reader::PlainReader};
+use crate::{
+    bundle_age::BundleAge,
+    eid::{Eid, NodeId},
+    error::CaptureFieldErr,
+    hop_info::HopInfo,
+    primary_block::PrimaryBlock,
+    reader::PlainReader,
+};
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
@@ -155,11 +164,50 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
     }
 }
 
+/// The blocks this node can't process, classified at the parser's tail
+/// into [`Parsed::classification`] by what the caller may do about them, and
+/// the deletion one of them may demand: `Type::Unrecognised` blocks (A1),
+/// BCBs with an unsupported security operation (A2), and plaintext BIBs with
+/// an unsupported security operation (A3). BCB-encrypted BIBs aren't visible
+/// here — their bodies are ciphertext; they surface once decrypted. Pure
+/// classification: the caller decides whether to honour the `*_deletable`
+/// lists.
+#[derive(Debug, Default)]
+pub struct Classification {
+    /// Unrecognised blocks flagged `delete_block_on_failure`. The caller
+    /// decides whether to honour the request (schedule them for removal).
+    pub unrecognised_deletable: SmallVec<[u64; 4]>,
+    /// Plaintext BIB blocks with an unrecognised security context, flagged
+    /// `delete_block_on_failure`. The caller decides whether to honour the
+    /// request (schedule them for removal). A plaintext BIB with an
+    /// unsupported security operation, listed here or not, is one the keyed
+    /// checks cannot check.
+    pub bib_deletable: SmallVec<[u64; 4]>,
+    /// At least one unrecognised (non-security) block had
+    /// `report_on_failure` set.
+    pub report_unsupported_block: bool,
+    /// At least one BCB/BIB carrying an unsupported security operation had
+    /// `report_on_failure` set.
+    pub report_unsupported_security: bool,
+    /// The bundle's deletion, where a block this node can't process sets
+    /// `delete_bundle_on_failure`: `Error::Unsupported(n)` for an A1 block,
+    /// or the error of the security block's first unsupported operation, such
+    /// as [`UnrecognisedContext`](bpsec::Error::UnrecognisedContext), for an
+    /// A2/A3 block, so the caller can tell the two kinds apart; an A1 block's
+    /// before an A2 block's before an A3 block's, and within a kind the
+    /// lowest-numbered such block's. The facts beside it are complete, so a caller
+    /// reporting the deletion still sees which blocks request a status
+    /// report: RFC 9171 §5.6 Step 4 reports, then deletes.
+    pub delete_bundle: Option<Error>,
+}
+
 /// A successfully-parsed [`Bundle`] paired with the authoritative
 /// `Bytes` buffer the parser owns (the source of truth that the
-/// returned `Bundle::blocks` extent/data offsets index into) and its
+/// returned `Bundle::blocks` extent/data offsets index into), its
 /// decoded BPSec OperationSet maps (BCBs and BIBs, keyed by block
-/// number). Returned by [`BundleParser::finish`] and [`parse()`].
+/// number), its [`PerHopFields`] and the classification of the blocks
+/// this node can't process ([`classification`](Self::classification)).
+/// Returned by [`BundleParser::finish`] and [`parse()`].
 ///
 /// Slice with `&parsed.data[block.payload_range()]` (or `block.extent`)
 /// using [`data`](Self::data) rather than a separate copy of the input —
@@ -176,6 +224,162 @@ pub struct Parsed {
     pub bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
     /// Decoded BIB OperationSets, keyed by BIB block number.
     pub bibs: HashMap<u64, bpsec::bib::OperationSet>,
+    /// The decoded per-hop blocks no BCB covers.
+    pub per_hop: PerHopFields,
+    /// The blocks this node can't process, classified by their flags at the
+    /// parser's tail, and the deletion one of them may demand
+    /// ([`Classification::delete_bundle`]), which the caller takes.
+    pub classification: Classification,
+}
+
+// §A: the classification of the blocks this node can't process, at the
+// parser's tail, the deletion verdict first-wins: an A1 block's before an
+// A2 block's before an A3 block's, and within a kind the lowest-numbered
+// such block's, so the verdict does not depend on the maps' iteration
+// order.
+fn classify(
+    blocks: &HashMap<u64, block::Block>,
+    bcbs: &HashMap<u64, bpsec::bcb::OperationSet>,
+    bibs: &HashMap<u64, bpsec::bib::OperationSet>,
+) -> Classification {
+    let mut out = Classification::default();
+    // The lowest-numbered block of the kind in hand that demands the
+    // bundle's deletion.
+    let lowest = |deletes: &mut Option<u64>, block_number: u64| {
+        *deletes = Some(deletes.map_or(block_number, |n| n.min(block_number)));
+    };
+
+    // A1 — unrecognised blocks.
+    let mut deletes = None;
+    for (&block_number, block) in blocks {
+        if !matches!(block.block_type, block::Type::Unrecognised(_)) {
+            continue;
+        }
+        if block.flags.report_on_failure {
+            out.report_unsupported_block = true;
+        }
+        if block.flags.delete_bundle_on_failure {
+            lowest(&mut deletes, block_number);
+        } else if block.flags.delete_block_on_failure {
+            out.unrecognised_deletable.push(block_number);
+        }
+    }
+    if let Some(block_number) = deletes {
+        out.delete_bundle = Some(Error::Unsupported(block_number));
+    }
+
+    // A2 — BCBs with an unsupported security operation.
+    let mut deletes = None;
+    for (&bcb_block_number, ops) in bcbs {
+        if ops.unsupported_error().is_none() {
+            continue;
+        }
+        let flags = &blocks
+            .get(&bcb_block_number)
+            .expect("the parse's BCB is in its blocks")
+            .flags;
+        if flags.report_on_failure {
+            out.report_unsupported_security = true;
+        }
+        if flags.delete_bundle_on_failure {
+            lowest(&mut deletes, bcb_block_number);
+        }
+    }
+    if out.delete_bundle.is_none()
+        && let Some(bcb_block_number) = deletes
+    {
+        out.delete_bundle = bcbs[&bcb_block_number].unsupported_error().map(Into::into);
+    }
+
+    // A3 — plaintext BIBs with an unsupported security operation.
+    let mut deletes = None;
+    for (&bib_block_number, ops) in bibs {
+        if ops.unsupported_error().is_none() {
+            continue;
+        }
+        let flags = &blocks
+            .get(&bib_block_number)
+            .expect("the parse's BIB is in its blocks")
+            .flags;
+        if flags.report_on_failure {
+            out.report_unsupported_security = true;
+        }
+        if flags.delete_bundle_on_failure {
+            lowest(&mut deletes, bib_block_number);
+        } else if flags.delete_block_on_failure {
+            out.bib_deletable.push(bib_block_number);
+        }
+    }
+    if out.delete_bundle.is_none()
+        && let Some(bib_block_number) = deletes
+    {
+        out.delete_bundle = bibs[&bib_block_number].unsupported_error().map(Into::into);
+    }
+
+    out
+}
+
+/// The values of a bundle's RFC 9171 §4.4 per-hop blocks: each the block's
+/// decoded data, or `None` when the bundle carries no such block or a BCB
+/// covers it, its data then being ciphertext for the BCB's acceptor to
+/// decrypt and [`decode`](Self::decode).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PerHopFields {
+    /// The Previous Node block's node ID (§4.4.1).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub previous_node: Option<Eid>,
+    /// The Bundle Age block's age (§4.4.2).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub bundle_age: Option<BundleAge>,
+    /// The Hop Count block's limit and count (§4.4.3).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub hop_count: Option<HopInfo>,
+}
+
+impl PerHopFields {
+    /// Decodes the per-hop blocks among `blocks` that no BCB covers, from the
+    /// bytes `data` their extents index into. Data that does not decode as
+    /// §4.4 defines it makes the bundle malformed (RFC 9171 §5.6 Step 3).
+    pub fn from_blocks(blocks: &HashMap<u64, block::Block>, data: &[u8]) -> Result<Self, Error> {
+        let mut fields = Self::default();
+        for block in blocks.values().filter(|block| block.bcb.is_none()) {
+            if let Some(body) = block.payload(data) {
+                fields
+                    .decode(block.block_type, body)
+                    .map_field_err::<Error>("extension block data")?;
+            }
+        }
+        Ok(fields)
+    }
+
+    /// Decodes `data` as a `block_type` block's data into its field, as RFC
+    /// 9171 §4.4 defines it: a Previous Node, Bundle Age or Hop Count block.
+    /// A Previous Node's endpoint must be a node ID (§4.4.1), as an endpoint
+    /// naming a service is not. Any other type's data is opaque, and left
+    /// alone.
+    pub fn decode(&mut self, block_type: block::Type, data: &[u8]) -> Result<(), Error> {
+        match block_type {
+            block::Type::PreviousNode => {
+                let previous_node: Eid = parse_exact(data)?;
+                NodeId::try_from(previous_node.clone())?;
+                self.previous_node = Some(previous_node);
+            }
+            block::Type::BundleAge => self.bundle_age = Some(parse_exact(data)?),
+            block::Type::HopCount => self.hop_count = Some(parse_exact(data)?),
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 enum State {
@@ -490,7 +694,7 @@ pub struct BundleParser {
     /// MUST appear at most once per bundle. Tracked as a small set
     /// during the streaming walk; `insert` returning `false` is the
     /// duplicate detection.
-    unique_blocks: HashSet<block::Type>,
+    unique_types: HashSet<block::Type>,
 
     /// Block numbers of every BIB encountered, recorded in walk
     /// order. BIBs are NOT parsed inline because a BIB may itself be
@@ -534,7 +738,7 @@ impl BundleParser {
             data: None,
             state: State::Start,
             bundle: None,
-            unique_blocks: HashSet::with_capacity(3),
+            unique_types: HashSet::with_capacity(3),
             pending_bibs: SmallVec::new(),
             bcbs: HashMap::new(),
             deferred: None,
@@ -629,7 +833,11 @@ impl BundleParser {
     /// BCB `OperationSet`s decoded along the way. Returning the
     /// OperationSets lets the keyed BPSec filter skip a full CBOR
     /// re-decode of every BIB/BCB body (see `bpv7/docs/TODO.md` M1).
-    /// Bundles with no BPSec return empty maps.
+    /// Bundles with no BPSec return empty maps. The per-hop blocks no BCB
+    /// covers are decoded into [`Parsed::per_hop`], and one whose data does
+    /// not decode as RFC 9171 §4.4 defines it makes the bundle malformed
+    /// (§5.6 Step 3), as does a zero creation time without a Bundle Age
+    /// block ([`Error::MissingBundleAge`], §4.4.2).
     ///
     /// `data` should be the buffer this parser handed back from
     /// [`push`](Self::push) — the [`ParserProgress::Ready`] buffer, or the
@@ -662,11 +870,26 @@ impl BundleParser {
         let bundle = self
             .bundle
             .expect("terminal state guarantees self.bundle is populated");
+
+        // RFC 9171 §4.4.2: a bundle whose creation time is zero MUST carry
+        // a Bundle Age block, readable here or not.
+        if !bundle.primary.id.timestamp.is_clocked()
+            && !self.unique_types.contains(&block::Type::BundleAge)
+        {
+            return Err(Error::MissingBundleAge);
+        }
+
+        // Decoded once BCB coverage is known: a BCB-covered block holds
+        // ciphertext, for its acceptor to decode.
+        let per_hop = PerHopFields::from_blocks(&bundle.blocks, &data)?;
+        let classification = classify(&bundle.blocks, &self.bcbs, &bibs);
         Ok(Parsed {
             data,
             bundle,
             bcbs: self.bcbs,
             bibs,
+            per_hop,
+            classification,
         })
     }
 
@@ -785,15 +1008,26 @@ impl BundleParser {
         // blocks a BCB also covers: a BIB whose targets a new BCB matches
         // is encrypted with them, and a partially matched one is split so
         // only the matched results move to an encrypted BIB. Two later
-        // states break that: a security acceptor that decrypts a target but
-        // not the BIB over it (RFC 9172 §5.1.1 permits partial acceptance,
-        // and `bpsec::edit::remove_encryption` does exactly this for one
-        // target), and a non-conformant sender. An edit to such a block
-        // breaks the hidden signature, which fails closed at the downstream
-        // key-holder.
+        // states break that: another implementation's security acceptor
+        // that decrypts a target but not the BIB over it (RFC 9172 §5.1.1
+        // permits partial acceptance), and a non-conformant sender. An edit
+        // to such a block breaks the hidden signature, which fails closed
+        // at the downstream key-holder. A Previous Node or Bundle Age block
+        // is never marked: no valid bundle has an encrypted BIB over one,
+        // since only the forwarder that inserted the block can source an
+        // operation on it, and RFC 9172 §3.9 forbids it a BIB and then a BCB
+        // on one target. A reader without the BIB's key so treats either as
+        // covered by none; a keyed one that decrypts such a BIB stamps the
+        // coverage, and the operation it reveals is the caller's policy. The
+        // Hop Count is marked, since a signature on a count no node has
+        // incremented can stand (its increment is a SHOULD, RFC 9171 §4.4.3).
         if has_undecryptable_bibs {
             for block in bundle.blocks.values_mut() {
+                // Compared by encoding, so an alias of either type counts.
+                let per_hop = block.block_type == block::Type::PreviousNode
+                    || block.block_type == block::Type::BundleAge;
                 if block.bcb.is_some()
+                    && !per_hop
                     && !matches!(
                         block.block_type,
                         block::Type::BlockIntegrity | block::Type::BlockSecurity
@@ -969,7 +1203,7 @@ impl BundleParser {
             // that point would read as a duplicate on the retry.
             match header.block_type {
                 block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
-                    if self.unique_blocks.contains(&header.block_type) =>
+                    if self.unique_types.contains(&header.block_type) =>
                 {
                     return Err(Error::DuplicateBlocks(header.block_type));
                 }
@@ -1122,7 +1356,7 @@ impl BundleParser {
             // Past every fallible step for this block — record it.
             match header.block_type {
                 block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount => {
-                    self.unique_blocks.insert(header.block_type);
+                    self.unique_types.insert(header.block_type);
                 }
                 block::Type::BlockIntegrity => {
                     // Body range is recoverable from bundle.blocks[n]
