@@ -261,14 +261,11 @@ registered service has claimed.
 
 ## `rfc9171-validity` — RFC 9171 Validity Checks
 
-These control SHOULD-level requirements from RFC 9171 that can be
-relaxed for interoperability with other implementations. They are the
-BPA's own configuration-gated checks, not registered filters.
+This controls a SHOULD-level requirement from RFC 9171 that can be relaxed for interoperability with other implementations. It is the BPA's own configuration-gated check, not a registered filter.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `primary-block-integrity` | `true`, `false` | `true` | Require the primary block to be protected by CRC or BIB. Set `false` for interop with dtn7-rs and other implementations that omit CRCs. |
-| `bundle-age-required` | `true`, `false` | `true` | Require a Bundle Age block when creation timestamp is zero. Set `false` for peers without a clock that omit Bundle Age. |
 
 ## `ipn-legacy-nodes` — IPN Legacy Re-encode
 

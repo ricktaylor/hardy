@@ -42,9 +42,6 @@ pub struct Config {
     /// Pre-drain gate: require primary-block integrity protection
     /// (RFC 9171 §4.3.1).
     pub primary_block_integrity: bool,
-    /// Pre-drain gate: require a Bundle Age block on clockless bundles
-    /// (RFC 9171 §4.4.2).
-    pub bundle_age_required: bool,
     /// Peers whose next hop requires legacy 2-element IPN EID encoding in
     /// the per-hop rewrite stage.
     pub ipn_legacy_peers: Vec<EidPattern>,
@@ -99,7 +96,6 @@ pub(crate) struct Dispatcher {
     poll_channel_depth: usize,
     max_bundle_size: Option<NonZeroU64>,
     primary_block_integrity: bool,
-    bundle_age_required: bool,
     ipn_legacy_peers: Vec<EidPattern>,
 }
 
@@ -156,7 +152,6 @@ impl Dispatcher {
                     .min(ADDRESSABLE_CAP),
             ),
             primary_block_integrity: config.primary_block_integrity,
-            bundle_age_required: config.bundle_age_required,
             ipn_legacy_peers: config.ipn_legacy_peers,
         });
 
@@ -523,7 +518,6 @@ pub mod tests {
                 processing_pool_size: NonZeroUsize::new(4).unwrap(),
                 max_bundle_size: None,
                 primary_block_integrity: false,
-                bundle_age_required: false,
                 ipn_legacy_peers: Vec::new(),
             },
             node_ids,

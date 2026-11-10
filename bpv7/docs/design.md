@@ -124,7 +124,7 @@ Extension blocks use the same zero-copy approach as the primary block. Each `Blo
 
 The `BibCoverage` enum tracks integrity protection state: `None` (no BIB covers this block), `Some(block_number)` (protected by a specific BIB), or `Maybe` (encrypted BIBs couldn't be decrypted, so coverage is unknown). This three-state model allows code to distinguish between "definitely unprotected" and "unknown protection status."
 
-Unrecognised blocks are handled per RFC 9171 rules. The keyless classification (`checks::classify_unsupported`) reports the unprocessable blocks flagged "delete block if block can't be processed", and fails the bundle for any flagged "delete bundle"; the caller decides whether to honour the removals, which `rewrite::apply_rewrites` applies. The library rewrites BIBs and BCBs that targeted removed blocks, potentially removing security blocks entirely if all their targets are gone.
+Unrecognised blocks are handled per RFC 9171 rules. The parser's keyless classification (`Parsed::classification`) reports the unprocessable blocks flagged "delete block if block can't be processed", and the deletion any flagged "delete bundle" demands; the caller decides whether to honour the removals, which `rewrite::apply_rewrites` applies. The library rewrites BIBs and BCBs that targeted removed blocks, potentially removing security blocks entirely if all their targets are gone.
 
 ## Utility Types
 

@@ -648,12 +648,12 @@ mod tests {
         )
     }
 
-    const A2_BUNDLE: [u8; 159] = hex_literal::hex!(
+    const A2_BUNDLE: [u8; 168] = hex_literal::hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240850c0201
                 0058508101020182028202018482014c5477656c7665313231323132820201820358
                 1869c411276fecddc4780df42c8a2af89296fabf34d7fae7008204008181820150ef
-                a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
-                03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
+                a4b5ac0108e3816c5606479801bc0485070300004319012c850101000058233a09c1
+                e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e9aff"
     );
 
     fn count_bcbs(bundle: &hardy_bpv7::Bundle) -> usize {
@@ -681,6 +681,7 @@ mod tests {
             mut bundle,
             bcbs,
             mut bibs,
+            ..
         } = parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE)).expect("parse failed");
 
         let mut decrypted = HashMap::new();

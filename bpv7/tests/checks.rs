@@ -31,6 +31,7 @@ fn raw_parse_tuple(
         bundle,
         bcbs,
         bibs,
+        ..
     } = parse::parse(data)?;
     // Every parsed vector doubles as an `encoded_len` conformance check:
     // the derivation must equal the wire length (RFC 9171 §4.1 —
@@ -656,7 +657,9 @@ mod cascade_reencryption_tests {
 
     // RFC 9172 §5.1.1 with a *shared* BCB — the RFC 9173 Appendix A.4 wire
     // vector, where one BCB (block 2) covers both the encrypted BIB (block
-    // 3) and the payload (block 1). Corrupting the BIB's ciphertext must
+    // 3) and the payload (block 1). The Bundle Age block (block 4) RFC 9171
+    // §4.4.2 requires of its zero creation time is inserted before the
+    // payload; no security result covers it. Corrupting the BIB's ciphertext must
     // failure-drop only the BIB: the cascade strips block 3 from the BCB's
     // OperationSet and the BCB survives covering the payload. Queuing the
     // shared BCB itself for removal would strand the payload ciphertext
@@ -672,8 +675,9 @@ mod cascade_reencryption_tests {
              420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
              9b88029191850c0201005849820301020182028202018382014c5477656c76653132
              313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
-             50d2c51cb2481792dae8b21d848cede99b8501010000582390eab6457593379298a8
-             724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
+             50d2c51cb2481792dae8b21d848cede99b85070400004319012c8501010000582390
+             eab6457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122
+             ff"
         )
         .to_vec();
 
@@ -1082,6 +1086,7 @@ mod deferred_payload_bib_tests {
             bundle: mut raw,
             bcbs: bcb_ops,
             bibs: mut bib_ops,
+            ..
         } = parse_headers_only(&full);
         let bib_block = *bib_ops.keys().next().expect("a BIB op-set");
         assert!(
@@ -1138,6 +1143,7 @@ mod deferred_payload_bib_tests {
             bundle: mut raw,
             bcbs: bcb_ops,
             bibs: mut bib_ops,
+            ..
         } = parse_headers_only(full);
         let mut decrypted = HashMap::new();
         let no_updates = HashMap::new();

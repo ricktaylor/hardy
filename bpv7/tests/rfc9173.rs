@@ -58,6 +58,7 @@ fn validate_with_keys(
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
+        ..
     } = parse::parse(::bytes::Bytes::copy_from_slice(data))?;
 
     // §A — classify (Unsupported errors propagate)
@@ -157,14 +158,18 @@ fn block_data<'a>(
 
 #[test]
 fn rfc9173_appendix_a_1() {
-    // Original RFC9173 Appendix A.1.4 test vector
-    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
+    // RFC 9173 Appendix A.1.4's final bundle, with the Bundle Age block
+    // RFC 9171 §4.4.2 requires of its zero creation time inserted before the
+    // payload, where Appendix A.3 places one: no security result covers it,
+    // so every result is the RFC's. No CRC on the primary block: the BPA's
+    // gate checks that.
     let data = hex_literal::hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240850b0200
                 005856810101018202820201828201078203008181820158403bdc69b3a34a2b5d3a
                 8554368bd1e808f606219d2a10a846eae3886ae4ecc83c4ee550fdfb1cc636b904e2
-                f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
-                746f2067656e657261746520612033322d62797465207061796c6f6164ff"
+                f1a73e303dcd4b6ccece003e95e8164dcc89a156e185070300004319012c85010100
+                005823526561647920746f2067656e657261746520612033322d6279746520706179
+                6c6f6164ff"
     );
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [{
@@ -183,14 +188,17 @@ fn rfc9173_appendix_a_1() {
 
 #[test]
 fn rfc9173_appendix_a_2() {
-    // Original RFC9173 Appendix A.2.4 test vector
-    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
+    // RFC 9173 Appendix A.2.4's final bundle, with the Bundle Age block
+    // RFC 9171 §4.4.2 requires of its zero creation time inserted before the
+    // payload, where Appendix A.3 places one: no security result covers it,
+    // so every result is the RFC's. No CRC on the primary block: the BPA's
+    // gate checks that.
     let data = hex_literal::hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240850c0201
                 0058508101020182028202018482014c5477656c7665313231323132820201820358
                 1869c411276fecddc4780df42c8a2af89296fabf34d7fae7008204008181820150ef
-                a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
-                03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
+                a4b5ac0108e3816c5606479801bc0485070300004319012c850101000058233a09c1
+                e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e9aff"
     );
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [{
@@ -253,16 +261,20 @@ fn rfc9173_appendix_a_3() {
 
 #[test]
 fn rfc9173_appendix_a_4() {
-    // Original RFC9173 Appendix A.4.5 test vector
-    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
+    // RFC 9173 Appendix A.4.5's final bundle, with the Bundle Age block
+    // RFC 9171 §4.4.2 requires of its zero creation time inserted before the
+    // payload, where Appendix A.3 places one: no security result covers it,
+    // so every result is the RFC's. No CRC on the primary block: the BPA's
+    // gate checks that.
     let data = hex_literal::hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240850b0300
                 005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
                 420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
                 9b88029191850c0201005849820301020182028202018382014c5477656c76653132
                 313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
-                50d2c51cb2481792dae8b21d848cede99b8501010000582390eab6457593379298a8
-                724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
+                50d2c51cb2481792dae8b21d848cede99b85070400004319012c8501010000582390
+                eab6457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122
+                ff"
     );
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [

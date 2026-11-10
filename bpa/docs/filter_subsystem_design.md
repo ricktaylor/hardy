@@ -21,7 +21,7 @@ The built-in checks are therefore **not registered filters — they are the pipe
 
 The per-layer configurability answer falls out:
 
-- **Built-ins**: runtime *configuration* (on/off toggles, parameters on the `BpaBuilder`). Never registration, never reorderable — spec ordering is unviolable through the public API by construction. The RFC 9171 validity checks (`primary_block_integrity`, `bundle_age_required`, strict defaults) and the IPN legacy re-encode (`ipn_legacy_peers`) are this tier.
+- **Built-ins**: runtime *configuration* (on/off toggles, parameters on the `BpaBuilder`). Never registration, never reorderable — spec ordering is unviolable through the public API by construction. The RFC 9171 validity check (`primary_block_integrity`, strict by default) and the IPN legacy re-encode (`ipn_legacy_peers`) are this tier.
 - **Embedder chains**: construction-time registration, then **frozen**. Link-time embedding needs nothing more, and the frozen chain keeps the hot path lock-free.
 - **Remote or dynamic registration: excluded by design, permanently.** Filters are in-process, link-time extensions only — a gRPC filter puts an RPC round-trip on the per-bundle hot path, and dynamic (un)registration would put a runtime-mutable registry on it. The remotable, runtime-registrable tier is the *component* tier; anything that needs those properties is a component, not a filter. Consequence: **the filter chain is locked between restarts**, making a restart the policy application boundary — see [Restart re-admission](#restart-re-admission).
 

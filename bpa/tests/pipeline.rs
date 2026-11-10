@@ -21,7 +21,9 @@ use hardy_bpa::{
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
+// Aliased: this file names several crates' `Error`s.
 use hardy_bpv7::{
+    Error as Bpv7Error,
     block::{Flags as BlockFlags, Type},
     builder::Builder,
     bundle::{Flags, FragmentInfo, Id},
@@ -4693,10 +4695,10 @@ async fn relaxed_gate_admits_unprotected_primary_block() {
     bpa.shutdown().await;
 }
 
-/// RFC 9171 §4.4.2: with the default strict config, a clockless bundle
-/// without a Bundle Age block is rejected at the pre-drain gate.
+/// RFC 9171 §4.4.2: a clockless bundle without a Bundle Age block is
+/// malformed, and its parse refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gate_rejects_clockless_bundle_without_age() {
+async fn a_clockless_bundle_without_age_is_refused() {
     let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
 
     dispatch_inbound(&cla, clockless_ageless_bundle()).await;
@@ -4706,27 +4708,8 @@ async fn gate_rejects_clockless_bundle_without_age() {
     bpa.shutdown().await;
     assert!(
         app_rx.is_empty(),
-        "a clockless bundle without a Bundle Age block must be rejected at the gate"
+        "a clockless bundle without a Bundle Age block must be refused"
     );
-}
-
-/// `bundle_age_required(false)` relaxes the §4.4.2 check: the same bundle
-/// is admitted and delivered.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn relaxed_gate_admits_clockless_bundle_without_age() {
-    let (bpa, cla, app_rx) = gate_fixture(|b| b.bundle_age_required(false)).await;
-
-    dispatch_inbound(&cla, clockless_ageless_bundle()).await;
-
-    // Event-driven wait; the timeout only bounds a regression.
-    let (_, payload) =
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
-            .await
-            .expect("Timeout waiting for delivery")
-            .expect("Channel closed");
-    assert_eq!(payload.as_ref(), b"no clock");
-
-    bpa.shutdown().await;
 }
 
 // A peer removed while its construction is still in flight leaves nothing
@@ -5429,7 +5412,8 @@ async fn adu_originate_refuses_a_zero_lifetime() {
 /// service bytes trip the lifetime/hop admission check, and the
 /// config-gated RFC 9171 validity checks (strict by default) now apply to
 /// raw sends at the same seat — each surfacing as `Dropped(reason)` to the
-/// caller, with nothing admitted.
+/// caller, with nothing admitted. A clockless bundle without a Bundle Age
+/// block is malformed, and the parse refuses it as `InvalidBundle`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_applies_the_admission_gates() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -5465,7 +5449,8 @@ async fn raw_originate_applies_the_admission_gates() {
         )))
     ));
 
-    // Clockless without a Bundle Age block: RFC 9171 §4.4.2.
+    // Clockless without a Bundle Age block: malformed (RFC 9171 §4.4.2),
+    // so its parse refuses it.
     let (_, data) = Builder::new(source_eid.clone(), dest)
         .with_payload(Cow::Borrowed(b"no clock".as_slice()))
         .build(CreationTimestamp::default())
@@ -5473,7 +5458,7 @@ async fn raw_originate_applies_the_admission_gates() {
     let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
     assert!(matches!(
         result,
-        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+        Err(services::Error::InvalidBundle(Bpv7Error::MissingBundleAge))
     ));
 
     // The completed shutdown is the barrier proving the absence.
