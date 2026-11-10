@@ -398,6 +398,17 @@ pub trait Service: Send + Sync {
     /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
     /// carry empty bytes) completes the delivery.
     ///
+    /// The bundle is the one stored: the wire form as it arrived, less the
+    /// removals the ingress gate scheduled, and as any Deliver
+    /// [`Rewriter`](crate::filter::Rewriter) left it. Its per-hop blocks —
+    /// Previous Node, Hop Count and Bundle Age — are as they arrived: a
+    /// delivery is not a hop, so the BPA neither updates nor strips them
+    /// (RFC 9171 §5.4's writes are forwarding's). A Bundle Age block
+    /// therefore gives the age at the last forwarding, not now; `expiry` is
+    /// the deadline the BPA computed for this bundle (RFC 9171 §5.5), and
+    /// the one to act on. A service that wants the per-hop blocks gone
+    /// registers a Deliver Rewriter.
+    ///
     /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
     /// before `Final` means the producer aborted the delivery: the
     /// implementation must not act on the partial bundle and must not
