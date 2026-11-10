@@ -327,9 +327,9 @@ fn sign_targets<'b>(
                     &keying,
                     scope_flags.clone(),
                     bib::OperationArgs {
-                        bpsec_source,
+                        source: bpsec_source,
                         target,
-                        source,
+                        security_block: source,
                         blocks,
                     },
                 )?;

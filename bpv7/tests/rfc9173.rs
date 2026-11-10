@@ -8,6 +8,7 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     editor::{self, Chunk, Editor},
     parse,
+    reader::PlainReader,
 };
 use std::collections::HashMap;
 
@@ -133,9 +134,9 @@ fn verify_block(
     op.verify(
         keys,
         bpsec::bib::OperationArgs {
-            bpsec_source: opset.source(),
+            source: opset.source(),
             target: block_number,
-            source: bib_block_number,
+            security_block: bib_block_number,
             blocks: &block_set,
         },
     )
@@ -214,6 +215,90 @@ fn rfc9173_appendix_a_2() {
 
     let (data, raw, bcb_ops, _bib_ops) = validate_with_keys(&data, &keys).unwrap();
     block_data(1, &raw.blocks, &data, &bcb_ops, &keys).expect("Failed to decrypt");
+}
+
+// The payload's decrypt stage, begun on the headers alone and fed the
+// received payload in runs, recovers RFC 9173's plaintext from Appendix
+// A.2's bundle (a wrapped key, the tag carried as the BCB's result) and
+// A.4's (a direct key, one BCB over the payload and the encrypted BIB).
+#[test]
+fn rfc9173_payloads_decrypt_as_they_stream() {
+    // RFC 9173 Appendix A.1.1.2: "Ready to generate a 32-byte payload".
+    const PLAINTEXT: &[u8] = b"Ready to generate a 32-byte payload";
+    let a2 = hex_literal::hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240850c0201
+                0058508101020182028202018482014c5477656c7665313231323132820201820358
+                1869c411276fecddc4780df42c8a2af89296fabf34d7fae7008204008181820150ef
+                a4b5ac0108e3816c5606479801bc0485070300004319012c850101000058233a09c1
+                e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e9aff"
+    );
+    let a2_keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [{
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "A128KW",
+            "enc": "A128GCM",
+            "key_ops": ["unwrapKey", "decrypt"],
+            "k": "YWJjZGVmZ2hpamtsbW5vcA"
+        }]
+    }))
+    .unwrap();
+    let a4 = hex_literal::hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240850b0300
+                005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
+                420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
+                9b88029191850c0201005849820301020182028202018382014c5477656c76653132
+                313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
+                50d2c51cb2481792dae8b21d848cede99b85070400004319012c8501010000582390
+                eab6457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122
+                ff"
+    );
+    let a4_keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [{
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "enc": "A256GCM",
+            "key_ops": ["decrypt"],
+            "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g"
+        }]
+    }))
+    .unwrap();
+
+    for (name, data, keys) in [("A.2", &a2[..], a2_keys), ("A.4", &a4[..], a4_keys)] {
+        let parsed = parse::parse(::bytes::Bytes::copy_from_slice(data)).unwrap();
+        let payload = parsed.bundle.blocks[&1].payload_range();
+        let headers = &data[..usize::try_from(payload.start).unwrap()];
+        let received =
+            &data[usize::try_from(payload.start).unwrap()..usize::try_from(payload.end).unwrap()];
+
+        let bcb = parsed.bundle.blocks[&1]
+            .bcb
+            .expect("a BCB covers the payload");
+        let ops = &parsed.bcbs[&bcb];
+        let mut decryptor = ops.operations()[&1]
+            .begin_decrypt(
+                &keys,
+                &bcb::OperationArgs {
+                    source: ops.source(),
+                    target: 1,
+                    security_block: bcb,
+                    blocks: &PlainReader {
+                        blocks: &parsed.bundle.blocks,
+                        source_data: headers,
+                    },
+                },
+                received.len() as u64,
+            )
+            .unwrap_or_else(|e| panic!("{name}: the decryption begins: {e}"));
+        assert_eq!(decryptor.plaintext_len(), PLAINTEXT.len() as u64, "{name}");
+        for run in received.chunks(7) {
+            decryptor.update(run);
+        }
+        let plaintext = decryptor
+            .finish()
+            .unwrap_or_else(|e| panic!("{name}: the payload decrypts: {e}"));
+        assert_eq!(plaintext.as_ref(), PLAINTEXT, "{name}");
+    }
 }
 
 // The final bundle of RFC 9173 Appendix A.3: a BCB over the payload, and a

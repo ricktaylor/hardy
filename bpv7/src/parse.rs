@@ -3,8 +3,9 @@ The streaming wire parser for BPv7 bundles ([RFC 9171]). [`BundleParser`]
 drives the structural decode incrementally; [`parse()`] is the one-shot
 convenience over it. Both yield a [`Parsed`] — the authoritative byte
 buffer, the structural [`Bundle`], the decoded BPSec OperationSets, the
-values of the per-hop blocks and the classification of the blocks this node
-cannot process ([`Parsed::classification`], by their flags). Keyed BPSec
+values of the per-hop blocks, the classification of the blocks this node
+cannot process ([`Parsed::classification`], by their flags) and the
+arrival's plaintext cache, empty until a keyed pass fills it. Keyed BPSec
 validation is layered on top by composing [`crate::checks`] and
 [`crate::rewrite`].
 
@@ -205,7 +206,8 @@ pub struct Classification {
 /// `Bytes` buffer the parser owns (the source of truth that the
 /// returned `Bundle::blocks` extent/data offsets index into), its
 /// decoded BPSec OperationSet maps (BCBs and BIBs, keyed by block
-/// number), its [`PerHopFields`] and the classification of the blocks
+/// number), its [`PerHopFields`], its plaintext cache
+/// ([`decrypted`](Self::decrypted)) and the classification of the blocks
 /// this node can't process ([`classification`](Self::classification)).
 /// Returned by [`BundleParser::finish`] and [`parse()`].
 ///
@@ -230,6 +232,12 @@ pub struct Parsed {
     /// parser's tail, and the deletion one of them may demand
     /// ([`Classification::delete_bundle`]), which the caller takes.
     pub classification: Classification,
+    /// The arrival's plaintext cache ([`bpsec::Decrypted`]): what a keyed
+    /// pass decrypted, by block number, and the blocks whose ciphertext did
+    /// not authenticate. Empty from the parse; a
+    /// [`DecryptingReader`](bpsec::DecryptingReader) over the parse is seeded
+    /// from it, so no block is decrypted twice.
+    pub decrypted: bpsec::Decrypted,
 }
 
 // §A: the classification of the blocks this node can't process, at the
@@ -890,6 +898,7 @@ impl BundleParser {
             bibs,
             per_hop,
             classification,
+            decrypted: bpsec::Decrypted::default(),
         })
     }
 

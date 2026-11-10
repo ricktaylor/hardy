@@ -98,7 +98,7 @@ pub struct Classification {
 /// per-flag [`Classification`] facts. If any such block sets
 /// `delete_bundle_on_failure`, returns `Err(Error::Unsupported(n))` for an
 /// A1 block, or the security block's
-/// [`unsupported_error`](bpsec::bib::OperationSet::unsupported_error) for
+/// `unsupported_error` for
 /// an A2/A3 block — so the caller can tell the two kinds apart. The facts
 /// do not survive that `Err`; a caller that reports the deletion needs
 /// them, and takes both from [`classify_unsupported_and_verdict`].
@@ -278,9 +278,9 @@ pub fn decrypt_and_validate_covered_bibs(
             match bcb_op.decrypt(
                 key_source,
                 bpsec::bcb::OperationArgs {
-                    bpsec_source: &bcb_op_set.source,
+                    source: &bcb_op_set.source,
                     target: bib_block_number,
-                    source: bcb_block_number,
+                    security_block: bcb_block_number,
                     blocks: &block_set,
                 },
             ) {
@@ -311,24 +311,14 @@ pub fn decrypt_and_validate_covered_bibs(
         // BCB-encrypted then BIB must be BCB-encrypted" check inside
         // `OperationSet::check` is trivially satisfied here because we only
         // reach this branch for BCB-encrypted BIBs.
-        bib_op_set.check(
+        bib_op_set.check_decrypted(
             bib_block_number,
+            bcb_op_set,
             &PlainReader {
                 blocks: &*blocks,
                 source_data: data,
             },
         )?;
-
-        // §3.8 BCB-shares-target-with-BIB. Only fires when the BCB
-        // context permits sharing — BCB-AES-GCM cannot (IV uniqueness).
-        if bcb_op_set.can_share()
-            && !bib_op_set
-                .operations
-                .keys()
-                .any(|t| bcb_op_set.operations.contains_key(t))
-        {
-            return Err(bpsec::Error::BCBMustShareTarget.into());
-        }
 
         // Stamp coverage. The parser stamped these targets as Maybe
         // because of this encrypted BIB; now we know the actual targets.
@@ -436,9 +426,9 @@ pub fn verify_all_bibs(
             match op.verify(
                 key_source,
                 bpsec::bib::OperationArgs {
-                    bpsec_source: &ops.source,
+                    source: &ops.source,
                     target: target_number,
-                    source: bib_block_number,
+                    security_block: bib_block_number,
                     blocks: &block_set,
                 },
             ) {
@@ -491,14 +481,16 @@ pub fn begin_payload_verification(
             decrypted_data: &empty_decrypted,
             to_update: &empty_updates,
         };
+        let payload = target_block.payload_range();
         match op.begin_verify(
             key_source,
             &bpsec::bib::OperationArgs {
-                bpsec_source: &ops.source,
+                source: &ops.source,
                 target: 1,
-                source: bib_block_number,
+                security_block: bib_block_number,
                 blocks: &block_set,
             },
+            payload.end - payload.start,
         ) {
             Ok(verifier) => verifiers.push((bib_block_number, verifier)),
             Err(bpsec::Error::NoKey) => {}
@@ -596,9 +588,9 @@ pub fn verify(
             bcb_op.decrypt(
                 key_source,
                 bpsec::bcb::OperationArgs {
-                    bpsec_source: &bcb_op_set.source,
+                    source: &bcb_op_set.source,
                     target: target_number,
-                    source: bcb_block_number,
+                    security_block: bcb_block_number,
                     blocks: &block_set,
                 },
             )

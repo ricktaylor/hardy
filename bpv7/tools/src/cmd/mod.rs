@@ -157,9 +157,9 @@ pub(crate) fn verify_block(
     op.verify(
         keys,
         bib::OperationArgs {
-            bpsec_source: opset.source(),
+            source: opset.source(),
             target: block_number,
-            source: bib_block_number,
+            security_block: bib_block_number,
             blocks: &block_set,
         },
     )

@@ -77,6 +77,7 @@ optional functionality:
 
 - **`std`**: Enables system clock access and propagates `std` to dependencies.
 - **`rfc9173`** (default): Enables RFC 9173 security contexts, which require random number generation.
+- **`bpsec`** (default, through `rfc9173`): BPSec processing, both sides: the keyed operations and the decrypting reader, the keyed checks, the BPSec editing and rewrites, the signer and the encryptor. Every security-context feature enables it; without it the crate still parses security blocks and classifies them by their flags.
 - **`serde`**: Enables serialization support. Requires `std`.
 - **`critical-section`**: Enables atomic fallback via `critical-section` for targets without native CAS (e.g., Cortex-M0).
 
@@ -107,6 +108,7 @@ pub mod bpsec;
 pub mod builder;
 pub mod bundle;
 pub mod bundle_age;
+#[cfg(feature = "bpsec")]
 pub mod checks;
 pub mod crc;
 pub mod creation_timestamp;
@@ -119,6 +121,7 @@ pub mod lifetime;
 pub mod parse;
 pub mod primary_block;
 pub mod reader;
+#[cfg(feature = "bpsec")]
 pub mod rewrite;
 pub mod status_report;
 

@@ -56,6 +56,7 @@ Enabled by default via the `rfc9173` feature flag:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `rfc9173` | yes | RFC 9173 security contexts (BIB-HMAC-SHA2, BCB-AES-GCM, key wrap). Enables `hmac`, `sha2`, `aes-gcm`, `aes-kw`, `rand` |
+| `bpsec` | yes, through `rfc9173` | BPSec processing, both sides: the keyed operations and the decrypting reader, the keyed checks, the BPSec editing and rewrites, the signer and the encryptor. Every security-context feature enables it; without it the crate still parses security blocks and classifies them by their flags |
 | `std` | no | Enables system clock access (`CreationTimestamp::now()`) and propagates `std` to dependencies |
 | `serde` | no | Enables `Serialize`/`Deserialize` on bundle types. Requires `std` |
 | `critical-section` | no | Atomic fallback via `portable-atomic` for targets without native CAS (e.g. Cortex-M0) |
