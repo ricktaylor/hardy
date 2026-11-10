@@ -37,7 +37,7 @@ use hardy_bpv7::{
     editor::Editor,
     eid::Eid,
     parse::Parsed,
-    reader::{PlainReader, Reader},
+    reader::Reader,
     status_report::ReasonCode,
 };
 use hardy_cbor::decode::parse_exact;
@@ -49,7 +49,7 @@ use super::{
 };
 use crate::{
     HashMap,
-    bundle::{Bundle, BundleMetadata, arrival::peekable_payload},
+    bundle::{BundleMetadata, arrival::peekable_payload},
     keys::KeyProvider,
 };
 
@@ -307,36 +307,33 @@ impl FilterChains {
         !self.deliver.verifiers.is_empty()
     }
 
-    /// Runs the Deliver Verifiers over the bundle the Deliver Rewriters
-    /// left, materialised: `Some` carries the dropping Verifier's reason,
-    /// `None` means every Verifier passed.
+    /// Runs the Deliver Verifiers over the bundle as the attempt's `editor`
+    /// leaves it, after the Deliver Rewriters: its current bundle and a
+    /// decrypting reader over it, with the payload's resident prefix in
+    /// `data`, the bytes the editor works over, as their peek. Nothing is
+    /// materialised. `Some` carries the dropping Verifier's reason, `None`
+    /// means every Verifier passed.
     pub fn verify_deliver(
         &self,
-        bundle: &Bundle,
+        editor: &Editor<'_>,
         data: &[u8],
+        metadata: &BundleMetadata,
         keys: &dyn KeySource,
     ) -> Option<Option<ReasonCode>> {
         if self.deliver.verifiers.is_empty() {
             return None;
         }
-        let blocks = &bundle.bpv7.blocks;
-        let bcbs = decode_bcbs(
-            DELIVER,
-            blocks,
-            &PlainReader {
-                blocks,
-                source_data: data,
-            },
-        );
-        let reader = DecryptingReader::new(blocks, data, &bcbs, keys);
+        let current = editor.current_bundle();
+        let bcbs = decode_bcbs(DELIVER, &current.blocks, editor);
+        let reader = DecryptingReader::over_editor(&current.blocks, editor, &bcbs, keys);
         check_verifiers(
             &self.deliver.verifiers,
             DELIVER,
             &VerifyContext::new(
-                &bundle.bpv7,
+                &current,
                 &reader,
-                &bundle.metadata,
-                resident_payload_prefix(&bundle.bpv7, data),
+                metadata,
+                resident_payload_prefix(&current, data),
             ),
         )
     }
@@ -468,7 +465,7 @@ mod tests {
     use super::*;
     use crate::{
         Arc, Bytes,
-        bundle::{BundleMetadata, BundleStatus},
+        bundle::{Bundle, BundleMetadata, BundleStatus},
         filter::{
             Classifier, Rewriter, Verifier,
             pack::{FilterPack, chains::FilterChains},
@@ -801,7 +798,12 @@ mod tests {
         };
         let (bundle, data, _) = test_bundle();
         assert_eq!(
-            chains.verify_deliver(&bundle, &data, &KeySet::EMPTY),
+            chains.verify_deliver(
+                &Editor::new(&bundle.bpv7, &data),
+                &data,
+                &bundle.metadata,
+                &KeySet::EMPTY
+            ),
             None,
             "the shared Verifier passes at Deliver"
         );
@@ -865,8 +867,8 @@ mod tests {
     }
 
     // The Deliver Rewriters on an editor over the record's block index, the
-    // one rebuild when a link edited, then the Deliver Verifiers: the
-    // sequence the delivery door runs.
+    // Deliver Verifiers over its edits, then a rebuild when a link edited,
+    // so the test can read what reached the wire.
     fn deliver(
         chains: &FilterChains,
         mut bundle: Bundle,
@@ -874,6 +876,7 @@ mod tests {
     ) -> (Bundle, Bytes, Option<Option<ReasonCode>>) {
         let mut editor = Editor::new(&bundle.bpv7, &data);
         let edited = chains.run_deliver(&mut editor, &bundle.metadata, &KeySet::EMPTY);
+        let verdict = chains.verify_deliver(&editor, &data, &bundle.metadata, &KeySet::EMPTY);
         let rebuilt = edited.then(|| editor.rebuild_bundle().unwrap());
         let data = match rebuilt {
             Some((rebuilt, chunks)) => {
@@ -882,7 +885,6 @@ mod tests {
             }
             None => data,
         };
-        let verdict = chains.verify_deliver(&bundle, &data, &KeySet::EMPTY);
         (bundle, data, verdict)
     }
 
@@ -1075,9 +1077,9 @@ mod tests {
         freeze(pack)
     }
 
-    // The delivery door's sequence with `provider`'s keys: the Deliver
-    // Rewriters on an editor, then the Deliver Verifiers over the stored
-    // pair, which the non-editing links leave as it is.
+    // The Deliver Rewriters on an editor with `provider`'s keys, then the
+    // Deliver Verifiers over the editor, which the non-editing links leave
+    // as it is.
     fn deliver_with(
         chains: &FilterChains,
         bundle: &Bundle,
@@ -1090,7 +1092,10 @@ mod tests {
             !chains.run_deliver(&mut editor, &bundle.metadata, &*keys),
             "the non-editing links leave the editor as it was"
         );
-        assert_eq!(chains.verify_deliver(bundle, data, &*keys), None);
+        assert_eq!(
+            chains.verify_deliver(&editor, data, &bundle.metadata, &*keys),
+            None
+        );
     }
 
     #[test]
@@ -1221,7 +1226,12 @@ mod tests {
         let chains = freeze(pack);
 
         let (bundle, data) = undecodable_bcb_bundle();
-        chains.verify_deliver(&bundle, &data, &KeySet::EMPTY);
+        chains.verify_deliver(
+            &Editor::new(&bundle.bpv7, &data),
+            &data,
+            &bundle.metadata,
+            &KeySet::EMPTY,
+        );
     }
 
     #[test]

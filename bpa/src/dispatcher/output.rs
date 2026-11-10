@@ -1,9 +1,10 @@
-//! The egress door's hold on a stored bundle: [`pull_headers`] pulls the load
+//! The output doors' hold on a stored bundle: [`pull_headers`] pulls the load
 //! stream until the bytes held reach the payload's data, and the
-//! [`LoadedBundle`] it returns replays the stored bundle from its first byte
-//! for [`RebuiltHeaders`](crate::rebuilt_headers::RebuiltHeaders). The payload
-//! is the last block (RFC 9171 §4.1), so every block the output stages edit is
-//! then resident.
+//! [`LoadedBundle`] it returns replays the stored bundle from its first byte,
+//! as stored or under [`RebuiltHeaders`](crate::rebuilt_headers::RebuiltHeaders).
+//! The payload is the last block (RFC 9171 §4.1), so every block the output
+//! stages edit is then resident. [`pull_whole`] pulls the rest, for a door
+//! that needs the bundle whole.
 
 use super::*;
 use crate::stream::RecvError;
@@ -115,6 +116,36 @@ pub async fn pull_headers(
         }
     };
     loaded.trace_expect("The stored bundle ends before its headers")
+}
+
+/// Pulls `loaded`'s load stream on to its `Final`, so the whole stored bundle
+/// is in hand. A load already held whole, as a whole-buffer load's one
+/// `Final` is, comes back as-is.
+///
+/// # Panics
+///
+/// Panics if the stream ends before its `Final`: the store holds only
+/// bundles validated at a door or built by the BPA, so a short load is
+/// storage corruption.
+pub async fn pull_whole(loaded: LoadedBundle) -> Bytes {
+    let LoadedBundle { resident, rest, .. } = loaded;
+    let Some(mut rest) = rest else {
+        return resident;
+    };
+    let mut whole = BytesMut::from(&resident[..]);
+    loop {
+        match rest
+            .recv()
+            .await
+            .trace_expect("The bundle's load stream ended before its Final")
+        {
+            Segment::Next(data) => whole.extend_from_slice(&data),
+            Segment::Final(data) => {
+                whole.extend_from_slice(&data);
+                return whole.freeze();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +346,58 @@ mod tests {
         let (total_len, segments) = output(&bundle, loaded).await;
         assert_eq!(concat(&segments), &*expected);
         assert_eq!(total_len, expected.len() as u64);
+    }
+
+    // An attempt that edited nothing hands on the stored bundle as it was
+    // loaded, wherever the load is cut, ending in its Final.
+    #[tokio::test]
+    async fn an_unedited_bundle_streams_as_stored() {
+        let (bundle, data) = stored(&[0x6B; 64]);
+        let start = payload_start(&bundle);
+        for splits in [vec![], vec![10, start + 10], vec![start], vec![start + 3]] {
+            let mut loaded = pull_headers(&bundle, load(&data, &splits).await).await;
+            assert_eq!(
+                concat(&drain(&mut loaded).await),
+                &*data,
+                "cut at {splits:?}"
+            );
+        }
+    }
+
+    // A door that needs the bundle whole pulls the load on to its Final,
+    // wherever it is cut; a load held whole comes back zero-copy.
+    #[tokio::test]
+    async fn pull_whole_holds_the_whole_stored_bundle() {
+        let (bundle, data) = stored(&[0x2D; 64]);
+        let start = payload_start(&bundle);
+        for (splits, shared) in [
+            (vec![], true),
+            (vec![10, start + 10], false),
+            (vec![start], false),
+            (vec![start + 3], false),
+        ] {
+            let loaded = pull_headers(&bundle, load(&data, &splits).await).await;
+            let whole = pull_whole(loaded).await;
+            assert_eq!(whole, data, "cut at {splits:?}");
+            assert_eq!(
+                whole.as_ptr() == data.as_ptr(),
+                shared,
+                "cut at {splits:?}: only a load held whole is returned as-is"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "ended before its Final")]
+    async fn a_load_lost_before_its_final_is_fatal() {
+        let (bundle, data) = stored(b"lost after the headers");
+        let start = payload_start(&bundle);
+        let (tx, rx) = bounded(1);
+        tx.send(Segment::Next(data.slice(..start + 2)))
+            .await
+            .unwrap();
+        drop(tx);
+        pull_whole(pull_headers(&bundle, Box::new(rx)).await).await;
     }
 
     #[tokio::test]

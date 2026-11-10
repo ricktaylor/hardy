@@ -1,14 +1,23 @@
-use hardy_bpv7::{bpsec::key::KeySet, status_report::ReasonCode};
+use hardy_bpv7::{editor::Chunk, status_report::ReasonCode};
 
-use super::*;
-use crate::services::registry::{Service, ServiceImpl};
+use super::{
+    output::{LoadedBundle, pull_headers, pull_whole},
+    *,
+};
+use crate::{
+    rebuilt_headers::RebuiltHeaders,
+    services::registry::{Service, ServiceImpl},
+};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub(super) async fn deliver_bundle(&self, service: Arc<Service>, bundle: bundle::Bundle) {
-        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
+        // Open the stored bundle and hold it until its headers are resident:
+        // what the service receives streams on from the store.
+        let Some((mut bundle, stream)) = self.load_stream_or_drop(bundle).await else {
             return;
         };
+        let loaded = pull_headers(&bundle.bpv7, stream).await;
 
         // The claim key and every park in the offer use the canonical
         // registration EID stored at construction — the exact key
@@ -54,7 +63,7 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Delivery,
-            self.offer_to_service(service, service_eid, bundle, data, seen)
+            self.offer_to_service(service, service_eid, bundle, loaded, seen)
                 .await,
         )
         .await
@@ -62,67 +71,50 @@ impl Dispatcher {
 
     /// Offer a claimed bundle to its service. Runs strictly inside the
     /// `DeliveryAckPending` claim: every exit is an [`OfferOutcome`] the
-    /// caller resolves, so the claim cannot dangle.
+    /// caller resolves, so the claim cannot dangle. The record keeps the
+    /// stored bundle's block index throughout: a rebuild is the attempt's
+    /// alone.
     async fn offer_to_service(
         &self,
         service: Arc<Service>,
         service_eid: Eid,
-        mut bundle: bundle::Bundle,
-        data: Bytes,
+        bundle: bundle::Bundle,
+        mut loaded: LoadedBundle,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // The Deliver Rewriters (transport-block strip) edit one editor over
-        // the record's block index and the loaded bytes, rebuilt once, only
-        // if a link edited; with no Rewriters, none is built. The keys are
-        // derived once, over the stored bundle, and only when a stage reads
-        // through them: the Rewriters and the Verifiers do.
-        let mut data = {
-            let editing = self.filters.has_deliver_rewriters();
-            let keys = (editing || self.filters.has_deliver_verifiers())
-                .then(|| filter::output_keys(&bundle.bpv7, &data, &*self.key_provider));
-            let no_keys = KeySet::EMPTY;
-            let keys = keys.as_deref().unwrap_or(&no_keys);
-            let data = if !editing {
-                data
-            } else {
-                let mut editor = Editor::new(&bundle.bpv7, &data);
-                let rewritten = self
-                    .filters
-                    .run_deliver(&mut editor, &bundle.metadata, keys);
-
-                // The bytes were validated at ingress and every edit was
-                // checked when it was staged, so a failed rebuild is a BPA
-                // or bpv7 bug.
-                let rebuilt = rewritten.then(|| {
-                    editor
-                        .rebuild_bundle()
-                        .trace_expect("The delivery rewrite failed to rebuild the bundle")
-                });
-                match rebuilt {
-                    Some((rebuilt, chunks)) => {
-                        bundle.bpv7.blocks = rebuilt.blocks;
-                        Chunk::flatten_bytes(chunks, data)
-                    }
-                    None => data,
-                }
-            };
-
-            // The Deliver Verifiers, over the bundle as it will be delivered.
-            if let Some(reason) = self.filters.verify_deliver(&bundle, &data, keys) {
-                return OfferOutcome::Dropped(bundle, reason);
-            }
-            data
-        };
-
         let delivery_result = match &service.service {
             ServiceImpl::LowLevel(svc) => {
-                // Pass raw bundle bytes to low-level services: the whole
-                // bundle is in hand, so it travels as a single Final segment.
-                let total_len = data.len() as u64;
-                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
-                    .await
+                // A raw service receives the bundle: the rebuilt header region
+                // when a Deliver Rewriter edited, else the stored bundle as
+                // loaded, the payload streaming on from the store either way.
+                let chunks = match self.run_deliver_stages(&bundle, &loaded.resident) {
+                    Ok(chunks) => chunks,
+                    Err(reason) => return OfferOutcome::Dropped(bundle, reason),
+                };
+                match chunks {
+                    Some(chunks) => {
+                        let head = loaded.resident.clone();
+                        let mut stream = RebuiltHeaders::new(chunks, &head, &mut loaded);
+                        let total_len = stream.total_len(bundle.bpv7.encoded_len());
+                        svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut stream)
+                            .await
+                    }
+                    None => {
+                        let total_len = bundle.bpv7.encoded_len();
+                        svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut loaded)
+                            .await
+                    }
+                }
             }
             ServiceImpl::Application(app) => {
+                // An Application receives the payload alone, taken whole from
+                // the stored bundle. The Deliver stages run for their verdict:
+                // a Rewriter edits neither the payload nor its protection.
+                let data = pull_whole(loaded).await;
+                if let Err(reason) = self.run_deliver_stages(&bundle, &data) {
+                    return OfferOutcome::Dropped(bundle, reason);
+                }
+
                 // The payload as stored. Its security operations were the
                 // destination's to accept at ingress (RFC 9172 §1.4), where
                 // this node decrypted it into the store or refused the
@@ -146,8 +138,8 @@ impl Dispatcher {
                         .trace_expect("A stored bundle's payload extent exceeds its bytes"),
                 );
 
-                // As for low-level services, the whole payload is in hand,
-                // so it travels as a single Final segment.
+                // The whole payload is in hand, so it travels as a single
+                // Final segment.
                 let total_len = payload.len() as u64;
                 app.on_deliver(
                     bundle.id(),
@@ -176,6 +168,41 @@ impl Dispatcher {
         }
 
         OfferOutcome::Completed(bundle)
+    }
+
+    // The Deliver stages on one editor over the record's block index and
+    // `data`, the stored bundle's resident bytes: the Rewriters, then the
+    // Verifiers over the editor's edits, so nothing is materialised for them.
+    // With no Rewriters and no Verifiers no editor is built, and the keys are
+    // derived only when a stage reads through them. `Err` carries the
+    // dropping Verifier's reason; `Ok` carries the rebuild's chunks when a
+    // Rewriter edited. The bytes were validated at ingress and every edit was
+    // checked when it was staged, so a failed rebuild is a BPA or bpv7 bug,
+    // and fatal.
+    fn run_deliver_stages(
+        &self,
+        bundle: &bundle::Bundle,
+        data: &[u8],
+    ) -> Result<Option<Vec<Chunk>>, Option<ReasonCode>> {
+        if !self.filters.has_deliver_rewriters() && !self.filters.has_deliver_verifiers() {
+            return Ok(None);
+        }
+        let keys = filter::output_keys(&bundle.bpv7, data, &*self.key_provider);
+        let mut editor = Editor::new(&bundle.bpv7, data);
+        let edited = self
+            .filters
+            .run_deliver(&mut editor, &bundle.metadata, &*keys);
+        if let Some(reason) = self
+            .filters
+            .verify_deliver(&editor, data, &bundle.metadata, &*keys)
+        {
+            return Err(reason);
+        }
+        Ok(edited.then(|| {
+            editor
+                .rebuild()
+                .trace_expect("The delivery rewrite failed to rebuild the bundle")
+        }))
     }
 }
 
