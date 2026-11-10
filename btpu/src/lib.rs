@@ -88,6 +88,14 @@ The [`transfer`] module holds the Section 5 types both layers above share:
   service is always ready and never fails.  How to run the `Stream` drain
   alongside producers, and how several producers may share one sender, is
   set out under Concurrency in [`sender::Sender`].
+- **`frame`**: BTP-U over any frame service in the sense of `hardy_frame`:
+  [`frame::Sender`] binds a sender to a transmit half and
+  [`frame::Receiver`] a receiver to a receive half, one type per stack
+  (`frame::Sender<AosTx>`, `frame::Receiver<UdpRx>`).  The sender sizes
+  its configuration for the half's frames
+  ([`sender::SenderConfig::with_frame_size`]) and drives the two-phase
+  send itself, packing a PDU only into a frame it already holds; the
+  receiver is a `Stream` of [`receiver::ReceiverEvent`]s.
 - **`critical-section`**: For targets without native atomic
   compare-and-swap (such as `thumbv6m`, Cortex-M0).  `bytes` reference-counts
   with atomics, and each sender and receiver takes its owner tag from a
@@ -206,6 +214,9 @@ pub mod transfer;
 
 #[cfg(feature = "tower")]
 mod service;
+
+#[cfg(feature = "frame")]
+pub mod frame;
 
 /// A configuration value outside the range its type accepts.
 ///

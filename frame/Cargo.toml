@@ -1,0 +1,30 @@
+[package]
+name = "hardy-frame"
+description = "Stackable transmit and receive halves for the frame services below Hardy's convergence layers"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dtn", "convergence-layer", "frame", "no-std"]
+categories = ["network-programming", "no-std"]
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Enable this feature on targets without native atomic CAS instructions (e.g., thumbv6m / Cortex-M0).
+# Requires a critical-section implementation - see https://docs.rs/portable-atomic
+critical-section = ["bytes/extra-platforms", "dep:portable-atomic", "portable-atomic/critical-section"]
+
+[dependencies]
+bytes = { version = "1", default-features = false }
+futures-core = { version = "0.3", default-features = false }
+thiserror = { version = "2", default-features = false }
+portable-atomic = { version = "1", default-features = false, optional = true }
+
+[dev-dependencies]
+futures = "0.3"

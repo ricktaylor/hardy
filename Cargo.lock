@@ -2026,6 +2026,8 @@ dependencies = [
  "criterion",
  "futures",
  "futures-core",
+ "hardy-frame",
+ "pin-project-lite",
  "portable-atomic",
  "rand 0.10.3",
  "rand_core 0.10.1",
@@ -2127,6 +2129,17 @@ dependencies = [
  "tokio-util",
  "trace-err",
  "tracing",
+]
+
+[[package]]
+name = "hardy-frame"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "futures-core",
+ "portable-atomic",
+ "thiserror",
 ]
 
 [[package]]
