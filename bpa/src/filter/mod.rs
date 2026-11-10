@@ -46,11 +46,9 @@
 //! [`reader`](RewriteContext::reader) is a decrypting reader over the
 //! editor, taken on demand: it borrows the context, so a Rewriter reads
 //! before it edits, and takes the reader once, since each one memoises its
-//! own decrypts. At Egress and at a raw service's delivery the editor works
-//! over the stored bundle's resident bytes: the headers always, and the
-//! payload while it is in hand. A payload still streaming from the store
-//! reads as `NotResident`. At an Application's delivery the whole bundle is
-//! resident.
+//! own decrypts. At Egress and at delivery the editor works over the stored
+//! bundle's resident bytes: the headers always, and the payload while it is
+//! in hand. A payload still streaming from the store reads as `NotResident`.
 //!
 //! # Failure and Drop contract
 //!

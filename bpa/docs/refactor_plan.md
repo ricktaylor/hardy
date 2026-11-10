@@ -60,10 +60,10 @@ The leg's planned work is on the branch, where the forward door streams. It open
 |---|---|
 | ✅ | A payload's security operations are the destination's to accept at ingress, which reports a failure or a missing key there: delivery and the administrative door hand over the stored payload and decrypt nothing, dropping a record still under a BCB as Block unsupported |
 | ✅ | The delivery door opens the stored bundle with `Store::load_stream` and holds it until its headers are resident. The Deliver Rewriters edit one editor, and the Deliver Verifiers read that editor as the Rewriters left it, so nothing is materialised for them. A raw service receives the rebuilt header region when a Rewriter edited, else the stored bundle as loaded, the payload streaming on from the store either way; the record keeps the stored block index (on the branch) |
-| 🔲 | An Application receives its payload as it streams: the payload's data range, from the resident bytes and then the load stream |
+| ✅ | An Application receives its payload as it streams: the payload's data range, from the resident bytes and then the load stream, which is never read past the data's end (on the branch) |
 | ✅ | A declared Deliver peek (`FilterPack::deliver_verifier_with_peek`, `DeliverChain::peek`): the delivery door holds the payload's first min(P, payload length) bytes, read from the store, before the Deliver Verifiers run, as the input doors do (on the branch) |
 | 🔲 | The fixed-vs-pluggable transport-block strip at Deliver (Phase 3 row) |
-| 🔲 | Pin the ADU-length definition at the Application door: the announced size is the *stored* payload block data length, before BPSec decryption. AES-GCM preserves the plaintext length, so the two coincide today, but a length-changing confidentiality suite would make the distinction real. Post-reassembly bundles re-derive both lengths from the reassembled bundle's index |
+| ✅ | The ADU length at the Application door is the payload block's stored data length, known before the first byte: a payload's security operations are accepted at ingress, so every stored payload is plaintext, and a BCB-AES-GCM ciphertext's 16-byte tag (RFC 9173 §4.4) never reaches the door. Post-reassembly bundles re-derive the length from the reassembled bundle's index (on the branch) |
 
 ### Storage — retires `concat_stream`
 

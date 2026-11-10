@@ -1,7 +1,7 @@
 use hardy_bpv7::{editor::Chunk, status_report::ReasonCode};
 
 use super::{
-    output::{LoadedBundle, pull_headers, pull_whole},
+    output::{LoadedBundle, PayloadReceiver, pull_headers},
     *,
 };
 use crate::{
@@ -107,11 +107,11 @@ impl Dispatcher {
                 }
             }
             ServiceImpl::Application(app) => {
-                // An Application receives the payload alone, taken whole from
-                // the stored bundle. The Deliver stages run for their verdict:
-                // a Rewriter edits neither the payload nor its protection.
-                let data = pull_whole(loaded).await;
-                if let Err(reason) = self.run_deliver_stages(&bundle, &data) {
+                // An Application receives the payload alone, streaming from
+                // the store as it is read. The Deliver stages run on the held
+                // headers and peek for their verdict: a Rewriter edits
+                // neither the payload nor its protection.
+                if let Err(reason) = self.run_deliver_stages(&bundle, &loaded.resident) {
                     return OfferOutcome::Dropped(bundle, reason);
                 }
 
@@ -120,9 +120,7 @@ impl Dispatcher {
                 // this node decrypted it into the store or refused the
                 // bundle, so one still under a BCB here is a record no door
                 // of this build wrote: dropped, as the gate drops a bundle
-                // its destination cannot accept. The record's block index
-                // and its bytes were validated at ingress, so a disagreement
-                // between them is a BPA bug or storage corruption, and fatal.
+                // its destination cannot accept.
                 let block = bundle
                     .bpv7
                     .blocks
@@ -132,21 +130,17 @@ impl Dispatcher {
                     debug!("Payload still encrypted at delivery; dropped");
                     return OfferOutcome::Dropped(bundle, Some(ReasonCode::BlockUnsupported));
                 }
-                let mut payload = data.slice_ref(
-                    block
-                        .payload(&data)
-                        .trace_expect("A stored bundle's payload extent exceeds its bytes"),
-                );
 
-                // The whole payload is in hand, so it travels as a single
-                // Final segment.
-                let total_len = payload.len() as u64;
+                // Announced at its stored data length, the ADU's, known
+                // before the first byte.
+                let mut stream = PayloadReceiver::new(&bundle.bpv7, loaded);
+                let total_len = stream.total_len();
                 app.on_deliver(
                     bundle.id(),
                     bundle.expiry(),
                     bundle.primary().flags.app_ack_requested,
                     total_len,
-                    &mut payload,
+                    &mut stream,
                 )
                 .await
             }
