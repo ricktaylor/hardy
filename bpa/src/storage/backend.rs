@@ -46,6 +46,12 @@ pub type ConfirmResponse = (BundleMetadata, BundleStatus);
 /// over its internal flume channel, and tests use a `Vec`-collecting mock — all implementing the
 /// same [`Sender`] trait. Implementors should stop iterating when `stream.send` returns
 /// `Err(SendError(_))` — the consumer has gone away.
+///
+/// # Errors
+///
+/// An `Err` from any method is fatal: the BPA logs it and aborts the process. Ride out a
+/// transient failure inside the method, and return `Err` only for one that cannot be
+/// recovered.
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
     /// Retrieves the metadata for the bundle with the given `bundle_id`, or
@@ -205,6 +211,12 @@ pub type RecoveryResponse = (Arc<str>, OffsetDateTime);
 ///
 /// `recover` delivers entries to the caller via a [`Sender<RecoveryResponse>`] sink rather
 /// than returning a collection. See the [`MetadataStorage`] trait docs for the rationale.
+///
+/// # Errors
+///
+/// An `Err` from any method is fatal: the BPA logs it and aborts the process. Ride out a
+/// transient failure inside the method, and return `Err` only for one that cannot be
+/// recovered.
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
     /// Recovers bundles from the bundle storage, pushing each to `stream`.

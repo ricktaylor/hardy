@@ -131,34 +131,34 @@ trait BundleStorage {
     /// yields `Ok(Segment::Next(bytes))` for non-final payload
     /// segments and `Ok(Segment::Final(bytes))` for the final segment
     /// (which may be zero-length); on `Final`, commit the spool and
-    /// return the assigned storage name. `Err(Disconnected)` (the
-    /// producer dropped without sending `Final`) is treated as abort
-    /// and the staged data is discarded. See §3.2 for the full
-    /// Segment contract.
+    /// return the assigned storage name. A stream that ends without
+    /// `Final` (the producer dropped, or a decorator stopped it) is an
+    /// abort: the staged data is discarded and `None` returned. See
+    /// §3.2 for the full Segment contract.
     async fn store(
         &self,
         stream: &dyn Receiver<Segment>,
-    ) -> Result<Arc<str>>;
+    ) -> Option<Arc<str>>;
 
-    /// Push the stored bundle bytes for `storage_name` into `stream`
-    /// in order, returning when all bytes have been pushed or the
-    /// consumer has gone away (`SendError`). The egress direction is
-    /// a pure stream — end-of-data is unambiguous, so no `Segment` is
-    /// needed.
+    /// Open the stored bundle bytes for `storage_name` as a segment
+    /// stream, in order and ending in `Segment::Final`, or `None` if
+    /// absent. A consumer that has what it needs drops the stream, and
+    /// the backend stops reading.
     async fn load(
         &self,
         storage_name: &str,
-        stream: &dyn Sender<Bytes>,
-    ) -> Result<()>;
+    ) -> Option<Box<dyn Receiver<Segment>>>;
 
     /// Delete stored bundle data.
-    async fn delete(&self, storage_name: &str) -> Result<()>;
+    async fn delete(&self, storage_name: &str);
 }
 ```
 
+A storage call succeeds or the node stops ([storage_subsystem_design.md](storage_subsystem_design.md#storage-traits)): a backend rides out a transient failure inside the call and panics on one it cannot recover from, so no call returns a `Result`. A load's stream is held to the same contract: it yields exactly the stored bytes, ending in its `Final`, and a read the backend cannot recover panics inside `recv` rather than end the stream early. The load stream a door pulls therefore never fails. A door may still abort its own output stream to a CLA for a reason of its own; that abort is the BPA's, not the store's.
+
 Both `store` and `load` are fully sequential: every backend (local disk, SSD, NOR flash, S3, tape) handles these primitives naturally. The stream traits (§4) decouple the byte channel from the trait surface — each backend wraps whatever transport is most convenient.
 
-A **bounded head read needs no extra primitive**: the consumer calls `load` and drops its receiver once it has the bytes it wants (headers plus any declared payload peek); the backend sees `SendError` and stops streaming. Restart re-admission uses exactly this shape to re-supply filter invocation data (`filter_subsystem_design.md`), so the sequential-only model holds there too.
+A **bounded head read needs no extra primitive**: the consumer calls `load` and drops its receiver once it has the bytes it wants (headers plus any declared payload peek), and the backend stops reading. Restart re-admission uses exactly this shape to re-supply filter invocation data (`filter_subsystem_design.md`), so the sequential-only model holds there too.
 
 The `store` / `load` names match Hardy's existing storage convention and are unambiguous because the BPA is always the caller. The CLA byte-streaming surfaces keep their established verbs rather than the §4 `write` / `read` convention: egress is the streamed `Cla::forward` (§6.2), ingress the streamed `Sink::dispatch` (§5.1.3).
 
@@ -173,7 +173,7 @@ pub enum Segment {
 }
 ```
 
-A trait method that takes `&dyn Receiver<Segment>` is declaring that its producer marks the final item with `Final(bytes)` (which may carry payload data or be empty), and that a bare disconnect (the producer dropped without ever sending `Final`) is to be treated as abort. Plain `Receiver<Bytes>` is reserved for streams where end-of-data is unambiguous (e.g. `BundleStorage::load`, where the BPA is itself the producer and a consumer disconnect just means "stop streaming").
+A trait method that takes `&dyn Receiver<Segment>` is declaring that its producer marks the final item with `Final(bytes)` (which may carry payload data or be empty), and that a bare disconnect (the producer dropped without ever sending `Final`) is to be treated as abort. Every byte stream on the trait surfaces carries `Segment`, `BundleStorage::load`'s included, so a stream that ends without `Final` is never mistaken for the end of the data.
 
 The consumer pattern is uniform — *append until `Final`, then commit*:
 
@@ -237,14 +237,15 @@ The two traits are deliberately asymmetric in their receivers: `send` takes `&se
 
 Channel adapters live separately from the traits. The storage subsystem provides `ChannelSender<T>` wrapping `hardy_async::channel::Sender<T>`; the mirror `ChannelReceiver<T>` wraps `hardy_async::channel::Receiver<T>`. Tests use `Mutex<Vec<T>>`-backed collectors. None of these adapters appear in the trait surface.
 
-Byte streams use `Sender<Bytes>` and `Receiver<Bytes>` directly — no specialised aliases.
+Byte streams use `Receiver<Segment>` directly — no specialised aliases.
 
 **`Closeable` as the implementation primitive.** The `Sender<T>` / `Receiver<T>` pair is the natural abstraction over `Closeable` in `hardy-async`, which combines a channel with a cancellation token behind a single interface. Implementations that want cancellable cleanup — the registry's reconciler task (§5.1.2), per-call streaming receivers passed into `Sink::dispatch_streamed`, anywhere a `select_biased!(cancel | recv)` pattern would otherwise be hand-rolled — compose naturally on top of `Closeable` without re-exposing the cancellation primitive in their trait surface.
 
 **Direction conventions for trait method parameters:**
 
-- A method that takes `&dyn Sender<T>` *pushes items into it*; the caller holds the receiving end. Example: `BundleStorage::load(_, stream: &dyn Sender<Bytes>)` — storage pushes bytes; the caller wraps a channel receiver and reads from it.
+- A method that takes `&dyn Sender<T>` *pushes items into it*; the caller holds the receiving end. Example: `BundleStorage::recover(stream: &dyn Sender<RecoveryResponse>)` — storage pushes entries; the caller wraps a channel receiver and reads from it.
 - A method that takes `&dyn Receiver<T>` *pulls items from it*; the caller holds the producing end. Example: `BundleStorage::store(stream: &dyn Receiver<Segment>)` — storage pulls bytes; the caller wraps a channel sender and writes into it.
+- A method that returns a `Receiver<T>` hands the caller a stream to pull. Example: `BundleStorage::load(_) -> Option<Box<dyn Receiver<Segment>>>` — the caller pulls the stored bytes at its own pace and drops the stream to stop.
 
 **Method naming on symmetric trait surfaces.** When a trait surface is implemented on either side of a connection (CLA traits, filter traits), `stream_in()` / `stream_out()` are ambiguous — "in" relative to whom? These traits use `write()` for the push direction and `read()` for the pull direction, naming what the *caller of the method* is doing. A CLA that calls `sink.write(stream)` is writing bytes; the BPA that calls `cla.write(stream)` is also writing bytes. The trait surface is identical; only the direction of data flow differs by use site.
 
@@ -592,7 +593,7 @@ Each step is a `mac.update()` or AAD accumulation call. The stage provides these
 
 ### 6.2. CLA Egress: Cla::forward and Cla::write
 
-> **Landed state (2026-08).** There is no buffered/streamed pair: `Cla::forward` is the one, streamed-only method (keeping `forward`'s `bundle_id` correlation parameter, which the sketch predates), and the buffering adapter the sketch describes is the public helper `stream::buffer_stream` — it buffers the stream via `concat_stream`, enforces `total_len` exactly (with a `usize` pre-flight for 32-bit targets), and maps truncation to `StreamCancelled`, overrun to `PayloadTooLarge`, and short delivery to `PayloadUnderrun`. CLAs that need a contiguous bundle call it explicitly (marked `INTERIM BUFFERING` at each site). The dispatcher forwards the egress rebuild through the streamed door as segments (`rebuilt_headers::RebuiltHeaders` over `dispatcher::output::LoadedBundle`: the rebuilt header region, then the stored payload block streaming on from `Store::load_stream`), with the plan-derived `total_len` below: the rebuilt header region's length plus the stored bundle's from its payload block on. The egress cryptographic stages and the streamed storage `load` remain pending.
+> **Landed state.** There is no buffered/streamed pair: `Cla::forward` is the one, streamed-only method (keeping `forward`'s `bundle_id` correlation parameter, which the sketch predates), and the buffering adapter the sketch describes is the public helper `stream::buffer_stream` — it buffers the stream via `concat_stream`, enforces `total_len` exactly (with a `usize` pre-flight for 32-bit targets), and maps truncation to `StreamCancelled`, overrun to `PayloadTooLarge`, and short delivery to `PayloadUnderrun`. CLAs that need a contiguous bundle call it explicitly (marked `INTERIM BUFFERING` at each site). The dispatcher forwards the egress rebuild through the streamed door as segments (`rebuilt_headers::RebuiltHeaders` over `dispatcher::output::LoadedBundle`: the rebuilt header region, then the stored payload block streaming on from `Store::load_stream`), with the plan-derived `total_len` below: the rebuilt header region's length plus the stored bundle's from its payload block on. The egress cryptographic stages and the streamed storage `load` remain pending.
 
 Original sketch — a buffered `Cla::forward(Bytes)` for CLAs that expect a complete bundle in memory, beside a streaming variant that takes a `Receiver<Segment>` from which the CLA pulls chunks, mirroring the §5.1.3 sketch:
 
@@ -831,7 +832,7 @@ Result: the payload-never-in-RAM property (§2.5) on ingress.
 
 ### Phase B: Streaming Egress
 
-1. Replace `BundleStorage::load -> Bytes` with the streaming `load(&str, &dyn Sender<Bytes>)` across backends, behind `Store::load_stream`: the output door already pulls only its header region and streams the rest
+1. Replace `BundleStorage::load -> Bytes` with the streaming `load(&str) -> Option<Box<dyn Receiver<Segment>>>` across backends, behind `Store::load_stream`: the output door already pulls only its header region and streams the rest
 2. Retire the `INTERIM BUFFERING` sites: CLAs consume `Cla::forward`'s stream segment-at-a-time rather than calling `stream::buffer_stream` (§6.2)
 3. BPSec egress stages (integrity; confidentiality for header targets) as the hard-coded cryptographic stages, keyed through the `KeyProvider` (§6.1.1), reusing `Signer` / `Encryptor` for resident header targets
 
