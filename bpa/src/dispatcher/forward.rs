@@ -83,16 +83,11 @@ impl Dispatcher {
         lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
         next_hop: Eid,
-        mut bundle: bundle::Bundle,
+        bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // The §E removals the ingress gate deferred apply first, so the
-        // Rewriters see the bundle as it will travel, and the strip can never
-        // delete a Rewriter's insert into a removed block's number.
-        let data = self.strip_removed_blocks(&mut bundle, data);
-
-        // Egress chain: the registered Rewriters, on the stripped wire form.
+        // Egress chain: the registered Rewriters, on the stored wire form.
         // Nothing at Egress drops a bundle, so the chain hands back the pair.
         // - Runs after dequeue from ForwardPending, just before CLA send
         // - Edits are in-memory only (like Deliver), NOT persisted
@@ -278,19 +273,14 @@ impl Dispatcher {
         // included) rejects the combination.
         let report_on_failure = !bundle.primary().forbids_report_on_failure();
 
-        // The per-hop blocks below are replaced through `insert_block`, which
-        // strips a replaced block from any plaintext BIB that covers it. That
-        // is Hardy's relay policy, within the waypoint latitude of RFC 9172
-        // §3.1: this node must rewrite these blocks (RFC 9171 §5.4; the hop
-        // count's increment is a §4.4.3 SHOULD), and no operation over the
-        // old body survives the rewrite. Stripping keeps the sender's other
-        // results verifiable, where a stale result would fail verification
-        // downstream and cost the receiver the block or the whole bundle
-        // under its failure policy. Where this node is the operation's
-        // security acceptor and verified it at ingress, as for a hop-by-hop
-        // PreviousNode signature, the strip also discharges the RFC 9172
-        // §5.1.2 acceptor duty; elsewhere the node in effect acts as the
-        // acceptor of an operation it may not have verified. A Previous Node
+        // The per-hop blocks below are replaced through `insert_block`. This
+        // node is the acceptor of every operation on a Previous Node or
+        // Bundle Age block, which it must replace (RFC 9171 §5.4), and
+        // ingress discharged that duty (RFC 9172 §5.1.2): it accepted each
+        // operation or discarded the block, so a received bundle's blocks
+        // meet no operation here. A source's bundle may carry a plaintext
+        // BIB over one, which `insert_block` strips the replaced block from,
+        // the operation having no acceptor beyond this node. A Previous Node
         // or Bundle Age block the editor cannot safely update (BCB-covered,
         // so possibly under an encrypted BIB) refuses, and the caller parks
         // the bundle: both writes are MUSTs (RFC 9171 §5.4).
@@ -314,13 +304,24 @@ impl Dispatcher {
             )
             .rebuild();
 
-        // Increment Hop Count, where the block can be updated. The increment
-        // is a SHOULD (RFC 9171 §4.4.3): a Hop Count block the editor refuses
-        // (BCB-covered beside an encrypted BIB that may cover it) travels
-        // unchanged, with its security operations, rather than holding the
-        // bundle back. One this node could not read at ingress has no cached
-        // value, and travels unchanged too.
-        if let Some(hop_count) = &bundle.metadata.per_hop.hop_count {
+        // Increment the Hop Count, where this node is the acceptor of the
+        // operations on it: ingress accepted them, and the block meets none
+        // here. The increment is a SHOULD (RFC 9171 §4.4.3), so one it is
+        // not travels unchanged, with its security operations, rather than
+        // holding the bundle back: a block still under a BIB operation,
+        // which this node holds no key for or could not accept, is not its
+        // to change, one the editor refuses (BCB-covered beside an encrypted
+        // BIB that may cover it) cannot be, and one this node could not
+        // read at ingress has no cached value.
+        let signed = raw.blocks.values().any(|block| {
+            block.block_type == hardy_bpv7::block::Type::HopCount
+                && block.bib != hardy_bpv7::block::BibCoverage::None
+        });
+        if signed {
+            debug!(
+                "Hop Count block travels unchanged: under an integrity operation this node did not accept"
+            );
+        } else if let Some(hop_count) = &bundle.metadata.per_hop.hop_count {
             match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
                 Ok(block) => block
                     .with_flags(hardy_bpv7::block::Flags {
@@ -343,10 +344,11 @@ impl Dispatcher {
 
         // Bundle Age. A bundle that carries one, or has no creation time and
         // so must (RFC 9171 §4.4.2), gets this hop's: a MUST (§5.4), so a
-        // block the editor refuses parks the bundle. A bundle a Classifier
-        // marked gets one from the clock too, for a downstream node without
-        // one (§5.5), unless its Bundle Age a BCB covers: unread here, it
-        // travels unchanged.
+        // block the editor refuses parks the bundle. A bundle marked for one,
+        // by ingress for a Bundle Age it discarded or by a Classifier, gets
+        // one from the clock too, for a downstream node without one (§5.5),
+        // unless its Bundle Age a BCB covers: unread here, it travels
+        // unchanged.
         let required =
             bundle.metadata.per_hop.bundle_age.is_some() || !bundle.id().timestamp.is_clocked();
         let covered_age = raw.blocks.values().any(|block| {
@@ -511,9 +513,7 @@ mod tests {
         .unwrap();
         let data = Bytes::from(data);
         let storage_name = data_store.save(data.clone()).await.unwrap();
-        let parsed =
-            crate::bundle::parse::parse_validate_with_provider(data, hardy_bpv7::bpsec::no_keys)
-                .unwrap();
+        let parsed = hardy_bpv7::parse::parse(data).unwrap().bundle;
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -571,11 +571,7 @@ mod tests {
         .unwrap();
         let data = Bytes::from(data);
         let bundle = bundle::Bundle {
-            bpv7: crate::bundle::parse::parse_validate_with_provider(
-                data.clone(),
-                hardy_bpv7::bpsec::no_keys,
-            )
-            .unwrap(),
+            bpv7: hardy_bpv7::parse::parse(data.clone()).unwrap().bundle,
             metadata: bundle::BundleMetadata::originated(),
             status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
         };

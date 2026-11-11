@@ -1,27 +1,43 @@
 use alloc::sync::Arc;
+use core::{mem::take, ops::ControlFlow};
+use trace_err::*;
 
 use hardy_bpv7::{
-    block::BibCoverage, bpsec::bcb::OperationSet, crc::CrcType, eid::NodeId,
+    Error as Bpv7Error,
+    block::{self, BibCoverage},
+    bpsec::{Role, Roles, SecurityServices, bcb, bib, key::KeySource},
+    builder::PayloadTrailer,
+    crc::CrcType,
+    editor::Chunk,
+    eid::NodeId,
+    parse::Parsed,
     status_report::ReasonCode,
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
 use super::{
-    Dispatcher,
-    validate::{ValidatingReceiver, ValidationFailure},
+    Dispatcher, rewrite_received_bundle, rewrite_received_headers,
+    validate::{Rewrite, ValidatingReceiver, ValidationFailure},
 };
 use crate::{
-    Bytes, HashMap,
+    HashMap,
     bundle::{
         Bundle, BundleMetadata, BundleStatus,
-        parse::{HeaderFailure, HeaderVerify, ReceptionReport, parse_headers},
+        arrival::{
+            HeaderFailure, Headers, HopCountKept, Pass,
+            fate::check_announced,
+            parse_headers,
+            payload::{begin_payload_decryption, begin_payload_verifiers},
+            report::ReportFacts,
+        },
     },
     cla::{Acceptance, ClaAddress, Segment},
-    filter::ChainOutcome,
+    filter::slots::MetadataDelta,
     otel_metrics::{reason_label, status_label},
+    rebuilt_headers::RebuiltHeaders,
     routing::{Decision, DispatchAction},
     stream::{ConcatError, Receiver},
 };
@@ -34,13 +50,37 @@ fn count_received_dropped(reason: &ReasonCode) {
     metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(reason)).increment(1);
 }
 
-// An arrival the gate decisions (Ingress chain + route lookup) admitted.
-// The gate returns `None` for a rejection, which it has already counted and
-// reported.
+// What the gate decisions (Ingress chain + route lookup) settle for an
+// arrival they admit. The gate returns `None` for a rejection, which it has
+// already counted and reported.
 struct Admitted {
-    bundle: Bundle,
     // The routing decision of record, with the table it was made against.
     decision: Decision,
+    // The security roles the Ingress chain announced this node takes on
+    // the blocks.
+    roles: HashMap<u64, Roles>,
+}
+
+// What the ingress rewrite makes of an admitted arrival, for the drain: the
+// bundle as received; its headers rebuilt, the payload streaming on as
+// received; or, where this node accepts the payload, its headers rebuilt
+// through the payload block's header, the payload's data framed by the
+// trailer.
+enum Rewritten {
+    Unchanged,
+    Headers(hardy_bpv7::Bundle, Vec<Chunk>),
+    Payload(hardy_bpv7::Bundle, Vec<Chunk>, PayloadTrailer),
+}
+
+// The payload's stages, begun on the resident headers for the drain to
+// feed, where this node accepts the payload or verifies its ciphertext: the
+// decrypt stage, where a BCB covers the payload; the Verify stage's
+// verifiers, over what the decrypt stage hands on; and the length of the
+// data the stages hand on, the plaintext's where the payload is decrypted.
+struct PayloadStages {
+    decryptor: Option<bcb::Decryptor>,
+    verifiers: Vec<(u64, bib::Verifier)>,
+    len: u64,
 }
 
 // The outcome of the shared receive pipeline, for the three in-feeds.
@@ -143,17 +183,18 @@ impl Dispatcher {
         mut metadata: BundleMetadata,
     ) -> Received {
         // Pre-drain header pass: parse the header chain off the stream and run
-        // keyed header verification — both in `bundle::parse`, before a payload
+        // keyed header verification — both in `bundle::arrival`, before a payload
         // still arriving is spooled. `Err` carries an optional recoverable bundle to
         // report before dropping (reporting stays here — we own the machinery);
         // a structural failure, or a stream that ended inside the headers,
         // carries none. The pass holds the Ingress chain's payload peek: none
         // for an empty chain.
-        let (hv, headers, tail, bcb_ops) = match parse_headers(
+        let (hv, tail) = match parse_headers(
             stream,
+            Pass::Receiver,
             self.max_bundle_size_wire(),
             self.filters.ingress.peek,
-            self.key_provider(),
+            &*self.key_provider,
         )
         .await
         {
@@ -172,7 +213,7 @@ impl Dispatcher {
             }
             Err(HeaderFailure::Invalid { report, .. }) => {
                 let reason = match report {
-                    Some((bundle, reception, reason)) => {
+                    Some((bundle, facts, reason)) => {
                         // Complete but invalid, with a recoverable id: the
                         // drop is reported like the sibling gate and drain
                         // drops (RFC 9171 §5.6/§5.10). A structural failure,
@@ -182,7 +223,7 @@ impl Dispatcher {
                         self.report_bundle_reception(
                             &bundle,
                             metadata.received_at(),
-                            reception,
+                            facts,
                             Some(reason),
                         )
                         .await;
@@ -193,14 +234,17 @@ impl Dispatcher {
                 count_received_dropped(&reason);
                 return Received::Disposed;
             }
+            Err(HeaderFailure::SourceRule(_)) => {
+                unreachable!("a receiver's header pass checks no source rules")
+            }
         };
 
         // Reserved primary-block flag bits have no protocol effect, but they are
         // the only sign of a peer setting them: say so.
-        let u = hv.bundle.primary.flags.unrecognised;
+        let u = hv.parsed.bundle.primary.flags.unrecognised;
         if u != 0 {
             debug!(
-                bundle_id = %hv.bundle.primary.id,
+                bundle_id = %hv.parsed.bundle.primary.id,
                 "Bundle primary block has unrecognised flag bits set: {u:#x}"
             );
         }
@@ -223,7 +267,7 @@ impl Dispatcher {
                 return Received::Disposed;
             }
             self.report_bundle_reception(
-                &hv.bundle,
+                &hv.parsed.bundle,
                 metadata.received_at(),
                 hv.report,
                 Some(reason),
@@ -239,7 +283,7 @@ impl Dispatcher {
         if let Some(reason) = self.rfc9171_gate_reason(&hv) {
             count_received_dropped(&reason);
             self.report_bundle_reception(
-                &hv.bundle,
+                &hv.parsed.bundle,
                 metadata.received_at(),
                 hv.report,
                 Some(reason),
@@ -248,31 +292,42 @@ impl Dispatcher {
             return Received::Disposed;
         }
 
-        // Destructure the verified headers once, here at the gate: move the
-        // decoded per-hop blocks into metadata (a Classifier may read them),
-        // and keep the begun payload-BIB verifiers, the scheduled §E removals,
-        // and the reception reason for the drain and store below. Nothing
-        // downstream needs `hv` whole.
-        let HeaderVerify {
-            bundle,
-            per_hop,
-            to_remove,
-            report,
-            deferred_verifiers,
+        // Destructure the verified headers once, here at the gate: the parse
+        // stays whole through the gate's decisions, the acceptance and the
+        // rewrite, its decoded per-hop fields go into the metadata (a
+        // Classifier may read them), and the begun payload-BIB verifiers,
+        // the scheduled §E removals and the reception reason serve the
+        // rewrite, drain and store below.
+        let Headers {
+            mut parsed,
+            mut to_remove,
+            mut accepted,
+            hop_count_kept,
+            mut report,
+            mut verified,
+            mut deferred_verifiers,
+            keys,
         } = hv;
-        metadata.per_hop = per_hop;
+        metadata.per_hop = parsed.per_hop.clone();
 
-        // The record under construction: built once here at the gate, it is
-        // the one object that travels through the chain, the route lookup,
-        // the drain, and the store below, mutated in place. It is born at
-        // `Dispatching` — the status it is persisted at — because nothing
-        // observes the record before the single insert below: only the
-        // finished, classified record ever reaches storage.
-        let bundle = Bundle {
-            bpv7: bundle,
-            metadata,
-            status: BundleStatus::Dispatching,
-        };
+        // A bundle whose Bundle Age the header pass discards still wants one:
+        // a node upstream added it, so egress writes a fresh one from the
+        // clock, for downstream nodes without one (RFC 9171 §5.5). The mark is
+        // written as a Classifier's would be, ahead of the Ingress chain,
+        // which may clear it. A bundle without a creation time never gets
+        // here without its Bundle Age: the header pass rejects it.
+        if to_remove.iter().any(|n| {
+            parsed
+                .bundle
+                .blocks
+                .get(n)
+                .is_some_and(|b| b.block_type == block::Type::BundleAge)
+        }) {
+            metadata.apply(MetadataDelta {
+                add_bundle_age: Some(true),
+                ..Default::default()
+            });
+        }
 
         // Every arrival spools through the store's streaming seam — the
         // resident head may include payload bytes, or the whole bundle, so
@@ -282,39 +337,312 @@ impl Dispatcher {
         // complete-at-head arrival the decorator yields the head as the
         // stream's `Final` and settles from it alone: the header pass already
         // took the arrival's `Final`, so the inner stream is not pulled again.
-        debug_assert!(bundle.metadata.storage_name.is_none());
+        debug_assert!(metadata.storage_name.is_none());
 
         // The gate decisions settle before the payload drains, so a rejected
         // arrival returns here having spooled nothing; the producer learns
         // the verdict from the door's return, never from the stream.
         let Some(Admitted {
-            mut bundle,
             decision,
+            mut roles,
         }) = self
-            .decide_at_gate(bundle, headers.clone(), &bcb_ops, report)
+            .decide_at_gate(&mut parsed, &mut metadata, &*keys, report)
             .await
         else {
             return Received::Disposed;
         };
 
+        // A fragment's payload is part of the bundle's, whose operations
+        // are accepted, and verified, after reassembly, when the whole
+        // bundle crosses this gate: a Classifier's announcement of it is
+        // passed over. Otherwise
+        // the bundle's destination is the acceptor of every security
+        // operation in it (RFC 9172 §1.4): where the gate decided to deliver
+        // it here, now or once its service registers, every block an
+        // operation targets joins the acceptors, the payload among them. A
+        // Hop Count the header pass kept for the encrypted BIB it shares
+        // joins them too, accepted where this node accepts every block that
+        // BIB covers.
+        let local = self.delivers_locally(&parsed.bundle, &metadata, &decision);
+        let fragment = parsed.bundle.primary.id.fragment_info.is_some();
+        if fragment {
+            roles.remove(&1);
+        }
+        // This node's roles on the blocks the gate checks, the acceptor's
+        // outranking the verifier's on one operation: the chain's
+        // announcements, a per-hop block's acceptance among them but not
+        // its verification, since the header pass accepts the per-hop
+        // blocks' operations before the chain runs (RFC 9171 §5.4), kept or
+        // discarded; the destination's acceptance of every operation (RFC
+        // 9172 §1.4), which outranks any verification announced; and a Hop
+        // Count the header pass kept for the encrypted BIB it shares,
+        // accepted where this node accepts every block that BIB covers. The
+        // services policy announced on a block, to accept or to verify, it
+        // expects an operation of (`expected`); the destination's own
+        // acceptance expects nothing. A block the header pass accepted or
+        // the fate discards is outside the pass.
+        let mut gate_roles: HashMap<u64, Roles> = HashMap::new();
+        let mut expected: HashMap<u64, SecurityServices> = HashMap::new();
+        for (&n, r) in &roles {
+            // Compared by encoding, so an alias of the type counts.
+            let per_hop = parsed.bundle.blocks.get(&n).is_some_and(|b| {
+                b.block_type == block::Type::PreviousNode
+                    || b.block_type == block::Type::BundleAge
+                    || b.block_type == block::Type::HopCount
+            });
+            let announced = if per_hop {
+                Roles::each(Role::Acceptor, r.accepts())
+            } else {
+                *r
+            };
+            let services = announced.accepts() | announced.verifies();
+            if !services.any() {
+                continue;
+            }
+            gate_roles.insert(n, announced);
+            expected.insert(n, services);
+        }
+        if !fragment && local {
+            for (&n, b) in &parsed.bundle.blocks {
+                if b.bcb.is_some() || b.bib != BibCoverage::None {
+                    *gate_roles.entry(n).or_default() |=
+                        Roles::each(Role::Acceptor, SecurityServices::BOTH);
+                }
+            }
+            *gate_roles.entry(1).or_default() |=
+                Roles::each(Role::Acceptor, SecurityServices::BOTH);
+        }
+        if let Some((number, HopCountKept::SharesEncryptedBib { .. })) = hop_count_kept {
+            *gate_roles.entry(number).or_default() |=
+                Roles::each(Role::Acceptor, SecurityServices::BOTH);
+        }
+        gate_roles.retain(|n, _| !accepted.contains_key(n) && !to_remove.contains(n));
+        expected.retain(|n, _| gate_roles.contains_key(n));
+
+        // Their operations are processed now, before anything is spooled,
+        // for the rewrite below to remove what is accepted; a designated
+        // block must carry an operation of the service this arrival checked,
+        // and one that does not meets its fate. At the destination a Hop
+        // Count this node cannot accept meets its fate too, there being no
+        // node downstream to pass it to.
+        let mut verify_payload_ciphertext = false;
+        if !gate_roles.is_empty() {
+            match check_announced(
+                &gate_roles,
+                &expected,
+                &mut parsed,
+                &*keys,
+                &verified,
+                !deferred_verifiers.is_empty(),
+                local,
+            ) {
+                Ok(outcome) => {
+                    report |= outcome.fate.report;
+                    accepted.extend(outcome.accepted);
+                    verified.extend(outcome.verified);
+                    to_remove.extend(outcome.fate.discarded);
+                    verify_payload_ciphertext = outcome.verify_payload_ciphertext;
+                }
+                Err(rejected) => {
+                    let reason = rejected.reason();
+                    debug!(
+                        "The gate's check of an announced block rejected the bundle: {rejected}"
+                    );
+                    count_received_dropped(&reason);
+                    self.report_bundle_reception(
+                        &parsed.bundle,
+                        metadata.received_at(),
+                        report | rejected.report(),
+                        Some(reason),
+                    )
+                    .await;
+                    return Received::Disposed;
+                }
+            }
+        }
+
+        // Where this node forwards the bundle, a Hop Count the header pass
+        // left as received and the gate did not accept travels unchanged,
+        // logged.
+        if !local
+            && let Some((number, reason)) = &hop_count_kept
+            && !accepted.contains_key(number)
+            && !to_remove.contains(number)
+        {
+            info!("Hop Count block {number} travels unchanged: {reason}");
+        }
+
         // The deferred-BIB verifiers were begun by the header pass, in the
         // same keyed scope as the header verify; the decorator absorbs the
         // resident payload prefix at construction, the streamed remainder
         // as it arrives — feeding the payload CRC, the block+outer framing,
-        // and each deferred BIB digest as the bytes stream past.
-        let payload_start = bundle.bpv7.blocks.get(&1).map_or(headers.len(), |b| {
-            usize::try_from(b.payload_range().start)
-                .expect("parse bounds pre-payload offsets to usize")
-        });
-        let mut tail_rx =
-            ValidatingReceiver::new(stream, tail, deferred_verifiers, headers, payload_start);
+        // and each deferred BIB digest as the bytes stream past. It
+        // validates the bytes as received.
+        let payload_data = parsed.bundle.blocks[&1].payload_range();
 
+        // The accepted per-hop operations and the scheduled removals leave
+        // the bundle before it is first stored: its headers are rebuilt
+        // without them, and the record takes the rebuilt block map. A BIB
+        // the removal cascade decrypts and finds invalid rejects the bundle.
+        // Where this node accepts the payload, its operations are processed
+        // as it streams: the decrypt stage decrypts it where a BCB covers
+        // it, the Verify stage checks a BIB over it against what the decrypt
+        // stage hands on (RFC 9172 §3.9: the BCB first, the BIB second), and
+        // the payload is stored rewritten, in plaintext without those
+        // operations. The keys were found at the acceptance above, so each
+        // stage begins.
+        let payload = accepted.get(&1).copied().unwrap_or_default();
+        let payload_stages = if payload.any() || verify_payload_ciphertext {
+            let decryptor = if payload.confidentiality || verify_payload_ciphertext {
+                begin_payload_decryption(&parsed, &*keys)
+            } else {
+                Ok(None)
+            };
+            let stages = decryptor.and_then(|decryptor| {
+                let len = decryptor
+                    .as_ref()
+                    .map_or(payload_data.end - payload_data.start, |d| d.plaintext_len());
+                // The BIB over the payload. Over an accepted payload's
+                // plaintext every operation begins afresh: its acceptor's
+                // where the payload is accepted for integrity, and a
+                // verifier's, where it holds the key, over a payload
+                // accepted for confidentiality alone. Over a payload
+                // received in plaintext the verifiers the header pass began
+                // are those: one per BIB it could check, over the data as
+                // received, and none where the payload was resident and the
+                // check verified it there; an operation it holds no key for
+                // or cannot process has already failed the acceptance.
+                let verifiers = if !payload.any() {
+                    Ok(Vec::new())
+                } else if decryptor.is_some() {
+                    begin_payload_verifiers(&parsed, &*keys, len, payload.integrity)
+                } else {
+                    Ok(take(&mut deferred_verifiers))
+                };
+                verifiers.map(|verifiers| PayloadStages {
+                    decryptor,
+                    verifiers,
+                    len,
+                })
+            });
+            match stages {
+                Ok(stages) => Some(stages),
+                Err(e) => {
+                    let reason = ReasonCode::from(&e);
+                    debug!("The payload's acceptance rejected the bundle: {e}");
+                    count_received_dropped(&reason);
+                    self.report_bundle_reception(
+                        &parsed.bundle,
+                        metadata.received_at(),
+                        report,
+                        Some(reason),
+                    )
+                    .await;
+                    return Received::Disposed;
+                }
+            }
+        } else {
+            None
+        };
+
+        let rewrite: Result<Rewritten, Bpv7Error> = match &payload_stages {
+            Some(stages) if payload.any() => {
+                rewrite_received_bundle(&parsed, &accepted, to_remove, &*keys, stages.len)
+                    .map(|(rebuilt, chunks, trailer)| Rewritten::Payload(rebuilt, chunks, trailer))
+            }
+            _ => rewrite_received_headers(&parsed, &accepted, to_remove, &*keys).map(|rewrite| {
+                match rewrite {
+                    Some((rebuilt, chunks)) => Rewritten::Headers(rebuilt, chunks),
+                    None => Rewritten::Unchanged,
+                }
+            }),
+        };
+        let rewrite = match rewrite {
+            Ok(rewrite) => rewrite,
+            Err(e) => {
+                let reason = ReasonCode::from(&e);
+                debug!("The ingress rewrite rejected the bundle: {e}");
+                count_received_dropped(&reason);
+                self.report_bundle_reception(
+                    &parsed.bundle,
+                    metadata.received_at(),
+                    report,
+                    Some(reason),
+                )
+                .await;
+                return Received::Disposed;
+            }
+        };
         // Drain the admitted arrival into the store, bounded by
         // `max_bundle_size` as the defensive backstop (the declared size was
         // already enforced at parse; a producer exceeding its declaration
-        // trips the framing checks first).
+        // trips the framing checks first). The record is built here, once,
+        // from the bundle the rewrite leaves, its headers rebuilt or the
+        // bundle as received, and the metadata the gate wrote: born at
+        // `Dispatching` — the status it is persisted at — because nothing
+        // observes the record before the single insert below; only the
+        // finished, classified record ever reaches storage.
         let max_size = self.max_bundle_size_mem();
-        let outcome = self.store.save_stream(&mut tail_rx, max_size).await;
+        let Parsed {
+            data: headers,
+            bundle: received,
+            ..
+        } = parsed;
+        let resident = headers.clone();
+        let (bpv7, outcome, tail_rx) = match rewrite {
+            Rewritten::Payload(rebuilt, chunks, trailer) => {
+                let stages =
+                    payload_stages.trace_expect("a payload rewrite follows the payload's stages");
+                let mut tail_rx = ValidatingReceiver::new(
+                    stream,
+                    tail,
+                    stages.decryptor,
+                    stages.verifiers,
+                    headers,
+                    payload_data,
+                    Some(Rewrite::new(
+                        Chunk::flatten_head(chunks, &resident).into(),
+                        trailer,
+                    )),
+                );
+                let outcome = self.store.save_stream(&mut tail_rx, max_size).await;
+                (rebuilt, outcome, tail_rx)
+            }
+            Rewritten::Headers(rebuilt, chunks) => {
+                let mut tail_rx = ValidatingReceiver::new(
+                    stream,
+                    tail,
+                    payload_stages.and_then(|stages| stages.decryptor),
+                    deferred_verifiers,
+                    headers,
+                    payload_data,
+                    None,
+                );
+                let outcome = {
+                    let mut rebuilt_rx = RebuiltHeaders::new(chunks, &resident, &mut tail_rx);
+                    self.store.save_stream(&mut rebuilt_rx, max_size).await
+                };
+                (rebuilt, outcome, tail_rx)
+            }
+            Rewritten::Unchanged => {
+                let mut tail_rx = ValidatingReceiver::new(
+                    stream,
+                    tail,
+                    payload_stages.and_then(|stages| stages.decryptor),
+                    deferred_verifiers,
+                    headers,
+                    payload_data,
+                    None,
+                );
+                let outcome = self.store.save_stream(&mut tail_rx, max_size).await;
+                (received, outcome, tail_rx)
+            }
+        };
+        let mut bundle = Bundle {
+            bpv7,
+            metadata,
+            status: BundleStatus::Dispatching,
+        };
 
         // Settle the decorator's verdict against the save. A save the
         // verdict then rejects was staged before the verdict settled — the
@@ -341,8 +669,8 @@ impl Dispatcher {
                 .unwrap_or(ValidationFailure::Truncated)),
         };
 
-        // Settle the store from the spool's outcome. The bundle is stored
-        // exactly as received — no editing on input.
+        // Settle the store from the spool's outcome. The bundle is stored as
+        // received, less its scheduled removals.
         let (storage_name, data_len) = match outcome {
             Ok(saved) => saved,
             Err(failure) => {
@@ -371,13 +699,6 @@ impl Dispatcher {
             }
         };
         bundle.metadata.storage_name = Some(storage_name.clone());
-
-        // The §E removals travel with the bundle to the output doors, sorted
-        // for a deterministic persisted order; they ride the metadata and are
-        // applied per-attempt (egress rewrite, deliver strip).
-        let mut to_remove: Vec<u64> = to_remove.into_iter().collect();
-        to_remove.sort_unstable();
-        bundle.metadata.to_remove = to_remove;
 
         // Only a completely assembled bundle counts as received.
         metrics::counter!("bpa.bundle.received").increment(1);
@@ -434,10 +755,10 @@ impl Dispatcher {
     // happens here.
     async fn decide_at_gate(
         &self,
-        bundle: Bundle,
-        headers: Bytes,
-        bcb_ops: &HashMap<u64, OperationSet>,
-        report: ReceptionReport,
+        parsed: &mut Parsed,
+        metadata: &mut BundleMetadata,
+        keys: &dyn KeySource,
+        report: ReportFacts,
     ) -> Option<Admitted> {
         // Early duplicate probe, first — before any filter or route work: a
         // replay is DoS-shaped traffic, so a recently-committed id settles
@@ -447,42 +768,30 @@ impl Dispatcher {
         // insert_metadata's atomic refusal. Reception is still reported
         // (RFC 9171 §5.6 reports on reception; dedup is a dispatch
         // concern), exactly as the post-spool duplicate path reports it.
-        if self.store.seen_recently(bundle.id()) {
+        if self.store.seen_recently(&parsed.bundle.primary.id) {
             debug!("Duplicate bundle detected at the ingress gate");
             metrics::counter!("bpa.bundle.received.duplicate").increment(1);
-            self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
+            self.report_bundle_reception(&parsed.bundle, metadata.received_at(), report, None)
                 .await;
             return None;
         }
 
         // Ingress chain at the pre-drain gate, on the resident prefix: the
         // headers and whatever of the payload has arrived, at least the held
-        // peek. It runs synchronously on the record and returns it in every
-        // outcome, so a Classifier's metadata deltas survive. A filter
-        // reading a payload that is not all resident gets the reader's
-        // `NotResident`.
-        let bundle = if self.filters.has_ingress() {
-            match self
-                .filters
-                .run_ingress(bundle, headers, bcb_ops, &*self.key_provider)
-            {
-                ChainOutcome::Continue(bundle, _) => bundle,
-                ChainOutcome::Drop(bundle, reason) => {
-                    let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-                    count_received_dropped(&label);
-                    self.report_bundle_reception(
-                        &bundle.bpv7,
-                        bundle.metadata.received_at(),
-                        report,
-                        reason,
-                    )
-                    .await;
-                    return None;
-                }
-            }
-        } else {
-            bundle
-        };
+        // peek. It runs synchronously on the parse and writes the metadata
+        // in place, so a Classifier's deltas survive. A filter reading a
+        // payload that is not all resident gets the reader's `NotResident`.
+        let mut roles = HashMap::new();
+        if self.filters.has_ingress()
+            && let ControlFlow::Break(reason) =
+                self.filters.run_ingress(parsed, metadata, keys, &mut roles)
+        {
+            let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+            count_received_dropped(&label);
+            self.report_bundle_reception(&parsed.bundle, metadata.received_at(), report, reason)
+                .await;
+            return None;
+        }
 
         // Route at the gate — the decision of record for this arrival,
         // carrying the table it was made against: the commit decides again
@@ -491,7 +800,7 @@ impl Dispatcher {
         // the caller's cancel stops its drain mid-stream. Placement after
         // the chain is deliberate: a filter Drop keeps precedence, and the
         // Classifier-supplied routing inputs must precede the lookup.
-        let decision = self.rib.decide(&bundle);
+        let decision = self.rib.decide(&parsed.bundle, metadata);
         if let Some(DispatchAction::Drop(reason)) = decision.action {
             let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
             count_received_dropped(&label);
@@ -503,8 +812,8 @@ impl Dispatcher {
                 Some(reason) => {
                     debug!("Route lookup drops the bundle at the ingress gate: {reason:?}");
                     self.report_bundle_reception(
-                        &bundle.bpv7,
-                        bundle.metadata.received_at(),
+                        &parsed.bundle,
+                        metadata.received_at(),
                         report,
                         Some(reason),
                     )
@@ -515,21 +824,21 @@ impl Dispatcher {
             return None;
         }
 
-        Some(Admitted { bundle, decision })
+        Some(Admitted { decision, roles })
     }
 
-    // The config-gated RFC 9171 validity check: a policy requirement beyond
-    // structural validity, checked pre-drain — everything it reads is
+    // The config-gated RFC 9171 validity checks: policy requirements beyond
+    // structural validity, checked pre-drain — everything they read is
     // header material the keyed verify pass has already established. Both
-    // input doors apply it (the originate raw door at its own gate).
-    pub(super) fn rfc9171_gate_reason(&self, hv: &HeaderVerify) -> Option<ReasonCode> {
+    // input doors apply them (the originate raw door at its own gate).
+    pub(super) fn rfc9171_gate_reason(&self, hv: &Headers) -> Option<ReasonCode> {
         // RFC 9171 §4.3.1: "A CRC SHALL be present in the primary block
         // unless the bundle includes a BPSec Block Integrity Block whose
         // target is the primary block". `Maybe` coverage (undecryptable
         // BIBs) counts as protected, as the block-editing paths assume.
         if self.primary_block_integrity
-            && let Some(primary_block) = hv.bundle.blocks.get(&0)
-            && matches!(hv.bundle.primary.crc_type, CrcType::None)
+            && let Some(primary_block) = hv.parsed.bundle.blocks.get(&0)
+            && matches!(hv.parsed.bundle.primary.crc_type, CrcType::None)
             && matches!(primary_block.bib, BibCoverage::None)
         {
             debug!("Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)");

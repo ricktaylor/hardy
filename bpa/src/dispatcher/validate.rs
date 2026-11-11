@@ -1,10 +1,10 @@
 //! The validating decorator for a received bundle's segment stream.
 //!
-//! [`parse_headers`](crate::bundle::parse::parse_headers) hands back the
+//! [`parse_headers`](crate::bundle::arrival::parse_headers) hands back the
 //! resident prefix, a synchronous [`PayloadTail`] continuation, and —
-//! begun in its keyed pass via
-//! [`begin_payload_verification`](hardy_bpv7::checks::begin_payload_verification)
-//! — one incremental [`bib::Verifier`] per deferred payload BIB. An input
+//! begun in its keyed pass through bpv7's
+//! [`begin_verify`](hardy_bpv7::bpsec::bib::Operation::begin_verify) — one
+//! incremental [`bib::Verifier`] per deferred payload BIB. An input
 //! door — CLA ingress, or the raw originate door — marries those to the
 //! arrival's segment stream through a [`ValidatingReceiver`], then drains it
 //! through `Store::save_stream`: the validation is invisible downstream,
@@ -13,13 +13,22 @@
 //! by each door to its own surface (status reports at ingress, a
 //! `services::Error` at originate).
 
+use alloc::collections::VecDeque;
+use core::{mem::replace, ops::Range};
+
 use hardy_async::async_trait;
-use hardy_bpv7::{bpsec::bib, parse::PayloadTail, status_report::ReasonCode};
+use hardy_bpv7::{
+    bpsec::{bcb, bib},
+    builder::PayloadTrailer,
+    parse::PayloadTail,
+    status_report::ReasonCode,
+};
 use thiserror::Error;
+
+use trace_err::*;
 
 use crate::{
     Bytes,
-    bundle::parse,
     cla::Segment,
     stream::{Receiver, RecvError},
 };
@@ -45,6 +54,11 @@ pub enum ValidationFailure {
     /// bundle is accepted and dropped.
     #[error("deferred payload BIB {bib} failed integrity over the streamed body")]
     IntegrityFailed { bib: u64 },
+    /// The payload this node accepted did not decrypt: its ciphertext did
+    /// not authenticate (RFC 9172 §5.1.1). The bundle is accepted and
+    /// dropped.
+    #[error("the accepted payload did not decrypt")]
+    DecryptionFailed,
 }
 
 impl ValidationFailure {
@@ -56,8 +70,10 @@ impl ValidationFailure {
     pub fn reason_code(&self) -> Option<ReasonCode> {
         match self {
             Self::Truncated => None,
-            Self::Invalid(error) => Some(parse::status_report_reason_for(error)),
-            Self::IntegrityFailed { .. } => Some(ReasonCode::FailedSecurityOperation),
+            Self::Invalid(error) => Some(error.into()),
+            Self::IntegrityFailed { .. } | Self::DecryptionFailed => {
+                Some(ReasonCode::FailedSecurityOperation)
+            }
         }
     }
 }
@@ -72,6 +88,78 @@ enum Progress {
     Failed(ValidationFailure),
 }
 
+// The payload's decrypt stage, the first of the drain's two payload stages:
+// it takes each run of the payload's block-type-specific data as it streams
+// past and hands on the bytes the Verify stage checks.
+enum PayloadDecrypt {
+    // The data as received: a payload this node does not decrypt.
+    PassThrough,
+    // A payload this node accepts the BCB on: its decryptor, which hands on
+    // the plaintext once it has authenticated the whole ciphertext.
+    Decrypt(bcb::Decryptor),
+}
+
+impl PayloadDecrypt {
+    // Absorb a run of the payload's data, returning the bytes to hand on.
+    // The decryptor hands on nothing until `finish`.
+    fn update<'b>(&mut self, data: &'b [u8]) -> &'b [u8] {
+        match self {
+            Self::PassThrough => data,
+            Self::Decrypt(decryptor) => {
+                decryptor.update(data);
+                &[]
+            }
+        }
+    }
+}
+
+// The payload's Verify stage, after the decrypt stage: each deferred payload
+// BIB's incremental verifier, paired with its block number for failure
+// attribution, fed exactly what the decrypt stage hands on.
+struct PayloadVerify(Vec<(u64, bib::Verifier)>);
+
+impl PayloadVerify {
+    fn update(&mut self, data: &[u8]) {
+        for (_, verifier) in &mut self.0 {
+            verifier.update(data);
+        }
+    }
+
+    // Settle every verifier, naming the first BIB whose integrity fails.
+    fn finish(self) -> Result<(), ValidationFailure> {
+        for (bib, verifier) in self.0 {
+            verifier
+                .finish()
+                .map_err(|_| ValidationFailure::IntegrityFailed { bib })?;
+        }
+        Ok(())
+    }
+}
+
+// The bundle as the store receives it where the ingress rewrite frames the
+// payload afresh: the rebuilt header region, through the payload block's
+// header, then the payload's data as the payload stages hand it on (an
+// accepted payload's plaintext, or the data as received), then the trailer
+// that ends the bundle. The validating decorator yields these in place of
+// the bundle's own bytes, which it still validates.
+pub struct Rewrite {
+    // The rebuilt header region, through the payload block's header, until
+    // it is yielded.
+    head: Option<Bytes>,
+    // The payload's trailer, fed every byte yielded as the payload's data,
+    // until it ends the bundle.
+    trailer: Option<PayloadTrailer>,
+}
+
+impl Rewrite {
+    pub fn new(head: Bytes, trailer: PayloadTrailer) -> Self {
+        Self {
+            head: Some(head),
+            trailer: Some(trailer),
+        }
+    }
+}
+
 // A [`Receiver<Segment>`] decorator that validates a received bundle's
 // payload tail as it streams through.
 //
@@ -80,8 +168,9 @@ enum Progress {
 // incremental [`bib::Verifier`] per deferred payload BIB. This decorator
 // marries those to the arrival's segment stream: the resident head is
 // yielded as the first segment, then each streamed segment feeds the
-// `PayloadTail` (payload CRC, block/outer break, anti-smuggling) and the
-// block-type-specific data prefix to every verifier, before flowing onward —
+// `PayloadTail` (payload CRC, block/outer break, anti-smuggling), and its
+// block-type-specific data prefix passes the decrypt stage into the Verify
+// stage, before the segment flows onward —
 // one receiver carries the whole bundle, ready to drive
 // `Store::save_stream`. The validation is invisible downstream, surfacing
 // only as a pull that fails when the bytes are bad, with the categorised
@@ -98,40 +187,142 @@ pub struct ValidatingReceiver<'a> {
     // route and validated everything inline): the head is the only segment
     // and the inner stream is never pulled.
     tail: Option<PayloadTail>,
-    // Each deferred payload BIB, paired with its block number for failure
-    // attribution.
-    verifiers: Vec<(u64, bib::Verifier)>,
+    // The payload's two stages, in order: the Verify stage checks what the
+    // decrypt stage hands on.
+    decrypt: PayloadDecrypt,
+    verify: PayloadVerify,
+    // The rewritten bundle, where the ingress rewrite frames the payload
+    // afresh: yielded in place of the bundle's own bytes. `None` yields the
+    // bundle's bytes as received.
+    rewrite: Option<Rewrite>,
+    // The rewritten bundle's segments, ready to yield.
+    out: VecDeque<Segment>,
     progress: Progress,
 }
 
+// The payload's data the resident head holds: a prefix of it, or all of it
+// for a bundle complete at its head, whose bytes run on through the
+// payload's CRC and the breaks.
+fn resident_payload<'h>(head: &'h [u8], payload: &Range<u64>) -> &'h [u8] {
+    let start =
+        usize::try_from(payload.start).trace_expect("parse bounds pre-payload offsets to usize");
+    let end = usize::try_from(payload.end.min(head.len() as u64))
+        .trace_expect("bounded by the resident head");
+    &head[start..end]
+}
+
 impl<'a> ValidatingReceiver<'a> {
-    // Wraps `inner`, marrying the `tail` continuation and the deferred-BIB
-    // `verifiers` to the stream. `head` is the header pass's resident
-    // buffer, yielded onward as the first segment. Its payload
-    // block-type-specific data prefix (`head[payload_start..]`) — what
-    // arrived with the headers, and any peek the pass held — is absorbed
-    // into the verifiers here before the stream supplies the rest; the
-    // `PayloadTail` was fed it in the header pass, partly by the parser and
-    // partly by the hold. A `tail` that already failed on those resident
-    // bytes reports its failure when the first segment after the head is
-    // absorbed, whatever that segment holds.
+    // Wraps `inner`, marrying the `tail` continuation and the payload's
+    // stages to the stream: `decryptor` decrypts the payload where this
+    // node accepts its BCB, or authenticates its ciphertext as the verifier
+    // of that operation, and `verifiers` check what the decrypt stage hands
+    // on, the deferred BIBs over a payload received in plaintext, or an
+    // accepted payload's over its plaintext. `head` is the header pass's
+    // resident buffer, and `payload` the payload's data range, of which the
+    // head holds a prefix (what arrived with the headers, and any peek the
+    // pass held), or all of it for a bundle complete at its head, whose
+    // bytes run on through the payload's CRC and the breaks: the resident
+    // data passes the payload stages here before the stream supplies the
+    // rest; the `PayloadTail` was fed it in the header pass, partly by the
+    // parser and partly by the hold. A `tail` that already failed on those
+    // resident bytes reports its failure when the first segment after the
+    // head is absorbed, whatever that segment holds.
+    //
+    // Without a `rewrite`, the head is yielded onward as the first segment
+    // and the bundle's bytes pass through as received, a decryptor's
+    // plaintext going nowhere. With one, where the ingress rewrite frames
+    // the payload afresh, the decorator yields the rewrite's header region,
+    // the payload's data as the stages hand it on, and the trailer, in
+    // place of the bundle's own bytes.
     pub fn new(
         inner: &'a mut dyn Receiver<Segment>,
         tail: Option<PayloadTail>,
-        mut verifiers: Vec<(u64, bib::Verifier)>,
+        decryptor: Option<bcb::Decryptor>,
+        verifiers: Vec<(u64, bib::Verifier)>,
         head: Bytes,
-        payload_start: usize,
+        payload: Range<u64>,
+        rewrite: Option<Rewrite>,
     ) -> Self {
-        for (_, verifier) in &mut verifiers {
-            verifier.update(&head[payload_start..]);
-        }
-        Self {
+        let mut this = Self {
             inner,
-            head: Some(head),
+            head: None,
             tail,
-            verifiers,
+            decrypt: decryptor.map_or(PayloadDecrypt::PassThrough, PayloadDecrypt::Decrypt),
+            verify: PayloadVerify(verifiers),
+            rewrite,
+            out: VecDeque::new(),
             progress: Progress::Open,
+        };
+        if let Some(rewrite) = &mut this.rewrite {
+            let header = rewrite
+                .head
+                .take()
+                .trace_expect("a fresh rewrite holds its header region");
+            this.out.push_back(Segment::Next(header));
         }
+        this.hand_on(head.slice_ref(resident_payload(&head, &payload)));
+        if this.rewrite.is_none() {
+            this.head = Some(head);
+        } else if this.tail.is_none() {
+            // A bundle complete at its head has no more to come.
+            this.progress = Progress::Final;
+            if let Err(failure) = this.end_rewrite() {
+                this.progress = Progress::Failed(failure);
+            }
+        }
+        this
+    }
+
+    // Pass a run of the payload's data through the payload stages and, for
+    // a rewrite, queue what the stages hand on as the payload's data.
+    fn hand_on(&mut self, data: Bytes) {
+        let handed = self.decrypt.update(&data);
+        self.verify.update(handed);
+        if handed.is_empty() {
+            return;
+        }
+        let handed = data.slice_ref(handed);
+        if let Some(trailer) = self.rewrite.as_mut().and_then(|r| r.trailer.as_mut()) {
+            trailer
+                .update(&handed)
+                .trace_expect("the rewrite frames exactly the payload's data");
+            self.out.push_back(Segment::Next(handed));
+        }
+    }
+
+    // End the rewritten bundle once the stream has delivered its `Final`:
+    // the decrypt stage hands on the plaintext, authenticated, which the
+    // Verify stage checks, then the trailer ends the bundle. A payload the
+    // stream cut short ends nothing: `finish` reports it.
+    fn end_rewrite(&mut self) -> Result<(), ValidationFailure> {
+        if self
+            .tail
+            .as_ref()
+            .is_some_and(|tail| tail.body_remaining() > 0)
+        {
+            return Ok(());
+        }
+        if let PayloadDecrypt::Decrypt(_) = &self.decrypt {
+            let PayloadDecrypt::Decrypt(decryptor) =
+                replace(&mut self.decrypt, PayloadDecrypt::PassThrough)
+            else {
+                unreachable!("matched above");
+            };
+            let plaintext = decryptor
+                .finish()
+                .map_err(|_| ValidationFailure::DecryptionFailed)?;
+            self.hand_on(Bytes::from_owner(plaintext));
+        }
+        // The trailer ends the bundle; the rewrite's work is then done, but
+        // it stays, marking the decorator as rewriting.
+        let rewrite = self.rewrite.as_mut().trace_expect("only a rewrite ends");
+        let trailer = rewrite.trailer.take().trace_expect("a rewrite ends once");
+        self.out.push_back(Segment::Final(Bytes::from(
+            trailer
+                .finish()
+                .trace_expect("the rewrite framed exactly the payload's data"),
+        )));
+        Ok(())
     }
 
     // Settle the drain: assert the bundle completed and every deferred BIB
@@ -156,18 +347,21 @@ impl<'a> ValidatingReceiver<'a> {
             // phase: a truncation, and a resend may complete it.
             (Progress::Open, Some(_)) => return Err(ValidationFailure::Truncated),
         }
-        for (bib, verifier) in self.verifiers {
-            verifier
+        // A payload authenticated as it streamed settles with the stream:
+        // its plaintext goes nowhere. A rewrite settled its decryptor as it
+        // ended.
+        if let PayloadDecrypt::Decrypt(decryptor) = self.decrypt {
+            let _plaintext = decryptor
                 .finish()
-                .map_err(|_| ValidationFailure::IntegrityFailed { bib })?;
+                .map_err(|_| ValidationFailure::DecryptionFailed)?;
         }
-        Ok(())
+        self.verify.finish()
     }
 
     // Validate one segment's bytes: feed the tail (CRC / breaks / trailing
-    // data) and the leading body run to every verifier. The body is always
-    // consumed from the front of the run, so the `body_remaining` delta is
-    // the run's body-prefix length.
+    // data), and pass the leading body run through the payload stages. The
+    // body is always consumed from the front of the run, so the
+    // `body_remaining` delta is the run's body-prefix length.
     fn absorb(&mut self, bytes: &[u8]) -> Result<(), ValidationFailure> {
         // Only called on inner pulls, which only happen with a continuation.
         let Some(tail) = &mut self.tail else {
@@ -177,9 +371,21 @@ impl<'a> ValidatingReceiver<'a> {
         tail.push(bytes).map_err(ValidationFailure::Invalid)?;
         let body_len = (before - tail.body_remaining()) as usize;
         if body_len > 0 {
-            for (_, verifier) in &mut self.verifiers {
-                verifier.update(&bytes[..body_len]);
-            }
+            self.verify.update(self.decrypt.update(&bytes[..body_len]));
+        }
+        Ok(())
+    }
+
+    // As `absorb`, for a rewrite: the run's data goes through `hand_on`.
+    fn absorb_rewritten(&mut self, bytes: &Bytes) -> Result<(), ValidationFailure> {
+        let Some(tail) = &mut self.tail else {
+            return Err(ValidationFailure::Truncated);
+        };
+        let before = tail.body_remaining();
+        tail.push(bytes).map_err(ValidationFailure::Invalid)?;
+        let body_len = (before - tail.body_remaining()) as usize;
+        if body_len > 0 {
+            self.hand_on(bytes.slice(..body_len));
         }
         Ok(())
     }
@@ -188,6 +394,9 @@ impl<'a> ValidatingReceiver<'a> {
 #[async_trait]
 impl Receiver<Segment> for ValidatingReceiver<'_> {
     async fn recv(&mut self) -> Result<Segment, RecvError> {
+        if self.rewrite.is_some() {
+            return self.recv_rewritten().await;
+        }
         // A failure is terminal: never yield more bytes downstream. After
         // `Final` the stream has nothing left, and a stray pull must not read
         // the producer's departure as a truncation.
@@ -229,25 +438,67 @@ impl Receiver<Segment> for ValidatingReceiver<'_> {
     }
 }
 
+impl ValidatingReceiver<'_> {
+    // `recv` for a rewrite: the rewritten bundle's queued segments first,
+    // then the stream's, absorbed for validation and handed on, until the
+    // stream's `Final` ends the rewrite.
+    async fn recv_rewritten(&mut self) -> Result<Segment, RecvError> {
+        loop {
+            if let Some(segment) = self.out.pop_front() {
+                return Ok(segment);
+            }
+            // A failure is terminal, and after `Final` nothing is left.
+            if !matches!(self.progress, Progress::Open) {
+                return Err(RecvError);
+            }
+            let segment = match self.inner.recv().await {
+                Ok(segment) => segment,
+                Err(e) => {
+                    self.progress = Progress::Failed(ValidationFailure::Truncated);
+                    return Err(e);
+                }
+            };
+            let (bytes, last) = match segment {
+                Segment::Next(bytes) => (bytes, false),
+                Segment::Final(bytes) => (bytes, true),
+            };
+            if let Err(failure) = self.absorb_rewritten(&bytes) {
+                self.progress = Progress::Failed(failure);
+                return Err(RecvError);
+            }
+            if last {
+                self.progress = Progress::Final;
+                if let Err(failure) = self.end_rewrite() {
+                    self.progress = Progress::Failed(failure);
+                    return Err(RecvError);
+                }
+                // A payload cut short ends nothing; `finish` reports it.
+                if self.out.is_empty() {
+                    return Err(RecvError);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(all(test, feature = "rfc9173"))]
 mod tests {
     use hardy_bpv7::{
         bpsec::{
-            self,
-            key::{Key, KeyAlgorithm, KeySet, Operation, Type},
+            key::{Key, KeyAlgorithm, Operation, Type},
             signer::{Context, Signer},
         },
         builder::Builder,
         crc,
         creation_timestamp::CreationTimestamp,
         editor::{Chunk, Editor},
-        // `parse` names the BPA's keyed pass (`crate::bundle::parse`) in
-        // this file; alias the bpv7 structural parser it collides with.
-        parse::{self as bpv7_parse, BundleParser, ParserProgress},
+        parse::{self, BundleParser, ParserProgress},
     };
     use rand::{TryRng, rngs::SysRng};
 
     use super::*;
+    use crate::bundle::arrival;
+    use crate::keys::tests::Keys;
 
     const PAYLOAD: usize = 50_000;
     const CHUNK: usize = 1000;
@@ -278,7 +529,7 @@ mod tests {
         let Some(key) = key else {
             return base;
         };
-        let parsed = bpv7_parse::parse(base).expect("parse the built bundle");
+        let parsed = parse::parse(base).expect("parse the built bundle");
         let mut editor = Editor::new(&parsed.bundle, &parsed.data);
         editor
             .update_block(1)
@@ -289,7 +540,7 @@ mod tests {
             .rebuild()
             .map(|chunks| Chunk::flatten(chunks, &parsed.data))
             .expect("rebuild the bundle without the payload's CRC");
-        let parsed = bpv7_parse::parse(Bytes::from(crc_free)).expect("parse the CRC-free bundle");
+        let parsed = parse::parse(Bytes::from(crc_free)).expect("parse the CRC-free bundle");
         let mut signer = Signer::new(&parsed.bundle, &parsed.data);
         signer
             .sign_block(
@@ -350,6 +601,15 @@ mod tests {
         }
     }
 
+    // The payload's data range, from a parse of the whole bundle.
+    fn payload_range(full: &Bytes) -> Range<u64> {
+        parse::parse(full.clone())
+            .expect("the bundle parses")
+            .bundle
+            .blocks[&1]
+            .payload_range()
+    }
+
     // A valid tail passes through byte-for-byte — the resident head first,
     // then the streamed remainder — and settles Ok.
     #[tokio::test]
@@ -359,9 +619,16 @@ mod tests {
         let rest = full.slice(consumed.len()..);
 
         let mut inner = segment_stream(&rest).await;
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         let yielded = drain(&mut tr).await.expect("valid tail drains");
         assert_eq!(
             yielded, full,
@@ -380,9 +647,9 @@ mod tests {
         let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(1);
         drop(tx);
 
-        let payload_start = full.len();
+        let payload = payload_range(&full);
         let mut tr =
-            ValidatingReceiver::new(&mut rx, None, Vec::new(), full.clone(), payload_start);
+            ValidatingReceiver::new(&mut rx, None, None, Vec::new(), full.clone(), payload, None);
         let yielded = drain(&mut tr).await.expect("the head drains as Final");
         assert_eq!(yielded, full, "the head is the whole bundle");
         assert!(
@@ -402,9 +669,16 @@ mod tests {
         rest[10] ^= 0xFF; // inside the streamed body, before the CRC/breaks
 
         let mut inner = segment_stream(&rest).await;
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         // The corruption surfaces at the CRC check (end of body) as a failed
         // pull; finish categorises it.
         let _ = drain(&mut tr).await;
@@ -434,9 +708,16 @@ mod tests {
             .expect("channel open");
         drop(tx);
 
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut rx, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut rx,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         assert!(
             matches!(tr.recv().await, Ok(Segment::Next(_))),
             "first pull yields the resident head"
@@ -477,9 +758,16 @@ mod tests {
         }
         drop(tx);
 
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut rx, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut rx,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         assert!(
             matches!(drain(&mut tr).await, Err(RecvError)),
             "the stream ends without `Final`"
@@ -502,9 +790,16 @@ mod tests {
         let short = full.slice(consumed.len()..full.len() - 100);
 
         let mut inner = segment_stream(&short).await;
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         drain(&mut tr)
             .await
             .expect("the short stream drains to its `Final`");
@@ -529,9 +824,16 @@ mod tests {
         let rest = full.slice(consumed.len()..);
 
         let mut inner = segment_stream(&rest).await;
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         drain(&mut tr)
             .await
             .expect("the tail drains to its `Final`");
@@ -552,9 +854,16 @@ mod tests {
         let rest = full.slice(consumed.len()..);
 
         let mut inner = segment_stream(&rest).await;
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         assert!(
             matches!(tr.recv().await, Ok(Segment::Next(_))),
             "the head yields first"
@@ -588,9 +897,16 @@ mod tests {
             .await
             .expect("channel open");
 
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut rx, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut rx,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         // The resident head, then every streamed chunk.
         for _ in 0..=chunks.len() {
             assert!(matches!(tr.recv().await, Ok(Segment::Next(_))));
@@ -627,9 +943,16 @@ mod tests {
                 .await
                 .expect("channel open");
 
-            let payload_start = consumed.len();
-            let mut tr =
-                ValidatingReceiver::new(&mut rx, Some(tail), Vec::new(), consumed, payload_start);
+            let payload = payload_range(&full);
+            let mut tr = ValidatingReceiver::new(
+                &mut rx,
+                Some(tail),
+                None,
+                Vec::new(),
+                consumed,
+                payload,
+                None,
+            );
             let yielded = drain(&mut tr).await.expect("the tail drains");
             assert_eq!(yielded, full, "split {split}: every byte is yielded");
             tr.finish()
@@ -656,9 +979,16 @@ mod tests {
         rest.push(0x00); // one byte past the bundle's outer break
 
         let mut inner = segment_stream(&rest).await;
-        let payload_start = consumed.len();
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), Vec::new(), consumed, payload_start);
+        let payload = payload_range(&full);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            Vec::new(),
+            consumed,
+            payload,
+            None,
+        );
         let _ = drain(&mut tr).await;
         assert!(
             matches!(
@@ -673,30 +1003,28 @@ mod tests {
 
     // Build the deferred-BIB verifiers for a bundle signed with `key`: the
     // keyed header pass begins them itself. Returns the verifiers, the header
-    // prefix, the tail, and the resident body-prefix offset.
+    // prefix, the tail, and the payload's data range.
     async fn signed_setup(
         full: &Bytes,
         key: &Key,
         peek: usize,
-    ) -> (Vec<(u64, bib::Verifier)>, Bytes, PayloadTail, usize) {
-        let key = key.clone();
-        let keys = move |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
-            Box::new(KeySet::new(vec![key]))
-        };
+    ) -> (Vec<(u64, bib::Verifier)>, Bytes, PayloadTail, Range<u64>) {
+        let keys = Keys(vec![key.clone()]);
         let mut rx = segment_stream(full).await;
-        let (hv, headers, tail, _) = parse::parse_headers(&mut rx, 1 << 20, peek, keys)
-            .await
-            .map_err(|_| ())
-            .expect("header pass verifies (payload deferred)");
+        let (hv, tail) =
+            arrival::parse_headers(&mut rx, arrival::Pass::Receiver, 1 << 20, peek, &keys)
+                .await
+                .map_err(|_| ())
+                .expect("header pass verifies (payload deferred)");
         let tail = tail.expect("a payload segmented past its header takes the Partial route");
         assert!(
             !hv.deferred_verifiers.is_empty(),
             "the payload BIB is deferred"
         );
 
-        // The payload body prefix already resident in `headers`.
-        let payload_start = hv.bundle.blocks.get(&1).unwrap().payload_range().start as usize;
-        (hv.deferred_verifiers, headers, tail, payload_start)
+        // The payload's data, a prefix of which is already resident.
+        let payload = hv.parsed.bundle.blocks[&1].payload_range();
+        (hv.deferred_verifiers, hv.parsed.data, tail, payload)
     }
 
     // A signed bundle whose first segment ends where the payload's body does:
@@ -709,7 +1037,7 @@ mod tests {
     async fn a_body_resident_at_the_header_pass_defers_no_bib() {
         let key = sign_key();
         let full = oversized_bundle(Some(&key));
-        let payload = bpv7_parse::parse(full.clone()).unwrap().bundle.blocks[&1].payload_range();
+        let payload = parse::parse(full.clone()).unwrap().bundle.blocks[&1].payload_range();
         let body_end = payload.end as usize;
         assert_eq!(body_end, full.len() - 1, "the trailer is the outer break");
 
@@ -720,13 +1048,12 @@ mod tests {
         tx.send(Segment::Final(full.slice(body_end..)))
             .await
             .expect("channel open");
-        let keys = move |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
-            Box::new(KeySet::new(vec![key]))
-        };
-        let (hv, headers, tail, _) = parse::parse_headers(&mut rx, 1 << 20, 0, keys)
-            .await
-            .map_err(|_| ())
-            .expect("the header pass verifies the resident payload");
+        let keys = Keys(vec![key]);
+        let (hv, tail) =
+            arrival::parse_headers(&mut rx, arrival::Pass::Receiver, 1 << 20, 0, &keys)
+                .await
+                .map_err(|_| ())
+                .expect("the header pass verifies the resident payload");
         let tail = tail.expect("the outer break is still to come");
         assert!(
             hv.deferred_verifiers.is_empty(),
@@ -736,9 +1063,11 @@ mod tests {
         let mut tr = ValidatingReceiver::new(
             &mut rx,
             Some(tail),
+            None,
             hv.deferred_verifiers,
-            headers,
-            payload.start as usize,
+            hv.parsed.data,
+            payload,
+            None,
         );
         drain(&mut tr).await.expect("the outer break drains");
         tr.finish().expect("the bundle settles Ok");
@@ -751,13 +1080,20 @@ mod tests {
     async fn deferred_bib_verifies_over_stream() {
         let key = sign_key();
         let full = oversized_bundle(Some(&key));
-        let (verifiers, headers, tail, payload_start) = signed_setup(&full, &key, 0).await;
+        let (verifiers, headers, tail, payload) = signed_setup(&full, &key, 0).await;
         assert_eq!(verifiers.len(), 1);
 
         let rest = full.slice(headers.len()..);
         let mut inner = segment_stream(&rest).await;
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), verifiers, headers, payload_start);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            verifiers,
+            headers,
+            payload,
+            None,
+        );
         drain(&mut tr).await.expect("valid signed tail drains");
         tr.finish().expect("the deferred payload BIB verifies");
     }
@@ -769,14 +1105,21 @@ mod tests {
     async fn deferred_bib_tamper_fails() {
         let key = sign_key();
         let full = oversized_bundle(Some(&key));
-        let (verifiers, headers, tail, payload_start) = signed_setup(&full, &key, 0).await;
+        let (verifiers, headers, tail, payload) = signed_setup(&full, &key, 0).await;
         let signed_by = verifiers[0].0;
 
         let mut rest = full.slice(headers.len()..).to_vec();
         rest[5] ^= 0xFF; // inside the streamed body, after the header prefix
         let mut inner = segment_stream(&rest).await;
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), verifiers, headers, payload_start);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            verifiers,
+            headers,
+            payload,
+            None,
+        );
         drain(&mut tr).await.expect("a CRC-free payload drains");
         assert!(
             matches!(tr.finish(), Err(ValidationFailure::IntegrityFailed { bib }) if bib == signed_by),
@@ -791,14 +1134,21 @@ mod tests {
     async fn deferred_bib_verifies_over_a_held_peek() {
         let key = sign_key();
         let full = oversized_bundle(Some(&key));
-        let (verifiers, headers, tail, payload_start) = signed_setup(&full, &key, 2500).await;
-        let held = headers.len() - payload_start;
+        let (verifiers, headers, tail, payload) = signed_setup(&full, &key, 2500).await;
+        let held = headers.len() - payload.start as usize;
         assert!(held >= 2500, "the peek holds 2500 body bytes, got {held}");
 
         let rest = full.slice(headers.len()..);
         let mut inner = segment_stream(&rest).await;
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), verifiers, headers, payload_start);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            verifiers,
+            headers,
+            payload,
+            None,
+        );
         drain(&mut tr).await.expect("valid signed tail drains");
         tr.finish().expect("the deferred payload BIB verifies");
     }
@@ -809,7 +1159,7 @@ mod tests {
     async fn a_tamper_inside_the_peek_fails_the_deferred_bib() {
         let key = sign_key();
         let mut tampered = oversized_bundle(Some(&key)).to_vec();
-        let payload_start = bpv7_parse::parse(Bytes::from(tampered.clone()))
+        let payload_start = parse::parse(Bytes::from(tampered.clone()))
             .unwrap()
             .bundle
             .blocks[&1]
@@ -817,17 +1167,24 @@ mod tests {
             .start as usize;
         tampered[payload_start + 1500] ^= 0xFF;
         let tampered = Bytes::from(tampered);
-        let (verifiers, headers, tail, payload_start) = signed_setup(&tampered, &key, 2500).await;
+        let (verifiers, headers, tail, payload) = signed_setup(&tampered, &key, 2500).await;
         assert!(
-            headers.len() - payload_start > 1500,
+            headers.len() - payload.start as usize > 1500,
             "the tamper lies inside the peek"
         );
         let signed_by = verifiers[0].0;
 
         let rest = tampered.slice(headers.len()..);
         let mut inner = segment_stream(&rest).await;
-        let mut tr =
-            ValidatingReceiver::new(&mut inner, Some(tail), verifiers, headers, payload_start);
+        let mut tr = ValidatingReceiver::new(
+            &mut inner,
+            Some(tail),
+            None,
+            verifiers,
+            headers,
+            payload,
+            None,
+        );
         drain(&mut tr).await.expect("a CRC-free payload drains");
         assert!(
             matches!(tr.finish(), Err(ValidationFailure::IntegrityFailed { bib }) if bib == signed_by),

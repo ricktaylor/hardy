@@ -260,11 +260,11 @@ See [Policy Subsystem Design](policy_subsystem_design.md#hybrid-channel-architec
 
 ### With hardy-bpv7
 
-The BPA parses through its `bundle::parse` layer over hardy-bpv7, in three shapes:
+The BPA parses through its `bundle::arrival` layer over hardy-bpv7, in two shapes, and restart re-checks stored bytes with hardy-bpv7's own:
 
-- `parse_headers` for CLA ingress, fragment reassembly, and raw service input (untrusted: a streamed header pass with keyed BPSec verification before the payload drains; the payload CRC and deferred payload BIBs verify as it drains, and the bundle is stored exactly as received, its RFC 9172 block removals riding the metadata to the output doors)
-- `parse_validate_with_provider` for restart recovery (one-shot keyed validation with no block removal or rewriting)
+- `parse_headers` for CLA ingress, fragment reassembly, and raw service input (untrusted: a streamed header pass with keyed BPSec verification before the payload drains; the payload CRC and deferred payload BIBs verify as it drains, and a received bundle is stored as received, less the RFC 9172 block removals CLA ingress applies to its headers first; an originated one, as its service built it)
 - `extract_from_built` for bundles the BPA builds itself — status reports, and application payloads built as they stream (`Builder::build_stream`) — which are valid by construction
+- hardy-bpv7's `parse::parse` for restart recovery: the structural parse alone, CRCs and the per-hop blocks included, with no keys — acceptance precedes first persistence, so restart has no security operation to repeat
 
 ### With Storage Backends
 

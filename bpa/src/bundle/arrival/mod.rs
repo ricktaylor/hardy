@@ -27,9 +27,6 @@
 //! Used by `dispatcher::ingress`; on a keyed failure returns the recoverable
 //! bundle so the caller can emit a status report.
 
-// The doors parse through `bundle::parse`; nothing calls this pass yet.
-#![allow(dead_code)]
-
 use core::{fmt, mem::take};
 use trace_err::*;
 

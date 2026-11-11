@@ -3,6 +3,8 @@
 //! services that need a contiguous bundle.
 
 use core::{num::NonZeroU64, time::Duration};
+#[cfg(feature = "rfc9173")]
+use hardy_bpa::keys::KeyProvider;
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
@@ -12,6 +14,15 @@ use hardy_bpa::{
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
+#[cfg(feature = "rfc9173")]
+use hardy_bpv7::{
+    Bundle,
+    bpsec::{
+        encryptor::{Context, Encryptor},
+        key::{EncAlgorithm, Key, KeySet, KeySource, Operation, Type},
+        rfc9173::ScopeFlags,
+    },
+};
 use hardy_bpv7::{
     builder::Builder,
     bundle::{Flags, Id},
@@ -20,6 +31,8 @@ use hardy_bpv7::{
     parse::parse,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
+#[cfg(feature = "rfc9173")]
+use rand::{TryRng, rngs::SysRng};
 use std::{
     borrow::Cow,
     sync::{
@@ -888,4 +901,113 @@ async fn buffering_service_rejects_stream_exceeding_total_len() {
         services::Error::PayloadTooLarge { size, max: 4 } if size > 4
     ));
     assert!(events_rx.is_empty());
+}
+
+/// A key provider that hands out one fixed key.
+#[cfg(feature = "rfc9173")]
+struct OneKey(Key);
+
+#[cfg(feature = "rfc9173")]
+impl KeyProvider for OneKey {
+    fn key_source(&self, _bundle: &Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+        Box::new(KeySet::new(vec![self.0.clone()]))
+    }
+}
+
+/// A service receives an encrypted payload in plaintext: the destination
+/// accepted the payload's BCB at ingress, so the stored bundle it is
+/// delivered carries the plaintext and no BCB, and delivery decrypts
+/// nothing.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_receives_an_accepted_payload_in_plaintext() {
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut k = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut k).unwrap();
+    let key = Key {
+        key_type: Type::octet_sequence(k),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+    let plaintext: Vec<u8> = (0..3000u32).map(|i| (i % 233) as u8).collect();
+    let built = build_bundle(
+        &"ipn:0.2.1".parse().unwrap(),
+        &"ipn:0.1.7".parse().unwrap(),
+        &plaintext,
+    );
+    let parsed = parse(built).unwrap();
+    let mut encryptor = Encryptor::new(&parsed.bundle, &parsed.data);
+    encryptor
+        .encrypt_block(
+            1,
+            Context::AES_GCM(ScopeFlags::default()),
+            "ipn:0.2.1".parse().unwrap(),
+            &key,
+        )
+        .unwrap();
+    let encrypted = Bytes::from(encryptor.rebuild().unwrap());
+
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .key_provider(Arc::new(OneKey(key)))
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (svc, events_rx) = StreamingService::new(false);
+    bpa.register_service(Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+    let cla = IngressCla::new();
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut encrypted.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let Event::Streamed { segments, .. } = recv_event(&events_rx, 5).await else {
+        panic!("Expected the streamed door, got another event");
+    };
+    let mut delivered = Vec::new();
+    for segment in segments {
+        let (Segment::Next(bytes) | Segment::Final(bytes)) = segment;
+        delivered.extend_from_slice(&bytes);
+    }
+    let delivered = parse(Bytes::from(delivered)).expect("the delivered bundle parses");
+    assert!(
+        delivered.bcbs.is_empty(),
+        "the payload's BCB was accepted at ingress"
+    );
+    assert_eq!(
+        delivered.bundle.blocks[&1].payload(&delivered.data),
+        Some(plaintext.as_slice())
+    );
+    bpa.shutdown().await;
 }

@@ -155,7 +155,7 @@ impl BpaBuilder {
     /// Register a CLA to be initialized when the BPA is built.
     ///
     /// `init` carries the CLA's set-once declarations
-    /// ([`ClaInit`](crate::cla::ClaInit)), snapshotted at registration;
+    /// ([`ClaInit`]), snapshotted at registration;
     /// its `max_bundle_size` is the CLA's declared receive limit, folded
     /// with the BPA's configured cap into the effective value delivered to
     /// [`Cla::on_register`](crate::cla::Cla).

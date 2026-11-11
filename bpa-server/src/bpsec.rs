@@ -314,15 +314,18 @@ pub fn watch_keys(tasks: &TaskPool, config: BPSecConfig, provider: Arc<PatternKe
 
 #[cfg(test)]
 mod tests {
+
     use hardy_bpa::keys::KeyProvider;
     use hardy_bpv7::{
         block,
-        bpsec::key::{EncAlgorithm, KeyAlgorithm, Type, Use},
-        checks,
+        bpsec::{
+            checks,
+            key::{EncAlgorithm, KeyAlgorithm, Type, Use},
+        },
     };
 
     use hardy_bpv7::{
-        bpsec::DecryptingReader,
+        bpsec::{DecryptingReader, Role, Roles, SecurityServices},
         parse::{Parsed, parse},
     };
 
@@ -629,7 +632,8 @@ mod tests {
     }
 
     // RFC 9173 Appendix A.2 test vector: a BCB from security source ipn:2.1
-    // protecting the payload. Payload BCBs ride through parse intact and are
+    // protecting the payload, with the Bundle Age block RFC 9171 §4.4.2
+    // requires of its zero creation time inserted before the payload. Payload BCBs ride through parse intact and are
     // decrypted at delivery via `block_data`; the role decides whether the
     // decrypt key is released there: a verifier gets NoKey, an acceptor gets
     // the plaintext.
@@ -664,8 +668,8 @@ mod tests {
             .count()
     }
 
-    // Run the keyed BPSec pipeline a BPA runs at ingress — §A classify, §B
-    // decrypt BCB-covered BIBs, §C7 verify — and return the parsed pieces for
+    // Run the keyed BPSec pipeline a BPA runs at ingress — §A classify, then
+    // the composed keyed verification — and return the parsed pieces for
     // delivery-time assertions. Passing without error means nothing needed
     // rewriting for this vector.
     #[allow(clippy::type_complexity)]
@@ -676,38 +680,27 @@ mod tests {
         hardy_bpv7::Bundle,
         HashMap<u64, hardy_bpv7::bpsec::bcb::OperationSet>,
     ) {
+        let mut parsed =
+            parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE)).expect("parse failed");
+
+        if let Some(error) = &parsed.classification.delete_bundle {
+            panic!("classify failed: {error}");
+        }
+        let facts = parsed
+            .check(
+                source,
+                &HashMap::new(),
+                Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+            )
+            .expect("keyed verification failed");
+        assert!(
+            !facts.any(checks::Checked::Deferred),
+            "a complete buffer defers nothing"
+        );
+
         let Parsed {
-            data,
-            mut bundle,
-            bcbs,
-            mut bibs,
-            ..
-        } = parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE)).expect("parse failed");
-
-        let mut decrypted = HashMap::new();
-        let no_updates = HashMap::new();
-        checks::classify_unsupported(&bundle.blocks, &bcbs, &bibs, &[]).expect("classify failed");
-        checks::decrypt_and_validate_covered_bibs(
-            &data,
-            source,
-            &mut bundle.blocks,
-            &bcbs,
-            &mut bibs,
-            &mut decrypted,
-            &no_updates,
-        )
-        .expect("covered-BIB decrypt failed");
-        let deferred = checks::verify_all_bibs(
-            &data,
-            source,
-            &bundle.blocks,
-            &bibs,
-            &decrypted,
-            &no_updates,
-        )
-        .expect("BIB verify failed");
-        assert!(deferred.is_empty(), "a complete buffer defers nothing");
-
+            data, bundle, bcbs, ..
+        } = parsed;
         (data, bundle, bcbs)
     }
 

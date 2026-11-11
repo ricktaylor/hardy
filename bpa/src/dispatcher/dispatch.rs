@@ -1,8 +1,41 @@
 use futures::{FutureExt, join, select_biased};
 
 use super::*;
+use crate::routing::{Decision, DispatchAction};
 
 impl Dispatcher {
+    /// The local service a bundle no route matched waits for: its lookup
+    /// EID (the route key, else the destination) when that is local and the
+    /// lookup names the default table, which a registration can satisfy.
+    pub(super) fn awaited_service(
+        &self,
+        bundle: &Bpv7Bundle,
+        metadata: &bundle::BundleMetadata,
+    ) -> Option<Eid> {
+        let key = metadata.routing_key();
+        if key.unknown_table().is_some() {
+            return None;
+        }
+        self.node_ids
+            .local_service_eid(key.lookup_eid(&bundle.primary.destination))
+    }
+
+    /// Whether `decision` delivers the bundle here: to the administrative
+    /// endpoint or a service, or, matching no route, to the local service it
+    /// waits for.
+    pub(super) fn delivers_locally(
+        &self,
+        bundle: &Bpv7Bundle,
+        metadata: &bundle::BundleMetadata,
+        decision: &Decision,
+    ) -> bool {
+        match decision.action {
+            Some(DispatchAction::AdminEndpoint | DispatchAction::Deliver(_)) => true,
+            Some(_) => false,
+            None => self.awaited_service(bundle, metadata).is_some(),
+        }
+    }
+
     /// Queue a bundle for dispatch processing.
     /// The caller must have claimed the bundle (`Dispatching`), or be
     /// re-queueing one recovered still queued (`DispatchPending`); the send's
@@ -87,7 +120,7 @@ impl Dispatcher {
         // re-check it to close the park-vs-poll window (see park_bundle). A
         // Forward result names the peer, whose egress queue carries the
         // adjacency.
-        let decision = self.rib.decide(&bundle);
+        let decision = self.rib.decide(&bundle.bpv7, &bundle.metadata);
         self.execute_dispatch_action(bundle, decision, cla_registry)
             .await
     }
@@ -111,7 +144,7 @@ impl Dispatcher {
     ) {
         if self.rib.table_changed_since(&decision.seen) {
             debug!("Routing changed during the drain, deciding again");
-            decision = self.rib.decide(&bundle);
+            decision = self.rib.decide(&bundle.bpv7, &bundle.metadata);
         }
 
         match decision.action {
@@ -208,14 +241,7 @@ impl Dispatcher {
                 // default, which no registration can satisfy.
                 debug!("Storing bundle until a forwarding opportunity arises");
 
-                let key = bundle.metadata.routing_key();
-                let service = match key.unknown_table() {
-                    Some(_) => None,
-                    None => self
-                        .node_ids
-                        .local_service_eid(key.lookup_eid(&bundle.primary().destination)),
-                };
-                let parked = match service {
+                let parked = match self.awaited_service(&bundle.bpv7, &bundle.metadata) {
                     Some(service) => bundle::BundleStatus::WaitingForService { service },
                     None => bundle::BundleStatus::Waiting,
                 };
