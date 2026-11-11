@@ -115,7 +115,7 @@ SQLite uses Write-Ahead Logging (WAL) mode. All writes are serialized through an
 
 1. `start_recovery()` inserts all active bundle IDs into an `unconfirmed_bundles` table. This uses `INSERT OR IGNORE`, so it is safe to re-run if the process crashes during this step.
 2. `confirm_exists()` is called for each bundle found in the bundle data store. It removes the bundle from the `unconfirmed_bundles` table and returns its metadata.
-3. `remove_unconfirmed()` deletes any remaining entries from `unconfirmed_bundles` in batches, using atomic CTEs to snapshot the metadata before deletion.
+3. `remove_unconfirmed()` deletes any remaining entries from `unconfirmed_bundles` in batches. Each batch reads the orphaned records and then tombstones them in one transaction, so a crash mid-batch leaves the batch either untouched or fully removed.
 
 **What happens if the system crashes during recovery:**
 

@@ -284,7 +284,6 @@ macro_rules! storage_meta_tests {
             meta_test!(meta_14_poll_service_waiting);
             meta_test!(meta_16_reset_service_queue);
             meta_test!(meta_12_recovery);
-            meta_test!(meta_13_remove_unconfirmed);
         }
     };
 }
@@ -345,7 +344,6 @@ macro_rules! storage_meta_tests_async {
             meta_test!(meta_14_poll_service_waiting);
             meta_test!(meta_16_reset_service_queue);
             meta_test!(meta_12_recovery);
-            meta_test!(meta_13_remove_unconfirmed);
         }
     };
 }

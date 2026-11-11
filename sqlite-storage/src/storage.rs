@@ -479,12 +479,20 @@ impl MetadataStorage for SqliteStorage {
                             .collect::<Vec<_>>(),
                     );
 
+                    // Read the blobs before tombstoning them: RETURNING on
+                    // an UPDATE yields the updated (NULL) column values.
                     let bundles = trans
                         .prepare_cached(
-                            "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE id IN rarray(?1) AND bundle IS NOT NULL RETURNING bundle",
+                            "SELECT bundle FROM bundles WHERE id IN rarray(?1) AND bundle IS NOT NULL",
                         )?
-                        .query_map([id_values], |row| row.get(0))?
+                        .query_map([id_values.clone()], |row| row.get(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
+
+                    trans
+                        .prepare_cached(
+                            "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE id IN rarray(?1) AND bundle IS NOT NULL",
+                        )?
+                        .execute([id_values])?;
 
                     trans.commit()?;
 
