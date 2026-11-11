@@ -342,21 +342,14 @@ impl Dispatcher {
         // The gate decisions settle before the payload drains, so a rejected
         // arrival returns here having spooled nothing; the producer learns
         // the verdict from the door's return, never from the stream.
-        let Some(Admitted {
-            decision,
-            mut roles,
-        }) = self
+        let Some(Admitted { decision, roles }) = self
             .decide_at_gate(&mut parsed, &mut metadata, &*keys, report)
             .await
         else {
             return Received::Disposed;
         };
 
-        // A fragment's payload is part of the bundle's, whose operations
-        // are accepted, and verified, after reassembly, when the whole
-        // bundle crosses this gate: a Classifier's announcement of it is
-        // passed over. Otherwise
-        // the bundle's destination is the acceptor of every security
+        // The bundle's destination is the acceptor of every security
         // operation in it (RFC 9172 §1.4): where the gate decided to deliver
         // it here, now or once its service registers, every block an
         // operation targets joins the acceptors, the payload among them. A
@@ -364,10 +357,30 @@ impl Dispatcher {
         // joins them too, accepted where this node accepts every block that
         // BIB covers.
         let local = self.delivers_locally(&parsed.bundle, &metadata, &decision);
+
+        // A fragment's own security operations are the reassembled bundle's
+        // to process (RFC 9172 §5.2): every role the chain announced on it
+        // is passed over, and the destination's acceptance waits for the
+        // whole, which crosses this gate once reassembled. One addressed
+        // here that a Classifier
+        // declined to reassemble (`MetadataDelta::reassemble`) is dropped,
+        // reported: a raw fragment is never delivered, and cannot usefully
+        // forward.
         let fragment = parsed.bundle.primary.id.fragment_info.is_some();
-        if fragment {
-            roles.remove(&1);
+        if fragment && local && metadata.reassemble() == Some(false) {
+            let reason = ReasonCode::NoAdditionalInformation;
+            debug!("A Classifier declined to reassemble a fragment addressed here; dropped");
+            count_received_dropped(&reason);
+            self.report_bundle_reception(
+                &parsed.bundle,
+                metadata.received_at(),
+                report,
+                Some(reason),
+            )
+            .await;
+            return Received::Disposed;
         }
+
         // This node's roles on the blocks the gate checks, the acceptor's
         // outranking the verifier's on one operation: the chain's
         // announcements, a per-hop block's acceptance among them but not
@@ -380,44 +393,47 @@ impl Dispatcher {
         // services policy announced on a block, to accept or to verify, it
         // expects an operation of (`expected`); the destination's own
         // acceptance expects nothing. A block the header pass accepted or
-        // the fate discards is outside the pass.
+        // the fate discards is outside the pass, and a fragment's every
+        // block is.
         let mut gate_roles: HashMap<u64, Roles> = HashMap::new();
         let mut expected: HashMap<u64, SecurityServices> = HashMap::new();
-        for (&n, r) in &roles {
-            // Compared by encoding, so an alias of the type counts.
-            let per_hop = parsed.bundle.blocks.get(&n).is_some_and(|b| {
-                b.block_type == block::Type::PreviousNode
-                    || b.block_type == block::Type::BundleAge
-                    || b.block_type == block::Type::HopCount
-            });
-            let announced = if per_hop {
-                Roles::each(Role::Acceptor, r.accepts())
-            } else {
-                *r
-            };
-            let services = announced.accepts() | announced.verifies();
-            if !services.any() {
-                continue;
-            }
-            gate_roles.insert(n, announced);
-            expected.insert(n, services);
-        }
-        if !fragment && local {
-            for (&n, b) in &parsed.bundle.blocks {
-                if b.bcb.is_some() || b.bib != BibCoverage::None {
-                    *gate_roles.entry(n).or_default() |=
-                        Roles::each(Role::Acceptor, SecurityServices::BOTH);
+        if !fragment {
+            for (&n, r) in &roles {
+                // Compared by encoding, so an alias of the type counts.
+                let per_hop = parsed.bundle.blocks.get(&n).is_some_and(|b| {
+                    b.block_type == block::Type::PreviousNode
+                        || b.block_type == block::Type::BundleAge
+                        || b.block_type == block::Type::HopCount
+                });
+                let announced = if per_hop {
+                    Roles::each(Role::Acceptor, r.accepts())
+                } else {
+                    *r
+                };
+                let services = announced.accepts() | announced.verifies();
+                if !services.any() {
+                    continue;
                 }
+                gate_roles.insert(n, announced);
+                expected.insert(n, services);
             }
-            *gate_roles.entry(1).or_default() |=
-                Roles::each(Role::Acceptor, SecurityServices::BOTH);
+            if local {
+                for (&n, b) in &parsed.bundle.blocks {
+                    if b.bcb.is_some() || b.bib != BibCoverage::None {
+                        *gate_roles.entry(n).or_default() |=
+                            Roles::each(Role::Acceptor, SecurityServices::BOTH);
+                    }
+                }
+                *gate_roles.entry(1).or_default() |=
+                    Roles::each(Role::Acceptor, SecurityServices::BOTH);
+            }
+            if let Some((number, HopCountKept::SharesEncryptedBib { .. })) = hop_count_kept {
+                *gate_roles.entry(number).or_default() |=
+                    Roles::each(Role::Acceptor, SecurityServices::BOTH);
+            }
+            gate_roles.retain(|n, _| !accepted.contains_key(n) && !to_remove.contains(n));
+            expected.retain(|n, _| gate_roles.contains_key(n));
         }
-        if let Some((number, HopCountKept::SharesEncryptedBib { .. })) = hop_count_kept {
-            *gate_roles.entry(number).or_default() |=
-                Roles::each(Role::Acceptor, SecurityServices::BOTH);
-        }
-        gate_roles.retain(|n, _| !accepted.contains_key(n) && !to_remove.contains(n));
-        expected.retain(|n, _| gate_roles.contains_key(n));
 
         // Their operations are processed now, before anything is spooled,
         // for the rewrite below to remove what is accepted; a designated
