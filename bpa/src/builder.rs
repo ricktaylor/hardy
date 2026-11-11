@@ -1,4 +1,5 @@
 use core::num::{NonZeroU64, NonZeroUsize};
+use trace_err::*;
 
 use hardy_eid_patterns::EidPattern;
 
@@ -50,12 +51,15 @@ pub struct BpaBuilder {
     ipn_legacy_peers: Vec<EidPattern>,
 }
 
+const DEFAULT_POLL_CHANNEL_DEPTH: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+
 impl BpaBuilder {
     // The one constructor: reachable only through Bpa::builder().
     pub(crate) fn new() -> Self {
-        let poll_channel_depth = NonZeroUsize::new(16).unwrap();
+        let poll_channel_depth = DEFAULT_POLL_CHANNEL_DEPTH;
         let processing_pool_size =
-            NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
+            NonZeroUsize::new(hardy_async::available_parallelism().get() * 4)
+                .trace_expect("the available parallelism is non-zero");
 
         Self {
             poll_channel_depth,
@@ -168,7 +172,7 @@ impl BpaBuilder {
     ) -> Self {
         self.cla_registry_builder
             .insert(name.into(), cla, policy, init)
-            .expect("Failed to insert CLA");
+            .trace_expect("Failed to insert CLA");
         self
     }
 
@@ -183,7 +187,7 @@ impl BpaBuilder {
                 service_id,
                 services::registry::ServiceImpl::LowLevel(service),
             )
-            .expect("Failed to register service");
+            .trace_expect("Failed to register service");
         self
     }
 

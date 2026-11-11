@@ -176,6 +176,23 @@ pub struct MetadataDelta {
     /// Bundle Age it discards, which `Some(false)` clears. A Bundle Age the
     /// bundle carries is updated regardless (§5.4).
     pub add_bundle_age: Option<bool>,
+    /// Whether this node reassembles the fragment, holding it until every
+    /// fragment of its bundle has arrived and the whole can be rebuilt (RFC
+    /// 9171 §5.9), where the fragment would otherwise be forwarded as
+    /// routed. Same write semantics as `route_table`; unset leaves the
+    /// decision to the route: the bundle's destination reassembles it, as
+    /// RFC 9171 §5.9 requires of it, and a relay forwards it. `Some(true)`
+    /// reassembles here a fragment the route would forward, the whole then
+    /// routed as any bundle; `Some(false)` declines a fragment addressed
+    /// here, which is then dropped at the gate and reported, since a raw
+    /// fragment is never delivered and cannot usefully forward. Every
+    /// fragment of a bundle gets the same answer only where the decision is
+    /// derived from what every fragment shares, the primary block's fields,
+    /// and never from a fragment's own offset or the extension blocks that
+    /// travel in fragment 0 alone: a Classifier that answers differently
+    /// for two fragments of one bundle splits it, some forwarded and the
+    /// rest held until they expire.
+    pub reassemble: Option<bool>,
     /// This node's security roles on the blocks, by block number: on each
     /// block's BCB operation (confidentiality) and BIB operation
     /// (integrity), whether this node is the operation's verifier or its
@@ -226,10 +243,11 @@ pub struct MetadataDelta {
     /// recommend, or deletes the bundle where its flags say so, with the
     /// report "Missing security operation".
     ///
-    /// A fragment's payload is passed over, its operations accepted or
-    /// verified after reassembly, when the whole bundle crosses this gate;
-    /// so is anything at the Originate hook, since a source accepts
-    /// nothing. Announcements accumulate across the Ingress chain, one
+    /// Every role announced on a fragment is passed over: a fragment's
+    /// operations are accepted or verified after reassembly, when the whole
+    /// bundle crosses this gate (RFC 9172 §5.2); so is anything at the
+    /// Originate hook, since a source accepts nothing. Announcements
+    /// accumulate across the Ingress chain, one
     /// Classifier unable to withdraw another's, the acceptor's role
     /// outranking the verifier's on one operation, and serve the arrival
     /// only: they are never persisted. None reaches the per-hop blocks,
