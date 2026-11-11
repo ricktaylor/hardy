@@ -12,7 +12,7 @@ The pipeline turns untrusted wire bytes into a validated bundle while keeping th
 
 ## Architecture Overview
 
-A bundle moves through four stages, lowest to highest. The lower three are pure bpv7 mechanism; policy sits above them in the consumer, primarily the BPA's keyed parse pipelines (`bpa/src/bundle/parse.rs`).
+A bundle moves through four stages, lowest to highest, each pure bpv7 mechanism; policy sits above them in the consumer, primarily the BPA's keyed parse pipelines (`bpa/src/bundle/arrival/`).
 
 1. **Structural parse** (`parse::parse`) — keyless. Decodes the CBOR into a `Bundle` (primary block plus a map of canonical blocks), the BPSec OperationSets, and the values of the Previous Node, Bundle Age and Hop Count blocks no BCB covers (`Parsed::per_hop`), rejecting one whose data does not decode (RFC 9171 §5.6 Step 3), and a bundle without a creation time that carries no Bundle Age block (§4.4.2). Having no keys, it cannot read the target list of a BCB-encrypted BIB, so it conservatively marks every block such a BIB *might* cover as "maybe covered" (see *Coverage stamping*).
 2. **Keyless classification** (`Parsed::classification`, at the parser's tail) — §A: the blocks this node cannot process, `Type::Unrecognised` blocks (A1), BCBs (A2) and plaintext BIBs (A3) with an unsupported security operation, classified by their flags, with the deletion one of them may demand.
@@ -59,7 +59,7 @@ Classification (§A), run at the parser's tail, and the per-OperationSet structu
 
 ## Integration
 
-bpv7 supplies the mechanism; the BPA's `bundle::parse` module (`bpa/src/bundle/parse.rs`) composes it with BPA policy — the NoKey disposition, which failures reject, the §D field cache, and the status-report reason mapping. The bpv7 CLI tools (`bpv7/tools`), the fuzz harness (`bpv7/fuzz`), and the integration tests (`bpv7/tests`) compose the same sections for their own purposes. The BPSec edit cascade that §E drives lives in `bpsec::edit`, layered over the keyless `editor`.
+bpv7 supplies the mechanism; the BPA's `bundle::arrival` module (`bpa/src/bundle/arrival/`) composes it with BPA policy — the NoKey disposition, which failures reject, the §D field cache, and the status-report reason mapping. The bpv7 CLI tools (`bpv7/tools`), the fuzz harness (`bpv7/fuzz`), and the integration tests (`bpv7/tests`) compose the same sections for their own purposes. The BPSec edit cascade that §E drives lives in `bpsec::edit`, layered over the keyless `editor`.
 
 ## Standards Compliance
 

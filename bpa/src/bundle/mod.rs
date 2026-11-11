@@ -2,7 +2,6 @@ mod metadata;
 mod status;
 
 pub(crate) mod arrival;
-pub(crate) mod parse;
 
 pub use self::metadata::{BundleMetadata, Origin};
 pub use self::status::BundleStatus;
@@ -136,7 +135,7 @@ impl Bundle {
 }
 
 /// The RFC 9171 creation-time rule, shared by [`Bundle::creation_time`] and
-/// the pre-store ingress gate ([`parse::HeaderVerify::gate_reason`]): the
+/// the pre-store ingress gate ([`arrival::Headers::gate_reason`]): the
 /// primary block's timestamp when the source is clocked, else `received_at`
 /// minus the Bundle Age extension field. Saturates an out-of-range age (the
 /// callers' age fields are `pub`, so not necessarily wire-decoded), like

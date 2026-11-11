@@ -108,8 +108,6 @@ pub mod bpsec;
 pub mod builder;
 pub mod bundle;
 pub mod bundle_age;
-#[cfg(feature = "bpsec")]
-pub mod checks;
 pub mod crc;
 pub mod creation_timestamp;
 pub mod dtn_time;

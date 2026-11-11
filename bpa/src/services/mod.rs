@@ -85,6 +85,18 @@ pub enum Error {
     #[error("Cannot originate a bundle fragment")]
     FragmentedBundle,
 
+    /// The bundle carries a Previous Node block. An originated bundle has no
+    /// previous node (RFC 9171 §4.4.1); this node's egress inserts its own
+    /// when it forwards the bundle.
+    #[error("Cannot originate a bundle carrying a Previous Node block")]
+    PreviousNodeBlock,
+
+    /// A BIB or BCB targets the per-hop block with this number, a Bundle Age
+    /// or Hop Count. This node's egress rewrites the block when it forwards
+    /// the bundle, so the operation could never reach its acceptor.
+    #[error("Cannot originate a bundle with a security operation on per-hop block {0}")]
+    ProtectedPerHopBlock(u64),
+
     /// The bundle stream was cancelled: the producer dropped its sender
     /// before delivering the final segment, so no complete bundle arrived.
     #[error("The bundle stream was cancelled before completion")]
@@ -324,7 +336,7 @@ pub trait ApplicationSink: Send + Sync {
 /// the raw bundle bytes. This enables system services like echo that need
 /// to inspect/modify bundle structure. Services can parse the bundle
 /// themselves with [`hardy_bpv7::parse::parse`] for a structural parse, then
-/// apply the [`hardy_bpv7::checks`] primitives (e.g. `verify`) if they have
+/// apply the keyed check ([`hardy_bpv7::bpsec::checks`], `Parsed::check`) if they have
 /// key access.
 ///
 /// # Sink Lifecycle

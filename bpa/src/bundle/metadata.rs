@@ -117,28 +117,15 @@ pub struct BundleMetadata {
     provenance: Provenance,
     /// The decoded per-hop blocks: a cache, not a source of truth, recorded
     /// whenever the bundle's bytes are parsed — at ingress, on local build,
-    /// or on re-parse. It mirrors the *stored* bytes, which stay as
-    /// received: the per-attempt rewrites at Egress and Deliver (the
-    /// per-hop update, a Rewriter's edits) never touch it, and must not —
-    /// the expiry arithmetic reads the as-received Bundle Age. Nothing
-    /// re-validates it after the fact.
+    /// or on re-parse. It mirrors the *stored* bytes: the per-attempt
+    /// rewrites at Egress and Deliver (the per-hop update, a Rewriter's
+    /// edits) never touch it, and must not — the expiry arithmetic reads the
+    /// as-received Bundle Age. Nothing re-validates it after the fact.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub per_hop: PerHopFields,
     // Classifier-chain output: annotation slots and the routing inputs.
     #[cfg_attr(feature = "serde", serde(flatten))]
     classification: Classification,
-    // Wire-scoped block removals derived at ingress: RFC 9172 §5.1.1
-    // failure-drops and honoured `delete_block_on_failure` unknowns. The
-    // stored bundle is kept as received — no editing on input — so these
-    // ride the record and are applied per transmission/delivery attempt at
-    // the output doors (egress rewrite, deliver strip). A cache of a pure
-    // derivation over the received bytes + keys, re-derived at restart
-    // re-admission; crate-private, fixed machinery only (never a filter).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Vec::is_empty")
-    )]
-    pub(crate) to_remove: Vec<u64>,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
 }
@@ -157,7 +144,6 @@ impl BundleMetadata {
             },
             per_hop: PerHopFields::default(),
             classification: Classification::default(),
-            to_remove: Vec::new(),
             storage_name: None,
         }
     }
@@ -261,8 +247,9 @@ impl BundleMetadata {
         self.classification.routing.table.as_ref()
     }
 
-    /// Whether a Classifier asked egress to add a Bundle Age block to this
-    /// bundle, if it carries none (see
+    /// Whether egress adds a Bundle Age block to this bundle, if it carries
+    /// none: ingress marks a bundle whose Bundle Age it discarded, and a
+    /// Classifier sets or clears the mark (see
     /// [`MetadataDelta::add_bundle_age`]).
     pub fn add_bundle_age(&self) -> bool {
         self.classification.add_bundle_age
@@ -382,7 +369,6 @@ mod tests {
         delta.route_key = Some("ipn:9.0".parse().unwrap());
         delta.add_bundle_age = Some(true);
         metadata.apply(delta);
-        metadata.to_remove = vec![4, 5];
 
         let json = serde_json::to_string(&metadata).unwrap();
         let loaded: BundleMetadata = serde_json::from_str(&json).unwrap();

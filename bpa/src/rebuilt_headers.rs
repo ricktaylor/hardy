@@ -8,9 +8,6 @@
 //! as one segment, then the bundle's own bytes from where that last kept chunk
 //! starts, as they stream, so the payload is never held whole.
 
-// The ingress rewrite that splices this stream in arrives with the doors' switch to `bundle::arrival`.
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 
 use hardy_bpv7::editor::Chunk;

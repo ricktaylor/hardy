@@ -15,7 +15,7 @@
 //! [`services::Error`](Error) to the originator; this path never raises status
 //! reports.
 
-use core::time::Duration;
+use core::{ops::ControlFlow, time::Duration};
 
 use hardy_async::async_trait;
 // Aliased: a bare `Error` in this file is the originator's `services::Error`.
@@ -25,9 +25,11 @@ use hardy_bpv7::{
     bundle::{Flags, Id},
     creation_timestamp::CreationTimestamp,
     eid::Eid,
+    parse::Parsed,
     status_report::ReasonCode,
 };
-use tracing::debug;
+use trace_err::*;
+use tracing::{debug, info};
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -40,10 +42,9 @@ use crate::{
     Bytes, HashMap,
     bundle::{
         Bundle, BundleMetadata, BundleStatus,
-        parse::{HeaderFailure, HeaderVerify, extract_from_built, parse_headers},
+        arrival::{HeaderFailure, Headers, Pass, SourceRule, extract_from_built, parse_headers},
     },
     cla::Segment,
-    filter::ChainOutcome,
     otel_metrics::{reason_label, status_label},
     routing::{Decision, DispatchAction},
     services::{Error, SendOptions},
@@ -248,11 +249,12 @@ impl Dispatcher {
     ) -> Result<Id, Error> {
         // The pass holds the Originate chain's payload peek: none for an
         // empty chain.
-        let (hv, headers, tail, bcb_ops) = match parse_headers(
+        let (hv, tail) = match parse_headers(
             stream,
+            Pass::Source,
             self.max_bundle_size_wire(),
             self.filters.originate.peek,
-            self.key_provider(),
+            &*self.key_provider,
         )
         .await
         {
@@ -262,6 +264,12 @@ impl Dispatcher {
             }
             Err(HeaderFailure::TooLarge { size, max }) => {
                 return Err(Error::PayloadTooLarge { size, max });
+            }
+            Err(HeaderFailure::SourceRule(SourceRule::PreviousNode)) => {
+                return Err(Error::PreviousNodeBlock);
+            }
+            Err(HeaderFailure::SourceRule(SourceRule::ProtectedPerHopBlock(block))) => {
+                return Err(Error::ProtectedPerHopBlock(block));
             }
             // The report half is CLA-ingress machinery; an originator
             // gets the parse or verification error itself, counted under
@@ -276,9 +284,9 @@ impl Dispatcher {
 
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node).
-        if hv.bundle.primary.id.source != *expected_source {
+        if hv.parsed.bundle.primary.id.source != *expected_source {
             return Err(Error::InvalidDestination(
-                hv.bundle.primary.id.source.clone(),
+                hv.parsed.bundle.primary.id.source.clone(),
             ));
         }
 
@@ -286,7 +294,7 @@ impl Dispatcher {
         // source never emits fragments, and admitting one would let a
         // service fabricate pieces of an ADU it never sent whole. A header
         // fact, settled before the gates with nothing spooled.
-        if hv.bundle.primary.id.fragment_info.is_some() {
+        if hv.parsed.bundle.primary.id.fragment_info.is_some() {
             return Err(Error::FragmentedBundle);
         }
 
@@ -307,24 +315,36 @@ impl Dispatcher {
             return Err(Error::Dropped(Some(reason)));
         }
 
-        let HeaderVerify {
-            bundle,
-            per_hop,
-            to_remove,
+        let Headers {
+            parsed,
+            // A source's header pass schedules none, and accepts none.
+            to_remove: _,
+            accepted: _,
+            hop_count_kept,
             // Originated bundles never raise reception reports — reception
             // is a CLA-ingress notion; the originator learns the outcome
             // from this call's return value.
             report: _,
+            // A source designates nothing to verify.
+            verified: _,
             deferred_verifiers,
+            // The originate chain derives its own key source and decrypts
+            // as it reads.
+            keys: _,
         } = hv;
+        // A source accepts nothing, so the BIB operation sets are not read.
+        let Parsed {
+            data: headers,
+            bundle,
+            bcbs: bcb_ops,
+            per_hop,
+            ..
+        } = parsed;
         metadata.per_hop = per_hop;
-
-        // The §E removals travel with the bundle to the output doors,
-        // sorted for a deterministic persisted order, exactly as at CLA
-        // ingress — the bundle is stored as received.
-        let mut to_remove: Vec<u64> = to_remove.into_iter().collect();
-        to_remove.sort_unstable();
-        metadata.to_remove = to_remove;
+        // A Hop Count the pass left as received travels unchanged.
+        if let Some((number, reason)) = hop_count_kept {
+            info!("Hop Count block {number} travels unchanged: {reason}");
+        }
 
         let record = Bundle {
             bpv7: bundle,
@@ -349,16 +369,14 @@ impl Dispatcher {
         // The validating decorator settles the drain verdict — the same
         // machinery as CLA ingress, mapped to the caller's error surface
         // instead of status reports.
-        let payload_start = record.bpv7.blocks.get(&1).map_or(headers.len(), |b| {
-            usize::try_from(b.payload_range().start)
-                .expect("parse bounds pre-payload offsets to usize")
-        });
         let tail_rx = ValidatingReceiver::new(
             stream,
             tail,
+            None,
             deferred_verifiers,
             headers.clone(),
-            payload_start,
+            record.bpv7.blocks[&1].payload_range(),
+            None,
         );
         self.originate_admit(record, headers, tail_rx, &bcb_ops, |rx| {
             rx.finish().map_err(|failure| {
@@ -371,6 +389,10 @@ impl Dispatcher {
                     ValidationFailure::Invalid(e) => Error::InvalidBundle(e),
                     ValidationFailure::IntegrityFailed { .. } => {
                         Error::InvalidBundle(BpsecError::IntegrityCheckFailed.into())
+                    }
+                    // A source accepts nothing, so its door decrypts nothing.
+                    ValidationFailure::DecryptionFailed => {
+                        unreachable!("the originate door decrypts no payload")
                     }
                 }
             })
@@ -391,8 +413,9 @@ impl Dispatcher {
     // `stream` is the door's whole-bundle byte source (`head` included);
     // `settle` maps the door's post-drain verdict — a `ValidatingReceiver`'s
     // `finish` at the raw door, a `BuiltReceiver`'s length verdict at the
-    // ADU door — to the caller's error surface, and runs before anything is
-    // persisted.
+    // ADU door — to the caller's error surface. Each decorator fails the
+    // pull that meets a rejecting verdict, so a rejected stream is never
+    // committed, and the metadata write follows the verdict.
     async fn originate_admit<S, F>(
         &self,
         bundle: Bundle,
@@ -427,9 +450,10 @@ impl Dispatcher {
         let max_size = self.max_bundle_size_mem();
         let outcome = self.store.save_stream(&mut stream, max_size).await;
 
-        // Settle the door's stream verdict against the save: a save the
-        // verdict rejects was staged before the verdict settled — the
-        // discard half of the streaming contract.
+        // Settle the door's stream verdict against the save. Each door's
+        // decorator fails the pull that meets a rejecting verdict, the
+        // stream's `Final` included, so the drain never commits a stream its
+        // verdict rejects.
         let (storage_name, data_len) = match settle(stream) {
             Ok(()) => match outcome {
                 Ok(save) => save,
@@ -447,9 +471,9 @@ impl Dispatcher {
                 }
             },
             Err(e) => {
-                if let Ok((storage_name, _)) = outcome {
-                    self.store.delete_data(&storage_name).await;
-                }
+                outcome
+                    .err()
+                    .trace_expect("a rejected stream's drain committed nothing");
                 return Err(e);
             }
         };
@@ -487,7 +511,7 @@ impl Dispatcher {
     // past the peek.
     fn decide_at_originate_gate(
         &self,
-        bundle: Bundle,
+        mut bundle: Bundle,
         head: Bytes,
         bcbs: &HashMap<u64, OperationSet>,
     ) -> Result<(Bundle, Decision), Error> {
@@ -495,22 +519,20 @@ impl Dispatcher {
         // Classifier's metadata deltas survive into the persisted record. A
         // filter reading a payload that is not all resident gets the reader's
         // `NotResident`, and its held peek from `payload_peek`.
-        let bundle = if self.filters.has_originate() {
-            match self
-                .filters
-                .run_originate(bundle, head, bcbs, &*self.key_provider)
-            {
-                ChainOutcome::Continue(bundle, _) => bundle,
-                ChainOutcome::Drop(_, reason) => {
-                    let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-                    count_originated_dropped(&label);
-                    debug!("Originate filter chain dropped the bundle: {label:?}");
-                    return Err(Error::Dropped(reason));
-                }
-            }
-        } else {
-            bundle
-        };
+        if self.filters.has_originate()
+            && let ControlFlow::Break(reason) = self.filters.run_originate(
+                &bundle.bpv7,
+                &mut bundle.metadata,
+                &head,
+                bcbs,
+                &*self.key_provider,
+            )
+        {
+            let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+            count_originated_dropped(&label);
+            debug!("Originate filter chain dropped the bundle: {label:?}");
+            return Err(Error::Dropped(reason));
+        }
 
         // Route at the door — the decision of record for this origination,
         // carrying the table it was made against: the commit decides again
@@ -518,7 +540,7 @@ impl Dispatcher {
         // rejects here — doomed traffic is never persisted — and the
         // originator always gets an error: even a reasonless (silent) Drop
         // surfaces as `Dropped(None)`, where the CLA gate drops silently.
-        let decision = self.rib.decide(&bundle);
+        let decision = self.rib.decide(&bundle.bpv7, &bundle.metadata);
         if let Some(DispatchAction::Drop(reason)) = decision.action {
             let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
             count_originated_dropped(&label);

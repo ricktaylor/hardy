@@ -1,6 +1,6 @@
 //! Integration tests for the BPSec validation/rewrite pipeline — composing
 //! the public `hardy_bpv7::{parse, checks, rewrite}` primitives the way a
-//! consumer would (mirrors the reference pipeline in `bpa::bundle::parse`).
+//! consumer would (mirrors the reference pipeline in `bpa::bundle::arrival`).
 
 use bytes::Bytes;
 use hardy_bpv7::parse::Parsed;
@@ -84,7 +84,7 @@ fn empty_keys() -> bpsec::key::KeySet {
 type PipelineResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 // Full-mode pipeline: composes the per-section helpers exactly as
-// `bpa::bundle::parse` does, so the cascade tests exercise the real
+// `bpa::bundle::arrival` does, so the cascade tests exercise the real
 // composition. Returns the (possibly rewritten) bundle plus the chunk
 // plan when rewrites were applied.
 fn parse_full_for_test(

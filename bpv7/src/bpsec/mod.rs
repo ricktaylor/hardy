@@ -35,12 +35,6 @@ pub use error::Error;
 mod parse;
 pub use parse::UnknownOperation;
 
-/// A key provider function that returns no keys.
-/// Use this when parsing bundles that don't require decryption.
-pub fn no_keys(_bundle: &crate::bundle::Bundle, _data: &[u8]) -> Box<dyn key::KeySource> {
-    Box::new(key::KeySet::EMPTY)
-}
-
 /// RFC 9173 default security contexts (BIB-HMAC-SHA2 and BCB-AES-GCM).
 #[cfg(feature = "rfc9173")]
 pub mod rfc9173;
