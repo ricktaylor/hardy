@@ -43,6 +43,7 @@ extern crate alloc;
 
 mod dispatcher;
 mod otel_metrics;
+mod rebuilt_headers;
 
 pub mod bpa;
 pub mod builder;
