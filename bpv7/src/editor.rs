@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use super::*;
 #[cfg(feature = "bpsec")]
-use crate::reader::{Availability, Reader};
+use crate::bpsec::{Decrypted, key::KeySource};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -32,6 +32,33 @@ pub enum Error {
     #[error("Primary block is protected by a BIB; use remove_integrity(0) first")]
     PrimaryBlockHasBib,
 
+    /// The block is the target of no BCB, so has no encryption to remove.
+    #[error("Block is not the target of a BCB")]
+    NotEncrypted,
+
+    /// The block is the target of no BIB, so has no integrity operation to
+    /// remove.
+    #[error("Block is not the target of a BIB")]
+    NotSigned,
+
+    /// An encrypted BIB that could not be decrypted may cover the block, so
+    /// the edit cannot tell whether it breaks an integrity operation.
+    #[error("Block {0} may be protected by an encrypted BIB that couldn't be decrypted")]
+    MaybeHasBib(u64),
+
+    /// Removing the BCB without its targets would leave their ciphertext to
+    /// reparse as plaintext.
+    #[error("Cannot remove BCB {0} without also removing all of its targets")]
+    StrandsCiphertext(u64),
+
+    /// Removing `block` would remove its operation from the encrypted BIB
+    /// `bib`, which also covers a block that stays: the BIB would have to be
+    /// encrypted again, which only its BCB's security source may do.
+    #[error(
+        "Removing block {block} would shrink encrypted BIB {bib}, which only its BCB's security source may encrypt"
+    )]
+    ShrinksEncryptedBib { block: u64, bib: u64 },
+
     /// A change to the primary block's bytes would break an operation whose
     /// scope includes the primary block, as RFC 9173's default scope does:
     /// one held by security block `{0}`, the lowest such block, which may
@@ -39,13 +66,14 @@ pub enum Error {
     #[error("Security block {0} has an operation whose scope includes the primary block")]
     PrimaryInSecurityScope(u64),
 
-    #[error(
-        "Cannot decrypt BIB {0} that targets the decrypted block; this would violate RFC 9172 §3.8"
-    )]
-    CannotDecryptRelatedBib(u64),
-
     #[error("Security blocks (BIB/BCB) must be managed via Signer/Encryptor, not the Editor")]
     SecurityBlock,
+
+    /// The payload's data was staged, but the payload streams past the
+    /// editor ([`Editor::with_streamed_payload`]): the staged data would
+    /// never reach the wire.
+    #[error("The payload's data is staged, but the payload streams")]
+    StagedPayload,
 
     /// A block carries `report_on_failure` on a bundle whose final primary
     /// forbids it (RFC 9171 §4.2.3-4/-5); refused when the bundle is rebuilt,
@@ -53,19 +81,23 @@ pub enum Error {
     #[error("Block {0} requests report_on_failure, which the bundle forbids")]
     ReportOnFailureForbidden(u64),
 
+    /// A security operation the edit needed failed: a decryption, the
+    /// checks of a decoded BIB, a key the source does not hold.
+    #[error(transparent)]
+    Bpsec(#[from] bpsec::Error),
+
     #[error(transparent)]
     Builder(#[from] builder::Error),
 }
 
-impl From<bpsec::Error> for Error {
-    fn from(e: bpsec::Error) -> Self {
-        Error::Builder(builder::Error::InternalError(e.into()))
-    }
-}
-
+// A BPSec error reaches the editor as `Bpsec`, however it was wrapped on
+// the way; any other bundle error is the builder's.
 impl From<error::Error> for Error {
     fn from(e: error::Error) -> Self {
-        Error::Builder(builder::Error::InternalError(e))
+        match e {
+            error::Error::InvalidBPSec(e) => Error::Bpsec(e),
+            e => Error::Builder(builder::Error::InternalError(e)),
+        }
     }
 }
 
@@ -84,7 +116,8 @@ impl Chunk {
     }
 
     /// Flatten chunks into a contiguous byte buffer, wrapping in a CBOR
-    /// indefinite-length array (0x9F prefix, 0xFF suffix).
+    /// indefinite-length array (0x9F prefix, 0xFF suffix):
+    /// [`flatten_head`](Self::flatten_head) with the break.
     ///
     /// # Panics
     ///
@@ -93,8 +126,25 @@ impl Chunk {
     /// source buffer always satisfy this; pairing a plan with a different
     /// (or truncated) source is a caller error.
     pub fn flatten(chunks: Vec<Self>, source: &[u8]) -> Box<[u8]> {
-        let total_len = 2 + chunks.iter().map(|c| c.len()).sum::<usize>();
-        let mut result = Vec::with_capacity(total_len);
+        let mut result = Self::flatten_head(chunks, source);
+        result.push(0xFF);
+        result.into()
+    }
+
+    /// Flatten chunks into a contiguous byte buffer after the head of the
+    /// CBOR indefinite-length array (0x9F), without its break: the bytes a
+    /// caller continues itself, as the rebuilt header region of a streamed
+    /// rebuild ([`Editor::rebuild_streamed`]) is continued by the payload
+    /// and the trailer that ends the bundle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an `Unchanged` extent lies outside `source`, as
+    /// [`flatten`](Self::flatten) does.
+    pub fn flatten_head(chunks: Vec<Self>, source: &[u8]) -> Vec<u8> {
+        let len = 1 + chunks.iter().map(|c| c.len()).sum::<usize>();
+        // Room for the break a caller may add.
+        let mut result = Vec::with_capacity(len + 1);
         result.push(0x9F);
         for c in chunks {
             match c {
@@ -110,9 +160,8 @@ impl Chunk {
                 }
             }
         }
-        result.push(0xFF);
-        debug_assert_eq!(result.len(), total_len);
-        result.into()
+        debug_assert_eq!(result.len(), len);
+        result
     }
 
     /// Bytes-flavoured rebuild. Consumes `source` and returns the new
@@ -355,6 +404,16 @@ pub struct Editor<'a> {
     blocks: HashMap<u64, BlockTemplate<'a>>,
     bib_overrides: HashMap<u64, block::BibCoverage>,
     bcb_overrides: HashMap<u64, Option<u64>>,
+    #[cfg(feature = "bpsec")]
+    pub(crate) key_source: Option<&'a dyn KeySource>,
+    /// The plaintext an earlier pass over the bundle decrypted
+    /// ([`with_decrypted`](Self::with_decrypted)), read before any key.
+    #[cfg(feature = "bpsec")]
+    pub(crate) decrypted: Option<&'a Decrypted>,
+    /// The length of the payload's plaintext, where the payload's data
+    /// streams past the editor rather than being resident
+    /// ([`with_streamed_payload`](Self::with_streamed_payload)).
+    streamed_payload: Option<u64>,
 }
 
 enum BlockTemplate<'a> {
@@ -388,7 +447,26 @@ impl<'a> Editor<'a> {
             primary: None,
             bib_overrides: HashMap::new(),
             bcb_overrides: HashMap::new(),
+            #[cfg(feature = "bpsec")]
+            key_source: None,
+            #[cfg(feature = "bpsec")]
+            decrypted: None,
+            streamed_payload: None,
         }
+    }
+
+    /// Declare that the payload's data streams past the editor, as the
+    /// source bytes hold only the headers, and that its plaintext is
+    /// `plaintext_len` bytes long: the payload's security acceptor decrypts
+    /// it as it streams ([`bcb::Operation::begin_decrypt`](crate::bpsec::bcb::Operation::begin_decrypt)),
+    /// and knows that length before the first byte. Removing the payload's
+    /// encryption ([`remove_encryption`](crate::bpsec::edit::BPSecEditor::remove_encryption))
+    /// then writes the payload block for a streamed plaintext of that
+    /// length, rather than decrypting resident data, and
+    /// [`rebuild_streamed`](Self::rebuild_streamed) frames it.
+    pub fn with_streamed_payload(mut self, plaintext_len: u64) -> Self {
+        self.streamed_payload = Some(plaintext_len);
+        self
     }
 
     fn primary_block(&mut self) -> Result<&mut primary_block::PrimaryBlock, Error> {
@@ -415,7 +493,10 @@ impl<'a> Editor<'a> {
     /// longer holds it. An earlier edit's strip records the new coverage in
     /// the overrides and leaves the block's stamps stale: the BIB or BCB they
     /// name may be gone, and its number reused by an unrelated block.
-    fn current_coverage(&self, block_number: u64) -> Option<(block::BibCoverage, Option<u64>)> {
+    pub(crate) fn current_coverage(
+        &self,
+        block_number: u64,
+    ) -> Option<(block::BibCoverage, Option<u64>)> {
         let (block, _) = self.block(block_number)?;
         Some((
             self.bib_overrides
@@ -704,8 +785,11 @@ impl<'a> Editor<'a> {
     /// covering BIB/BCB target lists (the old signature could not survive a
     /// body change), and the replace is refused with
     /// [`BibIsEncrypted`](Error::BibIsEncrypted) /
-    /// [`MaybeHasBib`](bpsec::Error::MaybeHasBib) where the coverage cannot
-    /// be safely updated. As with `update_block`, a replaced block that was
+    /// [`MaybeHasBib`](Error::MaybeHasBib) where the coverage cannot
+    /// be safely updated, a [`Maybe`](block::BibCoverage::Maybe) being first
+    /// resolved with the editor's key source and plaintext cache
+    /// ([`with_key_source`](Self::with_key_source),
+    /// [`with_decrypted`](Self::with_decrypted)). As with `update_block`, a replaced block that was
     /// BCB-covered comes back with no data (its body was ciphertext), so
     /// the caller must supply fresh data with
     /// [`with_data`](BlockBuilder::with_data); rebuilding without it fails
@@ -770,7 +854,14 @@ impl<'a> Editor<'a> {
     /// that was BCB-covered comes back with no data (its body was
     /// ciphertext), so the caller must supply fresh data with
     /// [`with_data`](BlockBuilder::with_data); rebuilding without it fails
-    /// with [`NoBlockData`](builder::Error::NoBlockData).
+    /// with [`NoBlockData`](builder::Error::NoBlockData). A block under a BIB
+    /// that is itself encrypted is refused with
+    /// [`BibIsEncrypted`](Error::BibIsEncrypted), and one whose coverage
+    /// reads [`Maybe`](block::BibCoverage::Maybe) is first resolved with the
+    /// editor's key source and plaintext cache
+    /// ([`with_key_source`](Self::with_key_source),
+    /// [`with_decrypted`](Self::with_decrypted)), or refused with
+    /// [`MaybeHasBib`](Error::MaybeHasBib).
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
@@ -788,14 +879,22 @@ impl<'a> Editor<'a> {
             }
             _ => {}
         }
-        let Some((bib, bcb)) = self.current_coverage(block_number) else {
+        let Some((mut bib, bcb)) = self.current_coverage(block_number) else {
             return Err((self, Error::NoSuchBlock(block_number)));
         };
+        if matches!(bib, block::BibCoverage::Maybe) {
+            let (editor, resolved) = bpsec::edit::resolve_maybe(self, block_number);
+            self = editor;
+            bib = match resolved {
+                Ok(bib) => bib,
+                Err(e) => return Err((self, e)),
+            };
+        }
 
         // Handle BIB coverage — must remove from target list if present
         match bib {
             block::BibCoverage::Maybe => {
-                return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
+                return Err((self, Error::MaybeHasBib(block_number)));
             }
             block::BibCoverage::Some(bib_num) => {
                 if self
@@ -817,50 +916,31 @@ impl<'a> Editor<'a> {
         self.update_block_inner(block_number)
     }
 
-    /// Record that a BIB covers the given target block.
+    /// Update an existing block, keeping the security operations over it.
     ///
-    /// Used by `Signer` to set `bib` metadata on target blocks so that
-    /// `rebuild_bundle()` returns a correct `Bundle` without reparsing, and
-    /// by `BPSecEditor::remove_blocks` once a decrypt shows which targets an
-    /// encrypted BIB covers.
-    #[cfg(feature = "bpsec")]
-    pub(crate) fn set_bib_target(&mut self, target_block: u64, bib_block: u64) {
-        self.bib_overrides
-            .insert(target_block, block::BibCoverage::Some(bib_block));
-    }
-
-    /// Record that a BCB covers the given target block.
+    /// [`update_block`](Self::update_block) removes the edited block from
+    /// every BIB and BCB target list, since an edit invalidates the
+    /// operations computed over its data. This door keeps them, for a caller
+    /// restoring the data they were computed over: reassembly, which
+    /// restores the payload a fragmenter split (RFC 9171 §5.8), fragment 0
+    /// carrying the operations over the whole (RFC 9172 §5.2), for the
+    /// reassembled bundle's receiver to check. The caller answers for the
+    /// data: an operation checked against anything else fails. Refuses the
+    /// primary block and the security blocks, as `update_block` does, and
+    /// resolves no [`Maybe`](block::BibCoverage::Maybe) coverage, there
+    /// being nothing to remove.
     ///
-    /// Used by `Encryptor` to set `bcb` metadata on target blocks so that
-    /// `rebuild_bundle()` returns a correct `Bundle` without reparsing.
-    #[cfg(feature = "bpsec")]
-    pub(crate) fn set_bcb_target(&mut self, target_block: u64, bcb_block: u64) {
-        self.bcb_overrides.insert(target_block, Some(bcb_block));
-    }
-
-    /// Replace the primary block with a caller-supplied canonical encoding.
-    ///
-    /// Used by `Signer` for RFC 9173 Section 3.8.1 CRC removal: `primary` is
-    /// the CRC-stripped `PrimaryBlock` used on rebuild, and `data` is its
-    /// canonical encoding, served by `block(0)` so the IPPT and the rebuilt
-    /// bundle agree on the CRC-removed form. Bypasses the BIB-protection
-    /// check — the caller is adding that very BIB.
-    #[cfg(feature = "bpsec")]
-    pub(crate) fn set_canonical_primary(
-        &mut self,
-        primary: primary_block::PrimaryBlock,
-        data: Cow<'a, [u8]>,
-    ) {
-        self.blocks.insert(
-            0,
-            BlockTemplate::Update(builder::BlockTemplate::new(
-                block::Type::Primary,
-                block::Flags::default(),
-                crc::CrcType::None,
-                Some(data),
-            )),
-        );
-        self.primary = Some(primary);
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn restore_block(self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
+        match self.block(block_number).map(|(block, _)| block.block_type) {
+            None => Err((self, Error::NoSuchBlock(block_number))),
+            Some(block::Type::Primary) => Err((self, Error::PrimaryBlock)),
+            Some(block::Type::BlockIntegrity | block::Type::BlockSecurity) => {
+                Err((self, Error::SecurityBlock))
+            }
+            Some(_) => self.update_block_inner(block_number),
+        }
     }
 
     /// Update an existing block without automatic security target removal.
@@ -923,11 +1003,18 @@ impl<'a> Editor<'a> {
 
     /// Remove a block from the bundle.
     ///
-    /// Note that the primary and payload blocks cannot be removed.
+    /// Note that the primary and payload blocks cannot be removed. A block
+    /// under a BIB that is itself encrypted is refused with
+    /// [`BibIsEncrypted`](Error::BibIsEncrypted), and one whose coverage
+    /// reads [`Maybe`](block::BibCoverage::Maybe) is first resolved with the
+    /// editor's key source and plaintext cache
+    /// ([`with_key_source`](Self::with_key_source),
+    /// [`with_decrypted`](Self::with_decrypted)), or refused with
+    /// [`MaybeHasBib`](Error::MaybeHasBib).
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn remove_block(self, block_number: u64) -> Result<Self, (Self, Error)> {
+    pub fn remove_block(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
         if block_number == 0 {
             return Err((self, Error::PrimaryBlock));
         }
@@ -950,10 +1037,18 @@ impl<'a> Editor<'a> {
                 return Err((self, Error::SecurityBlock));
             }
         }
-        if let Some((bib, _)) = self.current_coverage(block_number) {
+        if let Some((mut bib, _)) = self.current_coverage(block_number) {
+            if matches!(bib, block::BibCoverage::Maybe) {
+                let (editor, resolved) = bpsec::edit::resolve_maybe(self, block_number);
+                self = editor;
+                bib = match resolved {
+                    Ok(bib) => bib,
+                    Err(e) => return Err((self, e)),
+                };
+            }
             match bib {
                 block::BibCoverage::Maybe => {
-                    return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
+                    return Err((self, Error::MaybeHasBib(block_number)));
                 }
                 block::BibCoverage::Some(bib) => {
                     // Check if the BIB is encrypted
@@ -988,15 +1083,8 @@ impl<'a> Editor<'a> {
         // `BibCoverage::Maybe` and keep it: another encrypted BIB may
         // cover them, so `Maybe` remains the accurate answer.
         //
-        // Unlike `remove_integrity`, no CRC is restored on targets left at
-        // `CrcType::None`. This path removes a BIB wholesale precisely
-        // because the BIB cannot be processed here (unknown context,
-        // malformed — the RFC 9172 §5.1.1 failure-drop), so it never
-        // constituted a checkable integrity statement at this node, and
-        // stamping a fresh CRC would assert an integrity the node cannot
-        // vouch for. `remove_integrity` strips a *processable* BIB from a
-        // specific target, so there a CRC preserves the continuity of an
-        // integrity check that genuinely existed.
+        // The targets keep their CRC type as it stands: no security
+        // operation changes a target's CRC.
         let mut bib_targets: Vec<u64> = Vec::new();
         if let Some((block, Some(payload))) = self.block(block_number)
             && matches!(block.block_type, block::Type::BlockIntegrity)
@@ -1151,19 +1239,17 @@ impl<'a> Editor<'a> {
     /// Iterate the current set of block numbers in the editor's view.
     /// Used by `bpsec::edit` to scan for BCB-encrypted BIBs without
     /// exposing the template map.
-    #[cfg(feature = "bpsec")]
     pub(crate) fn block_numbers(&self) -> impl Iterator<Item = u64> + '_ {
         self.blocks.keys().copied()
     }
 
-    // `remove_integrity` lives on [`crate::bpsec::edit::BPSecEditor`]
-    // (pull the trait into scope for method syntax); `remove_encryption`
-    // is the free fn [`crate::bpsec::edit::remove_encryption`]. Editor
-    // itself stays BPSec-agnostic (no `KeySource`):
+    // `remove_integrity` and `remove_encryption` live on
+    // [`crate::bpsec::edit::BPSecEditor`] (pull the trait into scope for
+    // method syntax), reading the key source and plaintext cache set here:
     //
     //     use hardy_bpv7::bpsec::edit::BPSecEditor;
-    //     let editor = editor.remove_integrity(block_number)?;
-    //     let editor = bpsec::edit::remove_encryption(editor, block_number, &keys)?;
+    //     let editor = editor.with_key_source(&keys).remove_integrity(block_number)?;
+    //     let editor = editor.remove_encryption(block_number)?;
 
     /// Rebuild the bundle, applying all of the modifications.
     ///
@@ -1185,7 +1271,7 @@ impl<'a> Editor<'a> {
         self.check_report_on_failure()?;
         let mut blocks_out: HashMap<u64, block::Block> = HashMap::new();
 
-        let primary_block = self.blocks.remove(&0).expect("No primary block!");
+        self.blocks.remove(&0).expect("No primary block!");
 
         // Build primary chunk + final PrimaryBlock for the output Bundle.
         let (primary_out, primary_chunk) = if let Some(mut primary) = self.primary.take() {
@@ -1201,21 +1287,6 @@ impl<'a> Editor<'a> {
                 primary_block::PrimaryBlock::as_block(primary.crc_type, 0..len),
             );
             (primary, (0u64, Chunk::New(primary_bytes.into())))
-        } else if let BlockTemplate::Update(template) = primary_block {
-            // Caller supplied raw primary bytes directly (e.g. via the
-            // BPSec edit path). Reuse the original PrimaryBlock metadata.
-            let primary_bytes = template
-                .data
-                .ok_or(Error::Builder(builder::Error::NoBlockData))?;
-            let len = primary_bytes.len();
-            blocks_out.insert(
-                0,
-                primary_block::PrimaryBlock::as_block(self.original.primary.crc_type, 0..len),
-            );
-            (
-                self.original.primary.clone(),
-                (0u64, Chunk::New(primary_bytes.into_owned().into())),
-            )
         } else {
             // Keep original primary verbatim.
             let block = self
@@ -1278,6 +1349,89 @@ impl<'a> Editor<'a> {
         Ok((bundle_out, chunks))
     }
 
+    /// Rebuild a bundle whose payload streams past the editor
+    /// ([`with_streamed_payload`](Self::with_streamed_payload)): every
+    /// header as [`rebuild_bundle`](Self::rebuild_bundle) builds it, then
+    /// the payload block's header for the declared plaintext length, with
+    /// the payload block's index entry spanning its full wire form. The
+    /// caller writes the outer array head (`0x9F`), the chunks, the
+    /// plaintext as it streams, feeding each run to the returned
+    /// [`PayloadTrailer`](builder::PayloadTrailer), and the bytes the
+    /// trailer's [`finish`](builder::PayloadTrailer::finish) returns: the
+    /// payload's CRC field, if it carries one, and the outer break.
+    ///
+    /// # Errors
+    ///
+    /// As [`rebuild_bundle`](Self::rebuild_bundle);
+    /// [`NoBlockData`](builder::Error::NoBlockData) when the editor was not
+    /// told the payload streams, or the payload is encrypted and its
+    /// encryption was not removed for it;
+    /// [`StagedPayload`](Error::StagedPayload) when the payload's data was
+    /// staged, which cannot stream; and
+    /// [`PayloadLengthOverflow`](builder::Error::PayloadLengthOverflow)
+    /// for a declared length whose wire form would pass `u64::MAX`.
+    #[allow(clippy::type_complexity)]
+    pub fn rebuild_streamed(
+        mut self,
+    ) -> Result<(bundle::Bundle, Vec<Chunk>, builder::PayloadTrailer), Error> {
+        let plaintext_len = self
+            .streamed_payload
+            .ok_or(Error::Builder(builder::Error::NoBlockData))?;
+        // The payload streams in plaintext: an encrypted payload only once
+        // its encryption is removed for the stream, since its received data
+        // is ciphertext. A payload received in plaintext streams as it
+        // stands, whatever else was edited around it.
+        let payload = match self.blocks.get(&1) {
+            Some(BlockTemplate::Update(template)) if template.data.is_none() => {
+                template.block.clone()
+            }
+            // Staged data never reaches the wire of a streamed rebuild:
+            // refused rather than dropped.
+            Some(BlockTemplate::Update(_)) => return Err(Error::StagedPayload),
+            Some(BlockTemplate::Keep(_)) => {
+                let payload = self
+                    .original
+                    .blocks
+                    .get(&1)
+                    .ok_or(Error::from(error::Error::Altered))?;
+                if payload.bcb.is_some() {
+                    return Err(Error::Builder(builder::Error::NoBlockData));
+                }
+                payload.clone()
+            }
+            _ => return Err(Error::Builder(builder::Error::NoBlockData)),
+        };
+        let (header, trailer) =
+            builder::streamed_payload_header(&payload.flags, payload.crc_type, plaintext_len)?;
+        // Every header but the payload rebuilds as usual, the payload's
+        // header standing in for its block.
+        self.blocks.insert(
+            1,
+            BlockTemplate::Update(builder::BlockTemplate::new(
+                block::Type::Payload,
+                payload.flags.clone(),
+                payload.crc_type,
+                Some(Cow::Borrowed(&[])),
+            )),
+        );
+        let (mut bundle, mut chunks) = self.rebuild_bundle()?;
+        let last = chunks.pop().expect("the payload's chunk is last");
+        debug_assert!(matches!(last, Chunk::New(_)));
+        let extent_start = bundle.blocks[&1].extent.start;
+        let mut entry = builder::streamed_payload_block(
+            payload.flags,
+            payload.crc_type,
+            header.len() as u64,
+            extent_start,
+            plaintext_len,
+        )?;
+        entry.bib = bundle.blocks[&1].bib;
+        entry.bcb = bundle.blocks[&1].bcb;
+        bundle.blocks.insert(1, entry);
+        chunks.push(Chunk::New(header.into()));
+        Ok((bundle, chunks, trailer))
+    }
+
     /// Rebuild the bundle as a list of chunks.
     ///
     /// `Chunk::Unchanged` references ranges in the original `source_data`,
@@ -1290,17 +1444,12 @@ impl<'a> Editor<'a> {
     /// [`rebuild_bundle`](Self::rebuild_bundle) refuses it.
     pub fn rebuild(mut self) -> Result<Vec<Chunk>, Error> {
         self.check_report_on_failure()?;
-        let primary_block = self.blocks.remove(&0).expect("No primary block!");
+        self.blocks.remove(&0).expect("No primary block!");
 
         // Build primary chunk
         let primary_chunk = if let Some(mut primary) = self.primary.take() {
             primary.flags.is_fragment = primary.id.fragment_info.is_some();
             (0u64, Chunk::New(primary.emit()?.into()))
-        } else if let BlockTemplate::Update(template) = primary_block {
-            let data = template
-                .data
-                .ok_or(Error::Builder(builder::Error::NoBlockData))?;
-            (0u64, Chunk::New(data.into_owned().into()))
         } else {
             let block = self
                 .original
@@ -1459,20 +1608,39 @@ impl<'a> BlockBuilder<'a> {
     }
 }
 
+// The accessors the BPSec editor's keyed paths need (`bpsec::edit::keyed`).
 #[cfg(feature = "bpsec")]
-pub(crate) struct EditorReader<'a> {
-    pub editor: Editor<'a>,
-}
+impl<'a> Editor<'a> {
+    /// The payload plaintext's length, where it streams
+    /// ([`with_streamed_payload`](Self::with_streamed_payload)).
+    pub(crate) fn streamed_payload(&self) -> Option<u64> {
+        self.streamed_payload
+    }
 
-#[cfg(feature = "bpsec")]
-impl<'a> Reader<'a> for EditorReader<'a> {
-    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
-        let (block, payload) = self.editor.block(block_number)?;
-        Some((
-            block,
-            payload
-                .map(block::Payload::Borrowed)
-                .map_or(Availability::NotResident, Availability::Available),
-        ))
+    /// Record that a BIB covers the given target block.
+    ///
+    /// Used by `Signer` to set `bib` metadata on target blocks so that
+    /// `rebuild_bundle()` returns a correct `Bundle` without reparsing, and
+    /// by `BPSecEditor::remove_blocks` once a decrypt shows which targets an
+    /// encrypted BIB covers.
+    pub(crate) fn set_bib_target(&mut self, target_block: u64, bib_block: u64) {
+        self.bib_overrides
+            .insert(target_block, block::BibCoverage::Some(bib_block));
+    }
+
+    /// Record that no BIB covers the given target block: used by
+    /// `BPSecEditor::remove_encryption` once decrypting the bundle's
+    /// encrypted BIBs shows that none covers a block read as `Maybe`.
+    pub(crate) fn clear_bib_target(&mut self, target_block: u64) {
+        self.bib_overrides
+            .insert(target_block, block::BibCoverage::None);
+    }
+
+    /// Record that a BCB covers the given target block.
+    ///
+    /// Used by `Encryptor` to set `bcb` metadata on target blocks so that
+    /// `rebuild_bundle()` returns a correct `Bundle` without reparsing.
+    pub(crate) fn set_bcb_target(&mut self, target_block: u64, bcb_block: u64) {
+        self.bcb_overrides.insert(target_block, Some(bcb_block));
     }
 }

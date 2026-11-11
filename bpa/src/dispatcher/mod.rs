@@ -5,7 +5,7 @@ use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
-use crate::filter::pack::chains::FilterChains;
+use crate::{HashSet, filter::pack::chains::FilterChains};
 
 mod admin;
 mod deliver;
@@ -461,9 +461,10 @@ impl Dispatcher {
             data, bundle: raw, ..
         } = hardy_bpv7::parse::parse(data).trace_expect("The stored bundle's bytes do not decode");
         let key_source = self.key_source(&raw, &data);
-        let to_remove = bundle.metadata.to_remove.iter().copied().collect();
+        let to_remove: HashSet<u64> = bundle.metadata.to_remove.iter().copied().collect();
         let (editor, _) = hardy_bpv7::editor::Editor::new(&raw, &data)
-            .remove_blocks(to_remove, key_source.as_ref())
+            .with_key_source(key_source.as_ref())
+            .remove_blocks(&to_remove)
             .map_err(|(_, e)| e)
             .trace_expect("The scheduled block removals failed");
         let (stripped, chunks) = editor

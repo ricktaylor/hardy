@@ -58,7 +58,7 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let editor = Editor::new(&raw, &data);
+        let editor = Editor::new(&raw, &data).with_key_source(&key_store);
 
         let mut block_builder = editor
             .update_block(self.block_number)

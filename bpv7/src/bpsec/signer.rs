@@ -8,9 +8,9 @@ use thiserror::Error;
 #[cfg(feature = "rfc9173")]
 use crate::bpsec::rfc9173;
 use crate::{
-    HashMap, HashSet, block,
-    bpsec::{self, bib, key},
-    builder, bundle, crc,
+    HashMap, block,
+    bpsec::{self, bib, edit::EditorReader, key},
+    bundle, crc,
     editor::{self, Chunk, Editor},
     eid,
     reader::Reader,
@@ -42,9 +42,7 @@ pub enum Error {
 
 impl From<bpsec::Error> for Error {
     fn from(e: bpsec::Error) -> Self {
-        Error::Editor(editor::Error::Builder(builder::Error::InternalError(
-            e.into(),
-        )))
+        Error::Editor(e.into())
     }
 }
 
@@ -68,7 +66,7 @@ impl Context {
     /// that leaves the security header out, since a result bound to its
     /// BIB's block number breaks when an RFC 9172 §3.9 split at a waypoint
     /// moves it into a new BIB (RFC 9172 erratum 8723).
-    pub fn can_share(&self) -> bool {
+    fn can_share(&self) -> bool {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(scope_flags) => rfc9173::bib_hmac_sha2::can_share(scope_flags),
@@ -104,17 +102,19 @@ impl<'a> Signer<'a> {
     ///
     /// Targets queued with the same source, context and key reference (the
     /// same `&Key`, not merely an equal one) share one BIB when the context
-    /// lets them (see [`Context::can_share`]); otherwise each gets its own.
+    /// lets them (BIB-HMAC-SHA2 does under a scope without the security
+    /// header); otherwise each gets its own.
+    ///
+    /// Every target keeps its CRC as it stands, the primary block included:
+    /// no security operation changes a target's CRC. The CRC is no part of
+    /// the IPPT (RFC 9173 §3.7), and the primary block is immutable (RFC
+    /// 9171 §4.3.1), its CRC covered by every operation whose scope
+    /// includes it.
     ///
     /// # Errors
     ///
-    /// Besides the target checks, signing a primary block that carries a CRC
-    /// removes it (RFC 9173 §3.8.1), changing the primary's bytes, so it is
-    /// refused with
-    /// [`PrimaryInSecurityScope`](editor::Error::PrimaryInSecurityScope)
-    /// while an operation already in the bundle has the primary in its
-    /// scope. On error, returns the signer along with the error so it can
-    /// be reused for recovery.
+    /// On error, returns the signer along with the error so it can be
+    /// reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn sign_block(
         mut self,
@@ -140,7 +140,7 @@ impl<'a> Signer<'a> {
                 return Err((self, Error::AlreadySigned(block_number)));
             }
             block::BibCoverage::Maybe => {
-                return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
+                return Err((self, editor::Error::MaybeHasBib(block_number).into()));
             }
             block::BibCoverage::None => {}
         }
@@ -151,17 +151,6 @@ impl<'a> Signer<'a> {
 
         if self.templates.contains_key(&block_number) {
             return Err((self, Error::AlreadySigned(block_number)));
-        }
-
-        if block_number == 0
-            && !matches!(self.original.primary.crc_type, crc::CrcType::None)
-            && let Some(security_block) = Editor::new(self.original, self.source_data)
-                .primary_scoped_operation(&HashSet::new())
-        {
-            return Err((
-                self,
-                editor::Error::PrimaryInSecurityScope(security_block).into(),
-            ));
         }
 
         self.templates.insert(
@@ -223,46 +212,12 @@ impl<'a> Signer<'a> {
                 .push(block_number);
         }
 
+        // Every target keeps its CRC as it stands: no security operation
+        // changes a target's CRC. A non-primary target's CRC is no part of
+        // the IPPT (RFC 9173 §3.7); the primary block's is, through its
+        // canonical form (RFC 9172 §4), wherever a scope includes the
+        // primary, and the primary block is immutable (RFC 9171 §4.3.1).
         let mut editor = Editor::new(self.original, self.source_data);
-
-        /* RFC 9173, Section 3.8.1 states:
-         * Prior to the generation of the IPPT, if a Cyclic Redundancy Check
-         * (CRC) value is present for the target block of the BIB, then that
-         * CRC value MUST be removed from the target block.  This involves
-         * both removing the CRC value from the target block and setting the
-         * CRC type field of the target block to "no CRC is present."
-         *
-         * Every group's CRCs go before any group's IPPT is computed: a
-         * primary-block target's CRC is part of every other target's IPPT
-         * whose scope includes the primary. */
-        for target in groups.values().flat_map(|(_, targets)| targets) {
-            let target_block = self
-                .original
-                .blocks
-                .get(target)
-                .expect("Missing target block");
-            if !matches!(target_block.crc_type, crc::CrcType::None) {
-                // The rule applies to every target, including the primary
-                // (RFC 9171 permits the primary to carry no CRC when a BIB
-                // targets it).
-                if *target == 0 {
-                    // Re-emit the primary canonically with no CRC and
-                    // register the bytes, so the IPPT (which reads the
-                    // primary via `block(0)`) and the rebuilt bundle agree
-                    // on the CRC-removed form.
-                    let mut primary = self.original.primary.clone();
-                    primary.crc_type = crc::CrcType::None;
-                    let canonical = primary.emit().map_err(editor::Error::from)?;
-                    editor.set_canonical_primary(primary, canonical.into());
-                } else {
-                    editor = editor
-                        .update_block_inner(*target)
-                        .map_err(|(_, e)| e)?
-                        .with_crc_type(crc::CrcType::None)
-                        .rebuild();
-                }
-            }
-        }
 
         // Now build BIB blocks
         for ((bpsec_source, context, _, _), (key, targets)) in groups {
@@ -272,10 +227,10 @@ impl<'a> Signer<'a> {
                 .map_err(|(_, e)| e)?
                 .with_crc_type(crc::CrcType::None);
 
-            let source = b.block_number();
+            let security_block = b.block_number();
             editor = b.rebuild();
 
-            let editor_bs = editor::EditorReader { editor };
+            let editor_bs = EditorReader { editor };
 
             let operation_set = bib::OperationSet {
                 source: bpsec_source.clone(),
@@ -284,7 +239,7 @@ impl<'a> Signer<'a> {
                     key,
                     &bpsec_source,
                     &targets,
-                    source,
+                    security_block,
                     &editor_bs,
                 )?,
             };
@@ -292,14 +247,14 @@ impl<'a> Signer<'a> {
             // Rewrite with the real data
             editor = editor_bs
                 .editor
-                .update_block_inner(source)
+                .update_block_inner(security_block)
                 .map_err(|(_, e)| e)?
                 .with_data(emit(&operation_set).0.into())
                 .rebuild();
 
             // Set BIB coverage on target blocks
             for target in operation_set.operations.keys() {
-                editor.set_bib_target(*target, source);
+                editor.set_bib_target(*target, security_block);
             }
         }
 
@@ -312,9 +267,9 @@ impl<'a> Signer<'a> {
 fn sign_targets<'b>(
     context: &Context,
     key: &key::Key,
-    bpsec_source: &'b eid::Eid,
+    source: &'b eid::Eid,
     targets: &[u64],
-    source: u64,
+    security_block: u64,
     blocks: &'b dyn Reader<'b>,
 ) -> Result<HashMap<u64, bib::Operation>, bpsec::Error> {
     #[cfg(feature = "rfc9173")]
@@ -327,9 +282,9 @@ fn sign_targets<'b>(
                     &keying,
                     scope_flags.clone(),
                     bib::OperationArgs {
-                        source: bpsec_source,
+                        source,
                         target,
-                        security_block: source,
+                        security_block,
                         blocks,
                     },
                 )?;

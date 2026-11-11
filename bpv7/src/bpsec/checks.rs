@@ -293,7 +293,7 @@ impl Parsed {
     ///
     /// Returns [`Facts`], to which the caller applies its failure policy,
     /// before removing the operations it accepted
-    /// ([`remove_encryption`](crate::bpsec::edit::remove_encryption)
+    /// ([`remove_encryption`](crate::bpsec::edit::BPSecEditor::remove_encryption)
     /// with the plaintext). Any BPSec error other than a missing key or a
     /// failed check propagates as `Err`.
     pub fn check(

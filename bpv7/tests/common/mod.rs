@@ -15,8 +15,10 @@ use hardy_bpv7::{
     bpsec::{
         self, Role, Roles, SecurityService, SecurityServices,
         checks::{self, Checked},
+        edit::BPSecEditor,
         key::{KeySet, KeySource},
     },
+    editor::{self, Chunk, Editor},
     eid::Eid,
     parse,
 };
@@ -86,6 +88,34 @@ pub fn rand_k(len: usize) -> String {
     let mut buf = vec![0u8; len];
     SysRng.try_fill_bytes(&mut buf).unwrap();
     BASE64_URL_SAFE_NO_PAD.encode(buf)
+}
+
+// The bundle as its destination reads it: every block's encryption removed
+// with `keys`, as `BPSecEditor::remove_encryption` removes it (with the
+// encrypted BIB coupled to the block), and re-parsed, so every BIB is
+// plaintext. Block numbers are kept. The encrypted BIBs go first, each with
+// the targets coupled to it, since the parse reads a Previous Node or
+// Bundle Age block, which no valid bundle has under an encrypted BIB, as
+// covered by none. Fails on the first block the keys do not decrypt.
+pub fn accept_all(parsed: &parse::Parsed, keys: &KeySet) -> Result<parse::Parsed, editor::Error> {
+    let (bibs, targets): (Vec<u64>, Vec<u64>) = parsed
+        .bundle
+        .blocks
+        .iter()
+        .filter(|(_, b)| b.bcb.is_some())
+        .map(|(&n, _)| n)
+        .partition(|n| parsed.bundle.blocks[n].block_type == block::Type::BlockIntegrity);
+    let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(keys);
+    for n in bibs.into_iter().chain(targets) {
+        editor = match editor.remove_encryption(n) {
+            Ok(editor) => editor,
+            // Taken with an earlier block's coupled BIB.
+            Err((editor, editor::Error::NotEncrypted)) => editor,
+            Err((_, e)) => return Err(e),
+        };
+    }
+    let data = Chunk::flatten_bytes(editor.rebuild()?, parsed.data.clone());
+    Ok(parse::parse(data)?)
 }
 
 // Every BIB operation in `data`, a complete bundle, checked with `keys` by
