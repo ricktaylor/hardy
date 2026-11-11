@@ -108,7 +108,7 @@ This document provides a Protocol Implementation Conformance Statement (PICS) fo
 
 | Item Number | Item | Protocol Feature | Reference | Status | Support |
 | :---: | :---- | :---- | :---- | :---: | :---: |
-| 58 | BIB-HMAC-SHA2 | Block Integrity Block security context with HMAC-SHA-256, HMAC-SHA-384, and HMAC-SHA-512 variants. | RFC 9173 Section 3 | O | Y |
+| 58 | BIB-HMAC-SHA2 | Block Integrity Block security context with HMAC-SHA-256, HMAC-SHA-384, and HMAC-SHA-512 variants. | RFC 9173 Section 3 | O | P (14) |
 | 59 | BCB-AES-GCM | Block Confidentiality Block security context with A128GCM and A256GCM variants. | RFC 9173 Section 4 | O | Y |
 | 60 | AES Key Wrap | AES key wrap (RFC 3394) of content-encryption and integrity keys, with 128-, 192-, and 256-bit key-encryption keys. | RFC 9173 Sections 3.3.2, 4.3.2 | O | Y |
 | 61 | Integrity/AAD Scope Flags | Integrity scope flags (BIB) and AAD scope flags (BCB) covering the primary block, target block header, and security block header. | RFC 9173 Sections 3.3.4, 4.3.4 | O | Y |
@@ -126,3 +126,4 @@ This document provides a Protocol Implementation Conformance Statement (PICS) fo
 9. No "protection required" security policy is implemented: there is no mechanism to specify that a target should have been protected by a BCB or BIB, and consequently no target removal for missing protection.
 10. The security acceptor role is determined implicitly by key release, and configuration distinguishes verifier and acceptor roles, but the two currently behave identically for BIBs: security operations are not removed from a BIB after successful verification at an acceptor (only BCBs are removed).
 11. Implemented for the primary block only: a validity filter can reject bundles whose primary block carries neither a CRC nor BIB coverage. There is no general mechanism to require integrity protection on the payload or other targets.
+14. A BIB-HMAC-SHA2 operation whose target is the primary block computes its IPPT over the canonical primary block with a CBOR byte-string head before it, reproducing the published RFC 9173 Appendix A.3 example. RFC 9173 §3.7 makes that part of the IPPT the canonical form of the primary block, and RFC 9172 §4 forbids any encapsulating CBOR encoding in a canonical form, so such an operation does not interoperate with an implementation that follows the text. RFC 9173 erratum 9192 (reported) corrects the example. A primary block included through the integrity scope flags, for any other target, is unwrapped as the text requires.

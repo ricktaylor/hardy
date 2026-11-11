@@ -5,9 +5,10 @@ convenience over it. Both yield a [`Parsed`] — the authoritative byte
 buffer, the structural [`Bundle`], the decoded BPSec OperationSets, the
 values of the per-hop blocks, the classification of the blocks this node
 cannot process ([`Parsed::classification`], by their flags) and the
-arrival's plaintext cache, empty until a keyed pass fills it. Keyed BPSec
-validation is layered on top by composing [`crate::checks`] and
-[`crate::rewrite`].
+arrival's plaintext cache, empty until the keyed BPSec check fills it. The
+keyed check is a method on `Parsed` ([`Parsed::check`], defined in
+[`crate::bpsec::checks`], with the `bpsec` feature); rewrites are applied
+through [`crate::rewrite`].
 
 [RFC 9171]: https://www.rfc-editor.org/rfc/rfc9171.html
 */
@@ -180,9 +181,9 @@ pub struct Classification {
     pub unrecognised_deletable: SmallVec<[u64; 4]>,
     /// Plaintext BIB blocks with an unrecognised security context, flagged
     /// `delete_block_on_failure`. The caller decides whether to honour the
-    /// request (schedule them for removal). A plaintext BIB with an
-    /// unsupported security operation, listed here or not, is one the keyed
-    /// checks cannot check.
+    /// request (schedule them for removal). [`Parsed::check`] checks no
+    /// plaintext BIB with an unsupported security operation, listed here or
+    /// not.
     pub bib_deletable: SmallVec<[u64; 4]>,
     /// At least one unrecognised (non-security) block had
     /// `report_on_failure` set.
@@ -206,10 +207,12 @@ pub struct Classification {
 /// `Bytes` buffer the parser owns (the source of truth that the
 /// returned `Bundle::blocks` extent/data offsets index into), its
 /// decoded BPSec OperationSet maps (BCBs and BIBs, keyed by block
-/// number), its [`PerHopFields`], its plaintext cache
+/// number), its [`PerHopFields`] and its plaintext cache
 /// ([`decrypted`](Self::decrypted)) and the classification of the blocks
 /// this node can't process ([`classification`](Self::classification)).
-/// Returned by [`BundleParser::finish`] and [`parse()`].
+/// Returned by [`BundleParser::finish`] and [`parse()`]. The keyed BPSec
+/// check is its method [`check`](Self::check), defined in
+/// [`crate::bpsec::checks`].
 ///
 /// Slice with `&parsed.data[block.payload_range()]` (or `block.extent`)
 /// using [`data`](Self::data) rather than a separate copy of the input —
@@ -232,9 +235,10 @@ pub struct Parsed {
     /// parser's tail, and the deletion one of them may demand
     /// ([`Classification::delete_bundle`]), which the caller takes.
     pub classification: Classification,
-    /// The arrival's plaintext cache ([`bpsec::Decrypted`]): what a keyed
-    /// pass decrypted, by block number, and the blocks whose ciphertext did
-    /// not authenticate. Empty from the parse; a
+    /// The arrival's plaintext cache ([`bpsec::Decrypted`]): what the keyed
+    /// check decrypted, by block number, and the blocks whose ciphertext did
+    /// not authenticate. Empty from the parse; [`check`](Self::check), with
+    /// the `bpsec` feature, fills it and reads it, and a
     /// [`DecryptingReader`](bpsec::DecryptingReader) over the parse is seeded
     /// from it, so no block is decrypted twice.
     pub decrypted: bpsec::Decrypted,
@@ -1027,9 +1031,10 @@ impl BundleParser {
         // operation on it, and RFC 9172 §3.9 forbids it a BIB and then a BCB
         // on one target. A reader without the BIB's key so treats either as
         // covered by none; a keyed one that decrypts such a BIB stamps the
-        // coverage, and the operation it reveals is the caller's policy. The
-        // Hop Count is marked, since a signature on a count no node has
-        // incremented can stand (its increment is a SHOULD, RFC 9171 §4.4.3).
+        // coverage and records the operation `Checked::Conflicting`, for its
+        // caller's policy. The Hop Count is
+        // marked, since a signature on a count no node has incremented can
+        // stand (its increment is a SHOULD, RFC 9171 §4.4.3).
         if has_undecryptable_bibs {
             for block in bundle.blocks.values_mut() {
                 // Compared by encoding, so an alias of either type counts.

@@ -7,8 +7,19 @@
 //! binary are expected.
 #![allow(dead_code)]
 
+use std::collections::{HashMap, HashSet};
+
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{
+    block,
+    bpsec::{
+        self, Role, Roles, SecurityService, SecurityServices,
+        checks::{self, Checked},
+        key::{KeySet, KeySource},
+    },
+    eid::Eid,
+    parse,
+};
 use hardy_cbor::{
     decode::skip_value,
     encode::{Bytes, Encoder, emit_array},
@@ -75,4 +86,63 @@ pub fn rand_k(len: usize) -> String {
     let mut buf = vec![0u8; len];
     SysRng.try_fill_bytes(&mut buf).unwrap();
     BASE64_URL_SAFE_NO_PAD.encode(buf)
+}
+
+// Every BIB operation in `data`, a complete bundle, checked with `keys` by
+// the keyed verification over a fresh parse: an error for a failed check,
+// as a strict caller wants, and a panic should anything be deferred.
+pub fn verify_all_bibs(data: &[u8], keys: &KeySet) -> Result<(), hardy_bpv7::Error> {
+    let facts = parse::parse(::bytes::Bytes::copy_from_slice(data))?.check(
+        keys,
+        &HashMap::new(),
+        Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+    )?;
+    if facts
+        .targets_of(SecurityService::Integrity, Checked::Failed)
+        .next()
+        .is_some()
+    {
+        return Err(bpsec::Error::IntegrityCheckFailed.into());
+    }
+    assert!(
+        !facts.any(Checked::Deferred),
+        "a complete buffer defers nothing"
+    );
+    Ok(())
+}
+
+// The per-hop blocks a receiving node accepts (RFC 9171 §5.4): every
+// Previous Node, Bundle Age and Hop Count block.
+pub fn per_hop_blocks(blocks: &HashMap<u64, block::Block>) -> HashSet<u64> {
+    blocks
+        .iter()
+        .filter(|(_, b)| {
+            matches!(
+                b.block_type,
+                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
+            )
+        })
+        .map(|(&n, _)| n)
+        .collect()
+}
+
+// The keyed pass a receiving node makes over `parsed` (`Parsed::check`): the
+// per-hop blocks and `acceptors` accepted, both services, and every other
+// readable BIB operation verified, one `Facts`.
+pub fn verify_as_receiver(
+    parsed: &mut parse::Parsed,
+    keys: &dyn KeySource,
+    acceptors: &HashSet<u64>,
+) -> Result<checks::Facts, hardy_bpv7::Error> {
+    let mut accepted = per_hop_blocks(&parsed.bundle.blocks);
+    accepted.extend(acceptors.iter().copied());
+    let roles: HashMap<u64, Roles> = accepted
+        .into_iter()
+        .map(|n| (n, Roles::each(Role::Acceptor, SecurityServices::BOTH)))
+        .collect();
+    parsed.check(
+        keys,
+        &roles,
+        Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+    )
 }

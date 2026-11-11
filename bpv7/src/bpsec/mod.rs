@@ -1,5 +1,8 @@
 use alloc::boxed::Box;
-use core::fmt;
+use core::{
+    fmt,
+    ops::{BitOr, BitOrAssign},
+};
 
 use hardy_cbor::{
     decode::FromCbor,
@@ -13,6 +16,8 @@ pub mod bib;
 /// Cryptographic key types and key source abstraction for BPSec operations.
 pub mod key;
 
+#[cfg(feature = "bpsec")]
+pub mod checks;
 #[cfg(feature = "bpsec")]
 mod reader;
 #[cfg(feature = "bpsec")]
@@ -104,6 +109,138 @@ impl FromCbor for Context {
             true,
             len,
         ))
+    }
+}
+
+/// A security service (RFC 9172 §1.1): what one security operation applies
+/// to its target, a BCB's confidentiality or a BIB's integrity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SecurityService {
+    /// A BCB operation: the target is encrypted.
+    Confidentiality,
+    /// A BIB operation: the target is signed.
+    Integrity,
+}
+
+/// The security services a caller names on a block, and this node accepts
+/// or verifies on it (RFC 9172 §1.1): its BCB operation (confidentiality),
+/// its BIB operation (integrity), or both. Two namings of the same block
+/// combine with `|`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SecurityServices {
+    pub confidentiality: bool,
+    pub integrity: bool,
+}
+
+impl SecurityServices {
+    /// The BCB operation alone.
+    pub const CONFIDENTIALITY: Self = Self {
+        confidentiality: true,
+        integrity: false,
+    };
+    /// The BIB operation alone.
+    pub const INTEGRITY: Self = Self {
+        confidentiality: false,
+        integrity: true,
+    };
+    /// Both operations.
+    pub const BOTH: Self = Self {
+        confidentiality: true,
+        integrity: true,
+    };
+
+    /// Whether either service is named.
+    pub fn any(self) -> bool {
+        self.confidentiality || self.integrity
+    }
+
+    /// The services named here and not in `other`.
+    pub fn without(self, other: Self) -> Self {
+        Self {
+            confidentiality: self.confidentiality && !other.confidentiality,
+            integrity: self.integrity && !other.integrity,
+        }
+    }
+}
+
+impl BitOr for SecurityServices {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self {
+            confidentiality: self.confidentiality || other.confidentiality,
+            integrity: self.integrity || other.integrity,
+        }
+    }
+}
+
+impl BitOrAssign for SecurityServices {
+    fn bitor_assign(&mut self, other: Self) {
+        *self = *self | other;
+    }
+}
+
+/// This node's role in a security operation, as a matter of its policy
+/// (RFC 9172 §1.4): the verifier checks the operation and leaves it in
+/// place; the acceptor processes it and removes it. An acceptor's role
+/// outranks a verifier's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    Verifier,
+    Acceptor,
+}
+
+/// This node's roles in the security operations on one block: on its BCB
+/// operation (confidentiality) and on its BIB operation (integrity), `None`
+/// where it has neither. Two namings of one block combine with `|`, the
+/// acceptor's role outranking the verifier's on each operation. The keyed
+/// checks take them by block number ([`Parsed::check`](crate::parse::Parsed::check)).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Roles {
+    pub confidentiality: Option<Role>,
+    pub integrity: Option<Role>,
+}
+
+impl Roles {
+    /// `role` on every service `services` names.
+    pub fn each(role: Role, services: SecurityServices) -> Self {
+        Self {
+            confidentiality: services.confidentiality.then_some(role),
+            integrity: services.integrity.then_some(role),
+        }
+    }
+
+    /// The services this node accepts on the block.
+    pub fn accepts(self) -> SecurityServices {
+        SecurityServices {
+            confidentiality: self.confidentiality == Some(Role::Acceptor),
+            integrity: self.integrity == Some(Role::Acceptor),
+        }
+    }
+
+    /// The services this node verifies on the block.
+    pub fn verifies(self) -> SecurityServices {
+        SecurityServices {
+            confidentiality: self.confidentiality == Some(Role::Verifier),
+            integrity: self.integrity == Some(Role::Verifier),
+        }
+    }
+}
+
+impl BitOr for Roles {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self {
+            confidentiality: self.confidentiality.max(other.confidentiality),
+            integrity: self.integrity.max(other.integrity),
+        }
+    }
+}
+
+impl BitOrAssign for Roles {
+    fn bitor_assign(&mut self, other: Self) {
+        *self = *self | other;
     }
 }
 

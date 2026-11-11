@@ -141,8 +141,8 @@ impl OperationSet {
     /// not checked here (it needs every operation in view at once).
     ///
     /// Shared by the structural parser ([`crate::parse`]) and the keyed
-    /// checks as the single source of truth for the per-OperationSet BCB
-    /// rules.
+    /// [`Parsed::check`](crate::parse::Parsed::check) pass as the single
+    /// source of truth for the per-OperationSet BCB rules.
     ///
     /// # Panics
     ///

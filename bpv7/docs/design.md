@@ -20,7 +20,7 @@ Parsing is layered rather than moded, so each caller composes exactly the proces
 
 The **structural parse** (`parse::parse`, or `parse::BundleParser` driven incrementally over a stream) is keyless: it decodes the primary block, the block map, and the BPSec OperationSets, verifies CRCs, and rejects malformed or non-deterministically encoded input. A streamed parse can stop once the header blocks are resident and hand back a `PayloadTail` continuation that validates the payload's CRC and trailer as the remaining bytes arrive.
 
-**Keyed validation** (`checks`) layers BPSec on top: keyless classification of the blocks the node cannot process, then decryption and verification with a caller-supplied `KeySource`, composed by `checks::verify`. The helpers report facts — decrypted, no key, decryption failed, coverage — and never decide accept-or-reject themselves.
+**Keyed validation** (`bpsec::checks`) layers BPSec on top, as a method on `Parsed`: the parser having classified the blocks the node cannot process by their flags (`Parsed::classification`), the security operations are checked with a caller-supplied `KeySource` in this node's roles on each block (`check`): the acceptor's decryption, the verifier's decryption of its own block and the integrity checks, in one pass. On a fragment the check processes the per-hop blocks' operations alone, the forwarder's writes to the fragment, and defers every other, looking up no key for it, since it is checkable only once the bundle is reassembled (RFC 9172 §5.2). The checks report facts — decrypted, no key, decryption failed, coverage — and never decide accept-or-reject themselves.
 
 **Rewrite application** (`rewrite::apply_rewrites`) applies the block removals and canonical re-emits the caller has decided on, through the BPSec-aware editor cascade.
 
@@ -73,11 +73,11 @@ First, all blocks are parsed and BCB targets are marked. Without keys the parser
 
 Second, BCB-encrypted BIBs are decrypted and validated, replacing the "maybe" marks with their real coverage.
 
-Third, BCB-protected Previous Node, Bundle Age, and Hop Count blocks are decrypted.
+Third, the blocks the consumer accepts for confidentiality are decrypted: at a receiver the per-hop blocks, every Previous Node and Bundle Age block and a Hop Count it holds the key for, and at the ingress gate the blocks its policy announces. An encrypted BIB that may cover one of them, one under a BCB from the same security source as the block's own, since the node that encrypts a signed block encrypts its BIB too (RFC 9172 §3.9), is read by necessity, and the blocks coupled through it are taken all or none; none is read on a Previous Node's or Bundle Age's account, which no valid bundle has under an encrypted BIB. A block the consumer verifies for confidentiality is decrypted alone, into the cache, the block travelling as received.
 
-Fourth, every BIB is verified. A BIB may cover a block that was encrypted, so verification has to follow decryption; `checks::verify` composes the three keyed steps in this order so no caller has to re-stitch it. A BIB whose payload target is not resident when the headers are verified is deferred to the payload drain.
+Fourth, every BIB operation on a block the consumer names for integrity, as its acceptor or its verifier, is verified where its target is readable, reading the plaintext the decryption cached: verification follows decryption, and `Parsed::check` runs the two in that order in one pass, over the roles the consumer names by block number (`bpsec::Roles`) and its roles on every other block. A BIB whose payload target is not resident when the headers are verified, or lies under a BCB, is deferred to the payload drain, its key required now.
 
-The payload's own BCB is not part of this pass: the payload stays encrypted until the consumer decrypts it at delivery (`bpsec::DecryptingReader`).
+The payload's own BCB is not part of these passes, since the payload need not be resident. With the payload's confidentiality accepted, `Parsed::check` settles everything about its BCB operation that needs a key before the first byte, and the BIB over it the same way: the keys are resolved, the operations recorded deferred, and an encrypted BIB over the payload is decrypted, so its operation can be checked against the plaintext. Its security acceptor decrypts it as it streams: `bcb::Operation::begin_decrypt` begins a `bcb::Decryptor` from the headers alone, resolving the key before the first byte, and the plaintext it returns at `finish`, authenticated, is what a BIB over the payload is checked against (`bib::Operation::begin_verify`, fed the plaintext). bpv7 supplies these per-operation stages; which operations to begin, and what a missing key means, is the consumer's policy, so the BPA composes them. Under BCB-AES-GCM the decryptor collects the ciphertext and decrypts it whole when finished; an incremental AES-GCM can replace that behind the same interface. A consumer reading a resident encrypted payload decrypts it through `bpsec::DecryptingReader`.
 
 ### Future Work: COSE Security Contexts
 
@@ -142,7 +142,7 @@ The library builds on hardy-cbor's wire-format parsing. It uses closure-based ar
 
 ### With hardy-bpa
 
-The Bundle Processing Agent composes the structural parser, `checks`, and `rewrite` with its own policy — which failures reject a bundle, the NoKey disposition, the status-report reason mapping — in its `bundle::parse` module. At ingress it parses the header blocks off the arriving stream, verifies them before anything is stored, and drains the payload through the `PayloadTail` continuation.
+The Bundle Processing Agent composes the structural parser, `bpsec::checks`, and `rewrite` with its own policy — which failures reject a bundle, the NoKey disposition, the status-report reason mapping — in its `bundle::parse` module. At ingress it parses the header blocks off the arriving stream, verifies them before anything is stored, and drains the payload through the `PayloadTail` continuation.
 
 ### CLI Tools
 
