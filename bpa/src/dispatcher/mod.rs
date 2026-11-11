@@ -462,10 +462,10 @@ impl Dispatcher {
         } = hardy_bpv7::parse::parse(data).trace_expect("The stored bundle's bytes do not decode");
         let key_source = self.key_source(&raw, &data);
         let to_remove: HashSet<u64> = bundle.metadata.to_remove.iter().copied().collect();
-        let (editor, _) = hardy_bpv7::editor::Editor::new(&raw, &data)
-            .with_key_source(key_source.as_ref())
+        let mut editor =
+            hardy_bpv7::editor::Editor::new(&raw, &data).with_key_source(key_source.as_ref());
+        editor
             .remove_blocks(&to_remove)
-            .map_err(|(_, e)| e)
             .trace_expect("The scheduled block removals failed");
         let (stripped, chunks) = editor
             .rebuild_bundle()

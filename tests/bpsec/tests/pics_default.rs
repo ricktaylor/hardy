@@ -120,8 +120,9 @@ fn pics_1_1_duplicate_bcb_on_payload_must_fail() {
     let parsed =
         parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
+    let mut encryptor = encryptor::Encryptor::new(&parsed.bundle, &incoming);
     // MUST FAIL: bundle already includes a BCB with target payload
-    let Err((_, err)) = encryptor::Encryptor::new(&parsed.bundle, &incoming).encrypt_block(
+    let Err(err) = encryptor.encrypt_block(
         1,
         encryptor::Context::AES_GCM(ScopeFlags::default()),
         "ipn:2.1".parse().unwrap(),
@@ -150,8 +151,9 @@ fn pics_1_2_duplicate_bib_on_payload_must_fail() {
     let parsed =
         parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
+    let mut signer = signer::Signer::new(&parsed.bundle, &incoming);
     // MUST FAIL: bundle already includes a BIB with target payload
-    let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
+    let Err(err) = signer.sign_block(
         1,
         signer::Context::HMAC_SHA2(ScopeFlags::default()),
         "ipn:2.1".parse().unwrap(),
@@ -177,20 +179,19 @@ const PICS_2_1_INCOMING: [u8; 79] = hex_literal::hex!(
 fn sign_payload_and_bundle_age(scope: ScopeFlags, sign_key: &key::Key) -> Box<[u8]> {
     let src: Eid = "ipn:3.1".parse().unwrap();
     let parsed = parse::parse(Bytes::copy_from_slice(&PICS_2_1_INCOMING)).expect("Failed to parse");
-    signer::Signer::new(&parsed.bundle, &PICS_2_1_INCOMING)
+    let mut signer = signer::Signer::new(&parsed.bundle, &PICS_2_1_INCOMING);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(scope.clone()),
             src.clone(),
             sign_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
+        .unwrap();
+    signer
         .sign_block(2, signer::Context::HMAC_SHA2(scope), src, sign_key)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
-        .unwrap()
+        .unwrap();
+    signer.rebuild().unwrap()
 }
 
 // Parse `bytes`, verify every BIB with `key`, and return each BIB's
@@ -261,17 +262,17 @@ fn pics_2_1_received_shared_default_scope_bib_verifies() {
 #[test]
 fn pics_2_1_source_signs_the_payload_as_the_interop_vector() {
     let parsed = parse::parse(Bytes::copy_from_slice(&PICS_2_1_INCOMING)).expect("Failed to parse");
-    let signed = signer::Signer::new(&parsed.bundle, &PICS_2_1_INCOMING)
+    let mut signer = signer::Signer::new(&parsed.bundle, &PICS_2_1_INCOMING);
+    let key = integrity_key();
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:3.1".parse().unwrap(),
-            &integrity_key(),
+            &key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let signed = signer.rebuild().unwrap();
     assert_bundles_equivalent(&signed, &PAYLOAD_SIGNED);
 }
 
@@ -293,13 +294,10 @@ fn pics_2_2_acceptor_verify_and_remove_bib() {
 
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).unwrap();
 
-    let result = Editor::new(&parsed.bundle, &incoming)
-        .remove_integrity(1)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .remove_integrity(2)
-        .map_err(|(_, e)| e)
-        .unwrap()
+    let mut editor = Editor::new(&parsed.bundle, &incoming);
+    editor.remove_integrity(1).unwrap();
+    editor.remove_integrity(2).unwrap();
+    let result = editor
         .rebuild()
         .map(|c| Chunk::flatten(c, &incoming))
         .unwrap();
@@ -327,25 +325,24 @@ fn pics_2_3_source_encrypt_payload_and_bundle_age() {
     let src: Eid = "ipn:3.1".parse().unwrap();
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
 
-    let encrypted = encryptor::Encryptor::new(&parsed.bundle, &incoming)
+    let mut encryptor = encryptor::Encryptor::new(&parsed.bundle, &incoming);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(ScopeFlags::default()),
             src.clone(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
+        .unwrap();
+    encryptor
         .encrypt_block(
             2,
             encryptor::Context::AES_GCM(ScopeFlags::default()),
             src,
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let encrypted = encryptor.rebuild().unwrap();
 
     assert_bundles_equivalent(&encrypted, &outgoing);
 }
@@ -369,8 +366,8 @@ fn pics_2_4_acceptor_decrypt_and_remove_bcb() {
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).unwrap();
 
     let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(&keys);
-    editor = editor.remove_encryption(1).map_err(|(_, e)| e).unwrap();
-    editor = editor.remove_encryption(2).map_err(|(_, e)| e).unwrap();
+    editor.remove_encryption(1).unwrap();
+    editor.remove_encryption(2).unwrap();
     let result = editor
         .rebuild()
         .map(|c| Chunk::flatten(c, &parsed.data))
@@ -409,42 +406,40 @@ fn pics_2_5_source_sign_then_encrypt_both() {
 
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).unwrap();
 
-    let signed = signer::Signer::new(&parsed.bundle, &incoming)
+    let mut signer = signer::Signer::new(&parsed.bundle, &incoming);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             src.clone(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
+        .unwrap();
+    signer
         .sign_block(
             2,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             src.clone(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let signed = signer.rebuild().unwrap();
 
     let parsed_signed = parse::parse(Bytes::copy_from_slice(&signed)).unwrap();
 
-    let encrypted = encryptor::Encryptor::new(&parsed_signed.bundle, &signed)
+    let mut encryptor = encryptor::Encryptor::new(&parsed_signed.bundle, &signed);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags.clone()),
             src.clone(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .encrypt_block(2, encryptor::Context::AES_GCM(flags), src, &enc_key)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    encryptor
+        .encrypt_block(2, encryptor::Context::AES_GCM(flags), src, &enc_key)
+        .unwrap();
+    let encrypted = encryptor.rebuild().unwrap();
 
     assert_bundles_equivalent(&encrypted, &outgoing);
 }
@@ -487,12 +482,11 @@ fn acceptor_decrypts_then_verifies(incoming: &[u8], keys: &key::KeySet) -> parse
         .partition(|n| parsed.bundle.blocks[n].block_type == block::Type::BlockIntegrity);
     let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(keys);
     for n in bibs.into_iter().chain(targets) {
-        editor = match editor.remove_encryption(n) {
-            Ok(editor) => editor,
+        match editor.remove_encryption(n) {
             // Taken with an earlier block's coupled BIB.
-            Err((editor, hardy_bpv7::editor::Error::NotEncrypted)) => editor,
-            Err((_, e)) => panic!("block {n} decrypts: {e}"),
-        };
+            Ok(()) | Err(hardy_bpv7::editor::Error::NotEncrypted) => {}
+            Err(e) => panic!("block {n} decrypts: {e}"),
+        }
     }
     let accepted = editor
         .rebuild()
@@ -547,11 +541,8 @@ fn pics_2_6_acceptor_decrypt_then_verify_both() {
         .map(|(&n, _)| n)
         .collect();
     let mut editor = Editor::new(&raw, &data).with_key_source(&all_keys);
-    editor = editor.remove_encryption(1).map_err(|(_, e)| e).unwrap();
-    let (editor, _) = editor
-        .remove_blocks(&bpsec_blocks)
-        .map_err(|(_, e)| e)
-        .unwrap();
+    editor.remove_encryption(1).unwrap();
+    let _ = editor.remove_blocks(&bpsec_blocks).unwrap();
     let result = editor.rebuild().map(|c| Chunk::flatten(c, &data)).unwrap();
 
     assert_bundles_equivalent(&result, &outgoing);
@@ -587,54 +578,50 @@ fn pics_2_7_source_interleaved_sign_encrypt() {
     };
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).unwrap();
 
-    let step1 = signer::Signer::new(&parsed.bundle, &incoming)
+    let mut signer = signer::Signer::new(&parsed.bundle, &incoming);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             src.clone(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let step1 = signer.rebuild().unwrap();
 
     let p1 = parse::parse(Bytes::copy_from_slice(&step1)).unwrap();
 
-    let step2 = encryptor::Encryptor::new(&p1.bundle, &step1)
+    let mut encryptor = encryptor::Encryptor::new(&p1.bundle, &step1);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags.clone()),
             src.clone(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let step2 = encryptor.rebuild().unwrap();
 
     let p2 = parse::parse(Bytes::copy_from_slice(&step2)).unwrap();
 
-    let step3 = signer::Signer::new(&p2.bundle, &step2)
+    let mut signer = signer::Signer::new(&p2.bundle, &step2);
+    signer
         .sign_block(
             2,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             src.clone(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let step3 = signer.rebuild().unwrap();
 
     let p3 = parse::parse(Bytes::copy_from_slice(&step3)).unwrap();
 
-    let step4 = encryptor::Encryptor::new(&p3.bundle, &step3)
+    let mut encryptor = encryptor::Encryptor::new(&p3.bundle, &step3);
+    encryptor
         .encrypt_block(2, encryptor::Context::AES_GCM(flags), src, &enc_key)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let step4 = encryptor.rebuild().unwrap();
 
     assert_bundles_equivalent(&step4, &outgoing);
 }
@@ -679,12 +666,9 @@ fn pics_2_8_acceptor_decrypt_and_verify_interleaved() {
         .map(|(&n, _)| n)
         .collect();
     let mut editor = Editor::new(&raw, &data).with_key_source(&all_keys);
-    editor = editor.remove_encryption(1).map_err(|(_, e)| e).unwrap();
-    editor = editor.remove_encryption(2).map_err(|(_, e)| e).unwrap();
-    let (editor, _) = editor
-        .remove_blocks(&bpsec_blocks)
-        .map_err(|(_, e)| e)
-        .unwrap();
+    editor.remove_encryption(1).unwrap();
+    editor.remove_encryption(2).unwrap();
+    let _ = editor.remove_blocks(&bpsec_blocks).unwrap();
     let result = editor.rebuild().map(|c| Chunk::flatten(c, &data)).unwrap();
 
     assert_bundles_equivalent(&result, &outgoing);
@@ -709,8 +693,9 @@ fn pics_7_1_bib_cannot_target_bib() {
         .map(|(bn, _)| *bn)
         .expect("No BIB found");
 
+    let mut signer = signer::Signer::new(&parsed.bundle, &incoming);
     // MUST FAIL: a BIB cannot target a BIB
-    let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
+    let Err(err) = signer.sign_block(
         bib_bn,
         signer::Context::HMAC_SHA2(ScopeFlags::default()),
         "ipn:3.1".parse().unwrap(),
@@ -742,8 +727,9 @@ fn pics_7_2_bib_cannot_target_bcb() {
         .map(|(bn, _)| *bn)
         .expect("No BCB found");
 
+    let mut signer = signer::Signer::new(&parsed.bundle, &incoming);
     // MUST FAIL: a BIB cannot target a BCB
-    let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
+    let Err(err) = signer.sign_block(
         bcb_bn,
         signer::Context::HMAC_SHA2(ScopeFlags::default()),
         "ipn:3.1".parse().unwrap(),
@@ -779,8 +765,9 @@ fn pics_14_1_bcb_cannot_target_bcb() {
         .map(|(bn, _)| *bn)
         .expect("No BCB found");
 
+    let mut encryptor = encryptor::Encryptor::new(&parsed.bundle, &incoming);
     // MUST FAIL: a BCB cannot target a BCB
-    let Err((_, err)) = encryptor::Encryptor::new(&parsed.bundle, &incoming).encrypt_block(
+    let Err(err) = encryptor.encrypt_block(
         bcb_bn,
         encryptor::Context::AES_GCM(ScopeFlags::default()),
         "ipn:3.1".parse().unwrap(),
@@ -806,8 +793,9 @@ fn pics_15_1_bcb_cannot_target_primary() {
     let parsed =
         parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
+    let mut encryptor = encryptor::Encryptor::new(&parsed.bundle, &incoming);
     // MUST FAIL: a BCB cannot target the primary block (block 0)
-    let Err((_, err)) = encryptor::Encryptor::new(&parsed.bundle, &incoming).encrypt_block(
+    let Err(err) = encryptor.encrypt_block(
         0,
         encryptor::Context::AES_GCM(ScopeFlags::default()),
         "ipn:3.1".parse().unwrap(),
@@ -838,8 +826,9 @@ fn pics_16_1_bcb_cannot_target_bib_directly() {
         .map(|(bn, _)| *bn)
         .expect("No BIB found");
 
+    let mut encryptor = encryptor::Encryptor::new(&parsed.bundle, &incoming);
     // MUST FAIL: a BCB cannot directly target a BIB
-    let Err((_, err)) = encryptor::Encryptor::new(&parsed.bundle, &incoming).encrypt_block(
+    let Err(err) = encryptor.encrypt_block(
         bib_bn,
         encryptor::Context::AES_GCM(ScopeFlags::default()),
         "ipn:3.1".parse().unwrap(),
@@ -888,12 +877,11 @@ fn pics_21_1_bib_split_on_partial_encrypt() {
         include_security_header: false,
         ..ScopeFlags::default()
     };
-    let encrypted = encryptor::Encryptor::new(&parsed.bundle, &incoming)
+    let mut encryptor = encryptor::Encryptor::new(&parsed.bundle, &incoming);
+    encryptor
         .encrypt_block(1, encryptor::Context::AES_GCM(flags), src, &enc_key)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let encrypted = encryptor.rebuild().unwrap();
 
     assert_bundles_equivalent(&encrypted, &outgoing);
 }
@@ -915,8 +903,9 @@ fn pics_22_1_cannot_sign_encrypted_block() {
     let parsed =
         parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
+    let mut signer = signer::Signer::new(&parsed.bundle, &incoming);
     // MUST FAIL: cannot sign a block that is already encrypted
-    let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
+    let Err(err) = signer.sign_block(
         1,
         signer::Context::HMAC_SHA2(ScopeFlags::default()),
         "ipn:3.1".parse().unwrap(),
@@ -1037,8 +1026,8 @@ fn pics_36_1_payload_decrypt_wrong_key_must_discard() {
         .expect("Parse should succeed with encrypted payload");
 
     // MUST FAIL: decryption with wrong key
-    let editor = Editor::new(&parsed.bundle, &parsed.data);
-    let Err((_, err)) = editor.with_key_source(&wrong_keys).remove_encryption(1) else {
+    let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(&wrong_keys);
+    let Err(err) = editor.remove_encryption(1) else {
         panic!("Expected decryption failure with wrong key");
     };
     assert!(
@@ -1088,17 +1077,17 @@ fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
         key_use: None,
     };
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
-    let encrypted = encryptor::Encryptor::new(&parsed.bundle, &incoming)
+    let mut encryptor = encryptor::Encryptor::new(&parsed.bundle, &incoming);
+    let key = aes_key(source_k);
+    encryptor
         .encrypt_block(
             3,
             encryptor::Context::AES_GCM(ScopeFlags::default()),
             "ipn:3.1".parse().unwrap(),
-            &aes_key(source_k),
+            &key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let encrypted = encryptor.rebuild().unwrap();
     let wrong_keys = key::KeySet::new(vec![aes_key(held_k)]);
 
     // Structural parse + keyed verification. The Hop Count's content is
@@ -1248,10 +1237,9 @@ fn pics_49_1_missing_required_bib_on_extension_removes_target() {
         "Policy should remove the hop count: no BIB on non-payload target"
     );
 
-    let result = Editor::new(&parsed.bundle, &incoming)
-        .remove_block(3)
-        .map_err(|(_, e)| e)
-        .unwrap()
+    let mut editor = Editor::new(&parsed.bundle, &incoming);
+    editor.remove_block(3).unwrap();
+    let result = editor
         .rebuild()
         .map(|c| Chunk::flatten(c, &incoming))
         .unwrap();
@@ -1307,7 +1295,8 @@ fn pics_56_1_cannot_add_bcb_to_fragment() {
         "Bundle should be a fragment"
     );
 
-    let Err((_, err)) = encryptor::Encryptor::new(&parsed.bundle, &incoming).encrypt_block(
+    let mut encryptor = encryptor::Encryptor::new(&parsed.bundle, &incoming);
+    let Err(err) = encryptor.encrypt_block(
         1,
         encryptor::Context::AES_GCM(ScopeFlags::default()),
         "ipn:3.1".parse().unwrap(),
@@ -1330,7 +1319,8 @@ fn pics_56_1b_cannot_add_bib_to_fragment() {
     let parsed =
         parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse fragment bundle");
 
-    let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
+    let mut signer = signer::Signer::new(&parsed.bundle, &incoming);
+    let Err(err) = signer.sign_block(
         1,
         signer::Context::HMAC_SHA2(ScopeFlags::default()),
         "ipn:3.1".parse().unwrap(),

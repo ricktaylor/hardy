@@ -61,17 +61,16 @@ fn sign_primary_keeps_its_crc_and_verifies() {
     .unwrap();
     let keys = key::KeySet::new(vec![key.clone()]);
 
-    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             0,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &key,
         )
-        .map_err(|(_, e)| e)
-        .expect("Failed to sign")
-        .rebuild()
-        .expect("Failed to rebuild");
+        .expect("Failed to sign");
+    let signed_bytes = signer.rebuild().expect("Failed to rebuild");
 
     // Round-trip: the signature must verify.
     let (data, signed, _) = reparse(&signed_bytes);
@@ -110,18 +109,17 @@ fn remove_integrity_clears_target_coverage() {
     .unwrap();
     let keys = key::KeySet::new(vec![key.clone()]);
 
-    // Sign the payload block, then re-parse and verify the signature.
-    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &key,
         )
-        .map_err(|(_, e)| e)
-        .expect("Failed to sign")
-        .rebuild()
-        .expect("Failed to rebuild");
+        .expect("Failed to sign");
+    // Sign the payload block, then re-parse and verify the signature.
+    let signed_bytes = signer.rebuild().expect("Failed to rebuild");
 
     let (data, signed, _) = reparse(&signed_bytes);
     common::verify_all_bibs(&data, &keys).expect("Failed to verify signed bundle");
@@ -137,13 +135,12 @@ fn remove_integrity_clears_target_coverage() {
         "the primary keeps its CRC"
     );
 
-    // remove_integrity() takes the *target* block number, not the BIB's.
-    let (rebuilt, _chunks) = Editor::new(&signed, &data)
+    let mut editor = Editor::new(&signed, &data);
+    editor
         .remove_integrity(1)
-        .map_err(|(_, e)| e)
-        .expect("Failed to remove integrity")
-        .rebuild_bundle()
-        .expect("Failed to rebuild bundle");
+        .expect("Failed to remove integrity");
+    // remove_integrity() takes the *target* block number, not the BIB's.
+    let (rebuilt, _chunks) = editor.rebuild_bundle().expect("Failed to rebuild bundle");
 
     assert_eq!(
         rebuilt.blocks[&1].bib,

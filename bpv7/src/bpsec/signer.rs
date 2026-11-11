@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::bpsec::rfc9173;
 use crate::{
     HashMap, block,
-    bpsec::{self, bib, edit::EditorReader, key},
+    bpsec::{self, bib, key},
     bundle, crc,
     editor::{self, Chunk, Editor},
     eid,
@@ -110,47 +110,41 @@ impl<'a> Signer<'a> {
     /// the IPPT (RFC 9173 §3.7), and the primary block is immutable (RFC
     /// 9171 §4.3.1), its CRC covered by every operation whose scope
     /// includes it.
-    ///
-    /// # Errors
-    ///
-    /// On error, returns the signer along with the error so it can be
-    /// reused for recovery.
-    #[allow(clippy::result_large_err)]
     pub fn sign_block(
-        mut self,
+        &mut self,
         block_number: u64,
         context: Context,
         source: eid::Eid,
         key: &'a key::Key,
-    ) -> Result<Self, (Self, Error)> {
+    ) -> Result<(), Error> {
         if self.original.primary.flags.is_fragment {
-            return Err((self, Error::FragmentedBundle));
+            return Err(Error::FragmentedBundle);
         }
 
         let Some(block) = self.original.blocks.get(&block_number) else {
-            return Err((self, editor::Error::NoSuchBlock(block_number).into()));
+            return Err(editor::Error::NoSuchBlock(block_number).into());
         };
 
         if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
-            return Err((self, Error::InvalidTarget(block_number)));
+            return Err(Error::InvalidTarget(block_number));
         }
 
         match block.bib {
             block::BibCoverage::Some(_) => {
-                return Err((self, Error::AlreadySigned(block_number)));
+                return Err(Error::AlreadySigned(block_number));
             }
             block::BibCoverage::Maybe => {
-                return Err((self, editor::Error::MaybeHasBib(block_number).into()));
+                return Err(editor::Error::MaybeHasBib(block_number).into());
             }
             block::BibCoverage::None => {}
         }
 
         if block.bcb.is_some() {
-            return Err((self, Error::EncryptedTarget(block_number)));
+            return Err(Error::EncryptedTarget(block_number));
         }
 
         if self.templates.contains_key(&block_number) {
-            return Err((self, Error::AlreadySigned(block_number)));
+            return Err(Error::AlreadySigned(block_number));
         }
 
         self.templates.insert(
@@ -161,7 +155,7 @@ impl<'a> Signer<'a> {
                 key,
             },
         );
-        Ok(self)
+        Ok(())
     }
 
     /// Applies all queued signing operations and rebuilds the bundle as raw bytes.
@@ -223,14 +217,11 @@ impl<'a> Signer<'a> {
         for ((bpsec_source, context, _, _), (key, targets)) in groups {
             // Reserve a block number for the BIB block
             let b = editor
-                .alloc_block(block::Type::BlockIntegrity)
-                .map_err(|(_, e)| e)?
+                .alloc_block(block::Type::BlockIntegrity)?
                 .with_crc_type(crc::CrcType::None);
 
             let security_block = b.block_number();
-            editor = b.rebuild();
-
-            let editor_bs = EditorReader { editor };
+            b.rebuild();
 
             let operation_set = bib::OperationSet {
                 source: bpsec_source.clone(),
@@ -240,15 +231,13 @@ impl<'a> Signer<'a> {
                     &bpsec_source,
                     &targets,
                     security_block,
-                    &editor_bs,
+                    &editor,
                 )?,
             };
 
             // Rewrite with the real data
-            editor = editor_bs
-                .editor
-                .update_block_inner(security_block)
-                .map_err(|(_, e)| e)?
+            editor
+                .update_block_inner(security_block)?
                 .with_data(emit(&operation_set).0.into())
                 .rebuild();
 

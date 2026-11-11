@@ -279,29 +279,27 @@ mod tests {
             return base;
         };
         let parsed = bpv7_parse::parse(base).expect("parse the built bundle");
-        let crc_free = Editor::new(&parsed.bundle, &parsed.data)
+        let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+        editor
             .update_block(1)
-            .map_err(|(_, e)| e)
             .expect("edit the payload block")
             .with_crc_type(crc::CrcType::None)
-            .rebuild()
+            .rebuild();
+        let crc_free = editor
             .rebuild()
             .map(|chunks| Chunk::flatten(chunks, &parsed.data))
             .expect("rebuild the bundle without the payload's CRC");
         let parsed = bpv7_parse::parse(Bytes::from(crc_free)).expect("parse the CRC-free bundle");
-        Bytes::from(
-            Signer::new(&parsed.bundle, &parsed.data)
-                .sign_block(
-                    1,
-                    Context::HMAC_SHA2(Default::default()),
-                    "ipn:2.1".parse().unwrap(),
-                    key,
-                )
-                .map_err(|(_, e)| e)
-                .expect("sign block 1")
-                .rebuild()
-                .expect("rebuild signed bundle"),
-        )
+        let mut signer = Signer::new(&parsed.bundle, &parsed.data);
+        signer
+            .sign_block(
+                1,
+                Context::HMAC_SHA2(Default::default()),
+                "ipn:2.1".parse().unwrap(),
+                key,
+            )
+            .expect("sign block 1");
+        Bytes::from(signer.rebuild().expect("rebuild signed bundle"))
     }
 
     // Drive the structural parser to `Partial` in CLA-sized chunks, handing

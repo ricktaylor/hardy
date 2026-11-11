@@ -205,11 +205,11 @@ impl services::Service for EchoService {
         else {
             return Ok(());
         };
-        let Ok(editor) = Editor::new(&raw, &data).with_source(raw.primary.destination.clone())
-        else {
+        let mut editor = Editor::new(&raw, &data);
+        let Ok(()) = editor.set_source(raw.primary.destination.clone()) else {
             return Ok(());
         };
-        let Ok(editor) = editor.with_destination(raw.primary.id.source.clone()) else {
+        let Ok(()) = editor.set_destination(raw.primary.id.source.clone()) else {
             return Ok(());
         };
         let Ok(chunks) = editor.rebuild() else {
@@ -1228,18 +1228,17 @@ async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
         .find(|(_, b)| b.block_type == Type::HopCount)
         .expect("the builder emitted the Hop Count block")
         .0;
+    let mut encryptor = Encryptor::new(&built, &data);
+    encryptor
+        .encrypt_block(
+            hop_count,
+            EncryptContext::AES_GCM(Default::default()),
+            source_eid,
+            &key,
+        )
+        .expect("encrypt the Hop Count block");
     let encrypted = parse(Bytes::from(
-        Encryptor::new(&built, &data)
-            .encrypt_block(
-                hop_count,
-                EncryptContext::AES_GCM(Default::default()),
-                source_eid,
-                &key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the Hop Count block")
-            .rebuild()
-            .expect("rebuild the encrypted bundle"),
+        encryptor.rebuild().expect("rebuild the encrypted bundle"),
     ))
     .unwrap();
 
@@ -5485,12 +5484,12 @@ async fn raw_originate_rejects_a_fragment() {
     let Parsed {
         bundle: raw, data, ..
     } = parse(Bytes::from(data)).expect("parse the built bundle");
-    let editor = Editor::new(&raw, &data)
-        .with_fragment_info(Some(FragmentInfo {
+    let mut editor = Editor::new(&raw, &data);
+    editor
+        .set_fragment_info(Some(FragmentInfo {
             offset: 0,
             total_adu_length: 1024,
         }))
-        .map_err(|(_, e)| e)
         .expect("set fragment info");
     let chunks = editor.rebuild().expect("rebuild the fragment");
     let mut fragment = Chunk::flatten_bytes(chunks, data);

@@ -113,18 +113,18 @@ impl Command {
 
         let block_type: block::Type = self.block_type.into();
 
-        let editor = Editor::new(&bundle, &data).with_key_source(&key_store);
+        let mut editor = Editor::new(&bundle, &data).with_key_source(&key_store);
 
         // Try to add the block, if it fails due to duplicate and --force is set, replace it
         let block_builder = match editor.push_block(block_type) {
             Ok(builder) => builder,
-            Err((editor, hardy_bpv7::editor::Error::IllegalDuplicate(_))) if self.force => {
+            Err(hardy_bpv7::editor::Error::IllegalDuplicate(_)) if self.force => {
                 // User explicitly requested --force, so replace the existing block
                 editor
                     .insert_block(block_type)
-                    .map_err(|(_, e)| anyhow::anyhow!("Failed to insert block: {e}"))?
+                    .map_err(|e| anyhow::anyhow!("Failed to insert block: {e}"))?
             }
-            Err((_, e)) => return Err(anyhow::anyhow!("Failed to add block: {e}")),
+            Err(e) => return Err(anyhow::anyhow!("Failed to add block: {e}")),
         };
 
         // Set flags if provided
@@ -142,7 +142,7 @@ impl Command {
         };
 
         // Set block data and rebuild
-        let editor = block_builder.with_data(block_data.into()).rebuild();
+        block_builder.with_data(block_data.into()).rebuild();
 
         let chunks = editor
             .rebuild()

@@ -144,16 +144,13 @@ pub(crate) fn accepted_copy(
         .partition(|n| parsed.bundle.blocks[n].block_type == Type::BlockIntegrity);
     let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(keys);
     for block_number in bibs.into_iter().chain(targets) {
-        editor = match editor.remove_encryption(block_number) {
-            Ok(editor) => editor,
+        match editor.remove_encryption(block_number) {
             // Taken with an earlier block's coupled BIB, or kept for want of
             // a key.
-            Err((
-                editor,
-                editor::Error::NotEncrypted | editor::Error::Bpsec(bpsec::Error::NoKey),
-            )) => editor,
-            Err((_, e)) => return Err(e.into()),
-        };
+            Ok(())
+            | Err(editor::Error::NotEncrypted | editor::Error::Bpsec(bpsec::Error::NoKey)) => {}
+            Err(e) => return Err(e.into()),
+        }
     }
     let chunks = editor.rebuild()?;
     Ok(parse::parse(Chunk::flatten_bytes(

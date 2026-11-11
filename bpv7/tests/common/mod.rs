@@ -107,12 +107,11 @@ pub fn accept_all(parsed: &parse::Parsed, keys: &KeySet) -> Result<parse::Parsed
         .partition(|n| parsed.bundle.blocks[n].block_type == block::Type::BlockIntegrity);
     let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(keys);
     for n in bibs.into_iter().chain(targets) {
-        editor = match editor.remove_encryption(n) {
-            Ok(editor) => editor,
+        match editor.remove_encryption(n) {
             // Taken with an earlier block's coupled BIB.
-            Err((editor, editor::Error::NotEncrypted)) => editor,
-            Err((_, e)) => return Err(e),
-        };
+            Ok(()) | Err(editor::Error::NotEncrypted) => {}
+            Err(e) => return Err(e),
+        }
     }
     let data = Chunk::flatten_bytes(editor.rebuild()?, parsed.data.clone());
     Ok(parse::parse(data)?)
