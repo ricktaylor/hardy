@@ -200,7 +200,7 @@ impl Dispatcher {
         .trace_expect("Failed to create new bundle");
 
         let data = Bytes::from(data);
-        let extensions = crate::bundle::parse::extract_from_built(&bundle, &data)
+        let per_hop = crate::bundle::parse::extract_from_built(&bundle, &data)
             .trace_expect("Failed to extract extension fields from built bundle");
 
         // Wrap in bundle::Bundle with Dispatching status — status reports
@@ -208,7 +208,7 @@ impl Dispatcher {
         // Ingress filters and go directly to routing.
         let mut bundle = bundle::Bundle {
             bpv7: bundle,
-            metadata: bundle::BundleMetadata::originated().with_extensions(extensions),
+            metadata: bundle::BundleMetadata::originated().with_per_hop(per_hop),
             status: bundle::BundleStatus::Dispatching,
         };
 

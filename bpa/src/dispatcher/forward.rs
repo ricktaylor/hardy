@@ -256,12 +256,12 @@ impl Dispatcher {
         source_data: Bytes,
         next_hop: &Eid,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), PerHopRefusal> {
-        // We read the cached extension fields (`hop_count` / `age` from
-        // `metadata.extensions`) to rebuild the wire blocks, but never write the
+        // We read the cached per-hop fields (`hop_count` / `bundle_age` from
+        // `metadata.per_hop`) to rebuild the wire blocks, but never write the
         // bumped values back: the rewrite is per-attempt and in-memory only, and
         // the cache mirrors the stored bytes, which stay as received. The cache
         // IS observed again after this rewrite: a park's reaper expiry watch
-        // reads `extensions.age`, and wants the original, un-bumped value.
+        // reads `per_hop.bundle_age`, and wants the original, un-bumped value.
         //
         // Editor needs a `&Bundle`, so re-parse structurally.
         let hardy_bpv7::parse::Parsed {
@@ -320,7 +320,7 @@ impl Dispatcher {
         // unchanged, with its security operations, rather than holding the
         // bundle back. One this node could not read at ingress has no cached
         // value, and travels unchanged too.
-        if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
+        if let Some(hop_count) = &bundle.metadata.per_hop.hop_count {
             match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
                 Ok(block) => block
                     .with_flags(hardy_bpv7::block::Flags {
@@ -341,10 +341,18 @@ impl Dispatcher {
             }
         }
 
-        // Update Bundle Age, if required
-        if bundle.metadata.extensions.age.is_some() || !bundle.id().timestamp.is_clocked() {
-            // We have a bundle age block already, or no valid clock at bundle source
-            // So we must add an updated bundle age block
+        // Bundle Age. A bundle that carries one, or has no creation time and
+        // so must (RFC 9171 §4.4.2), gets this hop's: a MUST (§5.4), so a
+        // block the editor refuses parks the bundle. A bundle a Classifier
+        // marked gets one from the clock too, for a downstream node without
+        // one (§5.5), unless its Bundle Age a BCB covers: unread here, it
+        // travels unchanged.
+        let required =
+            bundle.metadata.per_hop.bundle_age.is_some() || !bundle.id().timestamp.is_clocked();
+        let covered_age = raw.blocks.values().any(|block| {
+            block.block_type == hardy_bpv7::block::Type::BundleAge && block.bcb.is_some()
+        });
+        if required || (bundle.metadata.add_bundle_age() && !covered_age) {
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
                 .whole_milliseconds()
                 .clamp(0, u64::MAX as i128) as u64;

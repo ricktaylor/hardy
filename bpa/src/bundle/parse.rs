@@ -34,12 +34,14 @@ use core::mem::take;
 
 use bytes::{Bytes, BytesMut};
 use hardy_bpv7::{
-    Bundle as Bpv7Bundle, block, bpsec, bundle_age, checks, parse, status_report::ReasonCode,
+    Bundle as Bpv7Bundle, block, bpsec, checks,
+    parse::{self, PerHopFields},
+    status_report::ReasonCode,
 };
 use time::OffsetDateTime;
 use tracing::debug;
 
-use super::{ExtensionFields, expiry};
+use super::expiry;
 use crate::{HashMap, HashSet, cla::Segment, stream::Receiver};
 
 // ---------------------------------------------------------------------------
@@ -57,8 +59,8 @@ use crate::{HashMap, HashSet, cla::Segment, stream::Receiver};
 pub fn extract_from_built(
     bundle: &Bpv7Bundle,
     data: &[u8],
-) -> Result<ExtensionFields, hardy_bpv7::Error> {
-    extract_extension_block_fields(data, &bundle.blocks, &HashMap::<u64, &[u8]>::new())
+) -> Result<PerHopFields, hardy_bpv7::Error> {
+    PerHopFields::from_blocks(&bundle.blocks, data)
 }
 
 /// Map a keyed-validation error to the status-report reason BPA emits with the
@@ -201,6 +203,7 @@ where
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
+        per_hop,
         ..
     } = parse::parse(data)?;
     let key_source = keys_for(&bcb_ops, &bib_ops, key_provider, &bundle, &data);
@@ -229,7 +232,7 @@ where
 
     // §D — decode the extension fields purely as validation: a corrupt
     // well-known block rejects the bundle; the decoded values are discarded.
-    extract_extension_block_fields(&data, &bundle.blocks, &decrypted).map(|_| bundle)
+    decode_decrypted(per_hop, &bundle.blocks, &decrypted).map(|_| bundle)
 }
 
 /// A liveness-critical extension block a forwarding node can't process without
@@ -277,7 +280,7 @@ pub fn reject_undecryptable_liveness(
 /// needs to finish once the payload streams.
 pub struct HeaderVerify {
     pub bundle: Bpv7Bundle,
-    pub extensions: ExtensionFields,
+    pub per_hop: PerHopFields,
     /// Unrecognised / unsupported blocks scheduled for removal: the output
     /// doors drop them per attempt (`BundleMetadata::to_remove`).
     pub to_remove: HashSet<u64>,
@@ -308,12 +311,12 @@ impl HeaderVerify {
     /// straight off the parsed primary + extracted extension fields, so the
     /// streaming gate can run it before the payload is drained.
     pub fn gate_reason(&self, received_at: OffsetDateTime) -> Option<ReasonCode> {
-        if expiry(&self.bundle.primary, self.extensions.age, received_at)
+        if expiry(&self.bundle.primary, self.per_hop.bundle_age, received_at)
             <= OffsetDateTime::now_utc()
         {
             Some(ReasonCode::LifetimeExpired)
         } else if self
-            .extensions
+            .per_hop
             .hop_count
             .as_ref()
             .is_some_and(|h| h.count > u64::from(h.limit.get()))
@@ -519,10 +522,18 @@ where
         bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
+        per_hop,
         ..
     } = parsed;
     let key_source = keys_for(&bcb_ops, &bib_ops, key_provider, &bundle, &headers);
-    match verify_headers(&headers, &*key_source, bundle, &bcb_ops, &mut bib_ops) {
+    match verify_headers(
+        &headers,
+        &*key_source,
+        bundle,
+        per_hop,
+        &bcb_ops,
+        &mut bib_ops,
+    ) {
         // The header-region BCB OperationSets ride back to the caller for
         // the Ingress gate chain, handed back from this one decode rather
         // than re-derived from the prefix later.
@@ -709,6 +720,7 @@ fn verify_headers(
     headers: &[u8],
     key_source: &dyn bpsec::key::KeySource,
     bundle: Bpv7Bundle,
+    per_hop: PerHopFields,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
 ) -> Result<HeaderVerify, (Bpv7Bundle, hardy_bpv7::Error, ReceptionReport)> {
@@ -717,7 +729,7 @@ fn verify_headers(
     // and the recoverable bundle rides whichever arm results.
     let mut hv = HeaderVerify {
         bundle,
-        extensions: ExtensionFields::default(),
+        per_hop: PerHopFields::default(),
         to_remove: HashSet::new(),
         report: ReceptionReport::Requested,
         deferred_verifiers: Vec::new(),
@@ -795,11 +807,10 @@ fn verify_headers(
         // other undecipherable block is forwarded intact for a downstream acceptor.
         reject_undecryptable_liveness(&facts.nokey_ext, is_clocked)?;
 
-        // §D — decode the well-known extension fields; the caller records them in
-        // the bundle's metadata. Decode only: no canonical re-emission is queued
-        // (non-canonical CBOR is rejected at parse). Extension blocks only —
-        // never the payload, so header-resident.
-        hv.extensions = extract_extension_block_fields(headers, &hv.bundle.blocks, &decrypted)?;
+        // §D — the per-hop fields, which the caller records in the bundle's
+        // metadata: the parse decoded the plaintext blocks, and the blocks
+        // §C8 decrypted are decoded here.
+        hv.per_hop = decode_decrypted(per_hop, &hv.bundle.blocks, &decrypted)?;
 
         // Begin incremental verification of the deferred block-1 (payload)
         // targets here, where `key_source` already exists: the source
@@ -825,68 +836,23 @@ fn verify_headers(
 }
 
 // ---------------------------------------------------------------------------
-// §D — extension-block field extraction
-//
-// Decodes the well-known PreviousNode / BundleAge / HopCount extension blocks
-// into typed values the BPA records in metadata. BPA policy — bpv7 keeps only
-// the structural parse + per-section BPSec primitives.
+// §D — the per-hop fields
 // ---------------------------------------------------------------------------
 
-/// Decode one `PreviousNode` / `BundleAge` / `HopCount` field: the BCB-decrypted
-/// plaintext when §C8 supplied it (smuggling-checked via
-/// [`hardy_cbor::decode::parse_exact`]), else the block's wire payload via
-/// [`block::Block::extract`] (`None` for an encrypted block with no plaintext, or
-/// a not-resident payload). Selecting wire-vs-decrypted is BPA policy; the decode
-/// + smuggling check are bpv7's.
-fn decode_field<T>(
-    block: &block::Block,
-    source: &[u8],
-    decrypted: Option<&[u8]>,
-) -> Result<Option<T>, hardy_bpv7::Error>
-where
-    T: hardy_cbor::decode::FromCbor,
-    T::Error: From<hardy_cbor::decode::Error>,
-    hardy_bpv7::Error: From<T::Error>,
-{
-    match decrypted {
-        Some(plaintext) => Ok(Some(hardy_cbor::decode::parse_exact(plaintext)?)),
-        // No plaintext from §C8: `extract` itself returns `Ok(None)` for a
-        // BCB-covered block (ciphertext in place) or a non-resident payload.
-        None => block.extract(source),
-    }
-}
-
-/// Decode `PreviousNode` / `BundleAge` / `HopCount` block bodies into an
-/// [`ExtensionFields`]. Non-canonical encodings are rejected at decode
-/// (RFC 9171 §4.1), not re-emitted — canonicalisation is a configurable mutating
-/// filter. Generic over the decrypted-plaintext container so the BPSec
-/// `Zeroizing` type never needs naming here.
-fn extract_extension_block_fields<V: AsRef<[u8]>>(
-    data: &[u8],
+// The per-hop fields once §C8 has decrypted: the parse decoded the blocks no
+// BCB covers, and each this pass decrypted is decoded from its plaintext.
+fn decode_decrypted<V: AsRef<[u8]>>(
+    mut per_hop: PerHopFields,
     blocks: &HashMap<u64, block::Block>,
-    decrypted_data: &HashMap<u64, V>,
-) -> Result<ExtensionFields, hardy_bpv7::Error> {
-    let mut out = ExtensionFields::default();
-
-    // Iterate `blocks` directly — no per-bundle `candidates` Vec to allocate
-    // (this runs for every bundle, and a Previous Node block is near-universal).
-    for (&block_number, target_block) in blocks {
-        let decrypted = decrypted_data.get(&block_number).map(AsRef::as_ref);
-        match target_block.block_type {
-            block::Type::PreviousNode => {
-                out.previous_node = decode_field(target_block, data, decrypted)?;
-            }
-            block::Type::BundleAge => {
-                out.age = decode_field::<bundle_age::BundleAge>(target_block, data, decrypted)?
-                    .map(Into::into);
-            }
-            block::Type::HopCount => {
-                out.hop_count = decode_field(target_block, data, decrypted)?;
-            }
-            _ => {}
-        }
+    decrypted: &HashMap<u64, V>,
+) -> Result<PerHopFields, hardy_bpv7::Error> {
+    for (number, plaintext) in decrypted {
+        let block = blocks
+            .get(number)
+            .expect("a decrypted block is in the bundle");
+        per_hop.decode(block.block_type, plaintext.as_ref())?;
     }
-    Ok(out)
+    Ok(per_hop)
 }
 
 #[cfg(test)]
@@ -1085,7 +1051,7 @@ mod tests {
         let Ok((hv, ..)) = parse_headers(&mut rx, 1 << 20, 0, bpsec::no_keys).await else {
             panic!("an undecryptable Hop Count must pass the header pass");
         };
-        assert!(hv.extensions.hop_count.is_none(), "the count is unread");
+        assert!(hv.per_hop.hop_count.is_none(), "the count is unread");
         assert!(
             !hv.to_remove.contains(&hop_block),
             "the block is forwarded intact"

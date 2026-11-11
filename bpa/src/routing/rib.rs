@@ -308,9 +308,7 @@ impl Rib {
 
         let previous;
         let result = if matches!(result, LookupResult::Reflect) {
-            previous = bundle
-                .previous_node()
-                .unwrap_or_else(|| bundle.id().source.clone());
+            previous = bundle.metadata.previous_node(bundle.primary());
             table.find_recurse(&previous, false, &mut Trail::new())?
         } else {
             result
@@ -677,7 +675,7 @@ mod tests {
     use hardy_bpv7::eid::{IpnNodeId, Service as EidService};
 
     use super::*;
-    use crate::bundle::tests::test_bundle;
+    use crate::bundle::{BundleMetadata, tests::test_bundle};
     use crate::filter::slots::MetadataDelta;
     use crate::services::registry::ServiceImpl;
     use crate::services::tests::NullService;
@@ -882,12 +880,48 @@ mod tests {
         add_local_forward(&rib, ipn_node(4), 77);
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        bundle.metadata.per_hop.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.decide(&bundle).action;
         assert!(matches!(
             result,
             Some(DispatchAction::Forward { peer: 77, .. })
         ));
+    }
+
+    // The peer the CLA announced is the node the bundle came from, so
+    // `Reflect` prefers it to the Previous Node block, which it falls back to
+    // only where the CLA announced none, and that to the bundle's source.
+    #[test]
+    fn test_reflection_prefers_the_cla_peer() {
+        let rib = make_rib();
+        add_route(
+            &rib,
+            "ipn:0.5.*",
+            "reflect",
+            Action::Route(RouteAction::Reflect),
+            10,
+        );
+        add_local_forward(&rib, ipn_node(3), 33);
+        add_local_forward(&rib, ipn_node(4), 77);
+        add_local_forward(&rib, ipn_node(99), 99);
+
+        let mut bundle = make_bundle("ipn:0.5.1");
+        let block: Eid = "ipn:0.4.0".parse().unwrap();
+        for (peer_node, previous_node, expected) in [
+            (Some(ipn_node(3)), Some(block.clone()), 33),
+            (None, Some(block), 77),
+            (None, None, 99),
+        ] {
+            bundle.metadata = BundleMetadata::ingress("test".into(), peer_node, None);
+            bundle.metadata.per_hop.previous_node = previous_node;
+            assert!(
+                matches!(
+                    rib.decide(&bundle).action,
+                    Some(DispatchAction::Forward { peer, .. }) if peer == expected
+                ),
+                "expected peer {expected}"
+            );
+        }
     }
 
     #[test]
@@ -909,7 +943,7 @@ mod tests {
         );
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        bundle.metadata.per_hop.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.decide(&bundle).action;
         assert!(result.is_none());
     }

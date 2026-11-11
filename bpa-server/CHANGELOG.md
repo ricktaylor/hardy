@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **BREAKING**: the `ipn-legacy-filter` cargo feature is removed and the `ipn-legacy-nodes` config key is always available (previously feature-gated; a build without the feature refused the key). The key now drives the BPA's built-in per-hop re-encode (`BpaBuilder::ipn_legacy_peers`) instead of registering the standalone `IpnLegacyFilter`, which had become inert — nothing populates the `BundleMetadata::next_hop` field it reads. The built-in rewrites the transmitted wire form only and never replaces the stored bundle's primary block.
 
 ### Removed
-- **BREAKING:** the `rfc9171-validity.bundle-age-required` key. A bundle whose creation time is zero must carry a Bundle Age block (RFC 9171 §4.4.2), and the BPA's parse now refuses one without, so there is no check left to relax. A config naming the key fails to load, with the known keys listed.
+- **BREAKING:** the `rfc9171-validity.bundle-age-required` key. A bundle whose creation time is zero must carry a Bundle Age block (RFC 9171 §4.4.2), and the BPA's parse now refuses one without, so there is no check left to relax; whether a forwarded bundle with a creation time gains a Bundle Age is a per-bundle decision a Classifier makes (`MetadataDelta::add_bundle_age`). A config naming the key fails to load, with the known keys listed.
 
 ## [0.2.0]
 
