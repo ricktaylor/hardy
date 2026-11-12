@@ -5,8 +5,11 @@
 
 use core::{
     num::{NonZeroU8, NonZeroU32, NonZeroU64},
+    ops::Range,
     time::Duration,
 };
+#[cfg(feature = "rfc9173")]
+use hardy_bpa::bundle::{Bundle, BundleMetadata, BundleStatus};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
@@ -807,6 +810,43 @@ async fn keyed_node_receiving_in(
     flume::Receiver<Bytes>,
     flume::Receiver<Bytes>,
 ) {
+    let (bpa, cla, saved_rx, deleted_rx, forwarded_rx) = keyed_node(keys, pack, None).await;
+    receive_in(&cla, inbound, segments).await;
+    (bpa, saved_rx, deleted_rx, forwarded_rx)
+}
+
+// The node `keyed_node_receiving_in` builds, before it receives anything,
+// its metadata in `metadata` where given: the node, its CLA, the bundles it
+// stored, those it deleted from storage, and those it sent.
+#[cfg(feature = "rfc9173")]
+async fn keyed_node(
+    keys: Vec<Key>,
+    pack: Option<FilterPack>,
+    metadata: Option<Arc<dyn MetadataStorage>>,
+) -> (
+    Bpa,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+) {
+    keyed_node_under(None, keys, pack, metadata).await
+}
+
+// `keyed_node` under a bundle size cap.
+#[cfg(feature = "rfc9173")]
+async fn keyed_node_under(
+    max_bundle_size: Option<NonZeroU64>,
+    keys: Vec<Key>,
+    pack: Option<FilterPack>,
+    metadata: Option<Arc<dyn MetadataStorage>>,
+) -> (
+    Bpa,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
@@ -821,8 +861,14 @@ async fn keyed_node_receiving_in(
         .bundle_storage(saved)
         .status_reports(true)
         .key_provider(Arc::new(FixedKeys(keys)));
+    if let Some(metadata) = metadata {
+        builder = builder.metadata_storage(metadata);
+    }
     if let Some(pack) = pack {
         builder = builder.add_filters(pack);
+    }
+    if let Some(max_bundle_size) = max_bundle_size {
+        builder = builder.max_bundle_size(max_bundle_size);
     }
     let bpa = builder.build().await.unwrap();
     bpa.start(false).await;
@@ -847,6 +893,14 @@ async fn keyed_node_receiving_in(
         )
         .await
         .unwrap();
+    (bpa, cla, saved_rx, deleted_rx, forwarded_rx)
+}
+
+// `inbound` received through `cla` in `segments` segments, through a bounded
+// channel with a spawned producer, so the header pass holds the headers and
+// only a prefix of the payload; the transfer is accepted.
+#[cfg(feature = "rfc9173")]
+async fn receive_in(cla: &PipelineCla, inbound: Bytes, segments: usize) {
     let step = inbound.len().div_ceil(segments);
     let mut split: Vec<Segment> = (0..inbound.len())
         .step_by(step)
@@ -879,7 +933,6 @@ async fn keyed_node_receiving_in(
     );
     drop(rx);
     producer.await.unwrap();
-    (bpa, saved_rx, deleted_rx, forwarded_rx)
 }
 
 // Announces `role` on every security operation each block of its types
@@ -9560,4 +9613,740 @@ fn as_fragment(data: Bytes) -> Bytes {
         .expect("set the fragment info");
     let chunks = editor.rebuild().expect("rebuild the fragment");
     Chunk::flatten_bytes(chunks, parsed.data)
+}
+
+// `data` fragmented `cut` bytes into its payload, every block in both
+// fragments: the payload's operations ride in fragment 0, as RFC 9171 §5.8
+// has them, and in fragment 1 as blocks replicated in every fragment.
+#[cfg(feature = "rfc9173")]
+fn fragments(data: &Bytes, cut: usize) -> (Bytes, Bytes) {
+    let parsed = parse(data.clone()).unwrap();
+    let payload = parsed.bundle.blocks[&1]
+        .payload(&parsed.data)
+        .expect("the payload is resident")
+        .to_vec();
+    let total_adu_length = payload.len() as u64;
+    let fragment = |range: Range<usize>| {
+        let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
+                offset: range.start as u64,
+                total_adu_length,
+            }))
+            .expect("set the fragment info");
+        editor
+            .restore_block(1)
+            .expect("restore the payload")
+            .with_data(payload[range].to_vec().into())
+            .rebuild();
+        let chunks = editor.rebuild().expect("rebuild the fragment");
+        Chunk::flatten_bytes(chunks, parsed.data.clone())
+    };
+    (fragment(0..cut), fragment(cut..payload.len()))
+}
+
+// The first whole bundle, no fragment, stored from `source`.
+#[cfg(feature = "rfc9173")]
+async fn stored_whole_from(saved_rx: &flume::Receiver<Bytes>, source: &Eid) -> Parsed {
+    loop {
+        let stored = stored_from(saved_rx, source).await;
+        if stored.bundle.primary.id.fragment_info.is_none() {
+            return stored;
+        }
+    }
+}
+
+// Metadata storage that reports every fragment parked for reassembly: each
+// successful swap into `AduFragment`, by bundle id.
+#[cfg(feature = "rfc9173")]
+struct FragmentParks {
+    inner: MetadataMemStorage,
+    parked_tx: flume::Sender<Id>,
+}
+
+#[cfg(feature = "rfc9173")]
+impl FragmentParks {
+    fn new() -> (Arc<Self>, flume::Receiver<Id>) {
+        let (parked_tx, parked_rx) = flume::unbounded();
+        (
+            Arc::new(Self {
+                inner: MetadataMemStorage::new(None),
+                parked_tx,
+            }),
+            parked_rx,
+        )
+    }
+}
+
+#[cfg(feature = "rfc9173")]
+#[async_trait]
+impl MetadataStorage for FragmentParks {
+    async fn get(&self, bundle_id: &Id) -> StorageResult<Option<Bundle>> {
+        self.inner.get(bundle_id).await
+    }
+
+    async fn insert(&self, bundle: &Bundle) -> StorageResult<bool> {
+        self.inner.insert(bundle).await
+    }
+
+    async fn swap_status(
+        &self,
+        bundle_id: &Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> StorageResult<bool> {
+        let swapped = self.inner.swap_status(bundle_id, expected, status).await?;
+        if swapped && matches!(status, BundleStatus::AduFragment { .. }) {
+            let _ = self.parked_tx.send(bundle_id.clone());
+        }
+        Ok(swapped)
+    }
+
+    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> StorageResult<bool> {
+        self.inner.tombstone_if(bundle_id, expected).await
+    }
+
+    async fn tombstone(&self, bundle_id: &Id) -> StorageResult<()> {
+        self.inner.tombstone(bundle_id).await
+    }
+
+    async fn start_recovery(&self) {
+        self.inner.start_recovery().await;
+    }
+
+    async fn confirm_exists(
+        &self,
+        bundle_id: &Id,
+    ) -> StorageResult<Option<(BundleMetadata, BundleStatus)>> {
+        self.inner.confirm_exists(bundle_id).await
+    }
+
+    async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+        self.inner.remove_unconfirmed(stream).await
+    }
+
+    async fn reset_peer_queue(&self, peer: u32) -> StorageResult<u64> {
+        self.inner.reset_peer_queue(peer).await
+    }
+
+    async fn reset_peer_ack_pending(&self, peer: u32) -> StorageResult<u64> {
+        self.inner.reset_peer_ack_pending(peer).await
+    }
+
+    async fn reset_service_queue(&self, service: &Eid) -> StorageResult<u64> {
+        self.inner.reset_service_queue(service).await
+    }
+
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+        self.inner.poll_expiry(stream).await
+    }
+
+    async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+        self.inner.poll_waiting(stream).await
+    }
+
+    async fn poll_service_waiting(
+        &self,
+        source: Eid,
+        stream: &dyn Sender<Bundle>,
+    ) -> StorageResult<()> {
+        self.inner.poll_service_waiting(source, stream).await
+    }
+
+    async fn poll_adu_fragments(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+    ) -> StorageResult<()> {
+        self.inner.poll_adu_fragments(stream, status).await
+    }
+
+    async fn poll_pending(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+        limit: usize,
+    ) -> StorageResult<()> {
+        self.inner.poll_pending(stream, status, limit).await
+    }
+}
+
+// The next fragment parked for reassembly.
+#[cfg(feature = "rfc9173")]
+async fn parked(parked_rx: &flume::Receiver<Id>) -> Id {
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(Duration::from_secs(5), parked_rx.recv_async())
+        .await
+        .expect("timeout waiting for the park")
+        .expect("channel closed")
+}
+
+// Decides whether this node reassembles every bundle it classifies.
+#[cfg(feature = "rfc9173")]
+struct Reassembles(Option<bool>);
+
+#[cfg(feature = "rfc9173")]
+impl Classifier for Reassembles {
+    fn classify(&self, _ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+        let mut delta = MetadataDelta::default();
+        delta.reassemble = self.0;
+        Verdict::Continue(delta)
+    }
+}
+
+// A filter pack whose Classifier decides reassembly as `decision`.
+#[cfg(feature = "rfc9173")]
+fn reassembling(decision: Option<bool>) -> Option<FilterPack> {
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier("reassembles", Reassembles(decision));
+    Some(pack)
+}
+
+// A bundle from ipn:0.2.1 to `destination` with a per-hop block of
+// `block_type`, a Previous Node naming ipn:0.2.0, a Bundle Age of 5 s or a
+// Hop Count of 1 of 64, which the previous node signed where `signed` and
+// encrypted otherwise, under a scope that leaves the primary block out
+// where `primary_excluded`, asking for deletion reports: the bundle and the
+// key.
+#[cfg(feature = "rfc9173")]
+fn with_protected_per_hop_block(
+    destination: &str,
+    block_type: Type,
+    signed: bool,
+    primary_excluded: bool,
+) -> (Bytes, Key) {
+    let previous: Eid = "ipn:0.2.0".parse().unwrap();
+    let scope = ScopeFlags {
+        include_primary_block: !primary_excluded,
+        ..ScopeFlags::default()
+    };
+    let body = if block_type == Type::PreviousNode {
+        emit(&previous).0
+    } else if block_type == Type::BundleAge {
+        emit(&5_000u64).0
+    } else {
+        emit(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .0
+    };
+    let (built, data) = Builder::new("ipn:0.2.1".parse().unwrap(), destination.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(block_type)
+        .unwrap()
+        .build(body.into())
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let number = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block_type)
+        .expect("the per-hop block is present")
+        .0;
+    let (sign_key, enc_key) = generated_keys();
+    if signed {
+        let mut signer = Signer::new(&built, &data);
+        signer
+            .sign_block(
+                number,
+                signer::Context::HMAC_SHA2(scope),
+                previous,
+                &sign_key,
+            )
+            .expect("sign the block");
+        let signed = signer.rebuild().expect("rebuild the signed bundle");
+        (Bytes::from(signed), sign_key)
+    } else {
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
+            .encrypt_block(number, EncryptContext::AES_GCM(scope), previous, &enc_key)
+            .expect("encrypt the block");
+        let encrypted = encryptor.rebuild().expect("rebuild the encrypted bundle");
+        (Bytes::from(encrypted), enc_key)
+    }
+}
+
+// A bundle without a creation time from ipn:0.2.1 to a destination behind
+// node 1's peer, carrying a Previous Node (ipn:0.2.0), a Bundle Age (5 s)
+// and a Hop Count (1 of 64), none under an operation, and a 6 KiB payload
+// its source signed in plaintext, asking for deletion reports: the bundle,
+// the payload and the signing key.
+#[cfg(feature = "rfc9173")]
+fn with_per_hop_blocks_and_signed_payload() -> (Bytes, Vec<u8>, Key) {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let plaintext: Vec<u8> = (0..6144u32).map(|i| (i % 239) as u8).collect();
+    let (built, data) = Builder::new(source.clone(), REMOTE.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(Type::PreviousNode)
+        .unwrap()
+        .build(emit(&"ipn:0.2.0".parse::<Eid>().unwrap()).0.into())
+        .add_extension_block(Type::BundleAge)
+        .unwrap()
+        .build(emit(&5_000u64).0.into())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .with_payload(plaintext.as_slice().into())
+        .build(CreationTimestamp::default())
+        .unwrap();
+    let (sign_key, _) = generated_keys();
+    let mut signer = Signer::new(&built, &data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source,
+            &sign_key,
+        )
+        .expect("sign the payload");
+    let signed = signer.rebuild().expect("rebuild the signed bundle");
+    (Bytes::from(signed), plaintext, sign_key)
+}
+
+// A bundle without a creation time from ipn:0.9.1 to a local service, its
+// Bundle Age (5 s) under no operation and its 6 KiB payload in plaintext,
+// reporting to ipn:0.2.1: the bundle and the payload.
+#[cfg(feature = "rfc9173")]
+fn unclocked_with_bundle_age() -> (Bytes, Vec<u8>) {
+    let plaintext: Vec<u8> = (0..6144u32).map(|i| (i % 239) as u8).collect();
+    let (_, data) = Builder::new("ipn:0.9.1".parse().unwrap(), LOCAL.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_report_to("ipn:0.2.1".parse().unwrap())
+        .add_extension_block(Type::BundleAge)
+        .unwrap()
+        .build(emit(&5_000u64).0.into())
+        .with_payload(plaintext.as_slice().into())
+        .build(CreationTimestamp::default())
+        .unwrap();
+    (Bytes::from(data), plaintext)
+}
+
+// A BIB over a fragment's payload is checked after reassembly, never
+// against the fragment's partial payload: fragment 0 of a bundle whose
+// payload is signed in plaintext carries that BIB (RFC 9171 §5.8), and a
+// relay forwards the fragment as received, whether it arrives whole or in
+// segments.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_leaves_a_fragments_plaintext_payload_bib_unchecked() {
+    let (inbound, _, keys) = with_protected_payload(REMOTE, true, false);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let fragment = as_fragment(inbound);
+
+    for segments in [1, 3] {
+        let (bpa, saved_rx, _, sent_rx) =
+            keyed_node_receiving_in(keys.clone(), None, fragment.clone(), segments).await;
+        let stored = stored_from(&saved_rx, &source).await;
+        assert_eq!(
+            stored.data, fragment,
+            "{segments} segments: stored as received"
+        );
+        let forwarded = forwarded_from(&sent_rx, &source).await;
+        assert_eq!(forwarded.bundle.primary.id, stored.bundle.primary.id);
+        bpa.shutdown().await;
+    }
+}
+
+// The destination reassembles the fragments of a bundle whose payload its
+// source signed in plaintext, and accepts the operation over the whole (RFC
+// 9172 §5.2): the reassembled bundle keeps fragment 0's BIB over the
+// restored payload, and crosses the door to be stored in plaintext without
+// it, the check passed. Fragment 1 is received once fragment 0 is parked
+// for reassembly.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_destination_verifies_a_signed_payload_once_reassembled() {
+    let (inbound, plaintext, keys) = with_protected_payload(LOCAL, true, false);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, saved_rx, _, _) = keyed_node(keys, None, Some(parks)).await;
+
+    receive_in(&cla, first.clone(), 1).await;
+    assert_eq!(
+        stored_from(&saved_rx, &source).await.data,
+        first,
+        "fragment 0 is stored as received"
+    );
+    assert!(parked(&parked_rx).await.fragment_info.is_some());
+    receive_in(&cla, second, 3).await;
+
+    let reassembled = stored_whole_from(&saved_rx, &source).await;
+    assert_eq!(
+        reassembled.bundle.blocks[&1].payload(&reassembled.data),
+        Some(plaintext.as_slice())
+    );
+    assert_eq!(
+        reassembled.bibs.len(),
+        1,
+        "the whole carries fragment 0's BIB over the payload"
+    );
+    let accepted = stored_whole_from(&saved_rx, &source).await;
+    assert_eq!(
+        accepted.bundle.blocks[&1].payload(&accepted.data),
+        Some(plaintext.as_slice())
+    );
+    assert!(
+        accepted.bibs.is_empty() && accepted.bcbs.is_empty(),
+        "the destination accepted the whole's operation"
+    );
+    bpa.shutdown().await;
+}
+
+// A fragment tampered in transit fails the check the destination makes over
+// the reassembled whole: the bundle is deleted at the door it re-enters,
+// "Failed security operation", and nothing of it is left in storage.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_tampered_fragment_fails_the_check_over_the_reassembled_payload() {
+    let (inbound, _, keys) = with_protected_crcless_payload(LOCAL, true, false);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    // The last byte of the second fragment's payload: the value changes,
+    // and the fragment, carrying no CRC, still parses.
+    let tampered = {
+        let parsed = parse(second).unwrap();
+        let mut data = parsed.data.to_vec();
+        let last = usize::try_from(parsed.bundle.blocks[&1].payload_range().end).unwrap() - 1;
+        data[last] ^= 0x01;
+        Bytes::from(data)
+    };
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, saved_rx, deleted_rx, sent_rx) = keyed_node(keys, None, Some(parks)).await;
+
+    receive_in(&cla, first, 1).await;
+    parked(&parked_rx).await;
+    receive_in(&cla, tampered, 1).await;
+
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::FailedSecurityOperation
+    );
+    bpa.shutdown().await;
+    assert!(nothing_left_from(&saved_rx, &deleted_rx, &source));
+}
+
+// The destination reassembles the fragments of a bundle whose payload its
+// source signed and then encrypted, the BIB under the same encryption: the
+// reassembled bundle keeps fragment 0's BCB and BIB over the restored
+// ciphertext, and the destination decrypts and verifies the whole, storing
+// it in plaintext without them.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_destination_decrypts_an_encrypted_payload_once_reassembled() {
+    let (inbound, plaintext, keys) = with_protected_payload(LOCAL, true, true);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, saved_rx, _, _) = keyed_node(keys, None, Some(parks)).await;
+
+    receive_in(&cla, first, 1).await;
+    parked(&parked_rx).await;
+    receive_in(&cla, second, 3).await;
+
+    let reassembled = stored_whole_from(&saved_rx, &source).await;
+    assert!(
+        !reassembled.bcbs.is_empty() && reassembled.bundle.blocks[&1].bcb.is_some(),
+        "the whole carries fragment 0's BCB over the payload"
+    );
+    assert_ne!(
+        reassembled.bundle.blocks[&1].payload(&reassembled.data),
+        Some(plaintext.as_slice()),
+        "the restored payload is the ciphertext"
+    );
+    let accepted = stored_whole_from(&saved_rx, &source).await;
+    assert_eq!(
+        accepted.bundle.blocks[&1].payload(&accepted.data),
+        Some(plaintext.as_slice())
+    );
+    assert!(accepted.bibs.is_empty() && accepted.bcbs.is_empty());
+    bpa.shutdown().await;
+}
+
+// A fragment's per-hop blocks are processed as any bundle's (RFC 9171
+// §5.4), being the forwarder's writes to the fragment: the header pass
+// accepts the operation over one, computed over the fragment as one whose
+// scope leaves the primary block out is, and the fragment is stored with
+// the block in plaintext, its value as received, and no security block,
+// then forwarded as a fragment. A Previous Node whose operation this node
+// cannot accept, holding no key for it, or whose signature covers the
+// primary block as it was before fragmentation, is a failed acceptance on
+// a fragment as on any bundle: discarded, as its flags decide.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_fragments_per_hop_blocks_are_accepted_as_any_bundles() {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    for (block_type, signed, primary_excluded, held) in [
+        (Type::PreviousNode, true, true, true),
+        (Type::BundleAge, false, true, true),
+        (Type::HopCount, true, true, true),
+        (Type::HopCount, false, true, true),
+        (Type::PreviousNode, true, true, false),
+        (Type::PreviousNode, true, false, true),
+    ] {
+        let accepted = held && primary_excluded;
+        let case = format!(
+            "{block_type:?} signed {signed}, primary excluded {primary_excluded}, key held {held}"
+        );
+        let (inbound, key) =
+            with_protected_per_hop_block(REMOTE, block_type, signed, primary_excluded);
+        let fragment = as_fragment(inbound);
+        let keys = if held { vec![key] } else { Vec::new() };
+        let (bpa, saved_rx, sent_rx) = keyed_node_receiving(keys, None, fragment).await;
+
+        let stored = stored_from(&saved_rx, &source).await;
+        assert!(stored.bundle.primary.id.fragment_info.is_some(), "{case}");
+        assert!(stored.bibs.is_empty() && stored.bcbs.is_empty(), "{case}");
+        let block = stored
+            .bundle
+            .blocks
+            .values()
+            .find(|b| b.block_type == block_type);
+        if accepted {
+            let value = block
+                .expect("the accepted block stays")
+                .payload(&stored.data)
+                .expect("the block is resident");
+            let received: Vec<u8> = if block_type == Type::PreviousNode {
+                emit(&"ipn:0.2.0".parse::<Eid>().unwrap()).0
+            } else if block_type == Type::BundleAge {
+                emit(&5_000u64).0
+            } else {
+                emit(&HopInfo {
+                    limit: NonZeroU8::new(64).unwrap(),
+                    count: 1,
+                })
+                .0
+            };
+            assert_eq!(value, received.as_slice(), "{case}");
+        } else {
+            assert!(block.is_none(), "{case}: the block is discarded");
+        }
+        let forwarded = forwarded_from(&sent_rx, &source).await;
+        assert_eq!(
+            forwarded.bundle.primary.id, stored.bundle.primary.id,
+            "{case}"
+        );
+        bpa.shutdown().await;
+    }
+}
+
+// Fragment 0 of a bundle whose source signed then encrypted its payload,
+// and whose previous node encrypted the Previous Node block under a scope
+// that leaves the primary block out, at the destination: the Previous Node
+// is accepted and stored in plaintext, and the source's encrypted BIB, under
+// the source's BCB, is read on no per-hop block's account, so it rides the
+// fragment untouched to reassembly, where its BCB can authenticate again.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_fragments_source_bib_is_not_read_on_a_per_hop_blocks_account() {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (inbound, keys) = with_protected_payload_and_previous_node(ScopeFlags {
+        include_primary_block: false,
+        ..ScopeFlags::default()
+    });
+    let received = parse(inbound.clone()).unwrap();
+    let bib = *received
+        .bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::BlockIntegrity)
+        .expect("the source's BIB is present")
+        .0;
+    let fragment = as_fragment(inbound);
+    let (bpa, saved_rx, _) = keyed_node_receiving(keys, None, fragment).await;
+
+    let stored = stored_from(&saved_rx, &source).await;
+    assert!(stored.bundle.primary.id.fragment_info.is_some());
+    let previous_node = stored
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::PreviousNode)
+        .expect("the Previous Node is accepted and kept");
+    assert!(
+        previous_node.bcb.is_none(),
+        "the Previous Node is stored in plaintext"
+    );
+    assert!(
+        stored.bundle.blocks[&bib].bcb.is_some(),
+        "the source's BIB rides the fragment encrypted"
+    );
+    assert!(
+        stored.bundle.blocks[&1].bcb.is_some(),
+        "the payload rides the fragment encrypted"
+    );
+    bpa.shutdown().await;
+}
+
+// A transit fragment is forwarded as any bundle is: its Previous Node
+// replaced, its Bundle Age advanced by its dwell here and its Hop Count
+// incremented (RFC 9171 §5.4), none being under an operation, and the
+// operation over its payload untouched, for the node that reassembles the
+// bundle to check.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_forwards_a_fragment_with_its_per_hop_blocks_replaced() {
+    let (inbound, plaintext, key) = with_per_hop_blocks_and_signed_payload();
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let fragment = as_fragment(inbound);
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(vec![key], None, fragment.clone()).await;
+
+    assert_eq!(
+        stored_from(&saved_rx, &source).await.data,
+        fragment,
+        "stored as received"
+    );
+    let forwarded = forwarded_from(&sent_rx, &source).await;
+    assert!(forwarded.bundle.primary.id.fragment_info.is_some());
+    let block = |block_type: Type| {
+        forwarded
+            .bundle
+            .blocks
+            .values()
+            .find(|b| b.block_type == block_type)
+            .expect("the block is present")
+            .payload(&forwarded.data)
+            .expect("the block is resident")
+    };
+    let previous_node: Eid =
+        hardy_cbor::decode::parse(block(Type::PreviousNode)).expect("a node ID");
+    assert_eq!(
+        previous_node,
+        "ipn:0.1.0".parse().unwrap(),
+        "the Previous Node names this node"
+    );
+    let age: u64 = hardy_cbor::decode::parse(block(Type::BundleAge)).expect("an age");
+    assert!(age >= 5_000, "the Bundle Age advanced: {age}");
+    let hops: HopInfo = hardy_cbor::decode::parse(block(Type::HopCount)).expect("a hop count");
+    assert_eq!(hops.count, 2, "the Hop Count incremented");
+    assert_eq!(
+        forwarded.bundle.blocks[&1].payload(&forwarded.data),
+        Some(plaintext.as_slice())
+    );
+    assert!(
+        matches!(forwarded.bundle.blocks[&1].bib, BibCoverage::Some(_)),
+        "the payload's BIB travels"
+    );
+    bpa.shutdown().await;
+}
+
+// A fragment without a creation time passes the lifetime gate on its Bundle
+// Age, under no operation, to reassembly: the whole, with fragment 0's
+// Bundle Age as received, is stored.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_unclocked_fragment_passes_the_gate_to_reassembly() {
+    let (inbound, plaintext) = unclocked_with_bundle_age();
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, saved_rx, _, _) = keyed_node(Vec::new(), None, Some(parks)).await;
+
+    receive_in(&cla, first, 1).await;
+    parked(&parked_rx).await;
+    receive_in(&cla, second, 1).await;
+
+    let reassembled = stored_whole_from(&saved_rx, &source).await;
+    assert!(!reassembled.bundle.primary.id.timestamp.is_clocked());
+    assert!(reassembled.per_hop.bundle_age.is_some());
+    assert_eq!(
+        reassembled.bundle.blocks[&1].payload(&reassembled.data),
+        Some(plaintext.as_slice())
+    );
+    bpa.shutdown().await;
+}
+
+// An ADU whose total length exceeds the size cap is never rebuilt: the
+// whole would be materialised in memory and then refused by the cap as it
+// re-entered the door. Each fragment is dropped at reassembly as it
+// arrives, "Depleted storage", reported, and nothing whole is stored.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_fragment_of_an_adu_over_the_size_cap_is_dropped() {
+    let (inbound, _) = unclocked_with_bundle_age();
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    // Each fragment is under the cap; the 6 KiB ADU is over it.
+    let (first, second) = fragments(&inbound, 3072);
+    let (bpa, cla, saved_rx, _, sent_rx) =
+        keyed_node_under(NonZeroU64::new(4096), Vec::new(), None, None).await;
+
+    receive_in(&cla, first, 1).await;
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::DepletedStorage);
+
+    receive_in(&cla, second, 1).await;
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::DepletedStorage);
+
+    bpa.shutdown().await;
+    assert!(
+        saved_rx.try_iter().all(|data| {
+            let stored = parse(data).expect("a stored bundle parses");
+            stored.bundle.primary.id.source != source
+                || stored.bundle.primary.id.fragment_info.is_some()
+        }),
+        "nothing whole is stored"
+    );
+}
+
+// A Classifier claims a transit fragment set for reassembly here
+// (`MetadataDelta::reassemble`): the fragments are held, and the whole is
+// rebuilt and forwarded as routed, the operation over its payload untouched.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_classifier_claims_a_transit_fragment_set_for_reassembly() {
+    let (inbound, plaintext, keys) = with_protected_payload(REMOTE, true, false);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, _, _, sent_rx) = keyed_node(keys, reassembling(Some(true)), Some(parks)).await;
+
+    receive_in(&cla, first, 1).await;
+    parked(&parked_rx).await;
+    receive_in(&cla, second, 1).await;
+
+    let forwarded = forwarded_from(&sent_rx, &source).await;
+    assert!(
+        forwarded.bundle.primary.id.fragment_info.is_none(),
+        "the whole is forwarded"
+    );
+    assert_eq!(
+        forwarded.bundle.blocks[&1].payload(&forwarded.data),
+        Some(plaintext.as_slice())
+    );
+    assert_eq!(forwarded.bibs.len(), 1, "a relay accepts nothing");
+    bpa.shutdown().await;
+}
+
+// A Classifier declines to reassemble a fragment addressed here: it is
+// dropped at the gate and reported, and nothing is stored, since a raw
+// fragment is never delivered.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_classifier_declines_a_fragment_addressed_here() {
+    let (inbound, _, keys) = with_protected_payload(LOCAL, true, false);
+    let fragment = as_fragment(inbound);
+    let (bpa, saved_rx, sent_rx) =
+        keyed_node_receiving(keys, reassembling(Some(false)), fragment).await;
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::NoAdditionalInformation
+    );
+    bpa.shutdown().await;
+    assert_never_stored(&saved_rx, &"ipn:0.2.1".parse().unwrap());
 }

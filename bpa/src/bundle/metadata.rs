@@ -90,6 +90,15 @@ struct Classification {
         serde(default, skip_serializing_if = "core::ops::Not::not")
     )]
     add_bundle_age: bool,
+    // Whether this node reassembles the fragment, where a Classifier
+    // decided; `None` leaves it to the route. Persisted as the rest of the
+    // chain's output is: a fragment's reassembly runs on the processing
+    // pool, after the dispatch queue, from the record alone.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    reassemble: Option<bool>,
     // Policy-epoch stamp for lazy restart re-admission — engine bookkeeping
     // with no accessor at all.
     #[cfg_attr(
@@ -255,6 +264,13 @@ impl BundleMetadata {
         self.classification.add_bundle_age
     }
 
+    /// Whether this node reassembles the bundle, a fragment, as a Classifier
+    /// decided (see [`MetadataDelta::reassemble`]): `None` leaves it to the
+    /// route, the destination reassembling and a relay forwarding.
+    pub fn reassemble(&self) -> Option<bool> {
+        self.classification.reassemble
+    }
+
     /// Reads an annotation slot, decoding the stored value.
     ///
     /// Only code that can name the [`Slot`] reads it. Returns `None` when
@@ -328,6 +344,9 @@ impl BundleMetadata {
         if let Some(add) = delta.add_bundle_age {
             self.classification.add_bundle_age = add;
         }
+        if let Some(reassemble) = delta.reassemble {
+            self.classification.reassemble = Some(reassemble);
+        }
     }
 
     /// Clears the classification group for re-derivation (restart
@@ -338,6 +357,7 @@ impl BundleMetadata {
         self.classification.slots.clear();
         self.classification.routing = RoutingKey::default();
         self.classification.add_bundle_age = false;
+        self.classification.reassemble = None;
         self.classification.epoch = epoch;
     }
 }
@@ -368,6 +388,7 @@ mod tests {
         delta.route_table = Some(TableId::new(3));
         delta.route_key = Some("ipn:9.0".parse().unwrap());
         delta.add_bundle_age = Some(true);
+        delta.reassemble = Some(false);
         metadata.apply(delta);
 
         let json = serde_json::to_string(&metadata).unwrap();
@@ -500,6 +521,7 @@ mod tests {
             route_table: Some(TableId::new(1)),
             route_key: Some("ipn:0.2.1".parse().unwrap()),
             add_bundle_age: Some(true),
+            reassemble: Some(true),
             ..Default::default()
         });
 
@@ -508,6 +530,7 @@ mod tests {
         assert!(md.route_key().is_none());
         assert!(md.route_table().is_none());
         assert!(!md.add_bundle_age());
+        assert!(md.reassemble().is_none());
     }
 
     #[test]
