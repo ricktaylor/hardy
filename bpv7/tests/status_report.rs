@@ -1,5 +1,6 @@
+// The crate-level `Error` is aliased: `Error` here is the status-report one.
 use hardy_bpv7::{
-    bundle, creation_timestamp, dtn_time,
+    Error as Bpv7Error, bpsec, bundle, creation_timestamp, dtn_time,
     status_report::{AdministrativeRecord, BundleStatusReport, Error, ReasonCode, StatusAssertion},
 };
 use hardy_cbor::{
@@ -270,6 +271,39 @@ fn reason_code_cbor_roundtrip() {
     let (decoded, _, _) =
         ReasonCode::from_cbor(&encoded.0).expect("Should decode reason code from CBOR");
     assert_eq!(decoded, code);
+}
+
+// RFC 9171 §5.6 Steps 3 and 4 and RFC 9172 §7.1: the reason a bundle deleted
+// for an error is reported with.
+#[test]
+fn errors_map_to_their_reason_codes() {
+    for (error, reason) in [
+        (Bpv7Error::Unsupported(2), ReasonCode::BlockUnsupported),
+        (bpsec::Error::NoKey.into(), ReasonCode::BlockUnsupported),
+        (
+            bpsec::Error::UnrecognisedContext(99).into(),
+            ReasonCode::UnknownSecurityOperation,
+        ),
+        (
+            bpsec::Error::UnsupportedOperation.into(),
+            ReasonCode::UnknownSecurityOperation,
+        ),
+        (
+            bpsec::Error::DecryptionFailed.into(),
+            ReasonCode::FailedSecurityOperation,
+        ),
+        (
+            bpsec::Error::IntegrityCheckFailed.into(),
+            ReasonCode::FailedSecurityOperation,
+        ),
+        (
+            bpsec::Error::EncryptedBibCoversPerHopBlock(2).into(),
+            ReasonCode::ConflictingSecurityOperation,
+        ),
+        (Bpv7Error::NotCanonical, ReasonCode::BlockUnintelligible),
+    ] {
+        assert_eq!(ReasonCode::from(&error), reason, "{error}");
+    }
 }
 
 #[test]

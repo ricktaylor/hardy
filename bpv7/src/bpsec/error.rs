@@ -71,6 +71,12 @@ pub enum Error {
     #[error("BIBs that target blocks that are targets of BCBs must also be encrypted")]
     BIBMustBeEncrypted,
 
+    /// An encrypted BIB carries an integrity operation on Previous Node or
+    /// Bundle Age block `n`, which no valid bundle does: see
+    /// [`Checked::Conflicting`](crate::bpsec::checks::Checked::Conflicting).
+    #[error("An encrypted BIB covers per-hop block {0}")]
+    EncryptedBibCoversPerHopBlock(u64),
+
     #[error(
         "The same security service must not be applied to a security target more than once in a bundle"
     )]

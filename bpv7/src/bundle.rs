@@ -3,7 +3,7 @@ This module defines the core bundle data model: the [`Bundle`] structure
 (primary block + blocks map) together with its identifying types
 ([`Id`], [`Flags`], [`FragmentInfo`]). The wire parser lives in
 [`crate::parse`]; the BPSec validation/transform primitives in
-[`crate::checks`] and [`crate::rewrite`].
+[`crate::bpsec::checks`] and [`crate::rewrite`].
 */
 
 use alloc::collections::{BTreeMap, BTreeSet};

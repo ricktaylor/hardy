@@ -144,8 +144,8 @@ impl OperationSet {
     /// checked here — it fires only for BCB-encrypted BIBs whose
     /// OperationSet can't be decoded without keys; the checks a decrypted
     /// BIB gets add it. Shared by the structural parser ([`crate::parse`])
-    /// and the keyed checks as the single source of truth for the
-    /// per-OperationSet BIB rules.
+    /// and the keyed [`Parsed::check`](crate::parse::Parsed::check) pass as
+    /// the single source of truth for the per-OperationSet BIB rules.
     ///
     /// # Panics
     ///
