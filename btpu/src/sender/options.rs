@@ -48,7 +48,8 @@ impl From<Bytes> for SendRequest {
 }
 
 /// Options for [`Sender::next_pdu_with`], [`Sender::next_pdu_into_with`],
-/// and [`Sender::next_pdu_write_with`]: how one PDU is packed.  Policy that holds for every PDU belongs in
+/// [`Sender::next_pdu_write_with`], and [`Sender::next_pdu_vectored_with`]:
+/// how one PDU is packed.  Policy that holds for every PDU belongs in
 /// [`SenderConfig`].
 ///
 /// `Default`-constructible; `NextPduOptions::default()` packs only what is

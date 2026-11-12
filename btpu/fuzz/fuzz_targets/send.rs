@@ -1,6 +1,13 @@
 #![no_main]
 
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Wake, Waker},
+};
 
 use bytes::Bytes;
 use hardy_btpu::{
@@ -9,8 +16,9 @@ use hardy_btpu::{
         MaxRetainedBytes, MaxSegments, MaxTransferSize, Receiver, ReceiverConfig, ReceiverEvent,
     },
     sender::{
-        BundleFraming, Error, LinkFraming, NextPduOptions, PduSize, SegmentCutStrategy, SendHandle,
-        SendId, SendKind, SendOptions, SendQueueHighWatermark, Sender, SenderConfig,
+        BundleFraming, CarriedList, Error, LinkFraming, NextPduOptions, PduSize, PduSlices,
+        SegmentCutStrategy, SendHandle, SendId, SendKind, SendOptions, SendQueueHighWatermark,
+        Sender, SenderConfig,
     },
     transfer::WindowSize,
 };
@@ -58,16 +66,74 @@ fn options(hinted: bool) -> SendOptions {
     SendOptions { hints }
 }
 
-// A bundle begun and not yet finished or cancelled.
+// A waker that records that it was woken.
+struct Flag(AtomicBool);
+
+impl Flag {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(AtomicBool::new(false)))
+    }
+
+    fn is_set(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn clear(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+impl Wake for Flag {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+// The gate a producer parked in `poll_admit` waits on: the one closed when
+// it polled.
+#[derive(Clone, Copy)]
+enum Gate {
+    // The send queue was at its high watermark.
+    Watermark,
+    // The queue was below it, so the window was full.
+    Window,
+}
+
+// A producer that asks `poll_admit` for admission.
+struct Producer {
+    woken: Arc<Flag>,
+    parked: Option<Gate>,
+    // Polls again after every operation, as a task polled without a wake
+    // does, and so moves between the gates; the other polls again only
+    // once woken.
+    eager: bool,
+}
+
+// A bundle begun and not yet finished or cancelled, with the waker its
+// producer parks on in `poll_push_ready`.
 struct Open {
     handle: SendHandle,
     data: Bytes,
+    woken: Arc<Flag>,
+    parked: bool,
+}
+
+// How the run takes each PDU from the sender.
+enum Output {
+    Bytes,
+    Write(Vec<u8>),
+    Vectored(PduSlices),
 }
 
 // What the run expects of the sender, checked as PDUs are drained into a
 // receiver over a lossless link.
 struct Run {
     sender: Sender,
+    output: Output,
+    producers: [Producer; 2],
+    // The drain's waker, and whether the drain is parked on it.
+    drain_woken: Arc<Flag>,
+    drain_parked: bool,
     receiver: Receiver,
     pdu_size: usize,
     min_pdu_len: usize,
@@ -136,6 +202,18 @@ impl Run {
         });
         Self {
             sender: Sender::new(config, initial),
+            output: match (flags >> 5) & 3 {
+                0 => Output::Bytes,
+                1 => Output::Write(vec![0; pdu_size]),
+                _ => Output::Vectored(PduSlices::new()),
+            },
+            producers: [false, true].map(|eager| Producer {
+                woken: Flag::new(),
+                parked: None,
+                eager,
+            }),
+            drain_woken: Flag::new(),
+            drain_parked: false,
             receiver,
             pdu_size,
             min_pdu_len,
@@ -155,7 +233,7 @@ impl Run {
         bundle(self.serial, len)
     }
 
-    // Admission refuses only for want of a window slot or a PDU able to
+    // Admission refuses only for want of room in the window or a PDU able to
     // carry the segments.
     fn check_refusal(e: Error) {
         assert!(
@@ -174,7 +252,12 @@ impl Run {
         match self.sender.begin(len, options(hinted)) {
             Ok(handle) => {
                 assert!(self.live.insert(handle.id()));
-                self.open.push(Open { handle, data });
+                self.open.push(Open {
+                    handle,
+                    data,
+                    woken: Flag::new(),
+                    parked: false,
+                });
             }
             Err(e) => Self::check_refusal(e),
         }
@@ -212,7 +295,7 @@ impl Run {
     }
 
     fn finish(&mut self, k: usize) {
-        let Open { handle, data } = self.open.swap_remove(k);
+        let Open { handle, data, .. } = self.open.swap_remove(k);
         let (id, complete) = (handle.id(), handle.pushed() == handle.total_len());
         match self.sender.finish(handle) {
             Ok(finished) => {
@@ -240,7 +323,7 @@ impl Run {
     }
 
     fn cancel_open(&mut self, k: usize) {
-        let Open { handle, data } = self.open.swap_remove(k);
+        let Open { handle, data, .. } = self.open.swap_remove(k);
         let id = handle.id();
         if self.sender.cancel(handle) {
             self.cancel_bundle(id, data);
@@ -264,21 +347,47 @@ impl Run {
             .open
             .iter()
             .any(|o| !self.sender.is_push_ready(&o.handle));
-        let Some(pdu) = self.sender.next_pdu_with(options) else {
+        // Whatever readies a PDU wakes the parked drain, so a drain parked
+        // and not woken has nothing to pack.  A flush packs bytes a plain
+        // drain would leave, and no wake promises those.
+        let asleep = self.drain_parked && !self.drain_woken.is_set() && !options.flush;
+        let mut carried = CarriedList::new();
+        let data = match &mut self.output {
+            Output::Bytes => self.sender.next_pdu_into_with(&mut carried, options),
+            Output::Write(out) => self
+                .sender
+                .next_pdu_write_with(&mut carried, out, options)
+                .expect("the buffer holds a PDU")
+                .map(|len| Bytes::copy_from_slice(&out[..len])),
+            Output::Vectored(out) => self
+                .sender
+                .next_pdu_vectored_with(&mut carried, out, options)
+                .map(|len| {
+                    assert_eq!(len, out.len());
+                    assert!(out.iter().all(|slice| !slice.is_empty()));
+                    Bytes::from(out.iter().collect::<Vec<_>>().concat())
+                }),
+        };
+        let Some(data) = data else {
             assert!(
                 !blocked,
                 "a producer gated on push readiness would wait forever"
             );
+            self.park_drain();
             return false;
         };
-        assert!(pdu.data.len() <= self.pdu_size);
-        assert!(pdu.data.len() >= self.min_pdu_len);
+        assert!(
+            !asleep,
+            "a PDU was ready and the parked drain was not woken"
+        );
+        assert!(data.len() <= self.pdu_size);
+        assert!(data.len() >= self.min_pdu_len);
         if self.fixed_size {
-            assert_eq!(pdu.data.len(), self.pdu_size);
+            assert_eq!(data.len(), self.pdu_size);
         }
 
         let mut seen = HashSet::new();
-        for c in &pdu.carried {
+        for c in &carried {
             assert!(seen.insert(c.id), "{:?} listed twice", c.id);
             assert!(self.live.contains(&c.id), "{:?} is not live", c.id);
             if c.id.kind() != SendKind::Transfer {
@@ -290,7 +399,7 @@ impl Run {
             }
         }
 
-        for event in self.receiver.receive_pdu(pdu.data) {
+        for event in self.receiver.receive_pdu(data) {
             match event {
                 ReceiverEvent::Received { data, .. } => {
                     assert!(
@@ -305,6 +414,89 @@ impl Run {
             }
         }
         true
+    }
+
+    // Park the drain, which has just found nothing to pack, through the
+    // polling call that matches the output.
+    fn park_drain(&mut self) {
+        self.drain_woken.clear();
+        let waker = Waker::from(self.drain_woken.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut carried = CarriedList::new();
+        let pending = match &mut self.output {
+            Output::Vectored(out) => self
+                .sender
+                .poll_next_pdu_vectored(&mut cx, &mut carried, out)
+                .is_pending(),
+            Output::Write(out) => self
+                .sender
+                .poll_next_pdu_write(&mut cx, &mut carried, out)
+                .is_pending(),
+            Output::Bytes => self
+                .sender
+                .poll_next_pdu_into(&mut cx, &mut carried)
+                .is_pending(),
+        };
+        assert!(pending, "a drain with nothing to pack parks");
+        self.drain_parked = true;
+    }
+
+    // Whatever opens the gate a producer is parked on wakes it, and nothing
+    // else does: one parked on the watermark is woken exactly when the
+    // queue is below it, whatever the window's state, and one parked on
+    // the window exactly when both have room.  A producer then polls
+    // again if it was woken, or is the eager one, or has yet to poll.
+    fn check_admit_wakes(&mut self) {
+        let high = self.sender.is_send_queue_high();
+        let admissible = self.sender.is_window_available() && !high;
+        for producer in &mut self.producers {
+            let woken = producer.woken.is_set();
+            if let Some(gate) = producer.parked {
+                let open = match gate {
+                    Gate::Watermark => !high,
+                    Gate::Window => admissible,
+                };
+                assert_eq!(woken, open, "a producer parked on admission");
+            }
+            if woken || producer.eager || producer.parked.is_none() {
+                producer.woken.clear();
+                let waker = Waker::from(producer.woken.clone());
+                let polled = self.sender.poll_admit(&mut Context::from_waker(&waker));
+                assert_eq!(
+                    polled,
+                    if admissible {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                );
+                producer.parked = polled.is_pending().then_some(if high {
+                    Gate::Watermark
+                } else {
+                    Gate::Window
+                });
+            }
+        }
+    }
+
+    // Whatever makes a parked producer's push ready wakes it, so no parked
+    // producer is found ready and unwoken.  Each producer then polls again,
+    // parking if its push is still not ready.
+    fn check_push_wakes(&mut self) {
+        for open in &mut self.open {
+            let ready = self.sender.is_push_ready(&open.handle);
+            assert!(
+                !open.parked || !ready || open.woken.is_set(),
+                "a producer ready to push was not woken"
+            );
+            open.woken.clear();
+            let waker = Waker::from(open.woken.clone());
+            let polled = self
+                .sender
+                .poll_push_ready(&open.handle, &mut Context::from_waker(&waker));
+            assert_eq!(polled.is_ready(), ready);
+            open.parked = polled.is_pending();
+        }
     }
 
     // Push and finish every open bundle, then drain the queue.
@@ -328,8 +520,9 @@ impl Run {
 // byte selects the link framing (bits 0 and 1: fixed-size, variable,
 // variable with a 46-byte floor, or variable with bare bundle frames), a
 // send queue high watermark below one segment (bit 2), `SegmentCutStrategy::Half`
-// (bit 3), and an initial transfer number that rolls over (bit 4); the
-// second sets the PDU size, 24 to 279 bytes.  At the end every open bundle
+// (bit 3), an initial transfer number that rolls over (bit 4), and how
+// PDUs are taken (bits 5 and 6: as `Bytes`, written into a slice, or as
+// `PduSlices`, gathered); the second sets the PDU size, 24 to 279 bytes.  At the end every open bundle
 // is pushed and finished and the queue drained, and exactly the bundles
 // neither cancelled nor finished short must have arrived, once each.
 fuzz_target!(|data: &[u8]| {
@@ -381,6 +574,8 @@ fuzz_target!(|data: &[u8]| {
             }
             _ => {}
         }
+        run.check_push_wakes();
+        run.check_admit_wakes();
     }
     run.complete();
 });

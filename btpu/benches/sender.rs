@@ -1,16 +1,19 @@
 //! Criterion benchmarks for the send path.
 //!
 //! Measures packing throughput for small bundles and for one segmented
-//! bundle, into a new buffer per PDU and into a slice the caller keeps, the
-//! cost of draining messages queued behind transfers that are waiting on
-//! their producers, and of full PDUs with ready transfers queued behind.
+//! bundle, into a new buffer per PDU, into a slice the caller keeps, and as
+//! slices, both left for a vectored write and gathered into a slice as a
+//! ring slot would be, the cost of draining messages queued behind
+//! transfers that are waiting on their producers, of full PDUs with ready
+//! transfers queued behind, packed each way, and of PDUs that are mostly
+//! padding.
 
 use std::hint::black_box;
 
 use bytes::Bytes;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use hardy_btpu::{
-    sender::{CarriedList, SendOptions, Sender, SenderConfig},
+    sender::{CarriedList, PduSlices, SendOptions, Sender, SenderConfig},
     transfer::WindowSize,
 };
 
@@ -49,6 +52,26 @@ fn drain_write(s: &mut Sender) {
     }
 }
 
+fn drain_vectored(s: &mut Sender) {
+    let mut carried = CarriedList::new();
+    let mut out = PduSlices::new();
+    while s.next_pdu_vectored(&mut carried, &mut out).is_some() {
+        black_box((&out, &carried));
+    }
+}
+
+// As `drain_vectored`, gathering each PDU into a slice the caller keeps:
+// what a CLA filling a ring slot pays, to set against `drain_write`.
+fn drain_vectored_copy(s: &mut Sender) {
+    let mut carried = CarriedList::new();
+    let mut out = PduSlices::new();
+    let mut slot = vec![0; SenderConfig::default().pdu_size.get()];
+    while s.next_pdu_vectored(&mut carried, &mut out).is_some() {
+        let len = out.copy_to_slice(&mut slot).unwrap();
+        black_box((&slot[..len], &carried));
+    }
+}
+
 /// Pack fitting bundles, many to a PDU.
 fn bench_small_bundles(c: &mut Criterion) {
     let mut group = c.benchmark_group("sender/small_bundles");
@@ -72,6 +95,28 @@ fn bench_small_bundles(c: &mut Criterion) {
                 s
             },
             |mut s| drain_write(&mut s),
+            BatchSize::LargeInput,
+        )
+    });
+    group.bench_function("drain_vectored", |b| {
+        b.iter_batched(
+            || {
+                let mut s = sender(WindowSize::DEFAULT);
+                enqueue_small(&mut s, SMALL_BUNDLES);
+                s
+            },
+            |mut s| drain_vectored(&mut s),
+            BatchSize::LargeInput,
+        )
+    });
+    group.bench_function("drain_vectored_copy", |b| {
+        b.iter_batched(
+            || {
+                let mut s = sender(WindowSize::DEFAULT);
+                enqueue_small(&mut s, SMALL_BUNDLES);
+                s
+            },
+            |mut s| drain_vectored_copy(&mut s),
             BatchSize::LargeInput,
         )
     });
@@ -102,6 +147,28 @@ fn bench_segmented_bundle(c: &mut Criterion) {
                 s
             },
             |mut s| drain_write(&mut s),
+            BatchSize::LargeInput,
+        )
+    });
+    group.bench_function("drain_vectored", |b| {
+        b.iter_batched(
+            || {
+                let mut s = sender(WindowSize::DEFAULT);
+                s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+                s
+            },
+            |mut s| drain_vectored(&mut s),
+            BatchSize::LargeInput,
+        )
+    });
+    group.bench_function("drain_vectored_copy", |b| {
+        b.iter_batched(
+            || {
+                let mut s = sender(WindowSize::DEFAULT);
+                s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+                s
+            },
+            |mut s| drain_vectored_copy(&mut s),
             BatchSize::LargeInput,
         )
     });
@@ -145,22 +212,105 @@ fn bench_full_pdus_behind_ready_transfers(c: &mut Criterion) {
     const BUNDLE_LEN: usize = 64 * 1024;
     let mut group = c.benchmark_group("sender/full_pdus_behind_ready_transfers");
     let bundle = Bytes::from(vec![0xA5; BUNDLE_LEN]);
+    let queued = |ready| {
+        let mut s = sender(WindowSize::DEFAULT);
+        for _ in 0..ready {
+            s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+        }
+        s
+    };
     for ready in [1usize, 16] {
         group.throughput(Throughput::Bytes((BUNDLE_LEN * ready) as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(ready), &ready, |b, &ready| {
+        group.bench_with_input(BenchmarkId::new("drain", ready), &ready, |b, &ready| {
             b.iter_batched(
-                || {
-                    let mut s = sender(WindowSize::DEFAULT);
-                    for _ in 0..ready {
-                        s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
-                    }
-                    s
-                },
+                || queued(ready),
                 |mut s| drain(&mut s),
                 BatchSize::LargeInput,
             )
         });
+        group.bench_with_input(
+            BenchmarkId::new("drain_write", ready),
+            &ready,
+            |b, &ready| {
+                b.iter_batched(
+                    || queued(ready),
+                    |mut s| drain_write(&mut s),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("drain_vectored", ready),
+            &ready,
+            |b, &ready| {
+                b.iter_batched(
+                    || queued(ready),
+                    |mut s| drain_vectored(&mut s),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("drain_vectored_copy", ready),
+            &ready,
+            |b, &ready| {
+                b.iter_batched(
+                    || queued(ready),
+                    |mut s| drain_vectored_copy(&mut s),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
     }
+    group.finish();
+}
+
+/// Pack one small bundle to a fixed-size PDU, the rest of it padding: a
+/// fixed-rate link with little to send.
+fn bench_padded_pdus(c: &mut Criterion) {
+    const PDUS: usize = 1024;
+    let mut group = c.benchmark_group("sender/padded_pdus");
+    group.throughput(Throughput::Elements(PDUS as u64));
+    let bundle = Bytes::from(vec![0xA5; SMALL_BUNDLE_LEN]);
+    let pdu_size = SenderConfig::default().pdu_size.get();
+    group.bench_function("write", |b| {
+        let mut s = sender(WindowSize::DEFAULT);
+        let mut carried = CarriedList::new();
+        let mut slot = vec![0; pdu_size];
+        b.iter(|| {
+            for _ in 0..PDUS {
+                s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+                let len = s.next_pdu_write(&mut carried, &mut slot).unwrap();
+                black_box((&slot[..len.unwrap()], &carried));
+            }
+        })
+    });
+    group.bench_function("vectored", |b| {
+        let mut s = sender(WindowSize::DEFAULT);
+        let mut carried = CarriedList::new();
+        let mut out = PduSlices::new();
+        b.iter(|| {
+            for _ in 0..PDUS {
+                s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+                black_box(s.next_pdu_vectored(&mut carried, &mut out));
+                black_box((&out, &carried));
+            }
+        })
+    });
+    group.bench_function("vectored_copy", |b| {
+        let mut s = sender(WindowSize::DEFAULT);
+        let mut carried = CarriedList::new();
+        let mut out = PduSlices::new();
+        let mut slot = vec![0; pdu_size];
+        b.iter(|| {
+            for _ in 0..PDUS {
+                s.enqueue(bundle.clone(), SendOptions::default()).unwrap();
+                black_box(s.next_pdu_vectored(&mut carried, &mut out));
+                let len = out.copy_to_slice(&mut slot).unwrap();
+                black_box((&slot[..len], &carried));
+            }
+        })
+    });
     group.finish();
 }
 
@@ -169,6 +319,7 @@ criterion_group!(
     bench_small_bundles,
     bench_segmented_bundle,
     bench_behind_waiting_transfers,
-    bench_full_pdus_behind_ready_transfers
+    bench_full_pdus_behind_ready_transfers,
+    bench_padded_pdus
 );
 criterion_main!(benches);

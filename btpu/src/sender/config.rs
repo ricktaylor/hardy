@@ -82,9 +82,9 @@ config_newtype!(PduSize: usize);
 /// not yet packed into a PDU, counting whole bundles from
 /// [`Sender::enqueue`] and chunks from [`Sender::push`] alike.
 ///
-/// The watermark drives backpressure, not errors: the `tower`
-/// `Service::poll_ready` returns `Pending` while the queue is at or above
-/// it, and direct callers pace themselves with
+/// The watermark drives backpressure, not errors: [`Sender::poll_admit`]
+/// (and so the `tower` `Service::poll_ready`) returns `Pending` while the
+/// queue is at or above it, and direct callers pace themselves with
 /// [`Sender::is_send_queue_high`] and by draining [`Sender::next_pdu`].
 /// `enqueue` and `push` never refuse on it, and take the whole bundle or
 /// chunk they are given, so one call below the watermark can take the
@@ -97,7 +97,7 @@ config_newtype!(PduSize: usize);
 /// counts, and two queued clones of one buffer count twice.
 ///
 /// Construct via [`SendQueueHighWatermark::new`], [`TryFrom<usize>`], or
-/// [`From<NonZeroUsize>`]; a zero watermark would park `poll_ready`
+/// [`From<NonZeroUsize>`]; a zero watermark would park `poll_admit`
 /// forever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
