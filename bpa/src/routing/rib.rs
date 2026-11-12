@@ -29,7 +29,7 @@ use super::{
 };
 use crate::{
     Arc, HashMap, HashSet,
-    bundle::Bundle,
+    bundle::BundleMetadata,
     cla::{ClaAddressType, registry::Cla},
     dispatcher::Dispatcher,
     hash_map::Entry as HashMapEntry,
@@ -275,21 +275,27 @@ impl Rib {
         self.tasks.shutdown().await;
     }
 
-    /// Route `bundle` against the current table, pairing the result with
-    /// the table it walked.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub fn decide(&self, bundle: &Bundle) -> Decision {
+    /// Route `bundle`, with the `metadata` the Classifier chain wrote for
+    /// it, against the current table, pairing the result with the table it
+    /// walked.
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.primary.id)))]
+    pub fn decide(&self, bundle: &Bpv7Bundle, metadata: &BundleMetadata) -> Decision {
         let table = self.snapshot.load_full();
         Decision {
-            action: self.find(&table, bundle),
+            action: self.find(&table, bundle, metadata),
             seen: RibSnapshot(table),
         }
     }
 
-    fn find(&self, table: &RouteTable, bundle: &Bundle) -> Option<DispatchAction> {
+    fn find(
+        &self,
+        table: &RouteTable,
+        bundle: &Bpv7Bundle,
+        metadata: &BundleMetadata,
+    ) -> Option<DispatchAction> {
         // The lookup inputs are the record's own: the {table, key} the
         // Classifier chain derived, destination-in-default-table when unset.
-        let key = bundle.metadata.routing_key();
+        let key = metadata.routing_key();
 
         // Only the default table exists until the tables tranche: a lookup
         // naming any other table is a strict no-match, and the bundle Waits
@@ -301,14 +307,14 @@ impl Rib {
         }
 
         let result = table.find_recurse(
-            key.lookup_eid(&bundle.primary().destination),
+            key.lookup_eid(&bundle.primary.destination),
             true,
             &mut Trail::new(),
         )?;
 
         let previous;
         let result = if matches!(result, LookupResult::Reflect) {
-            previous = bundle.metadata.previous_node(bundle.primary());
+            previous = metadata.previous_node(&bundle.primary);
             table.find_recurse(&previous, false, &mut Trail::new())?
         } else {
             result
@@ -322,7 +328,7 @@ impl Rib {
                 peer,
                 next_hop: next_hop.clone(),
             }),
-            LookupResult::ForwardEcmp(peers) => self.select_peer(peers, &bundle.bpv7),
+            LookupResult::ForwardEcmp(peers) => self.select_peer(peers, bundle),
             LookupResult::Reflect => None,
         }
     }
@@ -675,7 +681,7 @@ mod tests {
     use hardy_bpv7::eid::{IpnNodeId, Service as EidService};
 
     use super::*;
-    use crate::bundle::{BundleMetadata, tests::test_bundle};
+    use crate::bundle::{Bundle, tests::test_bundle};
     use crate::filter::slots::MetadataDelta;
     use crate::services::registry::ServiceImpl;
     use crate::services::tests::NullService;
@@ -772,7 +778,7 @@ mod tests {
         add_local_forward(&rib, ipn_node(2), 42);
 
         let bundle = make_bundle("ipn:0.2.1");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(matches!(
             result,
             Some(DispatchAction::Forward { peer: 42, .. })
@@ -792,7 +798,7 @@ mod tests {
         add_local_forward(&rib, ipn_node(10), 99);
 
         let bundle = make_bundle("ipn:0.50.1");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(matches!(
             result,
             Some(DispatchAction::Forward { peer: 99, .. })
@@ -822,7 +828,8 @@ mod tests {
         add_local_forward(&rib, ipn_node(3), 77);
 
         let bundle = make_bundle("ipn:0.50.1");
-        let Some(DispatchAction::Forward { peer: 77, next_hop }) = rib.decide(&bundle).action
+        let Some(DispatchAction::Forward { peer: 77, next_hop }) =
+            rib.decide(&bundle.bpv7, &bundle.metadata).action
         else {
             panic!("Via chain must resolve to the adjacent neighbour's peer");
         };
@@ -837,7 +844,7 @@ mod tests {
     fn test_no_route() {
         let rib = make_rib();
         let bundle = make_bundle("ipn:0.50.1");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(result.is_none());
     }
 
@@ -860,7 +867,7 @@ mod tests {
         );
 
         let bundle = make_bundle("ipn:0.2.1");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             result.is_none(),
             "Recursive route should return None (wait), not Drop"
@@ -881,7 +888,7 @@ mod tests {
 
         let mut bundle = make_bundle("ipn:0.5.1");
         bundle.metadata.per_hop.previous_node = Some("ipn:0.4.0".parse().unwrap());
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(matches!(
             result,
             Some(DispatchAction::Forward { peer: 77, .. })
@@ -916,7 +923,7 @@ mod tests {
             bundle.metadata.per_hop.previous_node = previous_node;
             assert!(
                 matches!(
-                    rib.decide(&bundle).action,
+                    rib.decide(&bundle.bpv7, &bundle.metadata).action,
                     Some(DispatchAction::Forward { peer, .. }) if peer == expected
                 ),
                 "expected peer {expected}"
@@ -944,7 +951,7 @@ mod tests {
 
         let mut bundle = make_bundle("ipn:0.5.1");
         bundle.metadata.per_hop.previous_node = Some("ipn:0.4.0".parse().unwrap());
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(result.is_none());
     }
 
@@ -969,7 +976,7 @@ mod tests {
         add_local_forward(&rib, ipn_node(11), 11);
 
         let bundle = make_bundle("ipn:0.50.1");
-        let result1 = rib.decide(&bundle).action;
+        let result1 = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         let peer1 = match result1 {
             Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
@@ -977,7 +984,7 @@ mod tests {
 
         let mut bundle2 = make_bundle("ipn:0.50.1");
         bundle2.bpv7.primary.id = bundle.id().clone();
-        let result2 = rib.decide(&bundle2).action;
+        let result2 = rib.decide(&bundle2.bpv7, &bundle2.metadata).action;
         let peer2 = match result2 {
             Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
@@ -1014,7 +1021,7 @@ mod tests {
         // no route of its own — the key selects the group.
         let mut bundle = make_bundle("ipn:0.60.1");
         set_routing(&mut bundle, None, Some("ipn:0.50.7"));
-        let keyed_off_destination = match rib.decide(&bundle).action {
+        let keyed_off_destination = match rib.decide(&bundle.bpv7, &bundle.metadata).action {
             Some(DispatchAction::Forward { peer, .. }) => peer,
             other => panic!("Expected Forward, got {other:?}"),
         };
@@ -1028,14 +1035,14 @@ mod tests {
         // RoutingKey, provided the walks resolve to the same group. This
         // holds for every hash seed — lookup state is not hash input.
         let bundle = make_bundle("ipn:0.50.1");
-        let unkeyed = match rib.decide(&bundle).action {
+        let unkeyed = match rib.decide(&bundle.bpv7, &bundle.metadata).action {
             Some(DispatchAction::Forward { peer, .. }) => peer,
             other => panic!("Expected Forward, got {other:?}"),
         };
         let mut keyed = make_bundle("ipn:0.50.1");
         keyed.bpv7.primary.id = bundle.id().clone();
         set_routing(&mut keyed, Some(TableId::DEFAULT), Some("ipn:0.50.7"));
-        let keyed = match rib.decide(&keyed).action {
+        let keyed = match rib.decide(&keyed.bpv7, &keyed.metadata).action {
             Some(DispatchAction::Forward { peer, .. }) => peer,
             other => panic!("Expected Forward, got {other:?}"),
         };
@@ -1059,7 +1066,7 @@ mod tests {
 
         // find resolves deterministically to one of them
         let bundle = make_bundle("ipn:0.2.1");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         let peer = match result {
             Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
@@ -1072,7 +1079,7 @@ mod tests {
         // Same bundle deterministically picks the same peer
         let mut bundle2 = make_bundle("ipn:0.2.1");
         bundle2.bpv7.primary.id = bundle.id().clone();
-        let result2 = rib.decide(&bundle2).action;
+        let result2 = rib.decide(&bundle2.bpv7, &bundle2.metadata).action;
         let peer2 = match result2 {
             Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
@@ -1088,7 +1095,7 @@ mod tests {
         // No route exists for the destination; the key routes the bundle.
         let mut bundle = make_bundle("ipn:0.50.1");
         set_routing(&mut bundle, None, Some("ipn:0.2.1"));
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             matches!(result, Some(DispatchAction::Forward { peer: 42, .. })),
             "The key must drive the walk when the destination has no route, got {result:?}"
@@ -1098,7 +1105,7 @@ mod tests {
         // destination itself has one.
         let mut bundle = make_bundle("ipn:0.2.1");
         set_routing(&mut bundle, None, Some("ipn:0.60.1"));
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             result.is_none(),
             "A keyed lookup must not fall back to the destination, got {result:?}"
@@ -1112,7 +1119,7 @@ mod tests {
 
         let mut bundle = make_bundle("ipn:0.2.1");
         set_routing(&mut bundle, Some(TableId::new(1)), None);
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             result.is_none(),
             "A lookup naming a table that does not exist must wait, not fall through, got {result:?}"
@@ -1121,7 +1128,7 @@ mod tests {
         // An explicit default table is the default table (per-field
         // last-writer-wins overwrites the stored table).
         set_routing(&mut bundle, Some(TableId::DEFAULT), None);
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             matches!(result, Some(DispatchAction::Forward { peer: 42, .. })),
             "An explicit default table must walk as None does, got {result:?}"
@@ -1132,7 +1139,7 @@ mod tests {
     fn test_admin_endpoint_lookup() {
         let rib = make_rib();
         let bundle = make_bundle("ipn:0.1.0");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             matches!(result, Some(DispatchAction::AdminEndpoint)),
             "Admin EID should resolve to AdminEndpoint, got {result:?}"
@@ -1143,7 +1150,7 @@ mod tests {
     fn test_unregistered_local_waits() {
         let rib = make_rib();
         let bundle = make_bundle("ipn:0.1.99");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             result.is_none(),
             "Unregistered local service should wait (no route), got {result:?}"
@@ -1163,7 +1170,7 @@ mod tests {
         );
 
         let bundle = make_bundle("ipn:0.1.42");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             matches!(result, Some(DispatchAction::Deliver(_))),
             "got {result:?}"
@@ -1183,7 +1190,7 @@ mod tests {
         );
 
         let bundle = make_bundle("ipn:0.2.42");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             result.is_none(),
             "Remote EID should not match local service route, got {result:?}"
@@ -1194,7 +1201,7 @@ mod tests {
     fn test_admin_endpoint_matches_concrete() {
         let rib = make_rib();
         let bundle = make_bundle("ipn:0.1.0");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             matches!(result, Some(DispatchAction::AdminEndpoint)),
             "got {result:?}"
@@ -1215,7 +1222,7 @@ mod tests {
         );
 
         let bundle = make_bundle("ipn:0.1.99");
-        let result = rib.decide(&bundle).action;
+        let result = rib.decide(&bundle.bpv7, &bundle.metadata).action;
         assert!(
             matches!(
                 result,

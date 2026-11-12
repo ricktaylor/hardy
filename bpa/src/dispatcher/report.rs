@@ -3,7 +3,7 @@ use hardy_bpv7::status_report::{
     AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion,
 };
 
-use crate::bundle::parse::ReceptionReport;
+use crate::bundle::arrival::report::{ReportFacts, reception_report_for};
 
 impl Dispatcher {
     // The cheap universal gates, checked before any report is built:
@@ -32,10 +32,11 @@ impl Dispatcher {
         &self,
         bundle: &hardy_bpv7::Bundle,
         received_at: time::OffsetDateTime,
-        reception: ReceptionReport,
+        facts: ReportFacts,
         deletion: Option<ReasonCode>,
     ) {
         debug!("Bundle {} received", bundle.primary.id);
+        let reception = reception_report_for(facts);
 
         if !self.reportable(bundle) {
             return;
@@ -200,7 +201,7 @@ impl Dispatcher {
         .trace_expect("Failed to create new bundle");
 
         let data = Bytes::from(data);
-        let per_hop = crate::bundle::parse::extract_from_built(&bundle, &data)
+        let per_hop = crate::bundle::arrival::extract_from_built(&bundle, &data)
             .trace_expect("Failed to extract extension fields from built bundle");
 
         // Wrap in bundle::Bundle with Dispatching status — status reports

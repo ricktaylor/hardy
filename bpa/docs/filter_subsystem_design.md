@@ -51,7 +51,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | **★ Ingress hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (headers + metadata, no payload) |
 | Route lookup at the gate — the decision of record (an explicit Drop route rejects before the drain) | read (reject) | already — RoutingAgent |
 | Payload drain/spool through `ValidatingReceiver` (payload CRC, breaks, deferred block-1 BIB digests) | write (accumulate), read (reject) | no — parser/BPSec owns |
-| §5.1.1 failure-drops + unrecognised-block removals — *scheduled* in `to_remove` metadata, applied per attempt at the output doors; stored bytes stay as-received | write (meta) | no |
+| §5.1.1 failure-drops + unrecognised-block removals — scheduled by the header verify, applied to the resident headers once the gate admits the bundle (with their BPSec cascade), the rebuilt header region spliced into the drain; the stored bytes are as received less those blocks | **write (extension blocks)** | no — RFC 9172 §5.1.1 |
 | Persist; reception report (§5.6, before dedup); dedup | write | storage trait; reports fixed |
 | Execute the gate's routing decision, decided again if the table changed during the drain (the admin-endpoint and fragment arms queue for the processing pool) | queue op | no |
 
@@ -59,7 +59,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 
 | Processing point | R/W | Pluggable? |
 |---|---|---|
-| Streamed build via `Builder::build_stream` (the payload CRC computed as the payload flows), or the raw door's header pass (`parse_headers` — the same parser and keyed header verify as CLA ingress; a security boundary) | write (create) / read (reject) | already — Service trait |
+| Streamed build via `Builder::build_stream` (the payload CRC computed as the payload flows), or the raw door's header pass (`parse_headers` in the source role — the same parser and keyed header verify as CLA ingress, refusing what breaks a source's rules and never altering the bundle; a security boundary) | write (create) / read (reject) | already — Service trait |
 | Raw-door admission: source check, fragment rejection, lifetime / hop exhaustion (`gate_reason`) + the config-gated RFC 9171 checks (`rfc9171_gate_reason`), early duplicate probe | read (reject) | no — spec/config |
 | **★ Originate hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (pre-spool, pre-store, on the resident prefix with the declared peek held, at the raw and ADU doors alike; a Drop returns its reason to the originating service) |
 | Route lookup at the door — the decision of record (an explicit Drop route rejects to the caller) | read (reject) | already — RoutingAgent |
@@ -82,7 +82,6 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Processing point | R/W | Pluggable? |
 |---|---|---|
 | Load from store | — | no |
-| Scheduled removals: the ingress-scheduled §5.1.1 failure-drops and `delete_block_on_failure` removals (`to_remove`, with their BPSec cascade) | **write (extension blocks)** | no — RFC 9172 §5.1.1; fixed, ahead of the Rewriters |
 | **★ Egress hook** — registered Rewriters, seq | **write (extension blocks)** | **yes — the hook** (in-memory, per transmission attempt, re-run with fresh context on re-route; payload/primary/BIB/BCB excluded by the editor handle) |
 | Per-hop writes: PreviousNode insert, HopCount increment, BundleAge update, and the config-driven IPN legacy re-encode (`update_extension_blocks`) | **write (extension blocks, primary for the re-encode)** | no — spec §4.4.x + config; the fixed tail of the rewrite stage, superseding Rewriter edits to the blocks it writes |
 | BPSec-egress seam | **write (bytes)** | no — fixed, security-policy/KeyProvider-driven (designed; not yet built) |
@@ -94,7 +93,6 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 |---|---|---|
 | Load from store | — | no |
 | **★ Deliver hook** — registered Rewriters (seq, transport-block strip), then Verifiers ∥ | read (reject) + **write (extension blocks)** | **yes — the hook** (runs for every local delivery, before payload decrypt; edits are observable on the raw-`Service` path only) |
-| Raw-`Service` path: the ingress-scheduled §5.1.1 / `delete_block_on_failure` removals (`to_remove`) stripped from the delivered wire form | write (extension blocks) | no — RFC 9172 §5.1.1 |
 | BCB payload decrypt — produces the ADU | write (plaintext) | no — normal BPA functionality |
 | `service.on_deliver` | — | already — Service trait |
 | Delivery report; delete | write | no — spec |
@@ -170,8 +168,7 @@ Two engine behaviours are load-bearing for the dispatcher's claim discipline:
 **Payload and primary-block mutation is exclusively fixed machinery**; extension-block mutation has exactly one pluggable point, inside the egress sequence:
 
 ```
-load from store                          (stored bundle = as received; source of truth)
-  └▶ deferred §5.1.1 removals            to_remove, with their BPSec cascade — fixed, RFC 9172, ahead of the Rewriters
+load from store                          (stored bundle = as received, less the §5.1.1 removals; source of truth)
   └▶ registered Rewriters (seq)          extension-block add / modify / remove — THE pluggable mutation point
   └▶ built-in per-hop writes             PreviousNode / HopCount / BundleAge — fixed, spec §4.4.x
                                          + the config-driven IPN legacy re-encode (ipn_legacy_peers)
@@ -189,7 +186,7 @@ The IPN legacy re-encode (3-element `ipn` EIDs re-encoded 2-element for peers th
 
 The fixed byte-owners elsewhere are unchanged:
 
-- **Ingress**: the parser — canonical rejection (never rewrite incoming wire bytes), BPSec verify/decrypt, and the scheduling of the RFC 9172 §5.1.1 removals, which leaves the stored bytes as received: the output doors apply the removal cascade per attempt.
+- **Ingress**: the parser — canonical rejection (a non-canonical encoding is refused, never re-encoded), BPSec verify/decrypt, and the RFC 9172 §5.1.1 removals, which CLA ingress applies to the headers with their BPSec cascade before the bundle is first stored; a bundle the raw service door originates leaves as its service built it.
 - **Deliver**: BCB payload decrypt — normal BPA functionality — and, on the raw-`Service` path, the deferred §5.1.1 removals.
 - **Re-targeting** (BIBE, tunnelling, overlays): RIB-selected **virtual CLAs**. The carrier gets a new destination, so the next lookup makes forward progress; chaining is the sequence of carrier destinations; loop protection is ordinary hop-count/age.
 
@@ -197,14 +194,14 @@ There is no payload-rewriting egress Transform. The slot such a filter would res
 
 ## BPSec roles at the boundaries
 
-The fixed BPSec machinery named above follows the RFC 9172 §1.4 role model, mapped onto the same boundaries the hooks sit at. bpv7 is policy-free mechanism (*check* functions decrypt/verify and report; *edit* functions remove/replace blocks); bpa owns policy and call sites. The egress half of that machinery, adding BIBs and BCBs by policy to originated and forwarded bundles at the BPSec-egress seam, is designed but not yet built: today the BPA verifies and decrypts, and signs or encrypts nothing on the way out. A node holding a key is **at least a Verifier**: it validates, keeps valid blocks encrypted, and applies the §5.1.1 failure-drop (removing corrupt ciphertext only, exposing no plaintext). An **Acceptor** additionally *consumes* a valid operation (decrypt + strip), deferred to Deliver/Egress so storage stays encrypted; the waypoint-acceptor call site is the fixed BPSec-egress seam in ClaSend — built-in pipeline, never a registered filter. A **Source** likewise stores the bundle as received, plaintext included, and adds its operations at that seam: the service begins at the source, whose own storage is inside its trust boundary (RFC 9172 §1).
+The fixed BPSec machinery named above follows the RFC 9172 §1.4 role model, mapped onto the same boundaries the hooks sit at. bpv7 is policy-free mechanism (*check* functions decrypt/verify and report; *edit* functions remove/replace blocks); bpa owns policy and call sites. The egress half of that machinery, adding BIBs and BCBs by policy to originated and forwarded bundles at the BPSec-egress seam, is designed but not yet built: today the BPA verifies and decrypts, and signs or encrypts nothing on the way out. A node holding a key is **at least a Verifier** by opportunity: it checks every plaintext BIB it can, keeps valid blocks encrypted, and applies the §5.1.1 failure-drop (removing corrupt ciphertext only, exposing no plaintext). Beyond that, an Ingress Classifier names the node's role on each block's BCB operation and BIB operation, Verifier or Acceptor (`MetadataDelta::roles`), which the ingress gate fills before the bundle is first stored: an **Acceptor** *consumes* the operation (decrypt or verify, then strip), as the node is for the per-hop blocks' operations without any announcement, and for every operation at the destination; a designated **Verifier** checks and leaves, a missing key then being a failure, and authenticates a confidentiality operation's ciphertext by decrypting it and dropping the plaintext. A **Source** stores the bundle as received, plaintext included, and adds its operations at the fixed BPSec-egress seam in ClaSend — built-in pipeline, never a registered filter: the service begins at the source, whose own storage is inside its trust boundary (RFC 9172 §1). Acceptance per attempt at that seam, by a gateway whose policy turns on the route, remains a design option for a block ingress left as received.
 
 | Boundary | BPSec role | Checks | Edits | On failure |
 |---|---|---|---|---|
 | **Originate · Service trait** | caller = Source for payload; BPA = Source for extension blocks | structurally validate; verify caller's security | add BPA extension blocks; secure them at the BPSec-egress seam | reject to caller |
 | **Originate · Application trait** | BPA = Source | validate built bundle | build; BIB/BCB per policy at the BPSec-egress seam | reject to app |
-| **Receive** (CLA → BPA) | BPA = **Verifier** | parse; verify BIBs pre-drain; decrypt extension blocks to read; classify unsupported; payload BIBs incrementally during the drain (`deferred_verifiers`, begun in the header pass) | none to the stored bytes: *schedule* (`to_remove`) the failure-drop of corrupt non-payload blocks + their security blocks and the drop of `delete_block_on_failure` unknowns, applied per attempt at Forward/Deliver; keep valid encrypted | block → drop block (at the output doors); bundle-level → drop bundle; NoKey → keep |
-| **Deliver · Application trait** | BPA = **Acceptor** | decrypt payload (`block_data`); optionally verify payload BIB | consume → transient plaintext to app; bundle deleted after | payload fail → drop bundle; NoKey → watch |
+| **Receive** (CLA → BPA) | BPA = **Verifier** of every plaintext BIB it holds a key for, and of the operations a Classifier names it the verifier of (`roles`); **Acceptor** of the per-hop blocks' operations, of the operations a Classifier names it the acceptor of (`roles`), and, as the destination, of every operation | parse; verify BIBs pre-drain; decrypt extension blocks to read; classify unsupported; payload BIBs incrementally during the drain (`deferred_verifiers`, begun in the header pass); at the destination, decrypt the payload and check its BIBs as it drains | the failure-drop of corrupt non-payload blocks + their security blocks, the removal of the operations accepted, and the drop of `delete_block_on_failure` unknowns, applied to the headers before the bundle is first stored; keep valid encrypted | the target's flags decide (RFC 9171 §5.6 Step 4): drop the block before storage, or drop the bundle; a missing key is a failure only for an operation this node accepts or is named the verifier of, and is otherwise a keep |
+| **Deliver · Application trait** | BPA = **Acceptor**, filled at ingress | none left: the destination accepted every operation, the payload's included, before the bundle was first stored | none; bundle deleted after delivery | — (a payload the destination could not accept never reached storage) |
 | **Deliver · Service trait** | service is the Acceptor; BPA passes through | none | none — hand raw encrypted bytes to service | service's responsibility |
 | **Forward** (BPA → CLA) | Forwarder (default); waypoint Acceptor/Source by policy | none by default; waypoint acceptor decrypts/verifies its op | per-hop blocks; optionally waypoint-accept at the BPSec seam → decrypt + strip + §5.1.1 | waypoint fail → §5.1.1 (drop block; payload → drop bundle) |
 
@@ -271,14 +268,15 @@ Header-only decisions are what keep this affordable: no filter kind needs the pa
 
 ## `MetadataDelta` and the traffic class
 
-The delta carries annotation-slot writes plus the two routing inputs and the Bundle Age decision; the `class` field arrives with the policy tranche:
+The delta carries annotation-slot writes plus the two routing inputs, the Bundle Age decision and the blocks this node accepts; the `class` field arrives with the policy tranche:
 
 | Field | What it is | Status |
 |---|---|---|
 | `class: Option<ClassId>` | membership of a **traffic class** — the unit of differentiated treatment | arrives with the policy tranche ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md)) |
 | `route_table: Option<TableId>` | per-bundle routing table — a routing decision, not a class property | present; `TableId` is opaque, naming only the default table until the tables arrive with the routing tranche ([`routing_table_redesign.md`](routing_table_redesign.md)) |
 | `route_key: Option<Eid>` | per-bundle routing key — the EID the RIB walks in place of the destination | present ([`routing_table_redesign.md`](routing_table_redesign.md)) |
-| `add_bundle_age: Option<bool>` | whether egress writes a Bundle Age block, from the clock, on a bundle with a creation time that carries none, for downstream nodes without a clock (RFC 9171 §5.5) | present |
+| `add_bundle_age: Option<bool>` | whether egress writes a Bundle Age block, from the clock, on a bundle with a creation time that carries none, for downstream nodes without a clock (RFC 9171 §5.5); ingress sets it, ahead of the chain, on a bundle whose Bundle Age it discarded | present |
+| `roles: HashMap<u64, Roles>` | this node's security roles on the blocks, by block number, in bpv7's `bpsec::Roles` (a `bpsec::Role`, verifier or acceptor, per service; `bpsec::SecurityServices` names the services, and the three live in bpv7 because `Parsed::check` takes the map): on each block's BCB operation and BIB operation, whether it is the verifier or the acceptor (RFC 9172 §1.4). The ingress gate, after the chain and the route, decrypts the blocks accepted for confidentiality and verifies those accepted for integrity, and the bundle is stored without the accepted operations; it authenticates the ciphertext of the blocks verified for confidentiality, the plaintext going nowhere, and requires those verified for integrity to carry an integrity operation this arrival checked and found good. A block it cannot accept or verify, for want of a key, a failed operation, integrity on a block encrypted here, a block not announced that its encrypted BIB also covers, or a service announced that the block does not carry ("Missing security operation"), meets the fate its flags decide. A union across the Ingress chain, the acceptor's role outranking the verifier's on one operation, serving the arrival only and never persisted; passed over at the Originate hook, and for a fragment's payload, accepted or verified after reassembly; never reaching the per-hop blocks, accepted by the header pass before the chain runs, nor the destination's acceptance of every operation | present |
 
 **The class is the unit of policy.** A traffic class is defined once — in configuration, or by an embedder in Builder code — together with *all* of its per-dimension properties: dispatch weight, egress contracts, eviction rank. `build()` compiles the definitions into one frozen `ClassPolicy` table, and every consumer reads the bundle's class properties by field access on that shared, validated object. Two simpler shapes fail in opposite directions, and the class model is the fixed point between them:
 
@@ -312,7 +310,6 @@ The delta decision forces the wider question, and the answer is a principle: **m
 | **Provenance** | `received_at`; `origin: Ingress { peer_node, peer_addr, cla } \| Originated \| Recovered` | admission machinery, once | yes | kept — historical fact | read-only; `previous_node(primary)` overlays the CLA's `peer_node` on the wire cache's `previous_node`, which stands only where the CLA announced none, and that on the bundle's source: the one answer routing (`Reflect`) and filters read |
 | **Wire cache** | `previous_node`, `age`, `hop_count` | parser, from the stored bytes (a BCB-protected block this node can decrypt is cached as plaintext) | yes | kept — stored bytes never change | read-only; as received — a preceding Rewriter's edits are read through the reader |
 | **Classification** | annotation slots, the routing inputs (`route_table`, `route_key`; later `class`) and `add_bundle_age`, plus the policy-epoch stamp | Classifier chain, via applied deltas | yes | cleared + re-derived (re-admission) | read; written only via the delta; slots gated by the declaring static; the epoch stamp invisible (engine bookkeeping) |
-| **Built-in derivations** | `to_remove` (the scheduled §5.1.1 failure-drops and `delete_block_on_failure` removals) | the header verify | yes | re-derived (re-admission) — a cache over stored bytes + keys | **none — crate-private, fixed machinery only** |
 | **Infrastructure** | `storage_name` | BPA | yes | kept | **none — unreachable outside the crate** |
 
 **Visibility is a property of each group**, as load-bearing as its writer, persistence, and restart fate — and it is enforced the way the Rewriter's payload-purity is: by construction, not code review. The per-kind contexts lend the record's own `BundleMetadata`, not a view of it: the record's own field/module privacy *is* the projection (private fields plus inline getters compile to field reads — the only zero-cost shape), so `bpa::bundle::BundleMetadata` is committed filter API directly, and there is no view type to drift from the record. Filters read provenance and the wire cache, read classification through the slot-gated accessors and write it only via the delta, and infrastructure does not exist in their world. Infrastructure stays BPA-private for safety in three senses — where "safety" means accident-prevention among trusted code, not defence: a mechanism reference in filter hands invites out-of-contract coupling; whatever the view exposes to a closed embedder is committed semver surface; and policy written against mechanism internals is meaningless policy — a rule keyed on a storage backend's naming scheme is not a rule about the bundle, and the shape makes such rules inexpressible rather than merely inadvisable.

@@ -167,7 +167,7 @@ The library builds on hardy-cbor's wire-format parsing. It uses closure-based ar
 
 ### With hardy-bpa
 
-The Bundle Processing Agent composes the structural parser, `bpsec::checks`, and `rewrite` with its own policy — which failures reject a bundle, the NoKey disposition, the status-report reason mapping — in its `bundle::parse` module. At ingress it parses the header blocks off the arriving stream, verifies them before anything is stored, and drains the payload through the `PayloadTail` continuation.
+The Bundle Processing Agent composes the structural parser, `bpsec::checks`, and `rewrite` with its own policy — which failures reject a bundle, the NoKey disposition, the status-report reason mapping — in its `bundle::arrival` module. At ingress it parses the header blocks off the arriving stream, verifies them before anything is stored, and drains the payload through the `PayloadTail` continuation.
 
 ### CLI Tools
 

@@ -19,11 +19,13 @@
 //! panics, which aborts the process — the fail-fast rule, by analogy with a
 //! storage fault.
 
-use core::{fmt::Debug, mem::take};
+use core::{fmt::Debug, mem::take, ops::ControlFlow};
 
+// Aliased: the wire bundle, beside the record `Bundle`.
 use hardy_bpv7::{
+    Bundle as Bpv7Bundle,
     bpsec::{
-        DecryptingReader, bcb,
+        Decrypted, DecryptingReader, Roles, bcb,
         key::{KeySet, KeySource},
     },
     editor::Chunk,
@@ -40,7 +42,7 @@ use super::{
 };
 use crate::{
     Bytes, HashMap,
-    bundle::{Bundle, parse::peekable_payload},
+    bundle::{Bundle, BundleMetadata, arrival::peekable_payload},
     keys::KeyProvider,
 };
 
@@ -50,8 +52,10 @@ const ORIGINATE: &str = "originate";
 const EGRESS: &str = "egress";
 const DELIVER: &str = "deliver";
 
-/// A hook chain's verdict over a bundle, which travels back to its
-/// claimant with it.
+/// An output hook chain's verdict over a record, which travels back to its
+/// claimant with it. An input chain's pass, over an arrival that is not yet
+/// a record, breaks with the drop's reason instead
+/// ([`FilterChains::run_ingress`], [`FilterChains::run_originate`]).
 pub enum ChainOutcome {
     /// The bundle passed the chain; the pair remains consistent (a Rewriter
     /// pass returns the rewritten bytes and re-indexed block map).
@@ -66,22 +70,22 @@ pub enum ChainOutcome {
 // pass, so the input and output paths cannot diverge.
 fn derive_keys(
     bcbs: &HashMap<u64, bcb::OperationSet>,
-    bundle: &Bundle,
+    bundle: &Bpv7Bundle,
     buf: &[u8],
     key_provider: &dyn KeyProvider,
 ) -> Box<dyn KeySource> {
     if bcbs.is_empty() {
         Box::new(KeySet::EMPTY)
     } else {
-        key_provider.key_source(&bundle.bpv7, buf)
+        key_provider.key_source(bundle, buf)
     }
 }
 
 // The payload's resident prefix, for the contexts' `payload_peek`: none for a
 // payload with no peekable prefix (`peekable_payload`). Compared in u64 first:
 // the payload's range is wire-derived.
-fn resident_payload_prefix<'a>(bundle: &Bundle, buf: &'a [u8]) -> Option<&'a [u8]> {
-    let block = peekable_payload(&bundle.bpv7)?;
+fn resident_payload_prefix<'a>(bundle: &Bpv7Bundle, buf: &'a [u8]) -> Option<&'a [u8]> {
+    let block = peekable_payload(bundle)?;
     let body = block.payload_range();
     let resident = buf.len() as u64;
     if body.start > resident {
@@ -139,22 +143,41 @@ struct Rewritten {
 }
 
 impl FilterChains {
-    /// Runs the Ingress chain (Verifiers, then Classifiers) on the resident
-    /// buffer `data`, with the BCB OperationSets the gate's header pass
-    /// decoded. `data` is the resident prefix: the headers and whatever of the
-    /// payload has arrived, at least the peek the gate holds. A filter reading
-    /// a payload not all resident gets the reader's `NotResident`.
+    /// Runs the Ingress chain (Verifiers, then Classifiers) on the gate's
+    /// header pass: its parse, whose `data` is the resident prefix (the
+    /// headers and whatever of the payload has arrived, at least the peek
+    /// the gate holds) and whose plaintext cache the pass filled, the key
+    /// source it derived, and the arrival's `metadata`, which the
+    /// Classifiers write. A filter reading a payload not all resident gets
+    /// the reader's `NotResident`. The chain's reader is seeded from the
+    /// parse's cache, so a block the header pass decrypted is not decrypted
+    /// again, and a passing chain hands back to it what its filters
+    /// decrypted. The security roles its
+    /// Classifiers announce this node takes on the blocks
+    /// ([`MetadataDelta::roles`](super::slots::MetadataDelta::roles)) collect
+    /// in `roles`, a union across the chain, for the gate. Breaks with a
+    /// filter's drop, carrying the reason a report would, if any.
     pub(crate) fn run_ingress(
         &self,
-        bundle: Bundle,
-        data: Bytes,
-        bcbs: &HashMap<u64, bcb::OperationSet>,
-        key_provider: &dyn KeyProvider,
-    ) -> ChainOutcome {
+        parsed: &mut Parsed,
+        metadata: &mut BundleMetadata,
+        keys: &dyn KeySource,
+        roles: &mut HashMap<u64, Roles>,
+    ) -> ControlFlow<Option<ReasonCode>> {
         if self.ingress.verifiers.is_empty() && self.ingress.classifiers.is_empty() {
-            return ChainOutcome::Continue(bundle, data);
+            return ControlFlow::Continue(());
         }
-        self.run_input_decoded(&self.ingress, INGRESS, bundle, data, bcbs, key_provider)
+        self.run_input_decoded(
+            &self.ingress,
+            INGRESS,
+            &parsed.bundle,
+            metadata,
+            &parsed.data,
+            &parsed.bcbs,
+            keys,
+            &mut parsed.decrypted,
+            roles,
+        )
     }
 
     /// Whether the Ingress chain has any registered links. The streaming gate
@@ -165,21 +188,37 @@ impl FilterChains {
     }
 
     /// Runs the Originate chain (Verifiers, then Classifiers) on the
-    /// resident buffer `data` and its already-decoded BCB OperationSets —
+    /// resident buffer `head` and its already-decoded BCB OperationSets —
     /// the resident prefix at the originate door's admission stage, with
     /// the declared peek held, exactly as [`run_ingress`](Self::run_ingress)
-    /// at the CLA gate.
+    /// at the CLA gate — with the record's `metadata`, which the
+    /// Classifiers write. Breaks with a filter's drop, carrying the reason a
+    /// report would, if any.
     pub(crate) fn run_originate(
         &self,
-        bundle: Bundle,
-        data: Bytes,
+        bundle: &Bpv7Bundle,
+        metadata: &mut BundleMetadata,
+        head: &[u8],
         bcbs: &HashMap<u64, bcb::OperationSet>,
         key_provider: &dyn KeyProvider,
-    ) -> ChainOutcome {
+    ) -> ControlFlow<Option<ReasonCode>> {
         if self.originate.verifiers.is_empty() && self.originate.classifiers.is_empty() {
-            return ChainOutcome::Continue(bundle, data);
+            return ControlFlow::Continue(());
         }
-        self.run_input_decoded(&self.originate, ORIGINATE, bundle, data, bcbs, key_provider)
+        let keys = derive_keys(bcbs, bundle, head, key_provider);
+        // A source accepts nothing, so the blocks its Classifiers announce
+        // are passed over.
+        self.run_input_decoded(
+            &self.originate,
+            ORIGINATE,
+            bundle,
+            metadata,
+            head,
+            bcbs,
+            &*keys,
+            &mut Decrypted::default(),
+            &mut HashMap::new(),
+        )
     }
 
     /// Whether the Originate chain has any registered links, for the
@@ -247,7 +286,7 @@ impl FilterChains {
                 &bundle.bpv7,
                 &reader,
                 &bundle.metadata,
-                resident_payload_prefix(&bundle, &buf),
+                resident_payload_prefix(&bundle.bpv7, &buf),
             ),
         ) {
             return ChainOutcome::Drop(bundle, reason);
@@ -259,47 +298,59 @@ impl FilterChains {
     // The Verifier-then-Classifier pass over a resident buffer whose BCB
     // OperationSets are already decoded — both input doors thread in the set
     // from their one header decode (`buf` is the resident prefix, and a
-    // payload not all resident reads as the reader's `NotResident`).
+    // payload not all resident reads as the reader's `NotResident`). The
+    // reader's memo starts from `decrypted` and goes back into it when the
+    // chain passes. The security roles the Classifiers announce this node
+    // takes collect in `roles`, a union, never into the persisted record.
+    #[allow(clippy::too_many_arguments)]
     fn run_input_decoded(
         &self,
         chain: &InputChain,
         hook: &'static str,
-        mut bundle: Bundle,
-        buf: Bytes,
+        bundle: &Bpv7Bundle,
+        metadata: &mut BundleMetadata,
+        buf: &[u8],
         bcbs: &HashMap<u64, bcb::OperationSet>,
-        key_provider: &dyn KeyProvider,
-    ) -> ChainOutcome {
-        let keys = derive_keys(bcbs, &bundle, &buf, key_provider);
-
+        keys: &dyn KeySource,
+        decrypted: &mut Decrypted,
+        roles: &mut HashMap<u64, Roles>,
+    ) -> ControlFlow<Option<ReasonCode>> {
         // The reader lends the *wire* view only, so one reader — and its
         // decrypt memo — serves the whole pass: the delta applications
-        // below touch `bundle.metadata`, a disjoint borrow.
-        let reader = DecryptingReader::new(&bundle.bpv7.blocks, &buf, bcbs, &*keys);
-        let peek = resident_payload_prefix(&bundle, &buf);
+        // below write `metadata`, which the contexts only borrow.
+        let reader =
+            DecryptingReader::new(&bundle.blocks, buf, bcbs, keys).with_decrypted(take(decrypted));
+        let peek = resident_payload_prefix(bundle, buf);
 
         if let Some(reason) = check_verifiers(
             &chain.verifiers,
             hook,
-            &VerifyContext::new(&bundle.bpv7, &reader, &bundle.metadata, peek),
+            &VerifyContext::new(bundle, &reader, metadata, peek),
         ) {
-            return ChainOutcome::Drop(bundle, reason);
+            return ControlFlow::Break(reason);
         }
 
         for entry in chain.classifiers.iter() {
             // Each delta is applied before the next link runs: a Classifier
             // sees the metadata its predecessors wrote.
-            let ctx = ClassifyContext::new(&bundle.bpv7, &reader, &bundle.metadata, peek);
+            let ctx = ClassifyContext::new(bundle, &reader, metadata, peek);
             match entry.classifier.classify(&ctx) {
-                Verdict::Continue(delta) => bundle.metadata.apply(delta),
+                Verdict::Continue(mut delta) => {
+                    for (n, announced) in take(&mut delta.roles) {
+                        *roles.entry(n).or_default() |= announced;
+                    }
+                    metadata.apply(delta);
+                }
                 Verdict::Drop(reason) => {
                     debug!("Classifier '{}' dropped bundle: {reason:?}", entry.label);
                     metrics::counter!("bpa.filter.filtered", "hook" => hook).increment(1);
-                    return ChainOutcome::Drop(bundle, reason);
+                    return ControlFlow::Break(reason);
                 }
             }
         }
 
-        ChainOutcome::Continue(bundle, buf)
+        *decrypted = reader.into_decrypted();
+        ControlFlow::Continue(())
     }
 }
 
@@ -319,7 +370,7 @@ fn rewrite(
         mut bcbs,
         ..
     } = parse(data).unwrap_or_else(|e| output_undecodable(hook, e));
-    let mut keys = derive_keys(&bcbs, &bundle, &buf, key_provider);
+    let mut keys = derive_keys(&bcbs, &bundle.bpv7, &buf, key_provider);
 
     for entry in rewriters {
         // The context, its reader and its editor are rebuilt per link
@@ -360,7 +411,7 @@ fn rewrite(
             });
             (buf, bcbs) = (new_buf, new_bcbs);
             bundle.bpv7.blocks = new_bundle.blocks;
-            keys = derive_keys(&bcbs, &bundle, &buf, key_provider);
+            keys = derive_keys(&bcbs, &bundle.bpv7, &buf, key_provider);
             metrics::counter!("bpa.filter.modified", "hook" => hook).increment(1);
         }
     }
@@ -382,9 +433,8 @@ mod tests {
     use alloc::borrow::Cow;
 
     use hardy_async::sync::spin::Mutex;
-    // Aliased: the wire bundle, beside the record `Bundle` from `super`.
     use hardy_bpv7::{
-        Bundle as Bpv7Bundle, block,
+        block,
         builder::Builder,
         crc::CrcType,
         creation_timestamp::CreationTimestamp,
@@ -415,6 +465,19 @@ mod tests {
         },
         keys::NullKeyProvider,
     };
+
+    // An arrival as the ingress gate holds one: the parse, and the
+    // metadata the chain writes.
+    fn test_arrival() -> (Parsed, BundleMetadata) {
+        let (_, data) = Builder::new("ipn:1.1".parse().unwrap(), "ipn:99.1".parse().unwrap())
+            .with_payload(Cow::Borrowed(b"engine-test"))
+            .build(CreationTimestamp::now())
+            .unwrap();
+        (
+            parse(Bytes::from(data)).unwrap(),
+            BundleMetadata::originated(),
+        )
+    }
 
     fn test_bundle() -> (Bundle, Bytes, HashMap<u64, bcb::OperationSet>) {
         let (_, data) = Builder::new("ipn:1.1".parse().unwrap(), "ipn:99.1".parse().unwrap())
@@ -474,13 +537,111 @@ mod tests {
         pack.ingress_classifier("expecter", SlotExpecter(&MARK, 7));
         let chains = freeze(pack);
 
-        let (bundle, data, bcbs) = test_bundle();
-        let ChainOutcome::Continue(bundle, _) =
-            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
-        else {
+        let (mut parsed, mut metadata) = test_arrival();
+        let ControlFlow::Continue(()) = chains.run_ingress(
+            &mut parsed,
+            &mut metadata,
+            &KeySet::EMPTY,
+            &mut HashMap::new(),
+        ) else {
             panic!("expecter must have seen the writer's delta");
         };
-        assert_eq!(bundle.metadata.slot(&MARK), Some(7));
+        assert_eq!(metadata.slot(&MARK), Some(7));
+    }
+
+    // Announces security roles on blocks.
+    struct Announces(Vec<(u64, Roles)>);
+
+    impl Classifier for Announces {
+        fn classify(&self, _ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+            let mut delta = MetadataDelta::default();
+            delta.roles.extend(self.0.iter().copied());
+            Verdict::Continue(delta)
+        }
+    }
+
+    // The roles the Ingress chain's Classifiers announce accumulate as a
+    // union for the gate: a later link adds to an earlier one's, and on one
+    // operation the acceptor's role outranks the verifier's.
+    #[test]
+    fn announced_roles_accumulate_for_the_gate() {
+        use hardy_bpv7::bpsec::Role::{Acceptor, Verifier};
+        let mut pack = FilterPack::new("test");
+        pack.ingress_classifier(
+            "two",
+            Announces(vec![
+                (
+                    2,
+                    Roles {
+                        confidentiality: Some(Verifier),
+                        integrity: Some(Acceptor),
+                    },
+                ),
+                (
+                    4,
+                    Roles {
+                        confidentiality: Some(Verifier),
+                        integrity: None,
+                    },
+                ),
+            ]),
+        );
+        pack.ingress_classifier(
+            "three",
+            Announces(vec![
+                (
+                    2,
+                    Roles {
+                        confidentiality: Some(Acceptor),
+                        integrity: Some(Verifier),
+                    },
+                ),
+                (
+                    3,
+                    Roles {
+                        confidentiality: None,
+                        integrity: Some(Acceptor),
+                    },
+                ),
+            ]),
+        );
+        let chains = freeze(pack);
+
+        let (mut parsed, mut metadata) = test_arrival();
+        let mut roles = HashMap::new();
+        let ControlFlow::Continue(()) =
+            chains.run_ingress(&mut parsed, &mut metadata, &KeySet::EMPTY, &mut roles)
+        else {
+            panic!("announcing Classifiers continue");
+        };
+        assert_eq!(
+            roles,
+            [
+                (
+                    2,
+                    Roles {
+                        confidentiality: Some(Acceptor),
+                        integrity: Some(Acceptor),
+                    },
+                ),
+                (
+                    3,
+                    Roles {
+                        confidentiality: None,
+                        integrity: Some(Acceptor),
+                    },
+                ),
+                (
+                    4,
+                    Roles {
+                        confidentiality: Some(Verifier),
+                        integrity: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect::<HashMap<u64, Roles>>()
+        );
     }
 
     // Drops if the slot is set: proves no Classifier has run before it.
@@ -504,13 +665,16 @@ mod tests {
         pack.ingress_verifier("unclassified", UnclassifiedVerifier(&MARK));
         let chains = freeze(pack);
 
-        let (bundle, data, bcbs) = test_bundle();
-        let ChainOutcome::Continue(bundle, _) =
-            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
-        else {
+        let (mut parsed, mut metadata) = test_arrival();
+        let ControlFlow::Continue(()) = chains.run_ingress(
+            &mut parsed,
+            &mut metadata,
+            &KeySet::EMPTY,
+            &mut HashMap::new(),
+        ) else {
             panic!("the Verifier must run before the Classifier writes the slot");
         };
-        assert_eq!(bundle.metadata.slot(&MARK), Some(7));
+        assert_eq!(metadata.slot(&MARK), Some(7));
     }
 
     // Chain order is registration order across packs too: a Classifier in
@@ -528,18 +692,28 @@ mod tests {
 
         let (writer, expecter) = packs();
         let chains = FilterChains::freeze(vec![writer, expecter]);
-        let (bundle, data, bcbs) = test_bundle();
+        let (mut parsed, mut metadata) = test_arrival();
         assert!(matches!(
-            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider),
-            ChainOutcome::Continue(..)
+            chains.run_ingress(
+                &mut parsed,
+                &mut metadata,
+                &KeySet::EMPTY,
+                &mut HashMap::new()
+            ),
+            ControlFlow::Continue(())
         ));
 
         let (writer, expecter) = packs();
         let chains = FilterChains::freeze(vec![expecter, writer]);
-        let (bundle, data, bcbs) = test_bundle();
+        let (mut parsed, mut metadata) = test_arrival();
         assert!(matches!(
-            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider),
-            ChainOutcome::Drop(_, Some(ReasonCode::NoAdditionalInformation))
+            chains.run_ingress(
+                &mut parsed,
+                &mut metadata,
+                &KeySet::EMPTY,
+                &mut HashMap::new()
+            ),
+            ControlFlow::Break(Some(ReasonCode::NoAdditionalInformation))
         ));
     }
 
@@ -557,10 +731,13 @@ mod tests {
         pack.ingress_verifier("dropper", DropVerifier);
         let chains = freeze(pack);
 
-        let (bundle, data, bcbs) = test_bundle();
-        let ChainOutcome::Drop(_, reason) =
-            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
-        else {
+        let (mut parsed, mut metadata) = test_arrival();
+        let ControlFlow::Break(reason) = chains.run_ingress(
+            &mut parsed,
+            &mut metadata,
+            &KeySet::EMPTY,
+            &mut HashMap::new(),
+        ) else {
             panic!("verifier must drop the bundle");
         };
         assert_eq!(reason, Some(ReasonCode::BlockUnintelligible));
@@ -585,10 +762,13 @@ mod tests {
         pack.ingress_verifier("boxed", boxed);
         let chains = freeze(pack);
 
-        let (bundle, data, bcbs) = test_bundle();
-        let ChainOutcome::Drop(_, reason) =
-            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
-        else {
+        let (mut parsed, mut metadata) = test_arrival();
+        let ControlFlow::Break(reason) = chains.run_ingress(
+            &mut parsed,
+            &mut metadata,
+            &KeySet::EMPTY,
+            &mut HashMap::new(),
+        ) else {
             panic!("the boxed Verifier must run");
         };
         assert_eq!(reason, Some(ReasonCode::BlockUnintelligible));
@@ -600,12 +780,16 @@ mod tests {
         pack.deliver_verifier("shared", shared.clone());
         let chains = freeze(pack);
 
-        let (bundle, data, bcbs) = test_bundle();
-        let ChainOutcome::Continue(bundle, data) =
-            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
-        else {
+        let (mut parsed, mut metadata) = test_arrival();
+        let ControlFlow::Continue(()) = chains.run_ingress(
+            &mut parsed,
+            &mut metadata,
+            &KeySet::EMPTY,
+            &mut HashMap::new(),
+        ) else {
             panic!("the shared Verifier passes at Ingress");
         };
+        let (bundle, data, _) = test_bundle();
         let ChainOutcome::Continue(..) = chains.run_deliver(bundle, data, &NullKeyProvider) else {
             panic!("the shared Verifier passes at Deliver");
         };
@@ -949,19 +1133,111 @@ mod tests {
     #[test]
     fn bpsec_free_input_skips_key_derivation() {
         let mut pack = FilterPack::new("test");
-        pack.ingress_verifier("pass", PassVerifier);
+        pack.originate_verifier("pass", PassVerifier);
         let chains = freeze(pack);
 
-        let (bundle, data, bcbs) = test_bundle();
+        let (mut bundle, data, bcbs) = test_bundle();
         assert!(bcbs.is_empty(), "the fixture bundle carries no BCB");
         let provider = CountingProvider(AtomicUsize::new(0));
-        let ChainOutcome::Continue(..) = chains.run_ingress(bundle, data, &bcbs, &provider) else {
+        let ControlFlow::Continue(()) =
+            chains.run_originate(&bundle.bpv7, &mut bundle.metadata, &data, &bcbs, &provider)
+        else {
             panic!("a passing Verifier must continue");
         };
         assert_eq!(
             provider.0.load(Ordering::Relaxed),
             0,
             "a BPSec-free bundle never consults the key provider"
+        );
+    }
+
+    // A key source that holds no keys and counts the lookups made of it.
+    #[cfg(feature = "rfc9173")]
+    struct CountingKeys(AtomicUsize);
+
+    #[cfg(feature = "rfc9173")]
+    impl KeySource for CountingKeys {
+        fn key<'a>(&'a self, _source: &Eid, _operations: &[Operation]) -> Option<&'a Key> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    }
+
+    // Reads one block and requires its plaintext.
+    #[cfg(feature = "rfc9173")]
+    struct ReadsBlock {
+        block: u64,
+        expected: Vec<u8>,
+    }
+
+    #[cfg(feature = "rfc9173")]
+    impl Classifier for ReadsBlock {
+        fn classify(&self, ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+            match ctx.reader().block(self.block) {
+                Some((_, Availability::Available(plaintext))) => {
+                    assert_eq!(plaintext.as_ref(), self.expected.as_slice());
+                }
+                other => panic!("block {} must read as plaintext, not {other:?}", self.block),
+            }
+            Verdict::Continue(MetadataDelta::default())
+        }
+    }
+
+    // The Ingress chain reads a block the header pass decrypted from the
+    // arrival's cache, without a key lookup, and hands the cache back.
+    #[cfg(feature = "rfc9173")]
+    #[test]
+    fn ingress_chain_reads_the_header_pass_plaintext() {
+        let (bundle, data) = bcb_test_bundle();
+        let mut parsed = parse(data).unwrap();
+        let mut metadata = bundle.metadata;
+        let hop_count = *parsed
+            .bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == block::Type::HopCount)
+            .expect("the fixture carries a Hop Count")
+            .0;
+        let plaintext = emit(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .0;
+
+        let mut pack = FilterPack::new("test");
+        pack.ingress_classifier(
+            "reads",
+            ReadsBlock {
+                block: hop_count,
+                expected: plaintext.clone(),
+            },
+        );
+        let chains = freeze(pack);
+
+        let keys = CountingKeys(AtomicUsize::new(0));
+        parsed
+            .decrypted
+            .plaintext
+            .insert(hop_count, plaintext.clone().into_boxed_slice().into());
+        let ControlFlow::Continue(()) =
+            chains.run_ingress(&mut parsed, &mut metadata, &keys, &mut HashMap::new())
+        else {
+            panic!("a passing Classifier must continue");
+        };
+
+        assert_eq!(
+            keys.0.load(Ordering::Relaxed),
+            0,
+            "a block the header pass decrypted is not decrypted again"
+        );
+        assert_eq!(
+            parsed
+                .decrypted
+                .plaintext
+                .get(&hop_count)
+                .map(|p| p.as_ref()),
+            Some(plaintext.as_slice()),
+            "the chain hands the cache back"
         );
     }
 }
