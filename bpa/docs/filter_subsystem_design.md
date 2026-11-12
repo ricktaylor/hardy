@@ -271,13 +271,14 @@ Header-only decisions are what keep this affordable: no filter kind needs the pa
 
 ## `MetadataDelta` and the traffic class
 
-The delta carries annotation-slot writes plus the two routing inputs; the `class` field arrives with the policy tranche:
+The delta carries annotation-slot writes plus the two routing inputs and the Bundle Age decision; the `class` field arrives with the policy tranche:
 
 | Field | What it is | Status |
 |---|---|---|
 | `class: Option<ClassId>` | membership of a **traffic class** — the unit of differentiated treatment | arrives with the policy tranche ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md)) |
 | `route_table: Option<TableId>` | per-bundle routing table — a routing decision, not a class property | present; `TableId` is opaque, naming only the default table until the tables arrive with the routing tranche ([`routing_table_redesign.md`](routing_table_redesign.md)) |
 | `route_key: Option<Eid>` | per-bundle routing key — the EID the RIB walks in place of the destination | present ([`routing_table_redesign.md`](routing_table_redesign.md)) |
+| `add_bundle_age: Option<bool>` | whether egress writes a Bundle Age block, from the clock, on a bundle with a creation time that carries none, for downstream nodes without a clock (RFC 9171 §5.5) | present |
 
 **The class is the unit of policy.** A traffic class is defined once — in configuration, or by an embedder in Builder code — together with *all* of its per-dimension properties: dispatch weight, egress contracts, eviction rank. `build()` compiles the definitions into one frozen `ClassPolicy` table, and every consumer reads the bundle's class properties by field access on that shared, validated object. Two simpler shapes fail in opposite directions, and the class model is the fixed point between them:
 
@@ -308,9 +309,9 @@ The delta decision forces the wider question, and the answer is a principle: **m
 
 | Group | Fields | Written by | Persisted | On restart | Filter visibility |
 |---|---|---|---|---|---|
-| **Provenance** | `received_at`; `origin: Ingress { peer_node, peer_addr, cla } \| Originated \| Recovered` | admission machinery, once | yes | kept — historical fact | read-only |
+| **Provenance** | `received_at`; `origin: Ingress { peer_node, peer_addr, cla } \| Originated \| Recovered` | admission machinery, once | yes | kept — historical fact | read-only; `previous_node(primary)` overlays the CLA's `peer_node` on the wire cache's `previous_node`, which stands only where the CLA announced none, and that on the bundle's source: the one answer routing (`Reflect`) and filters read |
 | **Wire cache** | `previous_node`, `age`, `hop_count` | parser, from the stored bytes (a BCB-protected block this node can decrypt is cached as plaintext) | yes | kept — stored bytes never change | read-only; as received — a preceding Rewriter's edits are read through the reader |
-| **Classification** | annotation slots and the routing inputs (`route_table`, `route_key`; later `class`), plus the policy-epoch stamp | Classifier chain, via applied deltas | yes | cleared + re-derived (re-admission) | read; written only via the delta; slots gated by the declaring static; the epoch stamp invisible (engine bookkeeping) |
+| **Classification** | annotation slots, the routing inputs (`route_table`, `route_key`; later `class`) and `add_bundle_age`, plus the policy-epoch stamp | Classifier chain, via applied deltas | yes | cleared + re-derived (re-admission) | read; written only via the delta; slots gated by the declaring static; the epoch stamp invisible (engine bookkeeping) |
 | **Built-in derivations** | `to_remove` (the scheduled §5.1.1 failure-drops and `delete_block_on_failure` removals) | the header verify | yes | re-derived (re-admission) — a cache over stored bytes + keys | **none — crate-private, fixed machinery only** |
 | **Infrastructure** | `storage_name` | BPA | yes | kept | **none — unreachable outside the crate** |
 

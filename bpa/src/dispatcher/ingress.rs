@@ -249,18 +249,18 @@ impl Dispatcher {
         }
 
         // Destructure the verified headers once, here at the gate: move the
-        // decoded extension fields into metadata (a Classifier may read them),
+        // decoded per-hop blocks into metadata (a Classifier may read them),
         // and keep the begun payload-BIB verifiers, the scheduled §E removals,
         // and the reception reason for the drain and store below. Nothing
         // downstream needs `hv` whole.
         let HeaderVerify {
             bundle,
-            extensions,
+            per_hop,
             to_remove,
             report,
             deferred_verifiers,
         } = hv;
-        metadata.extensions = extensions;
+        metadata.per_hop = per_hop;
 
         // The record under construction: built once here at the gate, it is
         // the one object that travels through the chain, the route lookup,

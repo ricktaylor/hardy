@@ -185,7 +185,7 @@ impl Dispatcher {
         let extracted =
             extract_from_built(&built_view, &prefix).map_err(|e| Error::Internal(e.into()))?;
         let mut metadata = BundleMetadata::originated();
-        metadata.extensions = extracted;
+        metadata.per_hop = extracted;
         let record = Bundle {
             bpv7: built_view,
             metadata,
@@ -309,7 +309,7 @@ impl Dispatcher {
 
         let HeaderVerify {
             bundle,
-            extensions,
+            per_hop,
             to_remove,
             // Originated bundles never raise reception reports — reception
             // is a CLA-ingress notion; the originator learns the outcome
@@ -317,7 +317,7 @@ impl Dispatcher {
             report: _,
             deferred_verifiers,
         } = hv;
-        metadata.extensions = extensions;
+        metadata.per_hop = per_hop;
 
         // The §E removals travel with the bundle to the output doors,
         // sorted for a deterministic persisted order, exactly as at CLA

@@ -169,6 +169,12 @@ pub struct MetadataDelta {
     /// bundle that must forward (`docs/routing_table_redesign.md`, "Key
     /// selection").
     pub route_key: Option<Eid>,
+    /// Whether egress writes a Bundle Age block, from the clock, on a bundle
+    /// with a creation time that carries none, for downstream nodes without a
+    /// clock (RFC 9171 §5.5). Same write semantics as `route_table`; unset
+    /// adds none. A Bundle Age the bundle carries is updated regardless
+    /// (§5.4).
+    pub add_bundle_age: Option<bool>,
 }
 
 impl MetadataDelta {

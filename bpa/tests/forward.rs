@@ -19,6 +19,11 @@ use hardy_bpa::{
     services,
     stream::{Receiver, Segment},
 };
+#[cfg(feature = "rfc9173")]
+use hardy_bpa::{
+    builder::BpaBuilder,
+    filter::{Classifier, ClassifyContext, Verdict, pack::FilterPack, slots::MetadataDelta},
+};
 use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
 #[cfg(feature = "rfc9173")]
 use hardy_bpv7::{
@@ -33,6 +38,7 @@ use hardy_bpv7::{
     builder::Builder,
     bundle::Flags as BundleFlags,
     creation_timestamp::CreationTimestamp,
+    dtn_time::DtnTime,
     hop_info::HopInfo,
     parse::Parsed,
     reader::ReaderExt,
@@ -40,6 +46,9 @@ use hardy_bpv7::{
 };
 #[cfg(feature = "rfc9173")]
 use rand::{TryRng, rngs::SysRng};
+// Aliased: `time`'s duration, the arithmetic type of `OffsetDateTime`.
+#[cfg(feature = "rfc9173")]
+use time::{Duration as TimeDuration, OffsetDateTime};
 
 // ---------------------------------------------------------------------------
 // Events observed by the mock CLAs
@@ -1154,15 +1163,27 @@ impl KeyProvider for FixedKeys {
 // relay) toward its peer node 1.2, returning the forwarded bundle.
 #[cfg(feature = "rfc9173")]
 async fn relay(received: &Bytes, keys: Vec<Key>) -> Parsed {
-    let bpa = Bpa::builder()
-        .node_ids(
-            hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice())
-                .unwrap(),
-        )
-        .key_provider(Arc::new(FixedKeys(keys)))
-        .build()
-        .await
-        .unwrap();
+    relay_with(received, keys, |builder| builder).await
+}
+
+// As `relay`, with the relay's builder configured by `configure`.
+#[cfg(feature = "rfc9173")]
+async fn relay_with(
+    received: &Bytes,
+    keys: Vec<Key>,
+    configure: impl FnOnce(BpaBuilder) -> BpaBuilder,
+) -> Parsed {
+    let bpa = configure(
+        Bpa::builder()
+            .node_ids(
+                hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice())
+                    .unwrap(),
+            )
+            .key_provider(Arc::new(FixedKeys(keys))),
+    )
+    .build()
+    .await
+    .unwrap();
     bpa.start(false).await;
     let (ingress, _) = BufferedCla::new();
     bpa.register_cla(
@@ -1333,4 +1354,112 @@ async fn key_holding_relay_forwards_a_possibly_signed_hop_count_unchanged() {
         .expect("the hop count decodes")
         .expect("the hop count decrypts downstream");
     assert_eq!(hop_info.count, 1, "the count is not incremented");
+}
+
+// A bundle from ipn:1.3.1 created at `timestamp`, asking for deletion reports
+// at ipn:1.2.9 (behind the relay's peer), whose Bundle Age block its source
+// encrypted under `enc_key`. One without a creation time must carry the
+// block (RFC 9171 §4.4.2).
+#[cfg(feature = "rfc9173")]
+fn with_encrypted_bundle_age(enc_key: &Key, timestamp: CreationTimestamp) -> Parsed {
+    let source: Eid = "ipn:1.3.1".parse().unwrap();
+    let (_, data) = Builder::new(source.clone(), "ipn:1.2.99".parse().unwrap())
+        .with_flags(BundleFlags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_report_to("ipn:1.2.9".parse().unwrap())
+        .add_extension_block(block::Type::BundleAge)
+        .expect("add the Bundle Age block")
+        .build(hardy_cbor::encode::emit(&5_000u64).0.into())
+        .with_payload(b"relay me".as_slice().into())
+        .build(timestamp)
+        .expect("build the bundle");
+    let built = hardy_bpv7::parse::parse(Bytes::from(data)).unwrap();
+    let age = *built
+        .bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block::Type::BundleAge)
+        .expect("the Bundle Age block is present")
+        .0;
+    let flags = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let mut encryptor = Encryptor::new(&built.bundle, &built.data);
+    encryptor
+        .encrypt_block(age, encryptor::Context::AES_GCM(flags), source, enc_key)
+        .expect("encrypt the Bundle Age block");
+    hardy_bpv7::parse::parse(Bytes::from(
+        encryptor.rebuild().expect("rebuild the encrypted bundle"),
+    ))
+    .unwrap()
+}
+
+// RFC 9171 §5.5: a relay gives a bundle with a creation time and no Bundle
+// Age block one from the clock, for a downstream node without a clock, when
+// a Classifier marks it; an unmarked bundle leaves without one.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_classifier_has_a_relay_add_a_bundle_age() {
+    let created = DtnTime::saturating_from(OffsetDateTime::now_utc() - TimeDuration::seconds(10));
+    let (_, data) = Builder::new("ipn:1.3.1".parse().unwrap(), "ipn:1.2.99".parse().unwrap())
+        .with_payload(b"relay me".as_slice().into())
+        .build(CreationTimestamp::from_parts(Some(created), 1))
+        .expect("build the bundle");
+    let received = Bytes::from(data);
+
+    let out = relay_with(&received, Vec::new(), |builder| {
+        let mut pack = FilterPack::new("test");
+        pack.ingress_classifier("bundle-age", AddsBundleAge);
+        builder.add_filters(pack)
+    })
+    .await;
+    let age = extension(&out, block::Type::BundleAge)
+        .extract::<u64>(&out.data)
+        .expect("the bundle age decodes")
+        .expect("the bundle age is resident");
+    assert!(age >= 10_000, "the age is the clock's: {age} ms");
+
+    let out = relay(&received, Vec::new()).await;
+    assert!(
+        !out.bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == block::Type::BundleAge),
+        "an unmarked bundle leaves without a Bundle Age"
+    );
+}
+
+// Marks every bundle for a Bundle Age at egress.
+#[cfg(feature = "rfc9173")]
+struct AddsBundleAge;
+
+#[cfg(feature = "rfc9173")]
+impl Classifier for AddsBundleAge {
+    fn classify(&self, _: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+        let mut delta = MetadataDelta::default();
+        delta.add_bundle_age = Some(true);
+        Verdict::Continue(delta)
+    }
+}
+
+// A keyless relay cannot read a Bundle Age block a BCB covers. On a bundle
+// with a creation time it is not this hop's to write, even one a Classifier
+// marked: the block travels unchanged with its BCB, and the bundle is not
+// held back for it.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_relay_leaves_an_unreadable_bundle_age_unchanged() {
+    let received = with_encrypted_bundle_age(&enc_key(), CreationTimestamp::now());
+
+    let out = relay_with(&received.data, Vec::new(), |builder| {
+        let mut pack = FilterPack::new("test");
+        pack.ingress_classifier("bundle-age", AddsBundleAge);
+        builder.add_filters(pack)
+    })
+    .await;
+
+    assert_protected_blocks_untouched(&received, &out);
 }
