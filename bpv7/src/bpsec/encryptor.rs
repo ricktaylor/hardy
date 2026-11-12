@@ -315,9 +315,9 @@ impl<'a> Encryptor<'a> {
                 let (op, data) = build_bcb_data(
                     context.clone(),
                     bcb::OperationArgs {
-                        bpsec_source: &bpsec_source,
+                        source: &bpsec_source,
                         target,
-                        source,
+                        security_block: source,
                         blocks: &editor_bs,
                     },
                     key,

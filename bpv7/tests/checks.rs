@@ -1012,7 +1012,11 @@ mod cascade_reencryption_tests {
 #[cfg(all(feature = "rfc9173", feature = "serde"))]
 mod deferred_payload_bib_tests {
     use super::*;
-    use hardy_bpv7::parse::{BundleParser, ParserProgress};
+    use hardy_bpv7::{
+        block,
+        parse::{BundleParser, ParserProgress},
+        reader::PlainReader,
+    };
 
     fn sign_key() -> bpsec::key::Key {
         serde_json::from_value(serde_json::json!({
@@ -1138,6 +1142,21 @@ mod deferred_payload_bib_tests {
         full: &[u8],
         keys: &bpsec::key::KeySet,
     ) -> (Bytes, hardy_bpv7::bundle::Bundle, checks::VerifyFacts) {
+        let (consumed, raw, _, facts) = deferred_setup_with_bibs(full, keys);
+        (consumed, raw, facts)
+    }
+
+    // The same, with the BIB op-sets the pass leaves: those the parse read
+    // in plaintext and those it decrypted.
+    fn deferred_setup_with_bibs(
+        full: &[u8],
+        keys: &bpsec::key::KeySet,
+    ) -> (
+        Bytes,
+        hardy_bpv7::bundle::Bundle,
+        HashMap<u64, bpsec::bib::OperationSet>,
+        checks::VerifyFacts,
+    ) {
         let Parsed {
             data: consumed,
             bundle: mut raw,
@@ -1157,7 +1176,7 @@ mod deferred_payload_bib_tests {
             &no_updates,
         )
         .unwrap();
-        (consumed, raw, facts)
+        (consumed, raw, bib_ops, facts)
     }
 
     // The streamed twin of `payload_bib_deferred_then_verified`: the
@@ -1305,5 +1324,331 @@ mod deferred_payload_bib_tests {
             facts.deferred_bibs.is_empty(),
             "nothing is deferred when the payload is resident"
         );
+    }
+
+    // The payload's received length, from its parsed extent.
+    fn received_len(blocks: &HashMap<u64, block::Block>) -> u64 {
+        let data = &blocks[&1].data;
+        data.end - data.start
+    }
+
+    // The payload's received data: its ciphertext, Hardy's encryptor
+    // attaching the tag to it (RFC 9173 §4.4).
+    fn received_payload<'a>(raw: &hardy_bpv7::bundle::Bundle, full: &'a [u8]) -> &'a [u8] {
+        raw.blocks[&1]
+            .payload(full)
+            .expect("the full bundle holds the payload")
+    }
+
+    // The payload's plaintext, decrypted from the whole bundle.
+    fn payload_plaintext(full: &[u8], keys: &bpsec::key::KeySet) -> Box<[u8]> {
+        let parsed = parse::parse(Bytes::copy_from_slice(full)).unwrap();
+        let reader =
+            bpsec::DecryptingReader::new(&parsed.bundle.blocks, &parsed.data, &parsed.bcbs, keys);
+        let payload = reader
+            .into_block_data(1)
+            .expect("the payload decrypts")
+            .expect("the payload is resident");
+        Box::from(payload.as_ref())
+    }
+
+    // Begin decrypting the payload under the BCB that covers it, against
+    // `data`, which need not hold the payload.
+    fn payload_decryptor(
+        data: &[u8],
+        keys: &bpsec::key::KeySet,
+        blocks: &HashMap<u64, block::Block>,
+        bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    ) -> Result<bpsec::bcb::Decryptor, bpsec::Error> {
+        let bcb = blocks[&1].bcb.expect("a BCB covers the payload");
+        let ops = &bcb_ops[&bcb];
+        ops.operations()[&1].begin_decrypt(
+            keys,
+            &bpsec::bcb::OperationArgs {
+                source: ops.source(),
+                target: 1,
+                security_block: bcb,
+                blocks: &PlainReader {
+                    blocks,
+                    source_data: data,
+                },
+            },
+            received_len(blocks),
+        )
+    }
+
+    // The streaming verifier of each BIB in `bib_ops` over the payload, fed
+    // `target_len` bytes, against `data`, which need not hold the payload: a
+    // missing key begins none.
+    fn payload_verifiers(
+        data: &[u8],
+        keys: &bpsec::key::KeySet,
+        blocks: &HashMap<u64, block::Block>,
+        bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
+        target_len: u64,
+    ) -> Vec<(u64, bpsec::bib::Verifier)> {
+        let reader = PlainReader {
+            blocks,
+            source_data: data,
+        };
+        bib_ops
+            .iter()
+            .filter_map(|(&bib, ops)| {
+                let op = ops.operations().get(&1)?;
+                let args = bpsec::bib::OperationArgs {
+                    source: ops.source(),
+                    target: 1,
+                    security_block: bib,
+                    blocks: &reader,
+                };
+                match op.begin_verify(keys, &args, target_len) {
+                    Ok(verifier) => Some((bib, verifier)),
+                    Err(bpsec::Error::NoKey) => None,
+                    Err(e) => panic!("BIB {bib}: {e}"),
+                }
+            })
+            .collect()
+    }
+
+    fn enc_key() -> bpsec::key::Key {
+        serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "A128KW",
+            "enc": "A128GCM",
+            "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+            "k": rand_k(16)
+        }))
+        .unwrap()
+    }
+
+    // A direct-mode content-encryption key: its value is immaterial, so it is
+    // generated, and its bytes are reachable for the redaction check.
+    fn direct_enc_key() -> bpsec::key::Key {
+        serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "dir",
+            "enc": "A256GCM",
+            "key_ops": ["encrypt", "decrypt"],
+            "k": rand_k(32)
+        }))
+        .unwrap()
+    }
+
+    // `signed_large_payload`'s bundle with its payload then encrypted, which
+    // encrypts the BIB over it too (RFC 9172 §3.9).
+    fn signed_then_encrypted_payload(
+        sign_key: &bpsec::key::Key,
+        enc_key: &bpsec::key::Key,
+    ) -> Box<[u8]> {
+        let signed = parse::parse(Bytes::from(signed_large_payload(sign_key))).unwrap();
+        bpsec::encryptor::Encryptor::new(&signed.bundle, &signed.data)
+            .encrypt_block(
+                1,
+                bpsec::encryptor::Context::AES_GCM(bpsec::rfc9173::ScopeFlags {
+                    include_security_header: false,
+                    ..Default::default()
+                }),
+                "ipn:2.1".parse().unwrap(),
+                enc_key,
+            )
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .rebuild()
+            .unwrap()
+    }
+
+    // An acceptor learns it holds no key for an operation without
+    // processing it: each operation finds its key as its own processing
+    // would, and a key for another operation does not count.
+    #[test]
+    fn require_key_finds_the_key_each_operation_needs() {
+        let sign_key = sign_key();
+        let enc_key = enc_key();
+        let full = signed_then_encrypted_payload(&sign_key, &enc_key);
+        let both = bpsec::key::KeySet::new(vec![sign_key.clone(), enc_key.clone()]);
+        let (_, raw, bibs, _) = deferred_setup_with_bibs(&full, &both);
+        let parsed = parse::parse(Bytes::copy_from_slice(&full)).unwrap();
+
+        let bcb_number = raw
+            .blocks
+            .get(&1)
+            .unwrap()
+            .bcb
+            .expect("the payload is encrypted");
+        let bcb_ops = parsed.bcbs.get(&bcb_number).expect("its BCB");
+        let decrypt = bcb_ops
+            .operations()
+            .get(&1)
+            .expect("the payload's BCB operation");
+        let bib_ops = bibs.values().next().expect("the payload's BIB");
+        let verify = bib_ops
+            .operations()
+            .get(&1)
+            .expect("the payload's BIB operation");
+
+        let only_sign = bpsec::key::KeySet::new(vec![sign_key]);
+        let only_enc = bpsec::key::KeySet::new(vec![enc_key]);
+        let none = bpsec::key::KeySet::new(vec![]);
+
+        decrypt
+            .require_key(&only_enc, bcb_ops.source())
+            .expect("the encryption key serves the BCB operation");
+        assert!(matches!(
+            decrypt.require_key(&only_sign, bcb_ops.source()),
+            Err(bpsec::Error::NoKey)
+        ));
+        assert!(matches!(
+            decrypt.require_key(&none, bcb_ops.source()),
+            Err(bpsec::Error::NoKey)
+        ));
+        verify
+            .require_key(&only_sign, bib_ops.source())
+            .expect("the signing key serves the BIB operation");
+        assert!(matches!(
+            verify.require_key(&only_enc, bib_ops.source()),
+            Err(bpsec::Error::NoKey)
+        ));
+        assert!(matches!(
+            verify.require_key(&none, bib_ops.source()),
+            Err(bpsec::Error::NoKey)
+        ));
+    }
+
+    // The payload's acceptor decrypts it as it streams, from a headers-only
+    // buffer: fed the received data in awkward runs, the decryptor hands
+    // back the plaintext, as long as it said, and the BIB over the payload
+    // verifies against it (RFC 9172 §3.9, §5.1.1).
+    #[test]
+    fn the_payloads_decryptor_yields_the_plaintext_its_bib_verifies() {
+        let sign_key = sign_key();
+        let enc_key = enc_key();
+        let full = signed_then_encrypted_payload(&sign_key, &enc_key);
+        let keys = bpsec::key::KeySet::new(vec![sign_key, enc_key]);
+        let parsed = parse_headers_only(&full);
+        let (consumed, raw, bibs, _) = deferred_setup_with_bibs(&full, &keys);
+
+        let mut decryptor = payload_decryptor(&consumed, &keys, &raw.blocks, &parsed.bcbs)
+            .expect("the decryption begins on the headers alone");
+        let received = received_payload(&raw, &full);
+        assert_eq!(
+            decryptor.plaintext_len(),
+            received.len() as u64 - 16,
+            "the attached tag is not plaintext"
+        );
+        let plaintext_len = decryptor.plaintext_len();
+        for run in received.chunks(4093) {
+            decryptor.update(run);
+        }
+        let plaintext = decryptor.finish().expect("the payload decrypts");
+        assert_eq!(plaintext.len() as u64, plaintext_len);
+        assert_eq!(plaintext.as_ref(), payload_plaintext(&full, &keys).as_ref());
+
+        let verifiers = payload_verifiers(&consumed, &keys, &raw.blocks, &bibs, plaintext_len);
+        assert_eq!(verifiers.len(), 1);
+        for (_, mut verifier) in verifiers {
+            verifier.update(&plaintext);
+            verifier
+                .finish()
+                .expect("the BIB verifies against the decrypted payload");
+        }
+    }
+
+    // A flipped byte of the received ciphertext fails to authenticate, and
+    // no plaintext is released.
+    #[test]
+    fn a_tampered_payload_fails_to_decrypt() {
+        let enc_key = enc_key();
+        let full = signed_then_encrypted_payload(&sign_key(), &enc_key);
+        let keys = bpsec::key::KeySet::new(vec![enc_key]);
+        let parsed = parse_headers_only(&full);
+        let mut received = received_payload(&parsed.bundle, &full).to_vec();
+        let mid = received.len() / 2;
+        received[mid] ^= 0xFF;
+
+        let mut decryptor =
+            payload_decryptor(&parsed.data, &keys, &parsed.bundle.blocks, &parsed.bcbs).unwrap();
+        decryptor.update(&received);
+        assert!(matches!(
+            decryptor.finish(),
+            Err(bpsec::Error::DecryptionFailed)
+        ));
+    }
+
+    // Data short of the target's length, or past it, fails the decryption.
+    #[test]
+    fn a_payload_fed_short_or_long_fails_to_decrypt() {
+        let enc_key = enc_key();
+        let full = signed_then_encrypted_payload(&sign_key(), &enc_key);
+        let keys = bpsec::key::KeySet::new(vec![enc_key]);
+        let parsed = parse_headers_only(&full);
+        let received = received_payload(&parsed.bundle, &full);
+        let begin =
+            || payload_decryptor(&parsed.data, &keys, &parsed.bundle.blocks, &parsed.bcbs).unwrap();
+
+        let mut short = begin();
+        short.update(&received[..received.len() - 1]);
+        assert!(matches!(
+            short.finish(),
+            Err(bpsec::Error::DecryptionFailed)
+        ));
+
+        let mut long = begin();
+        long.update(received);
+        long.update(&[0]);
+        assert!(matches!(long.finish(), Err(bpsec::Error::DecryptionFailed)));
+    }
+
+    // The key is resolved before the first byte: without it the decryption
+    // does not begin (NoKey), and in key-wrap mode a key that cannot unwrap
+    // the content-encryption key fails there too.
+    #[test]
+    fn the_payloads_decryption_needs_its_key_before_the_first_byte() {
+        let sign_key = sign_key();
+        let full = signed_then_encrypted_payload(&sign_key, &enc_key());
+        let parsed = parse_headers_only(&full);
+        let begin = |keys: &bpsec::key::KeySet| {
+            payload_decryptor(&parsed.data, keys, &parsed.bundle.blocks, &parsed.bcbs)
+        };
+
+        assert!(matches!(
+            begin(&bpsec::key::KeySet::new(vec![sign_key])),
+            Err(bpsec::Error::NoKey)
+        ));
+        let other = enc_key();
+        assert!(matches!(
+            begin(&bpsec::key::KeySet::new(vec![other])),
+            Err(bpsec::Error::DecryptionFailed)
+        ));
+    }
+
+    // The decryptor holds the content-encryption key across the stream; its
+    // `Debug` shows lengths, never the key.
+    #[test]
+    fn the_decryptors_debug_shows_no_key() {
+        let enc_key = direct_enc_key();
+        let bpsec::key::Type::OctetSequence { key: secret } = &enc_key.key_type else {
+            panic!("an octet-sequence key");
+        };
+        let key_bytes = format!("{:?}", secret.expose_secret());
+        let full = signed_then_encrypted_payload(&sign_key(), &enc_key);
+        let keys = bpsec::key::KeySet::new(vec![enc_key.clone()]);
+        let parsed = parse_headers_only(&full);
+        let mut decryptor =
+            payload_decryptor(&parsed.data, &keys, &parsed.bundle.blocks, &parsed.bcbs).unwrap();
+        let shown = format!("{decryptor:?}");
+        assert!(shown.contains("plaintext_len"), "{shown}");
+        assert!(!shown.contains(&key_bytes), "{shown}");
+        decryptor.update(received_payload(&parsed.bundle, &full));
+        decryptor
+            .finish()
+            .expect("a direct key decrypts the payload");
+    }
+
+    #[test]
+    fn the_decryptor_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<bpsec::bcb::Decryptor>();
     }
 }

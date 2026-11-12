@@ -166,7 +166,7 @@ Feature flags control optional functionality:
 - **`serde`**: Enables serde-based serialization of bundle structures. Requires `std`.
 - **`rfc9173`**: Enables RFC 9173 default security contexts (HMAC-SHA and AES-GCM variants). Enables `bpsec`.
 - **`critical-section`**: Enables the `portable-atomic` critical-section fallback for targets without native 64-bit atomics (e.g., thumbv6m). Requires a `critical-section` implementation from your HAL or runtime.
-- **`bpsec`** (internal): Enables the `signer` and `encryptor` modules for BPSec operations. Automatically enabled by security context features (`rfc9173`, and future `cose`). Not intended for direct use.
+- **`bpsec`**: BPSec processing, both sides: the keyed operations and the decrypting reader, the keyed checks, the BPSec editing and rewrites, the signer and the encryptor. Enabled by every security-context feature (`rfc9173`, and future `cose`); without it the crate still parses security blocks and classifies them by their flags.
 
 ### Embedded Targets and Custom RNG
 

@@ -6,6 +6,7 @@ use hardy_cbor::decode::parse_exact;
 use thiserror::Error;
 
 use super::*;
+#[cfg(feature = "bpsec")]
 use crate::reader::{Availability, Reader};
 
 #[derive(Debug, Error)]
@@ -822,6 +823,7 @@ impl<'a> Editor<'a> {
     /// `rebuild_bundle()` returns a correct `Bundle` without reparsing, and
     /// by `BPSecEditor::remove_blocks` once a decrypt shows which targets an
     /// encrypted BIB covers.
+    #[cfg(feature = "bpsec")]
     pub(crate) fn set_bib_target(&mut self, target_block: u64, bib_block: u64) {
         self.bib_overrides
             .insert(target_block, block::BibCoverage::Some(bib_block));
@@ -1149,6 +1151,7 @@ impl<'a> Editor<'a> {
     /// Iterate the current set of block numbers in the editor's view.
     /// Used by `bpsec::edit` to scan for BCB-encrypted BIBs without
     /// exposing the template map.
+    #[cfg(feature = "bpsec")]
     pub(crate) fn block_numbers(&self) -> impl Iterator<Item = u64> + '_ {
         self.blocks.keys().copied()
     }
@@ -1456,10 +1459,12 @@ impl<'a> BlockBuilder<'a> {
     }
 }
 
+#[cfg(feature = "bpsec")]
 pub(crate) struct EditorReader<'a> {
     pub editor: Editor<'a>,
 }
 
+#[cfg(feature = "bpsec")]
 impl<'a> Reader<'a> for EditorReader<'a> {
     fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let (block, payload) = self.editor.block(block_number)?;

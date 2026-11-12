@@ -367,7 +367,7 @@ impl<'a> BPSecEditor for Editor<'a> {
 /// covers the decrypted block must itself be decrypted and stripped. That
 /// path is reached only by future multi-target security contexts:
 /// BCB-AES-GCM (RFC 9173) keeps its IV in the context parameters and so
-/// cannot share a BCB across targets ([`bcb::Operation::can_share`] is
+/// cannot share a BCB across targets (`bcb::Operation::can_share` is
 /// false).
 ///
 /// On error, returns the editor along with the error so it can be reused
@@ -410,9 +410,9 @@ where
     let mut target_payload = match op.decrypt(
         key_source,
         bcb::OperationArgs {
-            bpsec_source: &opset.source,
+            source: &opset.source,
             target: block_number,
-            source: bcb,
+            security_block: bcb,
             blocks: &block_set,
         },
     ) {
@@ -557,9 +557,9 @@ where
     let result = bcb_op.decrypt(
         key_source,
         bcb::OperationArgs {
-            bpsec_source: &bcb_opset.source,
+            source: &bcb_opset.source,
             target: bib_num,
-            source: bcb_num,
+            security_block: bcb_num,
             blocks: &block_set,
         },
     );
@@ -593,7 +593,7 @@ where
 /// that BCB and must be re-encrypted before the bundle is re-serialised.
 ///
 /// Bypasses the [`encryptor::Encryptor`] orchestrator and calls
-/// [`rfc9173::bcb_aes_gcm::Operation::encrypt`] directly. AAD inputs
+/// `rfc9173::bcb_aes_gcm::Operation::encrypt` directly. AAD inputs
 /// (primary block bytes, target/source block headers) are unchanged
 /// across the cascade — only the BIB's BTSD differs — so reusing the
 /// original `scope_flags`, BCB source EID, and key is sound. The
@@ -638,9 +638,9 @@ where
     let result = template_op.encrypt(
         key_source,
         bcb::OperationArgs {
-            bpsec_source: &bpsec_source,
+            source: &bpsec_source,
             target: bib_block_number,
-            source: bcb_block_number,
+            security_block: bcb_block_number,
             blocks: &editor_bs,
         },
     );
