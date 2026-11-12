@@ -121,7 +121,6 @@ pub mod lifetime;
 pub mod parse;
 pub mod primary_block;
 pub mod reader;
-#[cfg(feature = "bpsec")]
 pub mod rewrite;
 pub mod status_report;
 

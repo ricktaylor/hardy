@@ -43,6 +43,7 @@ impl Command {
 
         use hardy_bpv7::bpsec::edit::BPSecEditor;
         let editor = Editor::new(&raw, &data)
+            .with_key_source(&key_store)
             .remove_integrity(self.block)
             .map_err(|(_, e)| anyhow::anyhow!("Failed to remove integrity check: {e}"))?;
 

@@ -240,6 +240,7 @@ mod tests {
         builder::Builder,
         crc,
         creation_timestamp::CreationTimestamp,
+        editor::{Chunk, Editor},
         // `parse` names the BPA's keyed pass (`crate::bundle::parse`) in
         // this file; alias the bpv7 structural parser it collides with.
         parse::{self as bpv7_parse, BundleParser, ParserProgress},
@@ -266,7 +267,8 @@ mod tests {
     }
 
     // An oversized-payload bundle, BIB-signed over block 1 with `key` when
-    // given.
+    // given. The signed payload carries no CRC, so that the BIB is the only
+    // check a tampered body can fail.
     fn oversized_bundle(key: Option<&Key>) -> Bytes {
         let (_, base) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_payload(vec![0xAB_u8; PAYLOAD].as_slice().into())
@@ -277,6 +279,16 @@ mod tests {
             return base;
         };
         let parsed = bpv7_parse::parse(base).expect("parse the built bundle");
+        let crc_free = Editor::new(&parsed.bundle, &parsed.data)
+            .update_block(1)
+            .map_err(|(_, e)| e)
+            .expect("edit the payload block")
+            .with_crc_type(crc::CrcType::None)
+            .rebuild()
+            .rebuild()
+            .map(|chunks| Chunk::flatten(chunks, &parsed.data))
+            .expect("rebuild the bundle without the payload's CRC");
+        let parsed = bpv7_parse::parse(Bytes::from(crc_free)).expect("parse the CRC-free bundle");
         Bytes::from(
             Signer::new(&parsed.bundle, &parsed.data)
                 .sign_block(
@@ -692,9 +704,9 @@ mod tests {
     // A signed bundle whose first segment ends where the payload's body does:
     // the body is resident at the header pass, so the payload BIB verifies
     // there and none is deferred, and no verifier reads the resident bytes
-    // past the payload's start, trailer included. The signer strips its
-    // target's CRC, so the trailer is the outer break alone. The drain then
-    // settles Ok.
+    // past the payload's start, trailer included. The payload carries no
+    // CRC, so the trailer is the outer break alone. The drain then settles
+    // Ok.
     #[tokio::test]
     async fn a_body_resident_at_the_header_pass_defers_no_bib() {
         let key = sign_key();
@@ -753,8 +765,8 @@ mod tests {
     }
 
     // Tampering a streamed body byte fails the deferred BIB at settle, named
-    // by the BIB that made the claim. The Signer strips its target's CRC, so
-    // the integrity check is the only one the tamper can fail.
+    // by the BIB that made the claim. The payload carries no CRC, so the
+    // integrity check is the only one the tamper can fail.
     #[tokio::test]
     async fn deferred_bib_tamper_fails() {
         let key = sign_key();

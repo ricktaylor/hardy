@@ -27,10 +27,6 @@ pub use reader::DecryptingReader;
 /// removal, integrity stripping, and decryption.
 ///
 /// [`BPSecEditor`]: edit::BPSecEditor
-///
-/// Every edit here decrypts or encrypts, so the module is gated with the
-/// keyed operations it drives.
-#[cfg(feature = "bpsec")]
 pub mod edit;
 
 mod error;

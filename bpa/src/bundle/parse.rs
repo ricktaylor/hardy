@@ -901,9 +901,12 @@ mod tests {
             encryptor::{Context, Encryptor},
             key::{EncAlgorithm, Key, KeySet, KeySource, Operation, Type},
         },
+        crc,
         hop_info::HopInfo,
     };
     use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
+    #[cfg(feature = "rfc9173")]
+    use hardy_cbor::encode::emit;
     use hex_literal::hex;
     #[cfg(feature = "rfc9173")]
     use rand::{TryRng, rngs::SysRng};
@@ -1024,10 +1027,24 @@ mod tests {
 
         let (built, data) =
             Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.99".parse().unwrap())
-                .with_hop_count(&HopInfo {
-                    limit: NonZeroU8::new(64).unwrap(),
-                    count: 1,
+                // The Hop Count carries no CRC, so that an alteration of its
+                // ciphertext reaches the decryption rather than the CRC.
+                .add_extension_block(block::Type::HopCount)
+                .unwrap()
+                .with_flags(block::Flags {
+                    report_on_failure: true,
+                    must_replicate: true,
+                    ..Default::default()
                 })
+                .with_crc_type(crc::CrcType::None)
+                .build(
+                    emit(&HopInfo {
+                        limit: NonZeroU8::new(64).unwrap(),
+                        count: 1,
+                    })
+                    .0
+                    .into(),
+                )
                 .with_payload(b"payload".as_slice().into())
                 .build(CreationTimestamp::now())
                 .unwrap();
@@ -1131,11 +1148,13 @@ mod tests {
             key_use: None,
         };
 
-        // Block type 777 is signed and carries no flags; block type 999 asks
-        // for a report on failure.
+        // Block type 777 is signed and carries no flags, and no CRC, so that
+        // the alteration reaches the security check; block type 999 asks for
+        // a report on failure.
         let (_, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .add_extension_block(block::Type::Unrecognised(777))
             .unwrap()
+            .with_crc_type(crc::CrcType::None)
             .build(b"signed".as_slice().into())
             .add_extension_block(block::Type::Unrecognised(999))
             .unwrap()
