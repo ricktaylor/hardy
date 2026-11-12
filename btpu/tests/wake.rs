@@ -1,5 +1,5 @@
 //! Integration tests for the sender's wake-ups without the `tower` feature:
-//! `poll_admit` and `poll_push_ready` for producers, and
+//! `poll_admit` and `poll_push_ready` for producers, and `poll_pdu_ready`,
 //! `poll_next_pdu_into`, `poll_next_pdu_write`, and
 //! `poll_next_pdu_vectored` for the drain.
 
@@ -339,6 +339,133 @@ fn a_drain_polled_from_another_task_replaces_the_first() {
 
     enqueue(&mut sender, bundle(20)).unwrap();
     assert_eq!((first.get(), second.get()), (0, 1));
+}
+
+// Readiness changes nothing: asked twice it answers the same, and the PDUs
+// that follow are those of a sender never asked.
+#[test]
+fn pdu_readiness_packs_nothing_and_agrees_with_the_drain() {
+    let fill = |sender: &mut Sender| {
+        enqueue(sender, bundle(200)).unwrap();
+        enqueue(sender, bundle(20)).unwrap();
+    };
+    let mut asked = sender(64, 4);
+    let mut plain = sender(64, 4);
+    fill(&mut asked);
+    fill(&mut plain);
+    let expected = drain(&mut plain);
+    assert!(expected.len() > 1);
+
+    let (count, waker) = Count::waker();
+    let mut cx = Context::from_waker(&waker);
+    let mut pdus = Vec::new();
+    while asked.poll_pdu_ready(&mut cx).is_ready() {
+        assert_eq!(asked.poll_pdu_ready(&mut cx), Poll::Ready(()));
+        pdus.push(asked.next_pdu().expect("a PDU was ready").data);
+    }
+    assert_eq!(pdus, expected);
+    assert!(asked.next_pdu().is_none());
+    assert_eq!(count.get(), 0);
+}
+
+// `has_pending` counts a streamed transfer with nothing pushed; readiness
+// waits for the push that lets it supply a segment.
+#[test]
+fn a_transfer_waiting_on_its_producer_is_pending_but_not_ready() {
+    let mut sender = sender(64, 4);
+    let mut handle = sender.begin(200, SendOptions::default()).unwrap();
+    let data = bundle(200);
+    let (count, waker) = Count::waker();
+    let mut cx = Context::from_waker(&waker);
+    assert!(sender.has_pending());
+    assert_eq!(sender.poll_pdu_ready(&mut cx), Poll::Pending);
+
+    // Too few bytes for segment 0.
+    sender.push(&mut handle, data.slice(..10)).unwrap();
+    assert_eq!(count.get(), 0);
+    assert_eq!(sender.poll_pdu_ready(&mut cx), Poll::Pending);
+
+    sender.push(&mut handle, data.slice(10..)).unwrap();
+    assert_eq!(count.get(), 1);
+    assert_eq!(sender.poll_pdu_ready(&mut cx), Poll::Ready(()));
+    assert!(sender.next_pdu().is_some());
+    sender.finish(handle).unwrap();
+}
+
+#[test]
+fn a_drain_parked_on_readiness_is_woken_by_an_enqueue() {
+    let mut sender = sender(64, 4);
+    let (count, waker) = Count::waker();
+    let mut cx = Context::from_waker(&waker);
+    assert_eq!(sender.poll_pdu_ready(&mut cx), Poll::Pending);
+
+    let id = enqueue(&mut sender, bundle(20)).unwrap();
+    assert_eq!(count.get(), 1);
+    assert_eq!(sender.poll_pdu_ready(&mut cx), Poll::Ready(()));
+
+    // The room is taken only now, and the pack fills it.
+    let mut carried = CarriedList::default();
+    let mut slot = vec![0; 64];
+    assert_eq!(
+        sender
+            .poll_next_pdu_write(&mut cx, &mut carried, &mut slot)
+            .map(Result::unwrap),
+        Poll::Ready(64)
+    );
+    assert_eq!(carried.completed().collect::<Vec<_>>(), [id]);
+    assert_eq!(sender.poll_pdu_ready(&mut cx), Poll::Pending);
+}
+
+// Readiness reserves nothing: a bundle cancelled before any of it is sent
+// queues no Transfer Cancel, so the pack finds nothing and parks.
+#[test]
+fn a_cancel_after_readiness_leaves_nothing_to_pack() {
+    let mut sender = sender(64, 4);
+    let id = enqueue(&mut sender, bundle(200)).unwrap();
+    let (count, waker) = Count::waker();
+    let mut cx = Context::from_waker(&waker);
+    assert_eq!(sender.poll_pdu_ready(&mut cx), Poll::Ready(()));
+
+    assert!(sender.cancel(id));
+    let mut carried = CarriedList::default();
+    assert_eq!(
+        sender.poll_next_pdu_into(&mut cx, &mut carried),
+        Poll::Pending
+    );
+    assert_eq!(sender.poll_pdu_ready(&mut cx), Poll::Pending);
+    assert_eq!(count.get(), 0);
+}
+
+// The drain has one consumer, whichever call it parks through.
+#[test]
+fn readiness_and_the_polling_drain_share_one_waker() {
+    let (first, first_waker) = Count::waker();
+    let (second, second_waker) = Count::waker();
+    let mut carried = CarriedList::default();
+
+    let mut sender = sender(64, 4);
+    assert_eq!(
+        sender.poll_next_pdu_into(&mut Context::from_waker(&first_waker), &mut carried),
+        Poll::Pending
+    );
+    assert_eq!(
+        sender.poll_pdu_ready(&mut Context::from_waker(&second_waker)),
+        Poll::Pending
+    );
+    enqueue(&mut sender, bundle(20)).unwrap();
+    assert_eq!((first.get(), second.get()), (0, 1));
+    assert_eq!(drain(&mut sender).len(), 1);
+
+    assert_eq!(
+        sender.poll_pdu_ready(&mut Context::from_waker(&second_waker)),
+        Poll::Pending
+    );
+    assert_eq!(
+        sender.poll_next_pdu_into(&mut Context::from_waker(&first_waker), &mut carried),
+        Poll::Pending
+    );
+    enqueue(&mut sender, bundle(20)).unwrap();
+    assert_eq!((first.get(), second.get()), (1, 1));
 }
 
 // The shape of a CLA whose drain is an OS thread filling a shared-memory

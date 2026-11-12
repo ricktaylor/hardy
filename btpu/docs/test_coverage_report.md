@@ -51,12 +51,13 @@ Test names are listed per scenario in [`UTP-BTPU-01`](unit_test_plan.md) Section
 | `tests/streaming.rs` | 25 | 3.17 | Streamed delivery, its ending events and hints, refusal, foreign ids |
 | `tests/budget.rs` | 9 | 3.18 | Shared retention budget and CLA charges |
 | `tests/config.rs` | 4 | 3.19 | serde form (`serde` feature) |
-| `tests/wake.rs` | 19 | 3.20 | Producer, push, and drain wake-ups through the core API, an OS-thread drain |
+| `tests/alloc.rs` | 3 | 3.8 | Allocation counts under a counting global allocator: none for an empty drain through any output or for `poll_pdu_ready`, one for a PDU packed into `Bytes` |
+| `tests/wake.rs` | 24 | 3.20 | Producer, push, and drain wake-ups through the core API, readiness without packing, an OS-thread drain |
 | `tests/tower.rs` | 21 | 3.21 | `Service`/`Stream` adapters (`tower` feature) |
 | `tests/tunnel.rs` | 3 | 3.22 | Packet tunnel over lossless, lossy, and UDP loopback links |
-| Doctests | 4 | 3.22 | README example (`rand` feature), `codec::BundleExtent`, `receiver::ReceiverConfig`, `sender::Sender` event loop |
+| Doctests | 5 | 3.22 | README example (`rand` feature), `codec::BundleExtent`, `receiver::ReceiverConfig`, `sender::Sender` admission in one poll and event loop |
 
-**Total: 422 tests (77 inline, 341 integration, 4 doctests) with all features; 393 with default features.** The 29 feature-gated tests are 21 `tower`, 4 `serde`, 3 `rand` seeding tests, and the README doctest.
+**Total: 431 tests (77 inline, 349 integration, 5 doctests) with all features; 402 with default features.** The 29 feature-gated tests are 21 `tower`, 4 `serde`, 3 `rand` seeding tests, and the README doctest.
 
 ### Fuzz Tests
 
@@ -93,10 +94,10 @@ Cross-reference against [`UTP-BTPU-01`](unit_test_plan.md):
 | 3.17 Receiver: Streamed Delivery and Refusal | In-order release, reordering, empty segments, ending, released segments, hints, FEC, drop ids, refusal | 9 | 9 | Complete |
 | 3.18 Receiver: Shared Retention Budget | Charges, sharing, reason order, joining and leaving, accounting | 5 | 5 | Complete |
 | 3.19 Configuration Types | Sender, receiver, window size, serde | 4 | 4 | Complete |
-| 3.20 Sender Wake-ups | Admission, push, drain, OS-thread drain | 4 | 4 | Complete |
+| 3.20 Sender Wake-ups | Admission, push, drain, readiness without packing, OS-thread drain | 5 | 5 | Complete |
 | 3.21 Tower Adapters | Services, backpressure, wakeups, stream | 4 | 4 | Complete |
 | 3.22 End to End | Round trip, tunnel, doc examples | 3 | 3 | Complete |
-| **Total** | | **112** | **112** | **100%** |
+| **Total** | | **113** | **113** | **100%** |
 
 ## 4. Line Coverage
 
@@ -140,4 +141,4 @@ The two layers check different things. The unit tests pin specified behaviour to
 
 ## 7. Conclusion
 
-The BTP-U crate has 422 tests (341 integration, 77 inline, 4 doctests) and 3 fuzz targets, covering 112 of 112 planned scenarios (100%). No LLRs are assigned; every implemented section of `draft-ietf-dtn-btpu-04` and the framing and transfer rules of `draft-ietf-dtn-btpu-fec-02` trace to passing tests. Line coverage is generated into the [coverage summary](../../docs/coverage_summary.md). The strongest coverage is fault containment in the codec and the receiver's bounded-memory limits, which are also the fuzz targets' focus. The remaining gaps are the optional sender behaviours (interleaving and repetition), FEC schemes, and the lack of an interoperability peer.
+The BTP-U crate has 431 tests (349 integration, 77 inline, 5 doctests) and 3 fuzz targets, covering 113 of 113 planned scenarios (100%). No LLRs are assigned; every implemented section of `draft-ietf-dtn-btpu-04` and the framing and transfer rules of `draft-ietf-dtn-btpu-fec-02` trace to passing tests. Line coverage is generated into the [coverage summary](../../docs/coverage_summary.md). The strongest coverage is fault containment in the codec and the receiver's bounded-memory limits, which are also the fuzz targets' focus. The remaining gaps are the optional sender behaviours (interleaving and repetition), FEC schemes, and the lack of an interoperability peer.

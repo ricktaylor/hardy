@@ -221,9 +221,11 @@ impl Sender {
     /// a PDU.  A push that leaves its transfer waiting does not wake it.
     ///
     /// The drain has one consumer: a poll from another task replaces the
-    /// task registered before.  The task that drains must not also wait on
-    /// [`Self::poll_admit`] or [`Self::poll_push_ready`], since only the
-    /// drain frees what they wait for.
+    /// task registered before.  A drain that must hold room below before
+    /// it packs waits in [`Self::poll_pdu_ready`] first.  The task that
+    /// drains must not also wait on [`Self::poll_admit`] or
+    /// [`Self::poll_push_ready`], since only the drain frees what they
+    /// wait for.
     ///
     /// The polling calls take no [`NextPduOptions`].  The bytes a flush
     /// would send are those of transfers waiting on their producers, which
@@ -266,6 +268,40 @@ impl Sender {
                 self.register_drain_waker(cx);
                 Poll::Pending
             }
+        }
+    }
+
+    /// Whether a PDU is ready to pack, without packing it: `Ready` when
+    /// [`Self::next_pdu`] would return a PDU, and `Pending` otherwise, with
+    /// the task registered as [`Self::poll_next_pdu_write`] registers it.
+    /// For a drain that must hold room below before it packs (a
+    /// frame-service permit, or a ring slot that [`Self::next_pdu_write`]
+    /// packs into in place), so that it takes the room only once it has a
+    /// PDU to put there.  [`Self::has_pending`] does not answer this: it is
+    /// true for a transfer still waiting on its producer.
+    ///
+    /// The drain has one consumer, whichever call it parks through: a task
+    /// parked here replaces one parked in a `poll_next_pdu_*` call, and the
+    /// reverse.
+    ///
+    /// Readiness is a snapshot, and nothing is reserved.  A
+    /// [`Self::cancel`] between this call and the pack can leave nothing
+    /// to pack, so the pack that follows may still return `None` (or
+    /// `Pending`), and the caller gives the room back and polls here again.
+    /// Like the polling drains, it does not count what only a
+    /// [`NextPduOptions::flush`] would send.
+    ///
+    /// Costs the queue lookup that opens a PDU, which the pack then
+    /// repeats.
+    pub fn poll_pdu_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut scan = take(&mut self.scan);
+        let ready = self.ready(&mut scan, NextPduOptions::default()).is_some();
+        self.restore_scan(scan);
+        if ready {
+            Poll::Ready(())
+        } else {
+            self.register_drain_waker(cx);
+            Poll::Pending
         }
     }
 
@@ -725,6 +761,8 @@ impl Sink for BytesSink {
         } else {
             sender.planned_len(pdu_size).max(padded_len)
         });
+        // Counts the call, not the allocation: `tests/alloc.rs` checks
+        // that nothing allocates outside it.
         sender.stats.pdu_buffers_allocated += 1;
     }
 

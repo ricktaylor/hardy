@@ -351,6 +351,19 @@ impl Run {
         // and not woken has nothing to pack.  A flush packs bytes a plain
         // drain would leave, and no wake promises those.
         let asleep = self.drain_parked && !self.drain_woken.is_set() && !options.flush;
+        // Readiness answers for a drain without a flush, and packs nothing.
+        // It parks on the drain's waker, so it polls with the one the drain
+        // last parked with and leaves the wake bookkeeping as it was.
+        let ready = self
+            .sender
+            .poll_pdu_ready(&mut Context::from_waker(&Waker::from(
+                self.drain_woken.clone(),
+            )))
+            .is_ready();
+        assert!(
+            !asleep || !ready,
+            "a PDU was ready and the parked drain was not woken"
+        );
         let mut carried = CarriedList::new();
         let data = match &mut self.output {
             Output::Bytes => self.sender.next_pdu_into_with(&mut carried, options),
@@ -368,7 +381,11 @@ impl Run {
                     Bytes::from(out.iter().collect::<Vec<_>>().concat())
                 }),
         };
+        if !options.flush {
+            assert_eq!(ready, data.is_some(), "readiness disagrees with the drain");
+        }
         let Some(data) = data else {
+            assert!(!ready, "a flush packs whatever a plain drain would");
             assert!(
                 !blocked,
                 "a producer gated on push readiness would wait forever"
@@ -519,12 +536,13 @@ impl Run {
 // sender, whose PDUs are fed to a receiver over a lossless link.  The first
 // byte selects the link framing (bits 0 and 1: fixed-size, variable,
 // variable with a 46-byte floor, or variable with bare bundle frames), a
-// send queue high watermark below one segment (bit 2), `SegmentCutStrategy::Half`
-// (bit 3), an initial transfer number that rolls over (bit 4), and how
-// PDUs are taken (bits 5 and 6: as `Bytes`, written into a slice, or as
-// `PduSlices`, gathered); the second sets the PDU size, 24 to 279 bytes.  At the end every open bundle
-// is pushed and finished and the queue drained, and exactly the bundles
-// neither cancelled nor finished short must have arrived, once each.
+// send queue high watermark below one segment (bit 2),
+// `SegmentCutStrategy::Half` (bit 3), an initial transfer number that rolls
+// over (bit 4), and how PDUs are taken (bits 5 and 6: as `Bytes`, written
+// into a slice, or as `PduSlices`, gathered); the second sets the PDU size,
+// 24 to 279 bytes.  At the end every open bundle is pushed and finished and
+// the queue drained, and exactly the bundles neither cancelled nor finished
+// short must have arrived, once each.
 fuzz_target!(|data: &[u8]| {
     let mut input = Input(data);
     let (Some(flags), Some(pdu_byte)) = (input.byte(), input.byte()) else {
