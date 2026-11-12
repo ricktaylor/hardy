@@ -1,6 +1,7 @@
 mod metadata;
 mod status;
 
+pub(crate) mod arrival;
 pub(crate) mod parse;
 
 pub use self::metadata::{BundleMetadata, Origin};

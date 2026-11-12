@@ -35,3 +35,21 @@ impl KeyProvider for NullKeyProvider {
         Box::new(KeySet::EMPTY)
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use alloc::{boxed::Box, vec::Vec};
+
+    use hardy_bpv7::bpsec::key::{Key, KeySet, KeySource};
+
+    use super::KeyProvider;
+
+    /// A [`KeyProvider`] of fixed keys, for a pass that needs them.
+    pub(crate) struct Keys(pub(crate) Vec<Key>);
+
+    impl KeyProvider for Keys {
+        fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+            Box::new(KeySet::new(self.0.clone()))
+        }
+    }
+}
