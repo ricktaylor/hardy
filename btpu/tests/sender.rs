@@ -1708,8 +1708,10 @@ fn debug_summarises_the_queue_instead_of_printing_it() {
          link_framing: FixedSize, segment_cut_strategy: Full, window_size: WindowSize(4), \
          transfers_outstanding: 1, window_available: true, queued: 2, parked: 0, cancels: 0, \
          queued_bytes: 1005, assembling: 0, next_bundle_id: 1, watermark_wakers: 0, \
-         window_wakers: 0, push_wakers: 0, drain_waker: false, pdus_packed: 0, \
-         pdu_buffers_allocated: 0, transfers_allocated: 1, bundles_cancelled: 0, transfer_cancels_queued: 0 }}"
+         window_wakers: 0, push_wakers: 0, drain_waker: false, pdu_buffers_allocated: 0, \
+         pdus_packed: 0, pdu_bytes_packed: 0, bundle_bytes_packed: 0, padding_bytes_packed: 0, \
+         segments_packed: 0, flush_segments_packed: 0, transfers_allocated: 1, \
+         bundles_cancelled: 0, transfer_cancels_queued: 0 }}"
     );
     assert_eq!(format!("{s:?}"), summary);
 }

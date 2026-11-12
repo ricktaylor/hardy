@@ -439,6 +439,13 @@ pub struct Sender {
     scan: Scan,
     /// What the sender has done since it was created.
     stats: SenderStats,
+    /// PDU buffers allocated: one for each PDU packed by `next_pdu` or
+    /// `next_pdu_into`, and none for a call that finds nothing to pack,
+    /// for a bare bundle frame, which is its own buffer, or for a PDU
+    /// packed into memory the caller supplies.  Not one of the
+    /// [`SenderStats`]: it tells which output the caller chose, not what
+    /// the sender sent.
+    pdu_buffers_allocated: u64,
     /// The queue entries examined by packing, summed over every PDU.
     #[cfg(test)]
     probes: usize,
@@ -448,20 +455,14 @@ pub struct Sender {
 /// bytes would make the output as large as the backlog.
 impl fmt::Debug for Sender {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let SenderStats {
-            pdus_packed,
-            pdu_buffers_allocated,
-            transfers_allocated,
-            bundles_cancelled,
-            transfer_cancels_queued,
-        } = self.stats();
+        let stats = self.stats();
         f.debug_struct("Sender")
             .field("pdu_size", &self.pdu_size)
             .field("send_queue_high_watermark", &self.send_queue_high_watermark)
             .field("link_framing", &self.link_framing)
             .field("segment_cut_strategy", &self.segment_cut_strategy)
             .field("window_size", &self.allocator.window_size())
-            .field("transfers_outstanding", &self.allocator.in_progress())
+            .field("transfers_outstanding", &self.transfers_outstanding())
             .field("window_available", &self.is_window_available())
             .field("queued", &(self.order.len() + self.parked.len()))
             .field("parked", &self.parked.len())
@@ -473,11 +474,16 @@ impl fmt::Debug for Sender {
             .field("window_wakers", &self.window_wakers.len())
             .field("push_wakers", &self.push_wakers.len())
             .field("drain_waker", &self.drain_waker.is_some())
-            .field("pdus_packed", &pdus_packed)
-            .field("pdu_buffers_allocated", &pdu_buffers_allocated)
-            .field("transfers_allocated", &transfers_allocated)
-            .field("bundles_cancelled", &bundles_cancelled)
-            .field("transfer_cancels_queued", &transfer_cancels_queued)
+            .field("pdu_buffers_allocated", &self.pdu_buffers_allocated)
+            .field("pdus_packed", &stats.pdus_packed())
+            .field("pdu_bytes_packed", &stats.pdu_bytes_packed())
+            .field("bundle_bytes_packed", &stats.bundle_bytes_packed())
+            .field("padding_bytes_packed", &stats.padding_bytes_packed())
+            .field("segments_packed", &stats.segments_packed())
+            .field("flush_segments_packed", &stats.flush_segments_packed())
+            .field("transfers_allocated", &stats.transfers_allocated())
+            .field("bundles_cancelled", &stats.bundles_cancelled())
+            .field("transfer_cancels_queued", &stats.transfer_cancels_queued())
             .finish()
     }
 }
@@ -513,6 +519,7 @@ impl Sender {
             drain_waker: None,
             scan: Scan::default(),
             stats: SenderStats::default(),
+            pdu_buffers_allocated: 0,
             #[cfg(test)]
             probes: 0,
         }
@@ -572,7 +579,7 @@ impl Sender {
     /// every bundle, and wake the drain.
     fn queue_cancel(&mut self, transfer_number: u32) {
         self.cancels.push_back(transfer_number);
-        self.stats.transfer_cancels_queued += 1;
+        self.stats.transfer_cancel_queued();
         self.wake_drain();
     }
 
@@ -651,9 +658,23 @@ impl Sender {
         })
     }
 
-    /// The sender's running totals.
+    /// The sender's running totals since it was created (see
+    /// [`SenderStats`]).
     pub(crate) fn stats(&self) -> SenderStats {
         self.stats
+    }
+
+    /// The segmented bundles in progress: those admitted whose Transfer End
+    /// is not yet packed and that have not been cancelled.  Each holds a
+    /// transfer number.
+    ///
+    /// This is a count, and the window is a span: [`Self::enqueue`] and
+    /// [`Self::begin`] can refuse a segmented bundle with fewer transfers
+    /// in progress than the window size, when the oldest of them is a
+    /// window behind the next number.  [`Self::is_window_available`] is
+    /// the gate.
+    pub(crate) fn transfers_outstanding(&self) -> usize {
+        self.allocator.in_progress()
     }
 
     /// Wake every parked producer whose gate now holds, asking each gate's
@@ -1144,7 +1165,7 @@ impl Sender {
                 window_size: self.allocator.window_size(),
             });
         };
-        self.stats.transfers_allocated += 1;
+        self.stats.transfer_allocated();
         Ok(Planned::Transfer(QueuedTransfer::new(
             transfer_number,
             total_len,
@@ -1216,7 +1237,7 @@ impl Sender {
             // A transfer number or queued bytes freed, and the bundle's own
             // push is ready.  A Transfer Cancel queued in its place has
             // woken the drain already.
-            self.stats.bundles_cancelled += 1;
+            self.stats.bundle_cancelled();
             self.wake_producers();
         }
         cancelled
@@ -1365,7 +1386,222 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
-    use crate::codec::hint::{HintValue, Hints};
+    use crate::codec::{
+        decode_pdu,
+        hint::{HintValue, Hints},
+    };
+
+    const FLUSH: NextPduOptions = NextPduOptions { flush: true };
+
+    // The three ways a PDU leaves the sender, each returning it as `Bytes`.
+    type Drain = fn(&mut Sender, NextPduOptions) -> Option<Bytes>;
+
+    fn drain_into(s: &mut Sender, options: NextPduOptions) -> Option<Bytes> {
+        s.next_pdu_into_with(&mut CarriedList::new(), options)
+    }
+
+    fn drain_write(s: &mut Sender, options: NextPduOptions) -> Option<Bytes> {
+        let mut out = vec![0; s.pdu_size.get()];
+        let len = s
+            .next_pdu_write_with(&mut CarriedList::new(), &mut out, options)
+            .unwrap()?;
+        Some(Bytes::copy_from_slice(&out[..len]))
+    }
+
+    fn drain_vectored(s: &mut Sender, options: NextPduOptions) -> Option<Bytes> {
+        let mut out = PduSlices::default();
+        s.next_pdu_vectored_with(&mut CarriedList::new(), &mut out, options)?;
+        Some(Bytes::from(out.iter().collect::<Vec<_>>().concat()))
+    }
+
+    // Bundle Messages, a transfer cancelled after its first segment, a
+    // whole transfer, and a streamed one with a flushed segment, packed
+    // through `drain` into 64-byte PDUs: the totals and the PDUs.
+    fn mixed_traffic(link_framing: LinkFraming, drain: Drain) -> (SenderStats, Vec<Bytes>) {
+        let mut s = Sender::new(
+            SenderConfig {
+                pdu_size: PduSize::try_from(64).unwrap(),
+                link_framing,
+                ..SenderConfig::default()
+            },
+            0,
+        );
+        let enqueue = |s: &mut Sender, len| {
+            s.enqueue(Bytes::from(vec![0x9F; len]), SendOptions::default())
+                .unwrap()
+        };
+        let mut pdus = Vec::new();
+
+        enqueue(&mut s, 20);
+        enqueue(&mut s, 5);
+        let cancelled = enqueue(&mut s, 200);
+        enqueue(&mut s, 150);
+        // The second PDU opens with the first segment of the 200-byte
+        // bundle.
+        for _ in 0..2 {
+            pdus.push(drain(&mut s, NextPduOptions::default()).unwrap());
+        }
+        assert!(s.cancel(cancelled));
+
+        let mut handle = s.begin(300, SendOptions::default()).unwrap();
+        s.push(&mut handle, Bytes::from(vec![0x9F; 10])).unwrap();
+        pdus.extend(from_fn(|| drain(&mut s, NextPduOptions::default())));
+        // Only the streamed transfer is left, waiting on its producer.
+        pdus.push(drain(&mut s, FLUSH).unwrap());
+        assert_eq!(drain(&mut s, FLUSH), None);
+        s.push(&mut handle, Bytes::from(vec![0x9F; 290])).unwrap();
+        s.finish(handle).unwrap();
+        pdus.extend(from_fn(|| drain(&mut s, NextPduOptions::default())));
+        assert!(!s.has_pending());
+        (s.stats(), pdus)
+    }
+
+    // What the PDUs hold, read back from the wire: their bytes, the bundle
+    // bytes, the padding, and the segments.
+    fn wire_totals(pdus: &[Bytes]) -> (u64, u64, u64, u64) {
+        let (mut pdu_bytes, mut bundle_bytes, mut padding_bytes, mut segments) = (0, 0, 0, 0);
+        for pdu in pdus {
+            pdu_bytes += pdu.len();
+            // Whatever is not a message is padding, the zero bytes of
+            // Indefinite Padding included.
+            padding_bytes += pdu.len();
+            for message in decode_pdu(pdu.clone()) {
+                let message = message.unwrap();
+                match &message {
+                    Message::DefinitePadding { .. } => continue,
+                    Message::Bundle { data, .. } => bundle_bytes += data.len(),
+                    Message::TransferSegment(segment) | Message::TransferEnd(segment) => {
+                        segments += 1;
+                        bundle_bytes += segment.data.len();
+                    }
+                    _ => {}
+                }
+                padding_bytes -= encoded_message_len(&message);
+            }
+        }
+        (
+            pdu_bytes as u64,
+            bundle_bytes as u64,
+            padding_bytes as u64,
+            segments,
+        )
+    }
+
+    #[test]
+    fn stats_match_what_the_pdus_carry_through_every_output() {
+        for link_framing in [
+            LinkFraming::FixedSize,
+            LinkFraming::variable(BundleFraming::Message),
+        ] {
+            let (stats, pdus) = mixed_traffic(link_framing, drain_into);
+            assert_eq!(
+                (
+                    stats.pdu_bytes_packed(),
+                    stats.bundle_bytes_packed(),
+                    stats.padding_bytes_packed(),
+                    stats.segments_packed(),
+                ),
+                wire_totals(&pdus)
+            );
+            assert_eq!(stats.pdus_packed(), pdus.len() as u64);
+            // Every bundle byte once: the cancelled transfer's first
+            // segment, and nothing more of it.
+            assert!(stats.bundle_bytes_packed() > 20 + 5 + 150 + 300);
+            assert!(stats.bundle_bytes_packed() < 20 + 5 + 200 + 150 + 300);
+            assert_eq!(stats.flush_segments_packed(), 1);
+            assert_eq!(stats.transfers_allocated(), 3);
+            assert_eq!(stats.bundles_cancelled(), 1);
+            assert_eq!(stats.transfer_cancels_queued(), 1);
+            // Fixed-size PDUs are padded, and variable ones are not.
+            assert_eq!(
+                stats.padding_bytes_packed() > 0,
+                link_framing == LinkFraming::FixedSize
+            );
+
+            for drain in [drain_write as Drain, drain_vectored] {
+                assert_eq!(mixed_traffic(link_framing, drain), (stats, pdus.clone()));
+            }
+        }
+    }
+
+    #[test]
+    fn stats_count_a_flushed_segment_among_the_segments() {
+        let mut s = Sender::new(
+            SenderConfig {
+                pdu_size: PduSize::try_from(64).unwrap(),
+                ..SenderConfig::default()
+            },
+            0,
+        );
+        let mut handle = s.begin(300, SendOptions::default()).unwrap();
+        s.push(&mut handle, Bytes::from(vec![0x9F; 10])).unwrap();
+        assert_eq!(s.next_pdu(), None);
+        assert_eq!(s.stats().segments_packed(), 0);
+
+        assert_eq!(s.next_pdu_with(FLUSH).map(|pdu| pdu.data.len()), Some(64));
+        let flushed = s.stats();
+        assert_eq!(flushed.segments_packed(), 1);
+        assert_eq!(flushed.flush_segments_packed(), 1);
+        assert_eq!(flushed.bundle_bytes_packed(), 10);
+        assert_eq!(flushed.pdu_bytes_packed(), 64);
+
+        // The rest goes out as the cut strategy cuts it, flush or no.
+        s.push(&mut handle, Bytes::from(vec![0x9F; 290])).unwrap();
+        s.finish(handle).unwrap();
+        let pdus = from_fn(|| s.next_pdu_with(FLUSH)).count() as u64;
+        let stats = s.stats();
+        assert_eq!(stats.segments_packed(), 1 + pdus);
+        assert_eq!(stats.flush_segments_packed(), 1);
+        assert_eq!(stats.bundle_bytes_packed(), 300);
+        assert_eq!(stats.pdus_packed(), 1 + pdus);
+    }
+
+    #[test]
+    fn stats_count_a_bare_frame_as_bundle_bytes_and_no_padding() {
+        let mut s = Sender::new(
+            SenderConfig {
+                link_framing: LinkFraming::variable(BundleFraming::Bare),
+                ..SenderConfig::default()
+            },
+            0,
+        );
+        let id = s
+            .enqueue(Bytes::from(vec![0x9F; 100]), SendOptions::default())
+            .unwrap();
+        assert_eq!(id.kind(), SendKind::Bare);
+        assert_eq!(s.next_pdu().map(|pdu| pdu.data.len()), Some(100));
+        let stats = s.stats();
+        assert_eq!(stats.pdus_packed(), 1);
+        assert_eq!(stats.pdu_bytes_packed(), 100);
+        assert_eq!(stats.bundle_bytes_packed(), 100);
+        assert_eq!(stats.padding_bytes_packed(), 0);
+        assert_eq!(stats.segments_packed(), 0);
+    }
+
+    #[test]
+    fn transfers_outstanding_counts_the_transfer_numbers_held() {
+        let mut s = Sender::new(
+            SenderConfig {
+                pdu_size: PduSize::try_from(64).unwrap(),
+                ..SenderConfig::default()
+            },
+            0,
+        );
+        let segmented = || Bytes::from(vec![0x9F; 200]);
+        assert_eq!(s.transfers_outstanding(), 0);
+        let first = s.enqueue(segmented(), SendOptions::default()).unwrap();
+        s.enqueue(segmented(), SendOptions::default()).unwrap();
+        // A bundle that fits one PDU holds no transfer number.
+        s.enqueue(Bytes::from(vec![0x9F; 20]), SendOptions::default())
+            .unwrap();
+        assert_eq!(s.transfers_outstanding(), 2);
+
+        assert!(s.cancel(first));
+        assert_eq!(s.transfers_outstanding(), 1);
+        // The other's number is released when its End is packed.
+        while s.next_pdu().is_some() {}
+        assert_eq!(s.transfers_outstanding(), 0);
+    }
 
     #[test]
     fn stats_count_transfers_and_cancels_and_not_a_refusal() {
@@ -1385,31 +1621,32 @@ mod tests {
         let fitting = s
             .enqueue(Bytes::from_static(&[0x9F, 0xFF]), SendOptions::default())
             .unwrap();
-        assert_eq!(
-            s.stats(),
-            SenderStats {
-                transfers_allocated: window as u64,
-                ..SenderStats::default()
-            }
-        );
+        // The refusal is not counted, and nothing else has happened.
+        let admitted = s.stats();
+        assert_eq!(admitted.transfers_allocated(), window as u64);
+        assert_eq!(admitted.bundles_cancelled(), 0);
+        assert_eq!(admitted.transfer_cancels_queued(), 0);
+        assert_eq!(admitted.pdus_packed(), 0);
 
         // The oldest transfer has a segment out once a PDU is packed, so
         // cancelling it queues a Transfer Cancel; the others, and the
         // fitting bundle, are removed with nothing sent.
         assert!(s.next_pdu().is_some());
+        let packed = s.stats();
         assert!(s.cancel(ids[0]));
         assert!(s.cancel(ids[1]));
         assert!(s.cancel(fitting));
         assert!(!s.cancel(fitting));
+        let cancelled = s.stats();
+        assert_eq!(cancelled.transfers_allocated(), window as u64);
+        assert_eq!(cancelled.bundles_cancelled(), 3);
+        assert_eq!(cancelled.transfer_cancels_queued(), 1);
+        // A cancel packs nothing.
+        assert_eq!(packed.pdus_packed(), 1);
+        assert_eq!(cancelled.pdus_packed(), 1);
         assert_eq!(
-            s.stats(),
-            SenderStats {
-                pdus_packed: 1,
-                pdu_buffers_allocated: 1,
-                transfers_allocated: window as u64,
-                bundles_cancelled: 3,
-                transfer_cancels_queued: 1,
-            }
+            cancelled.bundle_bytes_packed(),
+            packed.bundle_bytes_packed()
         );
     }
 

@@ -136,6 +136,12 @@ impl QueuedTransfer {
         self.offset > 0 || self.cut.is_some()
     }
 
+    /// Whether the next segment cut is a further copy of one already cut,
+    /// byte-identical to it, and not a new segment.
+    pub fn repeating(&self) -> bool {
+        self.cut.is_some()
+    }
+
     /// Whether the last copy of every segment has been cut, the Transfer
     /// End included.
     pub fn finished(&self) -> bool {

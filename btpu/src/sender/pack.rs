@@ -329,7 +329,6 @@ impl Sender {
         if packed?.is_none() {
             return Ok(false);
         }
-        self.stats.pdus_packed += 1;
         // Draining frees queued bytes, may open the window, and may leave
         // a transfer waiting on its producer; wake the producers it frees.
         self.wake_producers();
@@ -433,6 +432,7 @@ impl Sender {
                         completes: true,
                     });
                     out.put_frame(data);
+                    self.stats.bare_frame_packed(data.len());
                     self.dequeue(seq);
                     return Ok(());
                 }
@@ -443,12 +443,22 @@ impl Sender {
                         completes: true,
                     });
                     put_queued(message, out);
+                    if let Message::Bundle { data, .. } = message {
+                        self.stats.bundle_message_packed(data.len());
+                    }
                     true
                 }
                 QueueEntry::Transfer(t) => {
                     let len = t
                         .next_chunk(pdu_size.saturating_sub(out.used()))
                         .expect("next_source checked that it fits");
+                    // Unreachable while `COPIES` is 1, so no test covers
+                    // the guard.  Repetition (Section 6) needs one: a
+                    // second copy adds to the PDU bytes, and not to the
+                    // bundle bytes or the segments.
+                    if !t.repeating() {
+                        self.stats.segment_packed(len);
+                    }
                     self.queued_bytes -= t.cut(len, out) as u64;
                     let completes = t.finished();
                     // A transfer supplies one segment to a PDU: the cut
@@ -483,9 +493,15 @@ impl Sender {
                 let t = self
                     .transfer_mut(seq)
                     .expect("flush_source names transfers");
+                // As for the guard above: a flushed segment's further
+                // copies need the same test.
+                let first_copy = !t.repeating();
                 let released = t.cut(len, out);
                 let transfer_number = t.transfer_number;
                 self.queued_bytes -= released as u64;
+                if first_copy {
+                    self.stats.segment_flushed(len);
+                }
                 // A flushed segment never ends its transfer, and a transfer
                 // packed above was left no room or no bytes, so this is
                 // its only entry.
@@ -499,6 +515,7 @@ impl Sender {
         }
         let padding = self.padded_len().saturating_sub(out.used());
         out.put_copied(|buf| put_padding(buf, padding));
+        self.stats.pdu_packed(out.used(), padding);
         Ok(())
     }
 
@@ -763,7 +780,7 @@ impl Sink for BytesSink {
         });
         // Counts the call, not the allocation: `tests/alloc.rs` checks
         // that nothing allocates outside it.
-        sender.stats.pdu_buffers_allocated += 1;
+        sender.pdu_buffers_allocated += 1;
     }
 
     fn used(&self) -> usize {
@@ -828,8 +845,8 @@ mod tests {
         for _ in 0..10 {
             assert_eq!(s.next_pdu_into(&mut carried), None);
         }
-        assert_eq!(s.stats().pdu_buffers_allocated, 0);
-        assert_eq!(s.stats().pdus_packed, 0);
+        assert_eq!(s.pdu_buffers_allocated, 0);
+        assert_eq!(s.stats().pdus_packed(), 0);
 
         s.enqueue(Bytes::from(vec![0x9F; 100]), SendOptions::default())
             .unwrap();
@@ -839,8 +856,8 @@ mod tests {
             Ok(true)
         );
         assert!(sink.buf.capacity() >= s.pdu_size.get());
-        assert_eq!(s.stats().pdu_buffers_allocated, 1);
-        assert_eq!(s.stats().pdus_packed, 1);
+        assert_eq!(s.pdu_buffers_allocated, 1);
+        assert_eq!(s.stats().pdus_packed(), 1);
 
         // A bare bundle frame is its own buffer.
         let mut bare = Sender::new(
@@ -854,16 +871,16 @@ mod tests {
         bare.enqueue(frame.clone(), SendOptions::default()).unwrap();
         let pdu = bare.next_pdu_into(&mut carried).unwrap();
         assert_eq!(pdu.as_ptr(), frame.as_ptr());
-        assert_eq!(bare.stats().pdu_buffers_allocated, 0);
-        assert_eq!(bare.stats().pdus_packed, 1);
+        assert_eq!(bare.pdu_buffers_allocated, 0);
+        assert_eq!(bare.stats().pdus_packed(), 1);
 
         // A PDU packed into the caller's memory allocates no buffer.
         s.enqueue(Bytes::from(vec![0x9F; 100]), SendOptions::default())
             .unwrap();
         let mut out = vec![0; s.pdu_size.get()];
         assert!(s.next_pdu_write(&mut carried, &mut out).unwrap().is_some());
-        assert_eq!(s.stats().pdu_buffers_allocated, 1);
-        assert_eq!(s.stats().pdus_packed, 2);
+        assert_eq!(s.pdu_buffers_allocated, 1);
+        assert_eq!(s.stats().pdus_packed(), 2);
     }
 
     #[test]
