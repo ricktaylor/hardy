@@ -98,7 +98,8 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let encryptor = Encryptor::new(&raw, &data)
+        let mut encryptor = Encryptor::new(&raw, &data);
+        encryptor
             .encrypt_block(
                 self.block,
                 hardy_bpv7::bpsec::encryptor::Context::AES_GCM(rfc9173::ArgFlags::to_scope_flags(
@@ -107,7 +108,7 @@ impl Command {
                 self.source.unwrap_or_else(|| raw.primary.id.source.clone()),
                 &key,
             )
-            .map_err(|(_, e)| anyhow::anyhow!("Failed to encrypt block: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to encrypt block: {e}"))?;
 
         let data = encryptor
             .rebuild()

@@ -1055,19 +1055,16 @@ mod tests {
             .expect("builder emitted the Hop Count block")
             .0;
 
-        let encrypted = Bytes::from(
-            Encryptor::new(&built, &data)
-                .encrypt_block(
-                    hop_block,
-                    Context::AES_GCM(Default::default()),
-                    "ipn:0.2.1".parse().unwrap(),
-                    &key,
-                )
-                .map_err(|(_, e)| e)
-                .expect("encrypt the Hop Count block")
-                .rebuild()
-                .expect("rebuild the encrypted bundle"),
-        );
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
+            .encrypt_block(
+                hop_block,
+                Context::AES_GCM(Default::default()),
+                "ipn:0.2.1".parse().unwrap(),
+                &key,
+            )
+            .expect("encrypt the Hop Count block");
+        let encrypted = Bytes::from(encryptor.rebuild().expect("rebuild the encrypted bundle"));
         (encrypted, hop_block, key)
     }
 
@@ -1174,17 +1171,16 @@ mod tests {
             .find(|(_, b)| matches!(b.block_type, block::Type::Unrecognised(777)))
             .expect("the 777 block is present")
             .0;
-        let signed = Signer::new(&built.bundle, &built.data)
+        let mut signer = Signer::new(&built.bundle, &built.data);
+        signer
             .sign_block(
                 signed_block,
                 Context::HMAC_SHA2(Default::default()),
                 "ipn:1.2".parse().unwrap(),
                 &key,
             )
-            .map_err(|(_, e)| e)
-            .expect("sign the 777 block")
-            .rebuild()
-            .expect("rebuild the signed bundle");
+            .expect("sign the 777 block");
+        let signed = signer.rebuild().expect("rebuild the signed bundle");
 
         // Flip the signed block's first data byte.
         let at = parse::parse(Bytes::copy_from_slice(&signed))
@@ -1653,19 +1649,16 @@ mod tests {
             .with_payload(vec![0xA5_u8; 1000].as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
-        let encrypted = Bytes::from(
-            Encryptor::new(&built, &data)
-                .encrypt_block(
-                    1,
-                    Context::AES_GCM(Default::default()),
-                    "ipn:1.2".parse().unwrap(),
-                    &key,
-                )
-                .map_err(|(_, e)| e)
-                .expect("encrypt the payload")
-                .rebuild()
-                .expect("rebuild the encrypted bundle"),
-        );
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
+            .encrypt_block(
+                1,
+                Context::AES_GCM(Default::default()),
+                "ipn:1.2".parse().unwrap(),
+                &key,
+            )
+            .expect("encrypt the payload");
+        let encrypted = Bytes::from(encryptor.rebuild().expect("rebuild the encrypted bundle"));
         let start = parse::parse(encrypted.clone()).unwrap().bundle.blocks[&1]
             .payload_range()
             .start as usize;
@@ -1695,15 +1688,14 @@ mod tests {
         };
 
         let parsed = parse::parse(data.clone()).unwrap();
-        let chunks = Editor::new(&parsed.bundle, data)
-            .with_fragment_info(Some(FragmentInfo {
+        let mut editor = Editor::new(&parsed.bundle, data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
                 offset,
                 total_adu_length: 4000,
             }))
-            .map_err(|(_, e)| e)
-            .expect("set the fragment info")
-            .rebuild()
-            .expect("rebuild the fragment");
+            .expect("set the fragment info");
+        let chunks = editor.rebuild().expect("rebuild the fragment");
         Bytes::from(Chunk::flatten(chunks, data).into_vec())
     }
 

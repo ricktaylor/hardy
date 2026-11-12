@@ -541,7 +541,7 @@ mod cascade_reencryption_tests {
             raw_parse_tuple(Bytes::copy_from_slice(bundle_bytes)).expect("parse");
         let mut signer = bpsec::signer::Signer::new(&raw, &bundle_bytes);
         for &t in targets {
-            signer = signer
+            signer
                 .sign_block(
                     t,
                     bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags {
@@ -551,7 +551,6 @@ mod cascade_reencryption_tests {
                     "ipn:2.1".parse().unwrap(),
                     key,
                 )
-                .map_err(|(_, e)| e)
                 .unwrap();
         }
         signer.rebuild().unwrap()
@@ -576,14 +575,14 @@ mod cascade_reencryption_tests {
             include_security_header: false,
             ..bpsec::rfc9173::ScopeFlags::default()
         };
-        let encryptor = bpsec::encryptor::Encryptor::new(&raw, &bundle_bytes)
+        let mut encryptor = bpsec::encryptor::Encryptor::new(&raw, &bundle_bytes);
+        encryptor
             .encrypt_block(
                 target,
                 bpsec::encryptor::Context::AES_GCM(flags),
                 source.parse().unwrap(),
                 enc_k,
             )
-            .map_err(|(_, e)| e)
             .unwrap();
         encryptor.rebuild().unwrap()
     }
@@ -627,11 +626,8 @@ mod cascade_reencryption_tests {
             "the BIB is encrypted"
         );
 
-        let refused = Editor::new(&parsed.bundle, &parsed.data)
-            .with_key_source(&keys)
-            .remove_blocks(&HashSet::from([2]))
-            .map(|_| ())
-            .map_err(|(_, e)| e);
+        let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(&keys);
+        let refused = editor.remove_blocks(&HashSet::from([2])).map(|_| ());
         assert!(
             matches!(
                 refused,
@@ -640,10 +636,9 @@ mod cascade_reencryption_tests {
             "{refused:?}"
         );
 
-        let (editor, removed) = Editor::new(&parsed.bundle, &parsed.data)
-            .with_key_source(&keys)
+        let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(&keys);
+        let removed = editor
             .remove_blocks(&HashSet::from([2, bib]))
-            .map_err(|(_, e)| e)
             .expect("naming the BIB removes it whole");
         assert_eq!(removed, HashSet::from([2, bib]));
         let rebuilt = parse::parse(Bytes::from(editor::Chunk::flatten(
@@ -868,17 +863,15 @@ mod cascade_reencryption_tests {
             ),
             Err(editor::Error::Bpsec(bpsec::Error::MissingSecurityTarget))
         ));
+        let mut editor = Editor::new(raw, data).with_key_source(&keys);
         assert!(matches!(
-            Editor::new(raw, data)
-                .with_key_source(&keys)
-                .remove_encryption(2),
-            Err((_, editor::Error::Bpsec(bpsec::Error::MissingSecurityTarget)))
+            editor.remove_encryption(2),
+            Err(editor::Error::Bpsec(bpsec::Error::MissingSecurityTarget))
         ));
+        let mut editor = Editor::new(raw, data).with_key_source(&keys);
         assert!(matches!(
-            Editor::new(raw, data)
-                .with_key_source(&keys)
-                .update_block(2),
-            Err((_, editor::Error::Bpsec(bpsec::Error::MissingSecurityTarget)))
+            editor.update_block(2),
+            Err(editor::Error::Bpsec(bpsec::Error::MissingSecurityTarget))
         ));
         assert!(matches!(
             common::verify_as_receiver(&mut parsed, &keys, &HashSet::from([2])),
@@ -973,10 +966,8 @@ mod cascade_reencryption_tests {
         assert!(matches!(raw.blocks[&1].bib, block::BibCoverage::Some(n) if n == bib_num));
         assert!(matches!(raw.blocks[&2].bib, block::BibCoverage::Some(n) if n == bib_num));
 
-        let (editor, removed) = Editor::new(&raw, &bytes)
-            .remove_blocks(&HashSet::from([bib_num]))
-            .map_err(|(_, e)| e)
-            .unwrap();
+        let mut editor = Editor::new(&raw, &bytes);
+        let removed = editor.remove_blocks(&HashSet::from([bib_num])).unwrap();
         assert_eq!(removed, HashSet::from([bib_num]));
 
         let (bundle, _) = editor.rebuild_bundle().unwrap();
@@ -1002,12 +993,14 @@ mod cascade_reencryption_tests {
 
         // Plain bundle: primary and payload are refused outright.
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).unwrap();
-        let (_, err) = Editor::new(&raw, &bytes)
+        let mut editor = Editor::new(&raw, &bytes);
+        let err = editor
             .remove_blocks(&HashSet::from([0u64]))
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(err, editor::Error::PrimaryBlock), "{err}");
-        let (_, err) = Editor::new(&raw, &bytes)
+        let mut editor = Editor::new(&raw, &bytes);
+        let err = editor
             .remove_blocks(&HashSet::from([1u64]))
             .map(|_| ())
             .unwrap_err();
@@ -1020,7 +1013,8 @@ mod cascade_reencryption_tests {
         let encrypted = encrypt(&signed, 2, &enc_k);
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
         let bcb_over_2 = raw.blocks[&2].bcb.expect("block 2 is BCB-encrypted");
-        let (_, err) = Editor::new(&raw, &bytes)
+        let mut editor = Editor::new(&raw, &bytes);
+        let err = editor
             .remove_blocks(&HashSet::from([bcb_over_2]))
             .map(|_| ())
             .unwrap_err();
@@ -1046,10 +1040,8 @@ mod cascade_reencryption_tests {
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
         assert!(matches!(raw.blocks[&2].bib, block::BibCoverage::Maybe));
 
-        let refused = Editor::new(&raw, &bytes)
-            .remove_blocks(&HashSet::from([2u64]))
-            .map(|_| ())
-            .map_err(|(_, e)| e);
+        let mut editor = Editor::new(&raw, &bytes);
+        let refused = editor.remove_blocks(&HashSet::from([2u64])).map(|_| ());
         assert!(
             matches!(refused, Err(editor::Error::MaybeHasBib(2))),
             "{refused:?}"
@@ -1073,10 +1065,8 @@ mod cascade_reencryption_tests {
         let base = build_with_unknown_block();
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).unwrap();
 
-        let (_, removed) = Editor::new(&raw, &bytes)
-            .remove_blocks(&HashSet::from([99u64]))
-            .map_err(|(_, e)| e)
-            .unwrap();
+        let mut editor = Editor::new(&raw, &bytes);
+        let removed = editor.remove_blocks(&HashSet::from([99u64])).unwrap();
         assert!(removed.is_empty());
 
         let result = rewrite::apply_rewrites(
@@ -1107,11 +1097,8 @@ mod cascade_reencryption_tests {
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
         let bcb_num = raw.blocks[&1].bcb.expect("payload is BCB-encrypted");
 
-        let editor = Editor::new(&raw, &bytes)
-            .with_key_source(&keys)
-            .remove_encryption(1)
-            .map_err(|(_, e)| e)
-            .unwrap();
+        let mut editor = Editor::new(&raw, &bytes).with_key_source(&keys);
+        editor.remove_encryption(1).unwrap();
         let (bundle, _) = editor.rebuild_bundle().unwrap();
         assert!(
             !bundle.blocks.contains_key(&bcb_num),
@@ -1199,11 +1186,8 @@ mod cascade_reencryption_tests {
         let bib = find_bib(&raw).expect("BIB present");
 
         let keys = bpsec::key::KeySet::new(vec![enc_k]);
-        let editor = Editor::new(&raw, &bytes)
-            .with_key_source(&keys)
-            .remove_encryption(2)
-            .map_err(|(_, e)| e)
-            .unwrap();
+        let mut editor = Editor::new(&raw, &bytes).with_key_source(&keys);
+        editor.remove_encryption(2).unwrap();
         assert_coupled_set_decrypted(editor, &bytes, bib, &sign_k);
     }
 
@@ -1222,11 +1206,8 @@ mod cascade_reencryption_tests {
         let bib = find_bib(&raw).expect("BIB present");
 
         let keys = bpsec::key::KeySet::new(vec![enc_k]);
-        let editor = Editor::new(&raw, &bytes)
-            .with_key_source(&keys)
-            .remove_encryption(bib)
-            .map_err(|(_, e)| e)
-            .unwrap();
+        let mut editor = Editor::new(&raw, &bytes).with_key_source(&keys);
+        editor.remove_encryption(bib).unwrap();
         assert_coupled_set_decrypted(editor, &bytes, bib, &sign_k);
     }
 
@@ -1261,11 +1242,10 @@ mod cascade_reencryption_tests {
         let (bytes, raw, _, _) =
             raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).expect("parse");
         let no_keys = empty_keys();
-        let Err((editor, e)) = Editor::new(&raw, &bytes)
+        let mut editor = Editor::new(&raw, &bytes)
             .with_key_source(&no_keys)
-            .with_decrypted(&partial)
-            .remove_encryption(2)
-        else {
+            .with_decrypted(&partial);
+        let Err(e) = editor.remove_encryption(2) else {
             panic!("block 3's plaintext is neither supplied nor decryptable");
         };
         assert!(matches!(e, editor::Error::Bpsec(bpsec::Error::NoKey)));
@@ -1275,12 +1255,10 @@ mod cascade_reencryption_tests {
             "nothing is removed"
         );
 
-        let editor = Editor::new(&raw, &bytes)
+        let mut editor = Editor::new(&raw, &bytes)
             .with_key_source(&no_keys)
-            .with_decrypted(&complete)
-            .remove_encryption(2)
-            .map_err(|(_, e)| e)
-            .unwrap();
+            .with_decrypted(&complete);
+        editor.remove_encryption(2).unwrap();
         assert_coupled_set_decrypted(editor, &bytes, bib, &sign_k);
     }
 
@@ -1312,20 +1290,15 @@ mod cascade_reencryption_tests {
         let source_b: eid::Eid = "ipn:3.1".parse().unwrap();
 
         let only_b = KeysBySource(vec![(source_b.clone(), key_b.clone())]);
-        let Err((_, e)) = Editor::new(&raw, &bytes)
-            .with_key_source(&only_b)
-            .remove_encryption(3)
-        else {
+        let mut editor = Editor::new(&raw, &bytes).with_key_source(&only_b);
+        let Err(e) = editor.remove_encryption(3) else {
             panic!("the BIB this node cannot decrypt may cover block 3");
         };
         assert!(matches!(e, editor::Error::Bpsec(bpsec::Error::NoKey)));
 
         let both = KeysBySource(vec![(source_a, key_a), (source_b, key_b)]);
-        let editor = Editor::new(&raw, &bytes)
-            .with_key_source(&both)
-            .remove_encryption(3)
-            .map_err(|(_, e)| e)
-            .unwrap();
+        let mut editor = Editor::new(&raw, &bytes).with_key_source(&both);
+        editor.remove_encryption(3).unwrap();
         let (bundle, chunks) = editor.rebuild_bundle().unwrap();
         assert_eq!(bundle.blocks[&3].bib, block::BibCoverage::None);
         let decrypted = editor::Chunk::flatten(chunks, &bytes);
@@ -1348,12 +1321,9 @@ mod cascade_reencryption_tests {
         let signed = sign(&build_with_unknown_block(), &[2], &sign_key());
         let (data, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&signed)).expect("parse");
         assert_eq!(raw.blocks[&2].crc_type, crc::CrcType::None);
-        let (bundle, _) = Editor::new(&raw, &data)
-            .remove_integrity(2)
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild_bundle()
-            .unwrap();
+        let mut editor = Editor::new(&raw, &data);
+        editor.remove_integrity(2).unwrap();
+        let (bundle, _) = editor.rebuild_bundle().unwrap();
         assert_eq!(bundle.blocks[&2].crc_type, crc::CrcType::None);
 
         let key = sign_key();
@@ -1374,12 +1344,9 @@ mod cascade_reencryption_tests {
             found_targets(&facts, Checked::Verified).contains(&2),
             "the operation verifies over a target that carries a CRC"
         );
-        let (bundle, _) = Editor::new(&parsed.bundle, &parsed.data)
-            .remove_integrity(2)
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild_bundle()
-            .unwrap();
+        let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+        editor.remove_integrity(2).unwrap();
+        let (bundle, _) = editor.rebuild_bundle().unwrap();
         assert_eq!(bundle.blocks[&2].crc_type, crc::CrcType::CRC32_CASTAGNOLI);
 
         let (_, base) =
@@ -1396,12 +1363,9 @@ mod cascade_reencryption_tests {
         );
         let (data, raw, _, _) = raw_parse_tuple(Bytes::from(unrecognised)).expect("parse");
         assert_eq!(raw.blocks[&2].bib, block::BibCoverage::Some(3));
-        let (bundle, _) = Editor::new(&raw, &data)
-            .remove_integrity(2)
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild_bundle()
-            .unwrap();
+        let mut editor = Editor::new(&raw, &data);
+        editor.remove_integrity(2).unwrap();
+        let (bundle, _) = editor.rebuild_bundle().unwrap();
         assert_eq!(bundle.blocks[&2].crc_type, crc::CrcType::None);
         assert!(!bundle.blocks.contains_key(&3), "the emptied BIB goes");
     }
@@ -1421,14 +1385,11 @@ mod cascade_reencryption_tests {
         let encrypted = encrypt(&build_with_unknown_block(), 2, &enc_key());
         let (data, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).expect("parse");
         assert_eq!(raw.blocks[&2].crc_type, crc::CrcType::None);
-        let (bundle, _) = Editor::new(&raw, &data)
+        let mut editor = Editor::new(&raw, &data)
             .with_key_source(&no_keys)
-            .with_decrypted(&plaintexts)
-            .remove_encryption(2)
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild_bundle()
-            .unwrap();
+            .with_decrypted(&plaintexts);
+        editor.remove_encryption(2).unwrap();
+        let (bundle, _) = editor.rebuild_bundle().unwrap();
         assert_eq!(bundle.blocks[&2].crc_type, crc::CrcType::None);
 
         let enc = enc_key();
@@ -1440,13 +1401,10 @@ mod cascade_reencryption_tests {
             "encrypting leaves the target's CRC type, the CRC over its ciphertext"
         );
         assert!(raw.blocks[&2].bcb.is_some());
-        let (bundle, chunks) = Editor::new(&raw, &data)
-            .with_key_source(&bpsec::key::KeySet::new(vec![enc]))
-            .remove_encryption(2)
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild_bundle()
-            .unwrap();
+        let enc_keys = bpsec::key::KeySet::new(vec![enc]);
+        let mut editor = Editor::new(&raw, &data).with_key_source(&enc_keys);
+        editor.remove_encryption(2).unwrap();
+        let (bundle, chunks) = editor.rebuild_bundle().unwrap();
         assert_eq!(bundle.blocks[&2].crc_type, crc::CrcType::CRC32_CASTAGNOLI);
         let decrypted = editor::Chunk::flatten(chunks, &data);
         let (data, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&decrypted))
@@ -1468,14 +1426,11 @@ mod cascade_reencryption_tests {
         );
         let (data, raw, _, _) = raw_parse_tuple(Bytes::from(unrecognised)).expect("parse");
         assert_eq!(raw.blocks[&2].bcb, Some(3));
-        let (bundle, _) = Editor::new(&raw, &data)
+        let mut editor = Editor::new(&raw, &data)
             .with_key_source(&no_keys)
-            .with_decrypted(&plaintexts)
-            .remove_encryption(2)
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild_bundle()
-            .unwrap();
+            .with_decrypted(&plaintexts);
+        editor.remove_encryption(2).unwrap();
+        let (bundle, _) = editor.rebuild_bundle().unwrap();
         assert_eq!(bundle.blocks[&2].crc_type, crc::CrcType::None);
         assert!(!bundle.blocks.contains_key(&3), "the emptied BCB goes");
     }
@@ -1502,12 +1457,10 @@ mod cascade_reencryption_tests {
         assert_eq!(raw.blocks[&2].crc_type, crc::CrcType::CRC32_CASTAGNOLI);
         assert_eq!(raw.blocks[&2].bcb, Some(3));
 
+        let mut editor = Editor::new(&raw, &data);
         assert!(matches!(
-            Editor::new(&raw, &data).remove_encryption(2),
-            Err((
-                _,
-                editor::Error::Bpsec(bpsec::Error::UnrecognisedContext(99))
-            ))
+            editor.remove_encryption(2),
+            Err(editor::Error::Bpsec(bpsec::Error::UnrecognisedContext(99)))
         ));
     }
 
@@ -1634,17 +1587,16 @@ mod deferred_payload_bib_tests {
                 .build(creation_timestamp::CreationTimestamp::now())
                 .unwrap();
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).expect("parse");
-        bpsec::signer::Signer::new(&raw, &bytes)
+        let mut signer = bpsec::signer::Signer::new(&raw, &bytes);
+        signer
             .sign_block(
                 1,
                 bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
                 key,
             )
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild()
-            .unwrap()
+            .unwrap();
+        signer.rebuild().unwrap()
     }
 
     // Bind the key once; the signed bundle and the verifying KeySet derive
@@ -1914,7 +1866,8 @@ mod deferred_payload_bib_tests {
         enc_key: &bpsec::key::Key,
     ) -> Box<[u8]> {
         let signed = parse::parse(Bytes::from(signed_large_payload(sign_key))).unwrap();
-        bpsec::encryptor::Encryptor::new(&signed.bundle, &signed.data)
+        let mut encryptor = bpsec::encryptor::Encryptor::new(&signed.bundle, &signed.data);
+        encryptor
             .encrypt_block(
                 1,
                 bpsec::encryptor::Context::AES_GCM(bpsec::rfc9173::ScopeFlags {
@@ -1924,10 +1877,8 @@ mod deferred_payload_bib_tests {
                 "ipn:2.1".parse().unwrap(),
                 enc_key,
             )
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild()
-            .unwrap()
+            .unwrap();
+        encryptor.rebuild().unwrap()
     }
 
     // The payload's plaintext, decrypted from the whole bundle.
@@ -2196,12 +2147,11 @@ mod deferred_payload_bib_tests {
         let full = signed_then_encrypted_payload(&sign_key(), &enc_key);
         let keys = bpsec::key::KeySet::new(vec![enc_key.clone()]);
         let parsed = parse_headers_only(&full);
-        let decryptor =
+        let mut decryptor =
             payload_decryptor(&parsed.data, &keys, &parsed.bundle.blocks, &parsed.bcbs).unwrap();
         let shown = format!("{decryptor:?}");
         assert!(shown.contains("plaintext_len"), "{shown}");
         assert!(!shown.contains(&key_bytes), "{shown}");
-        let mut decryptor = decryptor;
         decryptor.update(received_payload(&parsed.bundle, &full));
         decryptor
             .finish()
@@ -2226,17 +2176,16 @@ mod deferred_payload_bib_tests {
                 .build(creation_timestamp::CreationTimestamp::now())
                 .unwrap();
         let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).unwrap();
-        let signed = bpsec::signer::Signer::new(&raw, &bytes)
+        let mut signer = bpsec::signer::Signer::new(&raw, &bytes);
+        signer
             .sign_block(
                 0,
                 bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
                 &key,
             )
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild()
             .unwrap();
+        let signed = signer.rebuild().unwrap();
         let parsed = parse::parse(Bytes::from(signed)).unwrap();
         let block::BibCoverage::Some(bib) = parsed.bundle.blocks[&0].bib else {
             panic!("the primary is signed");
@@ -2306,37 +2255,32 @@ fn signed_then_encrypted(
         .0;
     let (sign_key, enc_key) = generated_keys();
 
-    let signed = parse::parse(Bytes::from(
-        signer::Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                target,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source.clone(),
-                &sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the per-hop block")
-            .rebuild()
-            .expect("rebuild signed"),
-    ))
-    .unwrap();
+    let mut signer = signer::Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            target,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .expect("sign the per-hop block");
+    let signed = parse::parse(Bytes::from(signer.rebuild().expect("rebuild signed"))).unwrap();
     let flags = ScopeFlags {
         include_security_header: false,
         ..ScopeFlags::default()
     };
-    let mut encrypting = encryptor::Encryptor::new(&signed.bundle, &signed.data)
+    let mut encrypting = encryptor::Encryptor::new(&signed.bundle, &signed.data);
+    encrypting
         .encrypt_block(
             target,
             encryptor::Context::AES_GCM(flags.clone()),
             source.clone(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
         .expect("encrypt the per-hop block, and so its BIB");
     if encrypt_payload {
-        encrypting = encrypting
+        encrypting
             .encrypt_block(1, encryptor::Context::AES_GCM(flags), source, &enc_key)
-            .map_err(|(_, e)| e)
             .expect("encrypt the payload");
     }
     let parsed = parse::parse(Bytes::from(
@@ -2391,27 +2335,25 @@ fn signed_together_then_encrypted_with(
 
     let mut signing = signer::Signer::new(&built.bundle, &built.data);
     for &n in &numbers {
-        signing = signing
+        signing
             .sign_block(
                 n,
                 signer::Context::HMAC_SHA2(flags.clone()),
                 source.clone(),
                 sign_key,
             )
-            .map_err(|(_, e)| e)
             .expect("sign the target");
     }
     let signed = parse::parse(Bytes::from(signing.rebuild().expect("rebuild signed"))).unwrap();
     let mut encrypting = encryptor::Encryptor::new(&signed.bundle, &signed.data);
     for &n in &numbers {
-        encrypting = encrypting
+        encrypting
             .encrypt_block(
                 n,
                 encryptor::Context::AES_GCM(flags.clone()),
                 source.clone(),
                 enc_key,
             )
-            .map_err(|(_, e)| e)
             .expect("encrypt the target");
     }
     let parsed = parse::parse(Bytes::from(
@@ -2561,18 +2503,18 @@ fn accept_checks_a_bib_on_the_primary_block() {
 
     let (signing, rotated) = distinct_keys(32);
     let built = per_hop_bundle(creation_timestamp::CreationTimestamp::now());
+    let mut signer = signer::Signer::new(&built.bundle, &built.data);
+    let key = hmac_key(&signing);
+    signer
+        .sign_block(
+            0,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:1.3.1".parse().unwrap(),
+            &key,
+        )
+        .expect("sign the primary block");
     let signed = parse::parse(Bytes::from(
-        signer::Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                0,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                "ipn:1.3.1".parse().unwrap(),
-                &hmac_key(&signing),
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the primary block")
-            .rebuild()
-            .expect("rebuild the signed bundle"),
+        signer.rebuild().expect("rebuild the signed bundle"),
     ))
     .unwrap();
     let bib = the_bib(&signed);
@@ -2868,35 +2810,28 @@ fn a_per_hop_acceptor_reads_only_its_sources_encrypted_bibs() {
 
     // The source signs its payload and encrypts it, its BIB with it, the
     // primary block in both scopes.
-    let signed = parse::parse(Bytes::from(
-        signer::Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                1,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source.clone(),
-                &sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the payload")
-            .rebuild()
-            .expect("rebuild signed"),
-    ))
-    .unwrap();
+    let mut signer = signer::Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .expect("sign the payload");
+    let signed = parse::parse(Bytes::from(signer.rebuild().expect("rebuild signed"))).unwrap();
     let sources_bib = the_bib(&signed);
-    let protected = parse::parse(Bytes::from(
-        encryptor::Encryptor::new(&signed.bundle, &signed.data)
-            .encrypt_block(
-                1,
-                encryptor::Context::AES_GCM(ScopeFlags::default()),
-                source,
-                &enc_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the payload")
-            .rebuild()
-            .expect("rebuild encrypted"),
-    ))
-    .unwrap();
+    let mut encryptor = encryptor::Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(ScopeFlags::default()),
+            source,
+            &enc_key,
+        )
+        .expect("encrypt the payload");
+    let protected =
+        parse::parse(Bytes::from(encryptor.rebuild().expect("rebuild encrypted"))).unwrap();
 
     // The previous hop signs the Hop Count and encrypts it, its BIB with
     // it, and encrypts the Previous Node, each under a scope that leaves
@@ -2905,42 +2840,34 @@ fn a_per_hop_acceptor_reads_only_its_sources_encrypted_bibs() {
         include_primary_block: false,
         ..ScopeFlags::default()
     };
-    let signed = parse::parse(Bytes::from(
-        signer::Signer::new(&protected.bundle, &protected.data)
-            .sign_block(
-                hop_count,
-                signer::Context::HMAC_SHA2(scope.clone()),
-                previous.clone(),
-                &sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the Hop Count")
-            .rebuild()
-            .expect("rebuild signed"),
-    ))
-    .unwrap();
-    let whole = parse::parse(Bytes::from(
-        encryptor::Encryptor::new(&signed.bundle, &signed.data)
-            .encrypt_block(
-                hop_count,
-                encryptor::Context::AES_GCM(scope.clone()),
-                previous.clone(),
-                &enc_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the Hop Count, and so its BIB")
-            .encrypt_block(
-                previous_node,
-                encryptor::Context::AES_GCM(scope),
-                previous,
-                &enc_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the Previous Node")
-            .rebuild()
-            .expect("rebuild encrypted"),
-    ))
-    .unwrap();
+    let mut signer = signer::Signer::new(&protected.bundle, &protected.data);
+    signer
+        .sign_block(
+            hop_count,
+            signer::Context::HMAC_SHA2(scope.clone()),
+            previous.clone(),
+            &sign_key,
+        )
+        .expect("sign the Hop Count");
+    let signed = parse::parse(Bytes::from(signer.rebuild().expect("rebuild signed"))).unwrap();
+    let mut encryptor = encryptor::Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            hop_count,
+            encryptor::Context::AES_GCM(scope.clone()),
+            previous.clone(),
+            &enc_key,
+        )
+        .expect("encrypt the Hop Count, and so its BIB");
+    encryptor
+        .encrypt_block(
+            previous_node,
+            encryptor::Context::AES_GCM(scope),
+            previous,
+            &enc_key,
+        )
+        .expect("encrypt the Previous Node");
+    let whole = parse::parse(Bytes::from(encryptor.rebuild().expect("rebuild encrypted"))).unwrap();
     let hop_counts_bib = *whole
         .bundle
         .blocks
@@ -2991,15 +2918,14 @@ fn a_hop_count_under_an_encrypted_bib_passes() {
 // `parsed` as fragment 0 of a bundle of 1 MiB, every block as it is: a fresh
 // parse.
 fn as_fragment(parsed: &Parsed) -> Parsed {
-    let chunks = Editor::new(&parsed.bundle, &parsed.data)
-        .with_fragment_info(Some(FragmentInfo {
+    let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+    editor
+        .set_fragment_info(Some(FragmentInfo {
             offset: 0,
             total_adu_length: 1 << 20,
         }))
-        .map_err(|(_, e)| e)
-        .expect("set the fragment info")
-        .rebuild()
-        .expect("rebuild the fragment");
+        .expect("set the fragment info");
+    let chunks = editor.rebuild().expect("rebuild the fragment");
     parse::parse(Chunk::flatten_bytes(chunks, parsed.data.clone())).unwrap()
 }
 
@@ -3045,34 +2971,29 @@ fn fragment_with_protected_per_hop_block(
     let built = parse::parse(Bytes::from(data)).unwrap();
     let target = block_number(&built, block_type);
     let (sign_key, enc_key) = generated_keys();
-    let signed_payload = parse::parse(Bytes::from(
-        signer::Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                1,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source.clone(),
-                &sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the payload")
-            .rebuild()
-            .expect("rebuild signed"),
-    ))
-    .unwrap();
+    let mut signer = signer::Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .expect("sign the payload");
+    let signed_payload =
+        parse::parse(Bytes::from(signer.rebuild().expect("rebuild signed"))).unwrap();
     let protected = if signed {
-        signer::Signer::new(&signed_payload.bundle, &signed_payload.data)
+        let mut signer = signer::Signer::new(&signed_payload.bundle, &signed_payload.data);
+        signer
             .sign_block(target, signer::Context::HMAC_SHA2(scope), source, &sign_key)
-            .map_err(|(_, e)| e)
-            .expect("sign the per-hop block")
-            .rebuild()
-            .expect("rebuild signed")
+            .expect("sign the per-hop block");
+        signer.rebuild().expect("rebuild signed")
     } else {
-        encryptor::Encryptor::new(&signed_payload.bundle, &signed_payload.data)
+        let mut encryptor = encryptor::Encryptor::new(&signed_payload.bundle, &signed_payload.data);
+        encryptor
             .encrypt_block(target, encryptor::Context::AES_GCM(scope), source, &enc_key)
-            .map_err(|(_, e)| e)
-            .expect("encrypt the per-hop block")
-            .rebuild()
-            .expect("rebuild encrypted")
+            .expect("encrypt the per-hop block");
+        encryptor.rebuild().expect("rebuild encrypted")
     };
     let protected = parse::parse(Bytes::from(protected)).unwrap();
     (as_fragment(&protected), target, vec![sign_key, enc_key])
@@ -3146,34 +3067,27 @@ fn a_fragments_operations_are_deferred_without_a_key() {
     let built = parse::parse(Bytes::from(data)).unwrap();
     let signed_block = block_number(&built, block::Type::Unrecognised(199));
     let (sign_key, enc_key) = generated_keys();
-    let signed = parse::parse(Bytes::from(
-        signer::Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                signed_block,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source.clone(),
-                &sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the block")
-            .rebuild()
-            .expect("rebuild signed"),
-    ))
-    .unwrap();
-    let protected = parse::parse(Bytes::from(
-        encryptor::Encryptor::new(&signed.bundle, &signed.data)
-            .encrypt_block(
-                1,
-                encryptor::Context::AES_GCM(ScopeFlags::default()),
-                source,
-                &enc_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the payload")
-            .rebuild()
-            .expect("rebuild encrypted"),
-    ))
-    .unwrap();
+    let mut signer = signer::Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            signed_block,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .expect("sign the block");
+    let signed = parse::parse(Bytes::from(signer.rebuild().expect("rebuild signed"))).unwrap();
+    let mut encryptor = encryptor::Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            1,
+            encryptor::Context::AES_GCM(ScopeFlags::default()),
+            source,
+            &enc_key,
+        )
+        .expect("encrypt the payload");
+    let protected =
+        parse::parse(Bytes::from(encryptor.rebuild().expect("rebuild encrypted"))).unwrap();
     let mut fragment = as_fragment(&protected);
     let bib = the_bib(&fragment);
     let bcb = block_number(&fragment, block::Type::BlockSecurity);
@@ -3295,32 +3209,28 @@ fn encrypted_payload_bib(encrypted_age: bool) -> (Parsed, Vec<bpsec::key::Key>) 
     let built = parse::parse(Bytes::from(data)).unwrap();
     let (sign_key, enc_key) = generated_keys();
 
-    let signed = parse::parse(Bytes::from(
-        signer::Signer::new(&built.bundle, &built.data)
-            .sign_block(
-                1,
-                signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                source.clone(),
-                &sign_key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the payload")
-            .rebuild()
-            .expect("rebuild signed"),
-    ))
-    .unwrap();
+    let mut signer = signer::Signer::new(&built.bundle, &built.data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .expect("sign the payload");
+    let signed = parse::parse(Bytes::from(signer.rebuild().expect("rebuild signed"))).unwrap();
     let flags = ScopeFlags {
         include_security_header: false,
         ..ScopeFlags::default()
     };
-    let mut encrypting = encryptor::Encryptor::new(&signed.bundle, &signed.data)
+    let mut encrypting = encryptor::Encryptor::new(&signed.bundle, &signed.data);
+    encrypting
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags.clone()),
             source.clone(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
         .expect("encrypt the payload, and so its BIB");
     if encrypted_age {
         let (&age, _) = signed
@@ -3329,9 +3239,8 @@ fn encrypted_payload_bib(encrypted_age: bool) -> (Parsed, Vec<bpsec::key::Key>) 
             .iter()
             .find(|(_, b)| b.block_type == block::Type::BundleAge)
             .expect("the Bundle Age is present");
-        encrypting = encrypting
+        encrypting
             .encrypt_block(age, encryptor::Context::AES_GCM(flags), source, &enc_key)
-            .map_err(|(_, e)| e)
             .expect("encrypt the Bundle Age");
     }
     let parsed = parse::parse(Bytes::from(
@@ -3467,18 +3376,18 @@ fn a_failed_check_on_any_target_is_a_fact() {
     let built = per_hop_bundle(creation_timestamp::CreationTimestamp::now());
     let hop_count = block_number(&built, block::Type::HopCount);
     let signed = |target: u64| {
+        let mut signer = signer::Signer::new(&built.bundle, &built.data);
+        let key = hmac_key(&signing);
+        signer
+            .sign_block(
+                target,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                "ipn:1.3.1".parse().unwrap(),
+                &key,
+            )
+            .expect("sign the target");
         parse::parse(Bytes::from(
-            signer::Signer::new(&built.bundle, &built.data)
-                .sign_block(
-                    target,
-                    signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                    "ipn:1.3.1".parse().unwrap(),
-                    &hmac_key(&signing),
-                )
-                .map_err(|(_, e)| e)
-                .expect("sign the target")
-                .rebuild()
-                .expect("rebuild the signed bundle"),
+            signer.rebuild().expect("rebuild the signed bundle"),
         ))
         .unwrap()
     };
@@ -3502,18 +3411,18 @@ fn the_bundle_ages_confidentiality_outcome_is_a_fact_whatever_the_clock() {
     let encrypted_age = |timestamp| {
         let built = per_hop_bundle(timestamp);
         let age = block_number(&built, block::Type::BundleAge);
+        let mut encryptor = encryptor::Encryptor::new(&built.bundle, &built.data);
+        let key = aes_key(&encrypting);
+        encryptor
+            .encrypt_block(
+                age,
+                encryptor::Context::AES_GCM(ScopeFlags::default()),
+                "ipn:1.3.1".parse().unwrap(),
+                &key,
+            )
+            .expect("encrypt the Bundle Age");
         let parsed = parse::parse(Bytes::from(
-            encryptor::Encryptor::new(&built.bundle, &built.data)
-                .encrypt_block(
-                    age,
-                    encryptor::Context::AES_GCM(ScopeFlags::default()),
-                    "ipn:1.3.1".parse().unwrap(),
-                    &aes_key(&encrypting),
-                )
-                .map_err(|(_, e)| e)
-                .expect("encrypt the Bundle Age")
-                .rebuild()
-                .expect("rebuild the encrypted bundle"),
+            encryptor.rebuild().expect("rebuild the encrypted bundle"),
         ))
         .unwrap();
         (parsed, age)
@@ -3542,18 +3451,18 @@ fn the_bundle_ages_integrity_outcome_is_a_fact_whatever_the_clock() {
     let signed_age = |timestamp| {
         let built = per_hop_bundle(timestamp);
         let age = block_number(&built, block::Type::BundleAge);
+        let mut signer = signer::Signer::new(&built.bundle, &built.data);
+        let key = hmac_key(&signing);
+        signer
+            .sign_block(
+                age,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                "ipn:1.3.1".parse().unwrap(),
+                &key,
+            )
+            .expect("sign the Bundle Age");
         let parsed = parse::parse(Bytes::from(
-            signer::Signer::new(&built.bundle, &built.data)
-                .sign_block(
-                    age,
-                    signer::Context::HMAC_SHA2(ScopeFlags::default()),
-                    "ipn:1.3.1".parse().unwrap(),
-                    &hmac_key(&signing),
-                )
-                .map_err(|(_, e)| e)
-                .expect("sign the Bundle Age")
-                .rebuild()
-                .expect("rebuild the signed bundle"),
+            signer.rebuild().expect("rebuild the signed bundle"),
         ))
         .unwrap();
         (parsed, age)

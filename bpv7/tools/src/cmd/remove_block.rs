@@ -41,12 +41,10 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let editor = Editor::new(&raw, &data)
-            .with_key_source(&key_store)
+        let mut editor = Editor::new(&raw, &data).with_key_source(&key_store);
+        editor
             .remove_block(self.block_number)
-            .map_err(|(_, e)| {
-                anyhow::anyhow!("Failed to remove block {}: {e}", self.block_number)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to remove block {}: {e}", self.block_number))?;
 
         let chunks = editor
             .rebuild()

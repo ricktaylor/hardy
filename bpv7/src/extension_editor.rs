@@ -102,10 +102,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// directly from the parse products; edits are in-memory until
 /// [`finish`](Self::finish) materialises them.
 pub struct ExtensionEditor<'a> {
-    // Consuming-builder inner editor: taken and replaced around each
-    // operation. `None` only transiently inside an operation.
-    editor: Option<Editor<'a>>,
-    edited: bool,
+    editor: Editor<'a>,
     // The primary block is out of scope, so its verdicts are fixed at
     // construction.
     report_on_failure_forbidden: bool,
@@ -116,8 +113,7 @@ impl<'a> ExtensionEditor<'a> {
     /// Builds an editor over the bundle and its resident wire bytes.
     pub fn new(original: &'a Bundle, source_data: &'a [u8]) -> Self {
         Self {
-            editor: Some(Editor::new(original, source_data)),
-            edited: false,
+            editor: Editor::new(original, source_data),
             report_on_failure_forbidden: original.primary.forbids_report_on_failure(),
             bundle_age_required: !original.primary.id.timestamp.is_clocked(),
         }
@@ -167,28 +163,14 @@ impl<'a> ExtensionEditor<'a> {
         }
         check_body(block_type, &data)?;
 
-        let editor = self
-            .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.push_block(block_type) {
-            Ok(builder) => {
-                let block_number = builder.block_number();
-                self.editor = Some(
-                    builder
-                        .with_flags(flags)
-                        .with_crc_type(crc_type)
-                        .with_data(Cow::Owned(data.into_vec()))
-                        .rebuild(),
-                );
-                self.edited = true;
-                Ok(block_number)
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
-        }
+        let builder = self.editor.push_block(block_type)?;
+        let block_number = builder.block_number();
+        builder
+            .with_flags(flags)
+            .with_crc_type(crc_type)
+            .with_data(Cow::Owned(data.into_vec()))
+            .rebuild();
+        Ok(block_number)
     }
 
     /// Replaces an extension block's block-specific data, keeping its flags
@@ -206,21 +188,11 @@ impl<'a> ExtensionEditor<'a> {
         let block_type = self.check_target(block_number)?;
         check_body(block_type, &data)?;
 
-        let editor = self
-            .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.update_block(block_number) {
-            Ok(builder) => {
-                self.editor = Some(builder.with_data(Cow::Owned(data.into_vec())).rebuild());
-                self.edited = true;
-                Ok(())
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
-        }
+        self.editor
+            .update_block(block_number)?
+            .with_data(Cow::Owned(data.into_vec()))
+            .rebuild();
+        Ok(())
     }
 
     /// Removes an extension block.
@@ -239,21 +211,8 @@ impl<'a> ExtensionEditor<'a> {
             return Err(Bpv7Error::MissingBundleAge.into());
         }
 
-        let editor = self
-            .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.remove_block(block_number) {
-            Ok(editor) => {
-                self.editor = Some(editor);
-                self.edited = true;
-                Ok(())
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
-        }
+        self.editor.remove_block(block_number)?;
+        Ok(())
     }
 
     // The scoped refusals for an edit target, checked against the editor's
@@ -263,11 +222,7 @@ impl<'a> ExtensionEditor<'a> {
         if block_number <= 1 {
             return Err(Error::ReservedBlock(block_number));
         }
-        let editor = self
-            .editor
-            .as_ref()
-            .expect("the editor is present between operations");
-        let Some((block, _)) = editor.block(block_number) else {
+        let Some((block, _)) = self.editor.block(block_number) else {
             return Err(Error::NoSuchBlock(block_number));
         };
         if matches!(block.block_type, Type::BlockIntegrity | Type::BlockSecurity) {
@@ -283,18 +238,17 @@ impl<'a> ExtensionEditor<'a> {
 
     /// Whether any operation has been applied since construction.
     pub fn is_modified(&self) -> bool {
-        self.edited
+        self.editor.generation() > 0
     }
 
     /// Materialises the accumulated edits: `None` when nothing was edited,
     /// otherwise the rebuilt structural bundle and the chunks that assemble
     /// the rewritten wire form.
     pub fn finish(self) -> Result<Option<(Bundle, Vec<Chunk>)>> {
-        if !self.edited {
+        if !self.is_modified() {
             return Ok(None);
         }
         self.editor
-            .expect("the editor is present between operations")
             .rebuild_bundle()
             .map(Some)
             .map_err(Error::Editor)

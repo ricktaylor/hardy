@@ -42,20 +42,13 @@ use crate::{
 /// # Panics
 ///
 /// Panics if `to_update` names a block the bundle does not hold.
-#[allow(clippy::result_large_err)]
 pub fn apply_rewrites(
     mut editor: Editor<'_>,
     to_update: HashMap<u64, Vec<u8>>,
     to_remove: HashSet<u64>,
 ) -> Result<Option<(Bundle, Vec<Chunk>)>, Error> {
     // Bulk-remove with full BPSec cascade.
-    let removed_any = if to_remove.is_empty() {
-        false
-    } else {
-        let (ed, removed) = editor.remove_blocks(&to_remove).map_err(|(_, e)| e)?;
-        editor = ed;
-        !removed.is_empty()
-    };
+    let removed_any = !to_remove.is_empty() && !editor.remove_blocks(&to_remove)?.is_empty();
 
     if !removed_any && to_update.is_empty() {
         return Ok(None);
@@ -63,9 +56,8 @@ pub fn apply_rewrites(
 
     // Non-canonical re-emits, of blocks the caller found in the bundle.
     for (block_number, payload) in to_update {
-        editor = editor
+        editor
             .update_block_inner(block_number)
-            .map_err(|(_, e)| e)
             .expect("to_update names blocks the bundle holds")
             .with_data(payload.into())
             .rebuild();

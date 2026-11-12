@@ -1275,15 +1275,14 @@ async fn only_a_first_fragment_has_a_peek() {
         .unwrap();
 
     for (offset, has_peek) in [(0, true), (2000, false)] {
-        let chunks = Editor::new(&built, &data)
-            .with_fragment_info(Some(FragmentInfo {
+        let mut editor = Editor::new(&built, &data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
                 offset,
                 total_adu_length: 4000,
             }))
-            .map_err(|(_, e)| e)
-            .expect("set the fragment info")
-            .rebuild()
-            .expect("rebuild the fragment");
+            .expect("set the fragment info");
+        let chunks = editor.rebuild().expect("rebuild the fragment");
         let fragment = Bytes::from(Chunk::flatten(chunks, &data).into_vec());
 
         let (peek_tx, peek_rx) = flume::unbounded();
@@ -1344,19 +1343,16 @@ async fn a_held_peek_reaches_the_deferred_payload_bib() {
         .with_payload(payload.as_slice().into())
         .build(CreationTimestamp::now())
         .unwrap();
-    let signed = Bytes::from(
-        Signer::new(&built, &data)
-            .sign_block(
-                1,
-                Context::HMAC_SHA2(Default::default()),
-                SOURCE.parse().unwrap(),
-                &key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("sign the payload")
-            .rebuild()
-            .expect("rebuild the signed bundle"),
-    );
+    let mut signer = Signer::new(&built, &data);
+    signer
+        .sign_block(
+            1,
+            Context::HMAC_SHA2(Default::default()),
+            SOURCE.parse().unwrap(),
+            &key,
+        )
+        .expect("sign the payload");
+    let signed = Bytes::from(signer.rebuild().expect("rebuild the signed bundle"));
 
     let (peek_tx, peek_rx) = flume::unbounded();
     let mut pack = FilterPack::new("test");
@@ -1407,19 +1403,16 @@ async fn an_encrypted_payload_has_no_peek() {
         .with_payload(vec![0xA5_u8; 1000].as_slice().into())
         .build(CreationTimestamp::now())
         .unwrap();
-    let encrypted = Bytes::from(
-        Encryptor::new(&built, &data)
-            .encrypt_block(
-                1,
-                Context::AES_GCM(Default::default()),
-                SOURCE.parse().unwrap(),
-                &key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the payload")
-            .rebuild()
-            .expect("rebuild the encrypted bundle"),
-    );
+    let mut encryptor = Encryptor::new(&built, &data);
+    encryptor
+        .encrypt_block(
+            1,
+            Context::AES_GCM(Default::default()),
+            SOURCE.parse().unwrap(),
+            &key,
+        )
+        .expect("encrypt the payload");
+    let encrypted = Bytes::from(encryptor.rebuild().expect("rebuild the encrypted bundle"));
 
     let (peek_tx, peek_rx) = flume::unbounded();
     let mut pack = FilterPack::new("test");

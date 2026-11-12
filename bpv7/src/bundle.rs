@@ -513,7 +513,7 @@ impl core::fmt::Display for Id {
 /// values are canonical, serde canonicalizes in both directions, and the
 /// methods that take bundle flags canonicalize them:
 /// [`Builder::with_flags`](crate::builder::Builder::with_flags) and
-/// [`Editor::with_bundle_flags`](crate::editor::Editor::with_bundle_flags).
+/// [`Editor::set_bundle_flags`](crate::editor::Editor::set_bundle_flags).
 /// Direct field writes are not canonicalized.
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(

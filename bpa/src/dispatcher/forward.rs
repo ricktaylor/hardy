@@ -294,12 +294,11 @@ impl Dispatcher {
         // or Bundle Age block the editor cannot safely update (BCB-covered,
         // so possibly under an encrypted BIB) refuses, and the caller parks
         // the bundle: both writes are MUSTs (RFC 9171 §5.4).
-        let covered = |(_, e)| PerHopRefusal::Covered(e);
-
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
+        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data);
+        editor
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
-            .map_err(covered)?
+            .map_err(PerHopRefusal::Covered)?
             .with_flags(hardy_bpv7::block::Flags {
                 report_on_failure,
                 ..Default::default()
@@ -322,7 +321,7 @@ impl Dispatcher {
         // bundle back. One this node could not read at ingress has no cached
         // value, and travels unchanged too.
         if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
-            editor = match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
+            match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
                 Ok(block) => block
                     .with_flags(hardy_bpv7::block::Flags {
                         report_on_failure,
@@ -338,11 +337,8 @@ impl Dispatcher {
                         .into(),
                     )
                     .rebuild(),
-                Err((editor, e)) => {
-                    debug!("Hop Count block travels unchanged: {e}");
-                    editor
-                }
-            };
+                Err(e) => debug!("Hop Count block travels unchanged: {e}"),
+            }
         }
 
         // Update Bundle Age, if required
@@ -353,9 +349,9 @@ impl Dispatcher {
                 .whole_milliseconds()
                 .clamp(0, u64::MAX as i128) as u64;
 
-            editor = editor
+            editor
                 .insert_block(hardy_bpv7::block::Type::BundleAge)
-                .map_err(covered)?
+                .map_err(PerHopRefusal::Covered)?
                 .with_flags(hardy_bpv7::block::Flags {
                     report_on_failure,
                     must_replicate: true,
@@ -383,36 +379,30 @@ impl Dispatcher {
                 service_number,
             } = &bundle.id().source
             {
-                editor = match editor.with_source(Eid::LegacyIpn {
+                match editor.set_source(Eid::LegacyIpn {
                     fqnn: *fqnn,
                     service_number: *service_number,
                 }) {
-                    Err((
-                        _,
+                    Err(
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
-                    )) => return Err(PerHopRefusal::ProtectedPrimary),
-                    result => result
-                        .map_err(|(_, e)| e)
-                        .trace_expect("The legacy re-encode of the source failed"),
-                };
+                    ) => return Err(PerHopRefusal::ProtectedPrimary),
+                    result => result.trace_expect("The legacy re-encode of the source failed"),
+                }
             }
             if let Eid::Ipn {
                 fqnn,
                 service_number,
             } = &bundle.primary().destination
             {
-                editor = match editor.with_destination(Eid::LegacyIpn {
+                match editor.set_destination(Eid::LegacyIpn {
                     fqnn: *fqnn,
                     service_number: *service_number,
                 }) {
-                    Err((
-                        _,
+                    Err(
                         EditorError::PrimaryBlockHasBib | EditorError::PrimaryInSecurityScope(_),
-                    )) => return Err(PerHopRefusal::ProtectedPrimary),
-                    result => result
-                        .map_err(|(_, e)| e)
-                        .trace_expect("The legacy re-encode of the destination failed"),
-                };
+                    ) => return Err(PerHopRefusal::ProtectedPrimary),
+                    result => result.trace_expect("The legacy re-encode of the destination failed"),
+                }
             }
         }
 

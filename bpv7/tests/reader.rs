@@ -86,14 +86,14 @@ fn encrypted_bundle(
         include_security_header: false,
         ..ScopeFlags::default()
     };
-    let encryptor = encryptor::Encryptor::new(&raw, &bundle_bytes)
+    let mut encryptor = encryptor::Encryptor::new(&raw, &bundle_bytes);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags),
             "ipn:2.1".parse().unwrap(),
             key,
         )
-        .map_err(|(_, e)| e)
         .expect("encrypt payload block");
     let encrypted_bytes = encryptor.rebuild().expect("rebuild encrypted bundle");
 

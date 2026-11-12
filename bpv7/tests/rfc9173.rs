@@ -413,14 +413,14 @@ fn test_wrapped_key_sign_and_verify() {
 
     // Sign with key wrapping
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &kek,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign with key wrapping");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild");
 
@@ -461,14 +461,14 @@ fn test_wrapped_key_wrong_kek() {
 
     // Sign with the correct KEK
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_kek,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild");
 
@@ -523,14 +523,14 @@ fn test_sign_then_encrypt() {
 
     // 2. Sign
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
     // println!("Bundle bytes: {:02x?}", signed_bytes);
@@ -545,14 +545,14 @@ fn test_sign_then_encrypt() {
     };
 
     let raw = raw_of(&signed_bytes);
-    let encryptor = encryptor::Encryptor::new(&raw, &signed_bytes)
+    let mut encryptor = encryptor::Encryptor::new(&raw, &signed_bytes);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags),
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to encrypt block");
     let encrypted_bytes = encryptor
         .rebuild()
@@ -646,14 +646,14 @@ fn test_rfc9173_decrypt_payload_takes_its_encrypted_bib() {
 
     // 2. Sign payload (adds BIB)
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
@@ -668,14 +668,14 @@ fn test_rfc9173_decrypt_payload_takes_its_encrypted_bib() {
     };
 
     let raw = raw_of(&signed_bytes);
-    let encryptor = encryptor::Encryptor::new(&raw, &signed_bytes)
+    let mut encryptor = encryptor::Encryptor::new(&raw, &signed_bytes);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags),
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to encrypt block");
     let encrypted_bytes = encryptor
         .rebuild()
@@ -697,10 +697,9 @@ fn test_rfc9173_decrypt_payload_takes_its_encrypted_bib() {
 
     // 4. Remove the payload's BCB
     let raw = raw_of(&encrypted_bytes);
-    let editor = Editor::new(&raw, &encrypted_bytes)
-        .with_key_source(&all_keys)
+    let mut editor = Editor::new(&raw, &encrypted_bytes).with_key_source(&all_keys);
+    editor
         .remove_encryption(1)
-        .map_err(|(_, e)| e)
         .expect("Failed to remove BCB from payload");
     let decrypted_bytes = editor
         .rebuild()
@@ -768,14 +767,14 @@ fn test_bib_removal_and_readd() {
 
     // 2. Sign payload (adds BIB)
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
@@ -798,10 +797,8 @@ fn test_bib_removal_and_readd() {
 
     // 4. Remove BIB using Editor::remove_integrity
     let raw = raw_of(&signed_bytes);
-    let editor = Editor::new(&raw, &signed_bytes)
-        .remove_integrity(1)
-        .map_err(|(_, e)| e)
-        .expect("Failed to remove BIB");
+    let mut editor = Editor::new(&raw, &signed_bytes);
+    editor.remove_integrity(1).expect("Failed to remove BIB");
     let unsigned_bytes = editor
         .rebuild()
         .map(|c| Chunk::flatten(c, &signed_bytes))
@@ -831,14 +828,14 @@ fn test_bib_removal_and_readd() {
 
     // 7. Re-sign payload
     let raw = raw_of(&unsigned_bytes);
-    let signer = signer::Signer::new(&raw, &unsigned_bytes)
+    let mut signer = signer::Signer::new(&raw, &unsigned_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to re-sign block");
     let resigned_bytes = signer
         .rebuild()
@@ -899,14 +896,14 @@ fn test_encrypt_then_sign_fails() {
     };
 
     let raw = raw_of(&bundle_bytes);
-    let encryptor = encryptor::Encryptor::new(&raw, &bundle_bytes)
+    let mut encryptor = encryptor::Encryptor::new(&raw, &bundle_bytes);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags),
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to encrypt block");
     let encrypted_bytes = encryptor
         .rebuild()
@@ -916,7 +913,8 @@ fn test_encrypt_then_sign_fails() {
 
     // 3. Attempt to sign encrypted payload - this should fail
     let raw = raw_of(&encrypted_bytes);
-    let sign_result = signer::Signer::new(&raw, &encrypted_bytes).sign_block(
+    let mut signer = signer::Signer::new(&raw, &encrypted_bytes);
+    let sign_result = signer.sign_block(
         1,
         signer::Context::HMAC_SHA2(ScopeFlags::default()),
         "ipn:2.1".parse().unwrap(),
@@ -961,14 +959,14 @@ fn test_signature_tamper_detection() {
     let keys = key::KeySet::new(vec![sign_key.clone()]);
 
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
@@ -1038,14 +1036,14 @@ fn test_bcb_without_bib_removal() {
     };
 
     let raw = raw_of(&bundle_bytes);
-    let encryptor = encryptor::Encryptor::new(&raw, &bundle_bytes)
+    let mut encryptor = encryptor::Encryptor::new(&raw, &bundle_bytes);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(flags),
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to encrypt block");
     let encrypted_bytes = encryptor
         .rebuild()
@@ -1060,11 +1058,8 @@ fn test_bcb_without_bib_removal() {
 
     // 3. Remove BCB using Editor::remove_encryption
     let raw = raw_of(&encrypted_bytes);
-    let editor = Editor::new(&raw, &encrypted_bytes)
-        .with_key_source(&keys)
-        .remove_encryption(1)
-        .map_err(|(_, e)| e)
-        .expect("Failed to remove BCB");
+    let mut editor = Editor::new(&raw, &encrypted_bytes).with_key_source(&keys);
+    editor.remove_encryption(1).expect("Failed to remove BCB");
     let decrypted_bytes = editor
         .rebuild()
         .map(|c| Chunk::flatten(c, &encrypted_bytes))
@@ -1122,13 +1117,12 @@ fn test_remove_encryption_fails_on_unencrypted_block() {
     assert_eq!(bcb_count, 0, "Should have 0 BCBs (bundle is not encrypted)");
     let _ = bundle;
 
+    let mut editor = Editor::new(&raw, &bundle_bytes).with_key_source(&keys);
     // Attempt to remove encryption from payload block (which is not encrypted)
-    let result = Editor::new(&raw, &bundle_bytes)
-        .with_key_source(&keys)
-        .remove_encryption(1);
+    let result = editor.remove_encryption(1);
 
     // Should fail with NotEncrypted error
-    let Err((_, e)) = result else {
+    let Err(e) = result else {
         panic!("Expected remove_encryption to fail on unencrypted block");
     };
     assert!(
@@ -1156,11 +1150,12 @@ fn test_remove_integrity_fails_on_unsigned_block() {
     assert_eq!(bib_count, 0, "Should have 0 BIBs (bundle is not signed)");
     let _ = bundle;
 
+    let mut editor = Editor::new(&raw, &bundle_bytes);
     // Attempt to remove integrity from payload block (which is not signed)
-    let result = Editor::new(&raw, &bundle_bytes).remove_integrity(1);
+    let result = editor.remove_integrity(1);
 
     // Should fail with NotSigned error
-    let Err((_, e)) = result else {
+    let Err(e) = result else {
         panic!("Expected remove_integrity to fail on unsigned block");
     };
     assert!(
@@ -1194,14 +1189,14 @@ fn test_encrypt_bib_directly_fails() {
     .unwrap();
 
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
@@ -1231,7 +1226,8 @@ fn test_encrypt_bib_directly_fails() {
     .unwrap();
 
     let raw = raw_of(&signed_bytes);
-    let result = encryptor::Encryptor::new(&raw, &signed_bytes).encrypt_block(
+    let mut encryptor = encryptor::Encryptor::new(&raw, &signed_bytes);
+    let result = encryptor.encrypt_block(
         bib_block_num,
         encryptor::Context::AES_GCM(ScopeFlags::default()),
         "ipn:2.1".parse().unwrap(),
@@ -1239,7 +1235,7 @@ fn test_encrypt_bib_directly_fails() {
     );
 
     // Should fail with InvalidTarget error
-    let Err((_, e)) = result else {
+    let Err(e) = result else {
         panic!("Expected encrypt_block to fail when directly targeting a BIB");
     };
     assert!(
@@ -1280,14 +1276,14 @@ fn test_sign_primary_block_with_crc() {
     .unwrap();
 
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             0, // Sign the primary block
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign primary block");
 
     let signed_bytes = signer
@@ -1341,14 +1337,14 @@ fn test_sign_primary_block_with_crc_no_scope_flags() {
 
     // Use ScopeFlags::NONE - no AAD included
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             0,
             signer::Context::HMAC_SHA2(ScopeFlags::NONE),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign primary block with NONE flags");
 
     let signed_bytes = signer
@@ -1398,14 +1394,14 @@ fn test_sign_keeps_the_crc_on_the_target_block() {
     .unwrap();
 
     let raw = raw_of(&bundle_bytes);
-    let signer = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
         .expect("Failed to sign payload block");
 
     let signed_bytes = signer
@@ -1555,17 +1551,16 @@ fn signing_canonicalizes_an_alias_scope_bit() {
     let keys = key::KeySet::new(vec![sign_key.clone()]);
 
     let raw = raw_of(&bundle_bytes);
-    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(primary_scope_alias()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .expect("signing accepts the alias scope")
-        .rebuild()
-        .expect("the signed bundle rebuilds");
+        .expect("signing accepts the alias scope");
+    let signed_bytes = signer.rebuild().expect("the signed bundle rebuilds");
 
     let (signed_bytes, parsed, bcb_ops, bib_ops) =
         validate_with_keys(&signed_bytes, &keys).expect("the signed bundle verifies at parse");
@@ -1609,17 +1604,16 @@ fn encryption_canonicalizes_an_alias_scope_bit() {
     let keys = key::KeySet::new(vec![enc_key.clone()]);
 
     let raw = raw_of(&bundle_bytes);
-    let encrypted_bytes = encryptor::Encryptor::new(&raw, &bundle_bytes)
+    let mut encryptor = encryptor::Encryptor::new(&raw, &bundle_bytes);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(primary_scope_alias()),
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .expect("encryption accepts the alias scope")
-        .rebuild()
-        .expect("the encrypted bundle rebuilds");
+        .expect("encryption accepts the alias scope");
+    let encrypted_bytes = encryptor.rebuild().expect("the encrypted bundle rebuilds");
 
     let (encrypted_bytes, parsed, bcb_ops, _bib_ops) =
         validate_with_keys(&encrypted_bytes, &keys).expect("the encrypted bundle parses");
@@ -1668,25 +1662,24 @@ fn aliased_and_canonical_scopes_share_one_bib() {
         .find(|(_, b)| b.block_type == Type::Unrecognised(200))
         .expect("the extension block is present")
         .0;
-    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(primary_scope_alias()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .expect("signing accepts the alias scope")
+        .expect("signing accepts the alias scope");
+    signer
         .sign_block(
             ext,
             signer::Context::HMAC_SHA2(primary_scope()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .expect("signing accepts the canonical scope")
-        .rebuild()
-        .expect("the signed bundle rebuilds");
+        .expect("signing accepts the canonical scope");
+    let signed_bytes = signer.rebuild().expect("the signed bundle rebuilds");
 
     let (_, _, _, bib_ops) =
         validate_with_keys(&signed_bytes, &keys).expect("the signed bundle verifies at parse");
@@ -1725,25 +1718,24 @@ fn two_groups_signing_a_crc_primary_verify_in_either_order() {
     let keys = key::KeySet::new(vec![sign_key.clone()]);
 
     for _ in 0..64 {
-        let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+        let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+        signer
             .sign_block(
                 0,
                 signer::Context::HMAC_SHA2(ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
-            .expect("sign the primary")
+            .expect("sign the primary");
+        signer
             .sign_block(
                 1,
                 signer::Context::HMAC_SHA2(ScopeFlags::default()),
                 "ipn:3.1".parse().unwrap(),
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
-            .expect("sign the payload")
-            .rebuild()
-            .expect("rebuild the signed bundle");
+            .expect("sign the payload");
+        let signed_bytes = signer.rebuild().expect("rebuild the signed bundle");
         let (signed_bytes, parsed, bcb_ops, bib_ops) =
             validate_with_keys(&signed_bytes, &keys).expect("the signed bundle validates");
         assert_eq!(count_blocks_of_type(&parsed, Type::BlockIntegrity), 2);
@@ -1773,29 +1765,28 @@ fn signing_a_crc_primary_keeps_a_primary_scoped_operation_valid() {
     let raw = raw_of(&bundle_bytes);
     let sign_key = hs256_key();
     let sign_payload = |scope: ScopeFlags| {
-        let bytes = signer::Signer::new(&raw, &bundle_bytes)
+        let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+        signer
             .sign_block(
                 1,
                 signer::Context::HMAC_SHA2(scope),
                 "ipn:3.1".parse().unwrap(),
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
-            .expect("sign the payload")
-            .rebuild()
-            .expect("rebuild the signed bundle");
+            .expect("sign the payload");
+        let bytes = signer.rebuild().expect("rebuild the signed bundle");
         (raw_of(&bytes), bytes)
     };
     let sign_primary = |bundle: &Bundle, bytes: &[u8]| {
-        signer::Signer::new(bundle, bytes)
+        let mut signer = signer::Signer::new(bundle, bytes);
+        signer
             .sign_block(
                 0,
                 signer::Context::HMAC_SHA2(ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
                 &sign_key,
             )
-            .map(|signer| signer.rebuild().expect("rebuild the signed bundle"))
-            .map_err(|(_, e)| e)
+            .map(|()| signer.rebuild().expect("rebuild the signed bundle"))
     };
 
     let keys = key::KeySet::new(vec![sign_key.clone()]);
@@ -1830,22 +1821,22 @@ fn signing_a_target_twice_in_one_session_is_refused() {
         .unwrap();
     let raw = raw_of(&bundle_bytes);
     let sign_key = hs256_key();
-    let result = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
-        .map_err(|(_, e)| e)
-        .expect("sign the payload")
-        .sign_block(
-            1,
-            signer::Context::HMAC_SHA2(ScopeFlags::default()),
-            "ipn:3.1".parse().unwrap(),
-            &sign_key,
-        );
-    assert!(matches!(result, Err((_, signer::Error::AlreadySigned(1)))));
+        .expect("sign the payload");
+    let result = signer.sign_block(
+        1,
+        signer::Context::HMAC_SHA2(ScopeFlags::default()),
+        "ipn:3.1".parse().unwrap(),
+        &sign_key,
+    );
+    assert!(matches!(result, Err(signer::Error::AlreadySigned(1))));
 }
 
 // A BIB carries one parameter set, so under key wrap one CEK, wrapped once,
@@ -1877,25 +1868,24 @@ fn a_key_wrapped_multi_target_bib_verifies_every_target() {
     }))
     .unwrap();
 
-    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(shareable_scope()),
             "ipn:2.1".parse().unwrap(),
             &kek,
         )
-        .map_err(|(_, e)| e)
-        .expect("sign the payload")
+        .expect("sign the payload");
+    signer
         .sign_block(
             ext,
             signer::Context::HMAC_SHA2(shareable_scope()),
             "ipn:2.1".parse().unwrap(),
             &kek,
         )
-        .map_err(|(_, e)| e)
-        .expect("sign the extension block")
-        .rebuild()
-        .expect("rebuild the signed bundle");
+        .expect("sign the extension block");
+    let signed_bytes = signer.rebuild().expect("rebuild the signed bundle");
     let keys = key::KeySet::new(vec![kek]);
     let (signed_bytes, parsed, bcb_ops, bib_ops) =
         validate_with_keys(&signed_bytes, &keys).expect("the signed bundle validates");
@@ -1944,25 +1934,24 @@ fn sign_payload_and_extension(
         .find(|(_, b)| b.block_type == Type::Unrecognised(200))
         .expect("the extension block is present")
         .0;
-    let signed_bytes = signer::Signer::new(&raw, &bundle_bytes)
+    let mut signer = signer::Signer::new(&raw, &bundle_bytes);
+    signer
         .sign_block(
             1,
             signer::Context::HMAC_SHA2(scope.clone()),
             "ipn:2.1".parse().unwrap(),
             first,
         )
-        .map_err(|(_, e)| e)
-        .expect("sign the payload")
+        .expect("sign the payload");
+    signer
         .sign_block(
             ext,
             signer::Context::HMAC_SHA2(scope),
             "ipn:2.1".parse().unwrap(),
             second,
         )
-        .map_err(|(_, e)| e)
-        .expect("sign the extension block")
-        .rebuild()
-        .expect("rebuild the signed bundle");
+        .expect("sign the extension block");
+    let signed_bytes = signer.rebuild().expect("rebuild the signed bundle");
     (signed_bytes, ext)
 }
 
@@ -2039,7 +2028,8 @@ fn encrypting_under_a_bib_that_covers_the_primary_is_refused() {
         "k": rand_k(16)
     }))
     .unwrap();
-    let result = encryptor::Encryptor::new(&raw, &APPENDIX_A_3).encrypt_block(
+    let mut encryptor = encryptor::Encryptor::new(&raw, &APPENDIX_A_3);
+    let result = encryptor.encrypt_block(
         2,
         encryptor::Context::AES_GCM(ScopeFlags::default()),
         "ipn:2.1".parse().unwrap(),
@@ -2047,7 +2037,7 @@ fn encrypting_under_a_bib_that_covers_the_primary_is_refused() {
     );
     assert!(matches!(
         result,
-        Err((_, encryptor::Error::BibCoversPrimary(n))) if n == bib
+        Err(encryptor::Error::BibCoversPrimary(n)) if n == bib
     ));
 }
 
@@ -2083,22 +2073,22 @@ fn encrypted_payload(sign: bool) -> (Box<[u8]>, key::KeySet) {
         }))
         .unwrap();
         let raw = raw_of(&bytes);
-        bytes = signer::Signer::new(&raw, &bytes)
+        let mut signer = signer::Signer::new(&raw, &bytes);
+        signer
             .sign_block(
                 1,
                 signer::Context::HMAC_SHA2(ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
                 &sign_key,
             )
-            .map_err(|(_, e)| e)
-            .unwrap()
-            .rebuild()
             .unwrap();
+        bytes = signer.rebuild().unwrap();
         keys.push(sign_key);
     }
 
     let raw = raw_of(&bytes);
-    let encrypted = encryptor::Encryptor::new(&raw, &bytes)
+    let mut encryptor = encryptor::Encryptor::new(&raw, &bytes);
+    encryptor
         .encrypt_block(
             1,
             encryptor::Context::AES_GCM(ScopeFlags {
@@ -2108,10 +2098,8 @@ fn encrypted_payload(sign: bool) -> (Box<[u8]>, key::KeySet) {
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
         .unwrap();
+    let encrypted = encryptor.rebuild().unwrap();
     keys.push(enc_key);
     (encrypted, key::KeySet::new(keys))
 }
@@ -2146,23 +2134,13 @@ fn removing_encryption_from_supplied_plaintext_matches_decrypting() {
     let (bytes, parsed, bcb_ops, _) = validate_with_keys(&bytes, &keys).unwrap();
     let plaintexts = plaintexts_of(&[1], &parsed.blocks, &bytes, &bcb_ops, &keys);
 
-    let decrypted = Editor::new(&parsed, &bytes)
-        .with_key_source(&keys)
-        .remove_encryption(1)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
-        .map(|c| Chunk::flatten(c, &bytes))
-        .unwrap();
+    let mut editor = Editor::new(&parsed, &bytes).with_key_source(&keys);
+    editor.remove_encryption(1).unwrap();
+    let decrypted = editor.rebuild().map(|c| Chunk::flatten(c, &bytes)).unwrap();
+    let mut editor = Editor::new(&parsed, &bytes).with_decrypted(&plaintexts);
+    editor.remove_encryption(1).unwrap();
     // No keys: the supplied plaintext is all the removal reads.
-    let supplied = Editor::new(&parsed, &bytes)
-        .with_decrypted(&plaintexts)
-        .remove_encryption(1)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
-        .map(|c| Chunk::flatten(c, &bytes))
-        .unwrap();
+    let supplied = editor.rebuild().map(|c| Chunk::flatten(c, &bytes)).unwrap();
     assert_eq!(supplied, decrypted);
 
     let after = raw_of(&supplied);
@@ -2190,19 +2168,11 @@ fn accepting_an_encrypted_bib_and_its_target_from_plaintext_strips_both() {
     assert_eq!(count_blocks_of_type(&parsed, Type::BlockSecurity), 2);
     let plaintexts = plaintexts_of(&[1, bib], &parsed.blocks, &bytes, &bcb_ops, &keys);
 
+    let mut editor = Editor::new(&parsed, &bytes).with_decrypted(&plaintexts);
+    editor.remove_encryption(1).unwrap();
     // No keys: the supplied plaintext is all the removal reads.
-    let editor = Editor::new(&parsed, &bytes)
-        .with_decrypted(&plaintexts)
-        .remove_encryption(1)
-        .map_err(|(_, e)| e)
-        .unwrap();
-    let accepted = editor
-        .remove_integrity(1)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
-        .map(|c| Chunk::flatten(c, &bytes))
-        .unwrap();
+    editor.remove_integrity(1).unwrap();
+    let accepted = editor.rebuild().map(|c| Chunk::flatten(c, &bytes)).unwrap();
 
     let after = raw_of(&accepted);
     assert_eq!(count_blocks_of_type(&after, Type::BlockSecurity), 0);

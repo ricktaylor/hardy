@@ -73,9 +73,7 @@ fn parse_and_rewrite(
     let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(keys);
     for (&n, block) in &parsed.bundle.blocks {
         if block.bcb.is_some() {
-            editor = match editor.remove_encryption(n) {
-                Ok(editor) | Err((editor, _)) => editor,
-            };
+            let _ = editor.remove_encryption(n);
         }
     }
     let _ = editor.rebuild();

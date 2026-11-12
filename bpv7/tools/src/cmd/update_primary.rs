@@ -85,51 +85,51 @@ impl Command {
 
         // Update lifetime if provided
         if let Some(lifetime) = self.lifetime {
-            editor = editor
-                .with_lifetime(lifetime.into())
-                .map_err(|(_, e)| anyhow::anyhow!("Failed to update lifetime: {e}"))?;
+            editor
+                .set_lifetime(lifetime.into())
+                .map_err(|e| anyhow::anyhow!("Failed to update lifetime: {e}"))?;
         }
 
         // Reset timestamp if requested
         if self.reset_timestamp {
-            editor = editor
-                .with_timestamp(CreationTimestamp::now())
-                .map_err(|(_, e)| anyhow::anyhow!("Failed to update timestamp: {e}"))?;
+            editor
+                .set_timestamp(CreationTimestamp::now())
+                .map_err(|e| anyhow::anyhow!("Failed to update timestamp: {e}"))?;
         }
 
         // Update source if provided
         if let Some(source) = self.source {
-            editor = editor
-                .with_source(source)
-                .map_err(|(_, e)| anyhow::anyhow!("Failed to update source: {e}"))?;
+            editor
+                .set_source(source)
+                .map_err(|e| anyhow::anyhow!("Failed to update source: {e}"))?;
         }
 
         // Update destination if provided
         if let Some(destination) = self.destination {
-            editor = editor
-                .with_destination(destination)
-                .map_err(|(_, e)| anyhow::anyhow!("Failed to update destination: {e}"))?;
+            editor
+                .set_destination(destination)
+                .map_err(|e| anyhow::anyhow!("Failed to update destination: {e}"))?;
         }
 
         // Update report-to if provided
         if let Some(report_to) = self.report_to {
-            editor = editor
-                .with_report_to(report_to)
-                .map_err(|(_, e)| anyhow::anyhow!("Failed to update report-to: {e}"))?;
+            editor
+                .set_report_to(report_to)
+                .map_err(|e| anyhow::anyhow!("Failed to update report-to: {e}"))?;
         }
 
         // Update flags if provided
         if let Some(new_flags) = flags::ArgBundleFlags::to_bundle_flags(&self.flags) {
-            editor = editor
-                .with_bundle_flags(new_flags)
-                .map_err(|(_, e)| anyhow::anyhow!("Failed to update flags: {e}"))?;
+            editor
+                .set_bundle_flags(new_flags)
+                .map_err(|e| anyhow::anyhow!("Failed to update flags: {e}"))?;
         }
 
         // Update CRC type if provided
         if let Some(crc_type) = self.crc_type {
-            editor = editor
-                .with_bundle_crc_type(crc_type.into())
-                .map_err(|(_, e)| anyhow::anyhow!("Failed to update CRC type: {e}"))?;
+            editor
+                .set_bundle_crc_type(crc_type.into())
+                .map_err(|e| anyhow::anyhow!("Failed to update CRC type: {e}"))?;
         }
 
         let chunks = editor
