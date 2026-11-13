@@ -163,16 +163,96 @@ enum Unsegmented {
 /// queue was at its watermark once the queue drains, whatever the window's
 /// state, so a full window does not hold such a producer back.
 ///
+/// The try belongs in the same poll as `poll_admit`.  A task that awaits
+/// `poll_admit` until it is `Ready` and only then calls `enqueue` is woken
+/// when the queue drains, as it should be, but polls `poll_admit` again,
+/// finds the window still full, and parks on the window: the wake is
+/// spent, and a bundle `enqueue` would have taken waits for the slowest
+/// open transfer.  So an async producer tries on every poll and parks only
+/// on a refusal, and a wrapper over `poll_admit` does the same:
+///
+/// ```
+/// use std::{
+///     future::poll_fn,
+///     pin::pin,
+///     sync::Mutex,
+///     task::{Context, Poll, Waker},
+/// };
+///
+/// use bytes::Bytes;
+/// use hardy_btpu::{
+///     sender::{
+///         Error, PduSize, SendId, SendOptions, SendQueueHighWatermark, Sender, SenderConfig,
+///     },
+///     transfer::WindowSize,
+/// };
+///
+/// async fn admit(sender: &Mutex<Sender>, bundle: Bytes) -> Result<SendId, Error> {
+///     poll_fn(|cx| {
+///         // One lock hold for the try and the park: admission is not
+///         // reserved between them.
+///         let mut sender = sender.lock().unwrap();
+///         if !sender.is_send_queue_high() {
+///             match sender.enqueue(bundle.clone(), SendOptions::default()) {
+///                 // Only a segmented bundle is refused, and the refusal
+///                 // changes nothing.
+///                 Err(Error::WindowFull { .. }) => {}
+///                 result => return Poll::Ready(result),
+///             }
+///         }
+///         // Refused on the watermark or the window, so this is `Pending`
+///         // and wakes the task once the one that refused has room.
+///         let _ = sender.poll_admit(cx);
+///         Poll::Pending
+///     })
+///     .await
+/// }
+///
+/// // A window filled by streamed bundles with nothing pushed, and a queue
+/// // at its watermark.
+/// let mut sender = Sender::new(
+///     SenderConfig {
+///         pdu_size: PduSize::try_from(64).unwrap(),
+///         window_size: WindowSize::try_from(4).unwrap(),
+///         send_queue_high_watermark: SendQueueHighWatermark::try_from(100).unwrap(),
+///         ..SenderConfig::default()
+///     },
+///     0,
+/// );
+/// let _slow: Vec<_> = (0..4)
+///     .map(|_| sender.begin(1000, SendOptions::default()).unwrap())
+///     .collect();
+/// for _ in 0..3 {
+///     sender
+///         .enqueue(Bytes::from(vec![0x9F; 40]), SendOptions::default())
+///         .unwrap();
+/// }
+/// assert!(sender.is_send_queue_high() && !sender.is_window_available());
+/// let sender = Mutex::new(sender);
+///
+/// let mut cx = Context::from_waker(Waker::noop());
+/// let mut admitted = pin!(admit(&sender, Bytes::from(vec![0x9F; 10])));
+/// assert!(admitted.as_mut().poll(&mut cx).is_pending());
+///
+/// // The drain lowers the queue.  The window is still full, and the bundle,
+/// // which fits one PDU, is admitted on the next poll.
+/// while sender.lock().unwrap().next_pdu().is_some() {}
+/// assert!(!sender.lock().unwrap().is_window_available());
+/// assert!(matches!(admitted.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
+/// ```
+///
 /// The drain is [`Self::poll_next_pdu_into`],
 /// [`Self::poll_next_pdu_write`], or [`Self::poll_next_pdu_vectored`] (the
 /// `tower` `Stream` under that feature), which parks while nothing is ready
-/// to pack; the `tower` `Stream` never yields `Ready(None)`.  A task parked
-/// in `poll_admit` or `poll_push_ready` is woken when the drain packs a PDU
-/// or [`Self::cancel`] frees what it waits for.  Only the drain frees a
-/// full window or a queue at its high watermark, so run producers and the
-/// drain from separate tasks, or from one task that selects over both; a
-/// task that awaits admission before polling the drain stops for good once
-/// the window fills.
+/// to pack; the `tower` `Stream` never yields `Ready(None)`.  A drain that
+/// must hold room below before it packs, such as a frame permit or a ring
+/// slot, waits in [`Self::poll_pdu_ready`] first, which parks the same way
+/// and packs nothing.  A task parked in `poll_admit` or `poll_push_ready`
+/// is woken when the drain packs a PDU or [`Self::cancel`] frees what it
+/// waits for.  Only the drain frees a full window or a queue at its high
+/// watermark, so run producers and the drain from separate tasks, or from
+/// one task that selects over both; a task that awaits admission before
+/// polling the drain stops for good once the window fills.
 ///
 /// Several producers may share a `Sender` through `Arc<Mutex<_>>`.
 /// Admission is not reserved between the checks (or `poll_admit`, or
@@ -262,7 +342,7 @@ enum Unsegmented {
 ///                 && match sender.enqueue(bundle.clone(), SendOptions::default()) {
 ///                     Ok(_) => true,
 ///                     Err(Error::WindowFull { .. }) => false,
-///                     Err(e) => return Err(e.into()),
+///                     Err(e) => return Err(e),
 ///                 };
 ///             if !admitted {
 ///                 // Refused on the window or the watermark, so this is
@@ -276,7 +356,9 @@ enum Unsegmented {
 ///     }
 ///     if ready & DRAIN != 0 {
 ///         let mut cx = Context::from_waker(&drain);
-///         while let Poll::Ready(len) = sender.poll_next_pdu_write(&mut cx, &mut carried, &mut slot) {
+///         while let Poll::Ready(len) =
+///             sender.poll_next_pdu_write(&mut cx, &mut carried, &mut slot)
+///         {
 ///             let pdu = &slot[..len?]; // to the link
 ///             completed += carried.completed().count();
 ///         }
@@ -284,7 +366,7 @@ enum Unsegmented {
 /// }
 /// assert!(waiting.is_empty());
 /// assert_eq!(completed, 40);
-/// # Ok::<(), Box<dyn core::error::Error>>(())
+/// # Ok::<(), Error>(())
 /// ```
 pub struct Sender {
     /// Stamped on every [`SendId`] this sender issues, so that an ID or
@@ -345,12 +427,12 @@ pub struct Sender {
     /// [`Self::is_push_ready`] holds for its bundle, checked after every
     /// PDU packed and every cancel.
     push_wakers: Vec<(u32, Waker)>,
-    /// The task parked on the drain (`poll_next_pdu_into`,
-    /// `poll_next_pdu_write`, `poll_next_pdu_vectored`, or the `tower`
-    /// `Stream`), woken when a bundle joins `order` (through
-    /// [`Self::queue`]), a Transfer Cancel is queued, or a push lets a
-    /// queued transfer open a PDU.  Single-slot: the drain has one
-    /// consumer.
+    /// The task parked on the drain (`poll_pdu_ready`,
+    /// `poll_next_pdu_into`, `poll_next_pdu_write`,
+    /// `poll_next_pdu_vectored`, or the `tower` `Stream`), woken when a
+    /// bundle joins `order` (through [`Self::queue`]), a Transfer Cancel is
+    /// queued, or a push lets a queued transfer open a PDU.  Single-slot:
+    /// the drain has one consumer.
     drain_waker: Option<Waker>,
     /// What packing the last PDU learned of the queue, kept so the next
     /// PDU reuses its buffer (see [`Self::ready`]).
@@ -735,7 +817,10 @@ impl Sender {
     /// once both hold.  The first may find the window still full: a bundle
     /// that fits one PDU is admitted then (see the Concurrency section on
     /// [`Sender`]), and a caller that needs the window polls again, which
-    /// parks it on the window.
+    /// parks it on the window.  A caller woken that way must therefore try
+    /// `enqueue` or `begin` before it polls here again: one that awaits
+    /// this call until `Ready` and only then tries spends the wake and
+    /// holds a bundle that fits behind the full window.
     ///
     /// The window gate applies to a bundle that fits one PDU too, which
     /// takes no transfer number, since the request is not seen.  Admission
@@ -1159,6 +1244,10 @@ impl Sender {
         true
     }
     /// Returns `true` if there are messages pending for transmission.
+    ///
+    /// True also for a transfer waiting on its producer, which supplies
+    /// nothing yet; [`Self::poll_pdu_ready`] tells whether a PDU can be
+    /// packed now.
     pub fn has_pending(&self) -> bool {
         !(self.order.is_empty() && self.parked.is_empty() && self.cancels.is_empty())
     }

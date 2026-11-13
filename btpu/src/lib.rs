@@ -87,11 +87,11 @@ The [`transfer`] module holds the Section 5 types both layers above share:
   backpressure from the transfer window and the
   [`sender::SendQueueHighWatermark`]; the receiver's service is always
   ready and never fails.  Wake-ups need no feature: `poll_admit`,
-  `poll_push_ready`, `poll_next_pdu_into`, `poll_next_pdu_write`, and
-  `poll_next_pdu_vectored` serve a caller that does not use `tower`.  How
-  to run the `Stream` drain alongside producers, and how several producers
-  may share one sender, is set out under Concurrency in
-  [`sender::Sender`].
+  `poll_push_ready`, `poll_pdu_ready`, `poll_next_pdu_into`,
+  `poll_next_pdu_write`, and `poll_next_pdu_vectored` serve a caller that
+  does not use `tower`.  How to run the `Stream` drain alongside
+  producers, and how several producers may share one sender, is set out
+  under Concurrency in [`sender::Sender`].
 - **`critical-section`**: For targets without native atomic
   compare-and-swap (such as `thumbv6m`, Cortex-M0).  `bytes` reference-counts
   with atomics, and each sender and receiver takes its owner tag from a

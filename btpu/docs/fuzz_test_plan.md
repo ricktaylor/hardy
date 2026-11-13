@@ -96,7 +96,7 @@ The second sets the PDU size, 24 to 279 bytes. The sender and receiver windows a
 
 5. **Admission wake-ups:** `poll_admit` is ready exactly when the window is available and the queue is below its watermark. Two producers park in it, one polling again only once woken and one after every operation. After every operation, a producer that parked while the queue was at its watermark has been woken exactly if the queue is now below it, whatever the window's state, and one that parked on the window exactly if both now have room; so no gate opens without its wake, and no producer is woken for a gate still closed.
 
-6. **Drain wake-ups:** a drain that finds nothing to pack parks, through the polling call for its output (`poll_next_pdu_into`, `poll_next_pdu_write`, or `poll_next_pdu_vectored`), and the poll is `Pending`. A drain parked and not woken since finds nothing to pack on its next call without a flush.
+6. **Drain wake-ups:** a drain that finds nothing to pack parks, through the polling call for its output (`poll_next_pdu_into`, `poll_next_pdu_write`, or `poll_next_pdu_vectored`), and the poll is `Pending`. A drain parked and not woken since finds nothing to pack on its next call without a flush. Before every drain without a flush, `poll_pdu_ready` is `Ready` exactly if that drain then returns a PDU.
 
 7. **Delivery:** the receiver reports only `Received` and `TransferCancelled`; no bundle arrives twice and no cancelled bundle arrives.
 

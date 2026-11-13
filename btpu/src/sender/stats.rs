@@ -1,7 +1,12 @@
 //! Counters of what a sender has done since it was created.
 
-/// Running totals kept by a [`Sender`](super::Sender), none of which the
-/// values it returns would tell a caller.  The totals only grow.
+/// Running totals kept by a [`Sender`](super::Sender).  The totals only
+/// grow.
+///
+/// A caller could keep three of them itself, from the values the sender
+/// returns: a PDU packed, a [`SendKind::Transfer`](super::SendKind::Transfer)
+/// ID issued, and a `true` from `cancel`.  The other two it cannot learn
+/// that way: `pdu_buffers_allocated` and `transfer_cancels_queued`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SenderStats {
     /// PDUs packed, through any output.
