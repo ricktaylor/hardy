@@ -1,5 +1,3 @@
-use core::num::NonZeroU32;
-
 use hardy_bpv7::eid::{Eid, NodeId};
 
 use super::*;
@@ -15,7 +13,7 @@ pub struct Cla {
     pub policy: Arc<dyn policy::FlowControllerFactory>,
     // Snapshotted from the `ClaInit` declarations at registration.
     pub address_type: Option<ClaAddressType>,
-    pub lane_count: Option<NonZeroU32>,
+    pub lanes: Lanes,
 
     name: Arc<str>,
     // Cancelled at unregistration; every in-flight stream of this
@@ -309,7 +307,7 @@ impl ClaRegistry {
                 cancel: hardy_async::CancellationToken::new(),
                 cla,
                 address_type: init.address_type,
-                lane_count: init.lane_count,
+                lanes: init.lanes,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
                 policy: policy

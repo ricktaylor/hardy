@@ -1,4 +1,4 @@
-use core::num::{NonZeroU32, NonZeroU64};
+use core::num::NonZeroU64;
 
 use super::*;
 use proto::cla::*;
@@ -252,7 +252,7 @@ pub async fn register_cla(
                 .into()
             }),
             max_bundle_size: init.max_bundle_size.map(NonZeroU64::get),
-            lane_count: init.lane_count.map(NonZeroU32::get),
+            lanes: Some(init.lanes.into()),
         }),
     )
     .await

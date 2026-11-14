@@ -72,7 +72,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Null Policy** | The null policy declares one queue and releases every bundle to the `next_free` lane directive without rate limiting. | `src/policy/null_policy.rs` | Null policy; CLA with `lane_count = Some(2)` | `queue_count() = 1`; every bundle forwarded with lane `None` |
+| **Null Policy** | The null policy declares one queue and releases every bundle to the `next_free` lane directive without rate limiting. | `src/policy/null_policy.rs` | Null policy; CLA with `lanes = Limited(2)` | `queue_count() = 1`; every bundle forwarded with lane `None` |
 | **Queue Assignment** | The controller assigns each bundle a queue with `queue_for()`, which takes no per-bundle input; the total queue model means queue 0 always exists. | `src/policy/mod.rs` | Controller: `queue_count() = 2`, `queue_for() -> 1` | Bundle queued on queue 1 |
 
 ### 3.4 Service Registry Logic

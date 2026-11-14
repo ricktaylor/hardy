@@ -1,6 +1,8 @@
 use super::*;
 
 pub mod cla {
+    use core::num::NonZeroU32;
+
     use super::*;
 
     tonic::include_proto!("cla");
@@ -37,6 +39,39 @@ pub mod cla {
                     address_type: ClaAddressType::Private.into(),
                     address,
                 },
+            }
+        }
+    }
+
+    // The lanes a registering CLA declares: an absent declaration is
+    // serial, and an explicit zero limit is invalid. The BPA's `Lanes` is
+    // path-qualified throughout: the generated oneof is also `Lanes`.
+    pub fn declared_lanes(
+        declared: Option<register_cla_request::Lanes>,
+    ) -> Result<hardy_bpa::cla::Lanes, tonic::Status> {
+        match declared {
+            None | Some(register_cla_request::Lanes::Serial(())) => {
+                Ok(hardy_bpa::cla::Lanes::Serial)
+            }
+            Some(register_cla_request::Lanes::Limited(n)) => NonZeroU32::new(n)
+                .map(hardy_bpa::cla::Lanes::Limited)
+                .ok_or_else(|| {
+                    tonic::Status::invalid_argument(
+                        "lanes.limited 0 is invalid; declare serial instead",
+                    )
+                }),
+            Some(register_cla_request::Lanes::Unlimited(())) => {
+                Ok(hardy_bpa::cla::Lanes::Unlimited)
+            }
+        }
+    }
+
+    impl From<hardy_bpa::cla::Lanes> for register_cla_request::Lanes {
+        fn from(value: hardy_bpa::cla::Lanes) -> Self {
+            match value {
+                hardy_bpa::cla::Lanes::Serial => Self::Serial(()),
+                hardy_bpa::cla::Lanes::Limited(n) => Self::Limited(n.get()),
+                hardy_bpa::cla::Lanes::Unlimited => Self::Unlimited(()),
             }
         }
     }
@@ -92,6 +127,40 @@ pub mod cla {
                 msg_id,
                 msg: Some(msg),
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use hardy_bpa::cla::Lanes;
+
+        use super::*;
+
+        // Every declaration crosses the wire intact.
+        #[test]
+        fn lanes_round_trip_the_wire() {
+            for lanes in [
+                Lanes::Serial,
+                Lanes::Limited(NonZeroU32::new(4).unwrap()),
+                Lanes::Unlimited,
+            ] {
+                let wire = register_cla_request::Lanes::from(lanes);
+                assert_eq!(declared_lanes(Some(wire)).unwrap(), lanes);
+            }
+        }
+
+        // A client that sends no declaration, such as one built before the
+        // field existed, registers serial.
+        #[test]
+        fn absent_lanes_are_serial() {
+            assert_eq!(declared_lanes(None).unwrap(), Lanes::Serial);
+        }
+
+        // An explicit zero limit is refused, not read as serial or unlimited.
+        #[test]
+        fn a_zero_lane_limit_is_invalid() {
+            let refused = declared_lanes(Some(register_cla_request::Lanes::Limited(0)));
+            assert_eq!(refused.unwrap_err().code(), tonic::Code::InvalidArgument);
         }
     }
 }

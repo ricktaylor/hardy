@@ -1,4 +1,4 @@
-use core::num::{NonZeroU32, NonZeroU64};
+use core::num::NonZeroU64;
 
 use super::*;
 use proto::cla::*;
@@ -308,15 +308,7 @@ async fn run_cla_session(
                     }
                     declared => declared.and_then(NonZeroU64::new),
                 };
-                // Same shape for the lane declaration: absent = no limit.
-                let lane_count = match request.lane_count {
-                    Some(0) => {
-                        return Err(tonic::Status::invalid_argument(
-                            "lane_count 0 is invalid; omit the field to declare no limit",
-                        ));
-                    }
-                    declared => declared.and_then(NonZeroU32::new),
-                };
+                let lanes = declared_lanes(request.lanes)?;
                 let node_ids = bpa
                     .register_cla(
                         request.name,
@@ -324,7 +316,7 @@ async fn run_cla_session(
                         None,
                         hardy_bpa::cla::ClaInit {
                             address_type,
-                            lane_count,
+                            lanes,
                             max_bundle_size,
                         },
                     )

@@ -220,6 +220,40 @@ pub enum TransferOutcome {
     Failed,
 }
 
+/// A CLA's declared lanes: its honest parallelism, how many transfers to
+/// one peer it can usefully carry in flight at once.
+///
+/// Lanes are parallel transport channels — QUIC streams, DSCP classes,
+/// separate TCP connections — carrying in-flight transfers with no
+/// explicit priority among them. Scheduling and prioritisation live in the
+/// BPA's egress policy, which decides what is forwarded onto each lane; the
+/// CLA simply transmits what arrives on a lane, and one lane's in-flight
+/// transfer must not head-of-line block another's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Lanes {
+    /// One transfer at a time: the CLA declares no parallelism. A CLA that
+    /// declares nothing gets this.
+    #[default]
+    Serial,
+    /// Up to this many transfers at once, on explicit lanes indexed
+    /// `0..n`. A zero count is unrepresentable by construction.
+    Limited(NonZeroU32),
+    /// No limit of the CLA's own (a datagram CL): every forward travels on
+    /// a fresh lane. The BPA's own bounds still apply.
+    Unlimited,
+}
+
+impl Lanes {
+    // How many explicit lanes the declaration names: `n` for `Limited(n)`,
+    // none otherwise, since serial and unlimited CLAs index no lanes.
+    pub(crate) fn explicit(self) -> u32 {
+        match self {
+            Self::Limited(n) => n.get(),
+            Self::Serial | Self::Unlimited => 0,
+        }
+    }
+}
+
 /// A CLA's set-once registration declarations.
 ///
 /// Passed to [`BpaRegistration::register_cla`](crate::bpa::BpaRegistration::register_cla)
@@ -233,22 +267,9 @@ pub struct ClaInit {
     /// against the CLA, but no lookup consults the record.
     pub address_type: Option<ClaAddressType>,
 
-    /// The CLA's lane count: its honest parallelism, the number of
-    /// transfers it can usefully carry in flight at once.
-    ///
-    /// `None` declares no limit: the CLA is effectively unconstrained (a
-    /// datagram CL), and every forward arrives with lane `None`, each
-    /// transfer travelling on a new lane from the infinite pool. `Some(n)`
-    /// declares `n` explicit lanes, indexed `0..n`; a zero count is
-    /// unrepresentable by construction.
-    ///
-    /// Lanes are parallel transport channels — QUIC streams, DSCP classes,
-    /// separate TCP connections — carrying in-flight transfers with no
-    /// explicit priority among them. Scheduling and prioritisation live in
-    /// the BPA's egress policy, which decides what is forwarded onto each
-    /// lane; the CLA simply transmits what arrives on a lane, and one
-    /// lane's in-flight transfer must not head-of-line block another's.
-    pub lane_count: Option<NonZeroU32>,
+    /// The CLA's lanes: how many transfers to one peer it can usefully
+    /// carry in flight at once. Default: [`Lanes::Serial`].
+    pub lanes: Lanes,
 
     /// The CLA's declared receive limit (`None` = no CLA-side limit).
     ///
@@ -367,12 +388,12 @@ pub trait Cla: Send + Sync {
     /// Forwards a bundle, delivered as a stream of segments, to a specific CLA
     /// address over a given lane.
     ///
-    /// Lane `None` requests a new lane from the infinite pool — the
-    /// default for CLAs that declare no lane limit, where every transfer
-    /// travels on its own fresh lane (a datagram CL). `Some(i)` directs
-    /// the transfer onto explicit lane `i`. As a safety net, a CLA that
-    /// declares explicit lanes but still receives `None` should pick a
-    /// lane arbitrarily (e.g. at random) rather than fail the transfer.
+    /// Lane `None` leaves the lane to the CLA: the next free one, or a
+    /// fresh one for a CLA that declares [`Lanes::Unlimited`]. `Some(i)`
+    /// directs the transfer onto explicit lane `i` of a CLA that declares
+    /// [`Lanes::Limited`]. As a safety net, a CLA that declares explicit
+    /// lanes but still receives `None` should pick a lane arbitrarily
+    /// (e.g. at random) rather than fail the transfer.
     /// Mirroring [`Sink::dispatch`] on the egress side, the
     /// implementation pulls [`Segment::Next`] items from `stream` until
     /// [`Segment::Final`] (which may carry empty bytes) completes the

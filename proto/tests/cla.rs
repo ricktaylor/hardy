@@ -9,7 +9,7 @@ use common::MockBpa;
 use core::num::{NonZeroU32, NonZeroU64};
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::cla::{self, ClaAddress, ClaInit, ForwardBundleResult};
+use hardy_bpa::cla::{self, ClaAddress, ClaInit, ForwardBundleResult, Lanes};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -364,7 +364,7 @@ async fn cla_cli_06_deferred_outcome() {
 async fn cla_cli_07_cla_init_round_trip() {
     let declared = ClaInit {
         address_type: Some(hardy_bpa::cla::ClaAddressType::Tcp),
-        lane_count: Some(NonZeroU32::new(4).unwrap()),
+        lanes: Lanes::Limited(NonZeroU32::new(4).unwrap()),
         max_bundle_size: Some(NonZeroU64::new(1024 * 1024).unwrap()),
     };
     let effective = NonZeroU64::new(512 * 1024).unwrap();

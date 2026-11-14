@@ -104,12 +104,23 @@ message RegisterClaRequest {
   // Absent means no CLA-side limit; an explicit 0 is invalid and the
   // registration is rejected.
   optional uint64         max_bundle_size = 3;
-  // The CLA's lane count: its honest parallelism, the number of transfers
-  // it can usefully carry in flight at once. Absent means no limit (a
-  // datagram CL: every forward arrives with a fresh lane from the
-  // infinite pool); a value declares that many explicit lanes, indexed
-  // from 0. An explicit 0 is invalid and the registration is rejected.
-  optional uint32         lane_count      = 4;
+  // Reserved: an older client sends `optional uint32 lane_count` here, which
+  // this BPA ignores, so that client registers serial.
+  reserved 4;
+  reserved "lane_count";
+  // The CLA's lanes: its honest parallelism, how many transfers to one
+  // peer it can usefully carry in flight at once. Absent means serial,
+  // the same as `serial`.
+  oneof lanes {
+    // One transfer at a time.
+    google.protobuf.Empty serial    = 5;
+    // Up to this many transfers at once, on explicit lanes indexed from 0.
+    // An explicit 0 is invalid and the registration is rejected.
+    uint32                limited   = 6;
+    // No limit of the CLA's own (a datagram CL): every forward travels on
+    // a fresh lane. The BPA's own bounds still apply.
+    google.protobuf.Empty unlimited = 7;
+  }
 }
 
 // A response to a register CLA request.
@@ -192,10 +203,10 @@ message ForwardBundleRequest {
   bytes           bundle    = 1;
   // The address to forward the bundle to.
   ClaAddress      address   = 2;
-  // The egress lane to forward on; absent requests a new lane from the
-  // CLA's infinite pool (a CLA with explicit lanes picks one arbitrarily
-  // as a safety net). Which bundles go on which lane is decided by the
-  // BPA's egress policy; lanes carry no explicit priority.
+  // The egress lane to forward on; absent leaves the lane to the CLA (a
+  // CLA with explicit lanes picks one arbitrarily as a safety net). Which
+  // bundles go on which lane is decided by the BPA's egress policy; lanes
+  // carry no explicit priority.
   optional uint32 lane      = 3;
   // The unique bundle identifier, an opaque stable key (the encoding is
   // documented on service.proto's SendResponse.bundle_id).
