@@ -1,8 +1,10 @@
 //! [`Tcpclv4`]: the TCPCL entity — the CLA that registers with a BPA.
 
-use core::num::{NonZeroU32, NonZeroUsize};
-use std::net::TcpListener;
-use std::sync::Mutex;
+use core::{
+    fmt::{self, Debug, Formatter},
+    num::{NonZeroU32, NonZeroUsize},
+};
+use std::{net::TcpListener, sync::Mutex};
 
 use hardy_bpa::{
     async_trait,
@@ -183,6 +185,26 @@ impl Tcpclv4 {
             self.tasks
                 .spawn(acceptor.listen(self.tasks.clone(), listener));
         }
+    }
+}
+
+// The configuration and whether the entity is registered; the runtime
+// state (sockets, sessions, the BPA sink) has no useful text form. TLS
+// shows only whether it is required: the material holds key bytes.
+impl Debug for Tcpclv4 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Tcpclv4")
+            .field("contact_timeout", &self.contact_timeout)
+            .field("keepalive_interval", &self.keepalive_interval)
+            .field("connection_rate_limit", &self.connection_rate_limit)
+            .field("segment_mru", &self.segment_mru)
+            .field("transfer_mru", &self.transfer_mru)
+            .field(
+                "tls_required",
+                &self.tls.as_ref().map(|tls| tls.is_required()),
+            )
+            .field("registered", &self.inner.get().is_some())
+            .finish_non_exhaustive()
     }
 }
 

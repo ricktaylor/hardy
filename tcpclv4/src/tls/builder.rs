@@ -1,22 +1,31 @@
 // Construction of [`Tls`]: certificate and key loading via rustls's own
 // PEM API and CA-directory scanning.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     server::WebPkiClientVerifier,
 };
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use super::{Error, Result, Tls, verifier::InsecureVerifier};
 
 /// The accept side's client-certificate policy: whether dialers must
 /// present a certificate chaining to the trust anchors (mutual TLS).
+///
+/// With the `serde` feature it (de)serializes as `off`, `optional`, or
+/// `required`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum ClientAuth {
     /// Never request a client certificate; dialers are unauthenticated.
     #[default]

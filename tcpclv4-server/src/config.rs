@@ -1,8 +1,6 @@
-use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use hardy_tcpclv4::{ContactTimeout, KeepaliveInterval, tls};
+use hardy_tcpclv4::config::Config as ClaConfig;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
@@ -24,22 +22,6 @@ mod log_level_serde {
     {
         let s = String::deserialize(deserializer)?;
         Level::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-// `null` was an earlier schema's disabled spelling for the keepalive
-// interval; refuse it rather than silently re-enable keepalives. Delete
-// after the migration window: the library's serde impl then applies
-// (absent means the builder default, `0` disables).
-fn keepalive_refusing_null<'de, D>(deserializer: D) -> Result<Option<KeepaliveInterval>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    match Option::<KeepaliveInterval>::deserialize(deserializer)? {
-        None => Err(serde::de::Error::custom(
-            "keepalive-interval does not accept null: use 0 to disable keepalives, or omit the key for the default",
-        )),
-        some => Ok(some),
     }
 }
 
@@ -78,104 +60,15 @@ fn default_cla_name() -> String {
     env!("CARGO_PKG_NAME").to_string()
 }
 
-// A certificate and the private key that proves it: only representable as
-// a pair.
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct Identity {
-    // The node's certificate (PEM).
-    pub cert_file: PathBuf,
-
-    // The private key (PEM: PKCS#8, PKCS#1, or SEC1) matching `cert-file`.
-    #[serde(alias = "private-key-file")]
-    pub key_file: PathBuf,
-}
-
-// Client-certificate verification policy for inbound TLS connections
-// (mutual TLS): `required` refuses dialers without a certificate chaining
-// to `ca-certs`; `optional` verifies a certificate when one is presented
-// but accepts dialers without one; `off` never requests one.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ClientAuth {
-    #[default]
-    Off,
-    Optional,
-    Required,
-}
-
-// The config schema's client-auth policy is a mirror of the library's;
-// this conversion is the one place the two are stitched together.
-impl From<ClientAuth> for tls::ClientAuth {
-    fn from(policy: ClientAuth) -> Self {
-        match policy {
-            ClientAuth::Off => Self::Off,
-            ClientAuth::Optional => Self::Optional,
-            ClientAuth::Required => Self::Required,
-        }
-    }
-}
-
-// The `tls` section of the config file. The serde layer stays permissive
-// and flat, mirroring what the operator types; `identity` is one object
-// with two required fields, so a lone certificate or key cannot be
-// written, and `required` lives inside the section, so "require TLS
-// without configuring TLS" cannot be written. The trust-anchor rules are
-// judged by `Tcpclv4Server::new`, which names the keys in its errors; the
-// honest make-invalid-unrepresentable types live behind it, in
-// `hardy_tcpclv4::tls`.
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct TlsConfig {
-    // Refuse sessions that do not negotiate TLS. Default: `false`.
-    #[serde(default)]
-    pub required: bool,
-
-    // Directory of PEM CA certificates used to verify peers'
-    // certificates: the standing trust anchor for normal operation.
-    #[serde(default)]
-    pub ca_certs: Option<PathBuf>,
-
-    // Accept any peer certificate chain with no trust validation
-    // (INSECURE; testing only). The key is deliberately loud and has no
-    // shorter alias: the danger must be visible in the file. Overrides
-    // `ca-certs` when both are set, so a debug session is one line to
-    // flip; the override is named in a startup warning, and the ignored
-    // bundle is never loaded.
-    #[serde(default)]
-    pub insecure_skip_verify: bool,
-
-    // The node's own certificate and private key. Required to accept TLS
-    // connections (the listener's TLS server role), and presented to
-    // dialed peers under mutual TLS.
-    #[serde(default)]
-    pub identity: Option<Identity>,
-
-    // Client-certificate verification for inbound connections (mutual
-    // TLS). Requires `identity` and a `ca-certs` trust anchor.
-    #[serde(default)]
-    pub client_auth: ClientAuth,
-
-    // SNI override presented when dialing (for certificates issued to
-    // domain names).
-    #[serde(default)]
-    pub server_name: Option<String>,
-}
-
 // Configuration for the standalone TCPCLv4 CLA server.
 //
 // Loaded from a TOML/YAML/JSON config file and/or environment variables
 // prefixed with `HARDY_TCPCLV4_`. Uses kebab-case field names in config files
 // and `__` as the nested-field separator for environment variables.
 //
-// The transport fields mirror the `hardy_tcpclv4` builder inputs (kept in
-// sync with the `clas:` entry mirror in bpa-server/src/config/tcpclv4.rs).
-// Absent keys stay `None` and leave the corresponding builder default in
-// force, so no default value is restated here. Scalar invariants are
-// carried by the schema types (`NonZero` integers, the `contact-timeout`
-// adapter) and rejected at parse; `Tcpclv4Server::new` (src/server.rs)
-// maps the file surface onto the builder, naming config keys in the
-// errors that remain.
+// The server's own keys sit beside the flattened TCPCLv4 settings. Unknown
+// keys are refused: the flattened schema claims its own keys, and any key
+// left unclaimed by both is an error.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
@@ -202,49 +95,11 @@ pub struct Config {
     #[serde(default)]
     pub peers: Vec<String>,
 
-    // The passive listening elements, one address per listener; absent
-    // listens on the IANA-registered `[::]:4556`, and an empty list
-    // disables listening (dial-only).
-    #[serde(default)]
-    pub listeners: Option<Vec<SocketAddr>>,
-
-    // Largest acceptable single-segment payload, in bytes; zero is
-    // rejected at parse.
-    #[serde(default)]
-    pub segment_mru: Option<NonZeroU64>,
-
-    // Largest acceptable total bundle transfer, in bytes; zero is
-    // rejected at parse.
-    #[serde(default)]
-    pub transfer_mru: Option<NonZeroU64>,
-
-    // Idle connections retained per remote address; 0 disables pooling.
-    #[serde(default)]
-    pub max_idle_connections: Option<usize>,
-
-    // Transfers accepted but not yet resolved with an outcome, per peer;
-    // zero is rejected at parse. Bounds the bundles held in memory by
-    // in-flight and queued transfers to each peer.
-    #[serde(default)]
-    pub max_outstanding_transfers: Option<NonZeroUsize>,
-
-    // Inbound connections accepted per second; zero is rejected at parse.
-    #[serde(default)]
-    pub connection_rate_limit: Option<NonZeroU32>,
-
-    // Seconds to wait for a peer's contact header: 1 to 60 (RFC 9174
-    // Section 4.2); out-of-range values are rejected at parse.
-    #[serde(default)]
-    pub contact_timeout: Option<ContactTimeout>,
-
-    // Keepalive interval in seconds (RFC 9174 Section 4.7); 0 disables
-    // keepalives.
-    #[serde(default, deserialize_with = "keepalive_refusing_null")]
-    pub keepalive_interval: Option<KeepaliveInterval>,
-
-    // TLS configuration; absent means plaintext.
-    #[serde(default)]
-    pub tls: Option<TlsConfig>,
+    // The TCPCLv4 settings, flattened to the top level: the shared schema
+    // of `hardy_tcpclv4::config`, also read by `hardy-bpa-server`'s
+    // `clas:` entries.
+    #[serde(flatten)]
+    pub cla: ClaConfig,
 }
 
 impl Config {
@@ -293,11 +148,15 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU64;
+    use std::io::Write;
+
+    use hardy_async::TaskPool;
+    use hardy_tcpclv4::{KeepaliveInterval, tls::ClientAuth};
+    use serial_test::serial;
+
     use super::*;
     use crate::server::Tcpclv4Server;
-    use hardy_async::TaskPool;
-    use serial_test::serial;
-    use std::io::Write;
 
     // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
@@ -316,14 +175,14 @@ mod tests {
         assert_eq!(config.cla_name, env!("CARGO_PKG_NAME"));
         assert_eq!(config.log_level, Level::INFO);
         assert!(
-            config.listeners.is_none(),
+            config.cla.listeners.is_none(),
             "absent maps to the registered default listener"
         );
         assert!(
-            config.segment_mru.is_none(),
+            config.cla.segment_mru.is_none(),
             "absent keys defer to the builder defaults"
         );
-        assert!(config.tls.is_none(), "plaintext by default");
+        assert!(config.cla.tls.is_none(), "plaintext by default");
         // Not built here: the all-defaults build would bind the real
         // IANA-registered [::]:4556. The build path is covered by the
         // tests below, which listen on an ephemeral loopback port.
@@ -348,11 +207,14 @@ keepalive-interval = 30
         assert_eq!(config.cla_name, "test-cla");
         assert_eq!(config.log_level, Level::DEBUG);
         assert_eq!(
-            config.listeners.unwrap(),
+            config.cla.listeners.unwrap(),
             vec![std::net::SocketAddr::from(([0, 0, 0, 0], 9999))]
         );
-        assert_eq!(config.segment_mru, Some(NonZeroU64::new(8192).unwrap()));
-        assert_eq!(config.keepalive_interval, Some(KeepaliveInterval::new(30)));
+        assert_eq!(config.cla.segment_mru, Some(NonZeroU64::new(8192).unwrap()));
+        assert_eq!(
+            config.cla.keepalive_interval,
+            Some(KeepaliveInterval::new(30))
+        );
     }
 
     // YAML config file works identically to TOML.
@@ -371,7 +233,7 @@ segment-mru: 4096
         assert_eq!(config.bpa_address, "http://10.0.0.2:50051");
         assert_eq!(config.cla_name, "yaml-cla");
         assert_eq!(config.log_level, Level::WARN);
-        assert_eq!(config.segment_mru, Some(NonZeroU64::new(4096).unwrap()));
+        assert_eq!(config.cla.segment_mru, Some(NonZeroU64::new(4096).unwrap()));
     }
 
     // JSON config file works identically to TOML.
@@ -441,7 +303,10 @@ log-level = "warn"
         let config = Config::load(Some(path)).unwrap();
         unsafe { std::env::remove_var("HARDY_TCPCLV4_SEGMENT_MRU") };
 
-        assert_eq!(config.segment_mru, Some(NonZeroU64::new(32768).unwrap()));
+        assert_eq!(
+            config.cla.segment_mru,
+            Some(NonZeroU64::new(32768).unwrap())
+        );
     }
 
     // `HARDY_TCPCLV4_CONFIG_FILE` is the loader's own interface, consumed
@@ -560,7 +425,7 @@ tls:
   client-auth: "required"
 "#,
         );
-        let tls = config.tls.unwrap();
+        let tls = config.cla.tls.unwrap();
         assert!(tls.required);
         assert_eq!(tls.ca_certs, Some(PathBuf::from("/etc/hardy/ca")));
         assert!(!tls.insecure_skip_verify);
@@ -592,7 +457,7 @@ tls:
 "#,
         );
         assert_eq!(
-            config.tls.unwrap().identity.unwrap().key_file,
+            config.cla.tls.unwrap().identity.unwrap().key_file,
             PathBuf::from("/etc/hardy/private/server.key")
         );
     }
@@ -670,7 +535,7 @@ tls:
     fn large_segment_mru() {
         let config = write_and_load("large.toml", "segment-mru = 1073741824\n");
         assert_eq!(
-            config.segment_mru,
+            config.cla.segment_mru,
             Some(NonZeroU64::new(1073741824).unwrap())
         );
     }
@@ -680,7 +545,7 @@ tls:
     #[serial]
     fn empty_listeners_is_dial_only() {
         let config = write_and_load("dial_only.yaml", "listeners: []\n");
-        assert_eq!(config.listeners, Some(vec![]));
+        assert_eq!(config.cla.listeners, Some(vec![]));
         Tcpclv4Server::new(config, TaskPool::new()).expect("a dial-only build binds nothing");
     }
 
@@ -708,7 +573,10 @@ tls:
             "keepalive.toml",
             "listeners = [\"127.0.0.1:0\"]\nkeepalive-interval = 0\n",
         );
-        assert_eq!(config.keepalive_interval, Some(KeepaliveInterval::DISABLED));
+        assert_eq!(
+            config.cla.keepalive_interval,
+            Some(KeepaliveInterval::DISABLED)
+        );
         Tcpclv4Server::new(config, TaskPool::new()).expect("0 disables keepalives");
     }
 

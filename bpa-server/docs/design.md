@@ -161,7 +161,7 @@ When the `otel` feature is enabled, the server initialises OpenTelemetry for log
 
 ### With hardy-tcpclv4
 
-When the `tcpclv4` feature is enabled, TCPCLv4 can run in-process. This avoids the overhead of gRPC communication for deployments where a separate CLA process isn't needed.
+When the `tcpclv4` feature is enabled, TCPCLv4 can run in-process. This avoids the overhead of gRPC communication for deployments where a separate CLA process isn't needed. A `type: tcpclv4` entry in `clas` deserializes as `hardy-tcpclv4`'s `config::Config`, the schema `hardy-tcpclv4-server` reads too, and converts into the CLA with `Tcpclv4::try_from`.
 
 ## Testing
 

@@ -32,7 +32,7 @@ use hardy_s3_storage::S3Storage;
 #[cfg(feature = "sqlite-storage")]
 use hardy_sqlite_storage::SqliteStorage;
 #[cfg(feature = "tcpclv4")]
-use hardy_tcpclv4::{Tcpclv4, tls};
+use hardy_tcpclv4::Tcpclv4;
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
@@ -266,76 +266,17 @@ impl BpaServer {
             .collect();
 
         for cla_config in config.clas {
-            let cla: Option<(Arc<dyn Cla>, ClaInit)> = match &cla_config.cla_type {
+            let cla: Option<(Arc<dyn Cla>, ClaInit)> = match cla_config.cla_type {
                 #[cfg(feature = "tcpclv4")]
                 ClaType::TcpClv4(tcpcl) => {
-                    let name = &cla_config.name;
-                    let mut cla_builder = Tcpclv4::builder();
-
-                    cla_builder = match &tcpcl.listeners {
-                        Some(listeners) => {
-                            listeners.iter().fold(cla_builder, |cla_builder, address| {
-                                cla_builder.listen(*address)
-                            })
-                        }
-                        None => cla_builder.listen_default(),
-                    };
-                    if let Some(mru) = tcpcl.segment_mru {
-                        cla_builder = cla_builder.segment_mru(mru);
-                    }
-                    if let Some(mru) = tcpcl.transfer_mru {
-                        cla_builder = cla_builder.transfer_mru(mru);
-                    }
-                    if let Some(limit) = tcpcl.max_idle_connections {
-                        cla_builder = cla_builder.max_idle_connections(limit);
-                    }
-                    if let Some(limit) = tcpcl.max_outstanding_transfers {
-                        cla_builder = cla_builder.max_outstanding_transfers(limit);
-                    }
-                    if let Some(rate) = tcpcl.connection_rate_limit {
-                        cla_builder = cla_builder.connection_rate_limit(rate);
-                    }
-                    if let Some(timeout) = tcpcl.contact_timeout {
-                        cla_builder = cla_builder.contact_timeout(timeout);
-                    }
-                    if let Some(interval) = tcpcl.keepalive_interval {
-                        cla_builder = cla_builder.keepalive_interval(interval);
-                    }
-
-                    if let Some(tls_config) = &tcpcl.tls {
-                        let mut tls_builder = tls::Tls::builder().required(tls_config.required);
-
-                        if let Some(dir) = &tls_config.ca_certs {
-                            tls_builder = tls_builder.ca_certs(dir.clone());
-                        }
-                        if tls_config.insecure_skip_verify {
-                            tls_builder = tls_builder.dangerous().insecure_skip_verify();
-                        }
-                        if let Some(identity) = &tls_config.identity {
-                            tls_builder = tls_builder
-                                .identity(identity.cert_file.clone(), identity.key_file.clone());
-                        }
-                        tls_builder = tls_builder.client_auth(tls_config.client_auth.into());
-                        if let Some(server_name) = &tls_config.server_name {
-                            tls_builder = tls_builder.server_name(server_name.clone());
-                        }
-
-                        cla_builder = cla_builder.tls(
-                            tls_builder
-                                .build()
-                                .with_context(|| format!("Failed to create CLA '{name}'"))?,
-                        );
-                    }
-
-                    let cla = cla_builder
-                        .build()
-                        .with_context(|| format!("Failed to create CLA '{name}'"))?;
+                    let cla = Tcpclv4::try_from(tcpcl)
+                        .with_context(|| format!("Failed to create CLA '{}'", cla_config.name))?;
                     let init = cla.cla_init();
                     Some((Arc::new(cla) as Arc<dyn Cla>, init))
                 }
                 #[cfg(feature = "file-cla")]
                 ClaType::File(file) => Some((
-                    Arc::new(FileCla::new(file).map_err(|e| {
+                    Arc::new(FileCla::new(&file).map_err(|e| {
                         anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
                     })?) as Arc<dyn Cla>,
                     ClaInit::default(),

@@ -62,13 +62,13 @@ Configuration uses the same patterns as hardy-bpa-server:
 - **Environment overrides** - `HARDY_TCPCLV4_SERVER_*` prefix
 - **Defaults** - Derived from RFC 9174 recommendations
 
-Configuration owns the TCPCLv4 config-file schema (mapped onto `hardy-tcpclv4`'s `Tcpclv4::builder()`) plus the BPA gRPC endpoint address; the example configuration files (`example_config.toml`/`.yaml`) live in this crate.
+The TCPCLv4 keys are `hardy-tcpclv4`'s `config::Config`, flattened to the top level; this crate adds its own keys (the BPA gRPC endpoint address, the CLA name, the static peers, the log level) and the example configuration files (`example_config.toml`/`.yaml`).
 
 ## Integration
 
 ### With hardy-tcpclv4
 
-The server builds a `hardy_tcpclv4::Tcpclv4` from the config-file mapping and passes it the gRPC-backed Sink. All TCPCLv4 protocol handling is delegated to the library.
+The server converts the loaded `hardy_tcpclv4::config::Config` into a `Tcpclv4` and passes it the gRPC-backed Sink. All TCPCLv4 protocol handling is delegated to the library.
 
 ### With hardy-proto
 

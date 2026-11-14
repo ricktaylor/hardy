@@ -16,6 +16,8 @@ over TCP connections, with optional TLS encryption.
 - [`tls::Tls`] — TLS material (trust anchor, node identity, mutual-TLS
   policy), chained from [`tls::Tls::builder`] and loaded by
   [`builder::Tcpclv4Builder::build`].
+- [`config::Config`] — the builder inputs as plain data, for
+  configuration files; converts with `Tcpclv4::try_from`.
 - [`enum@Error`] — the generic error for everything TCPCLv4: assembling
   and registering the entity, with each sub-concept's error wrapped as a
   variant (`Tls`, `Session`).
@@ -23,9 +25,11 @@ over TCP connections, with optional TLS encryption.
 # Feature flags
 
 - `instrument` — adds `tracing` spans to the async internals.
-- `serde` — adds `Serialize`/`Deserialize` impls to the invariant newtypes
-  ([`ContactTimeout`], [`KeepaliveInterval`]), so consumer config schemas
-  reject invalid values at deserialization.
+- `serde` — adds `Serialize`/`Deserialize` impls to [`config::Config`]
+  (the strict kebab-case schema the Hardy servers read),
+  [`tls::ClientAuth`], and the invariant newtypes ([`ContactTimeout`],
+  [`KeepaliveInterval`]), so invalid values are rejected at
+  deserialization.
 */
 
 mod codec;
@@ -38,6 +42,7 @@ mod transport;
 mod writer;
 
 pub mod builder;
+pub mod config;
 pub mod tls;
 
 pub use self::error::Error;

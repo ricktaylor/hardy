@@ -17,7 +17,7 @@ Published on [crates.io](https://crates.io/crates/hardy-tcpclv4).
 
 This crate implements TCPCLv4 as a CLA library for the Hardy BPA. It handles active and passive TCP session establishment, contact header exchange, SESS_INIT negotiation, bundle transfer segmentation, and keepalive management. TLS support is provided via `rustls` for encrypted connections.
 
-The `Tcpclv4` type registers with any `BpaRegistration` implementation (local or remote via gRPC) and manages the full connection lifecycle including listener tasks, per-session state machines, and connection pooling. It is created through `Tcpclv4::builder()`, where every setting has a documented default; the configuration-file schema lives in the applications that consume this crate (`hardy-bpa-server`, `hardy-tcpclv4-server`).
+The `Tcpclv4` type registers with any `BpaRegistration` implementation (local or remote via gRPC) and manages the full connection lifecycle including listener tasks, per-session state machines, and connection pooling. It is created through `Tcpclv4::builder()`, where every setting has a documented default, or converted from a `config::Config` — the same settings as plain data, deserializable with the `serde` feature — which `hardy-bpa-server` and `hardy-tcpclv4-server` both read.
 
 ## Features
 
@@ -29,7 +29,7 @@ The `Tcpclv4` type registers with any `BpaRegistration` implementation (local or
 - **Connection registry**: Idle connection pooling per remote address
 - **Metrics**: 11 OpenTelemetry metrics for sessions, transfers, segments, throughput, and pool utilisation
 - Feature flag: `instrument` -- enables `tracing` span instrumentation
-- Feature flag: `serde` -- `Serialize`/`Deserialize` impls on the invariant newtypes (`ContactTimeout`, `KeepaliveInterval`) for consumer config schemas
+- Feature flag: `serde` -- `Serialize`/`Deserialize` impls on `config::Config` (the strict kebab-case config-file schema), `tls::ClientAuth`, and the invariant newtypes (`ContactTimeout`, `KeepaliveInterval`)
 
 ## Usage
 
