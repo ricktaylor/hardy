@@ -5,8 +5,11 @@
 
 use core::{
     num::{NonZeroU8, NonZeroU32, NonZeroU64},
+    ops::Range,
     time::Duration,
 };
+#[cfg(feature = "rfc9173")]
+use hardy_bpa::bundle::{Bundle, BundleMetadata, BundleStatus};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
@@ -18,10 +21,15 @@ use hardy_bpa::{
     node_ids::NodeIds,
     routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
     services,
-    storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
-    stream::{Receiver, Segment, buffer_stream},
+    storage::{
+        BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
+        Result as StorageResult,
+    },
+    stream::{Receiver, Segment, Sender, buffer_stream},
 };
+// Aliased: this file names several crates' `Error`s.
 use hardy_bpv7::{
+    Error as Bpv7Error,
     block::{Flags as BlockFlags, Type},
     builder::Builder,
     bundle::{Flags, FragmentInfo, Id},
@@ -39,9 +47,17 @@ use hardy_bpv7::{
 };
 // Aliased: the key type, beside the block `Type` imported above.
 #[cfg(feature = "rfc9173")]
-use hardy_bpv7::bpsec::{
-    encryptor::{Context as EncryptContext, Encryptor},
-    key::{EncAlgorithm, Key, Operation, Type as KeyType},
+use hardy_bpa::keys::KeyProvider;
+#[cfg(feature = "rfc9173")]
+use hardy_bpv7::{
+    block::BibCoverage,
+    bpsec::{
+        Role, Roles, SecurityServices,
+        encryptor::{Context as EncryptContext, Encryptor},
+        key::{EncAlgorithm, Key, KeyAlgorithm, KeySet, KeySource, Operation, Type as KeyType},
+        rfc9173::ScopeFlags,
+        signer::{self, Signer},
+    },
 };
 use hardy_cbor::{
     decode::skip_value,
@@ -60,6 +76,8 @@ use std::{
     },
     thread::available_parallelism,
 };
+
+mod common;
 
 struct PipelineCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
@@ -203,11 +221,11 @@ impl services::Service for EchoService {
         else {
             return Ok(());
         };
-        let Ok(editor) = Editor::new(&raw, &data).with_source(raw.primary.destination.clone())
-        else {
+        let mut editor = Editor::new(&raw, &data);
+        let Ok(()) = editor.set_source(raw.primary.destination.clone()) else {
             return Ok(());
         };
-        let Ok(editor) = editor.with_destination(raw.primary.id.source.clone()) else {
+        let Ok(()) = editor.set_destination(raw.primary.id.source.clone()) else {
             return Ok(());
         };
         let Ok(chunks) = editor.rebuild() else {
@@ -429,19 +447,1970 @@ async fn app_to_cla_routing() {
     bpa.shutdown().await;
 }
 
+// Bundle storage that hands each saved bundle to the test, so it can see
+// what is stored, and each deleted one to `deleted_tx`, where the test asks.
+struct SavedBundles {
+    inner: BundleMemStorage,
+    saved_tx: flume::Sender<Bytes>,
+    deleted_tx: Option<flume::Sender<Bytes>>,
+}
+
+impl SavedBundles {
+    fn new() -> (Arc<Self>, flume::Receiver<Bytes>) {
+        let (saved_tx, saved_rx) = flume::unbounded();
+        (
+            Arc::new(Self {
+                inner: BundleMemStorage::new(None, None),
+                saved_tx,
+                deleted_tx: None,
+            }),
+            saved_rx,
+        )
+    }
+
+    // As `new`, handing each deleted bundle to the second receiver too.
+    #[cfg(feature = "rfc9173")]
+    fn with_deletions() -> (Arc<Self>, flume::Receiver<Bytes>, flume::Receiver<Bytes>) {
+        let (saved_tx, saved_rx) = flume::unbounded();
+        let (deleted_tx, deleted_rx) = flume::unbounded();
+        (
+            Arc::new(Self {
+                inner: BundleMemStorage::new(None, None),
+                saved_tx,
+                deleted_tx: Some(deleted_tx),
+            }),
+            saved_rx,
+            deleted_rx,
+        )
+    }
+}
+
+#[async_trait]
+impl BundleStorage for SavedBundles {
+    async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> StorageResult<()> {
+        self.inner.recover(stream).await
+    }
+
+    async fn load(&self, storage_name: &str) -> StorageResult<Option<Bytes>> {
+        self.inner.load(storage_name).await
+    }
+
+    async fn save(&self, data: Bytes) -> StorageResult<Arc<str>> {
+        let _ = self.saved_tx.send(data.clone());
+        self.inner.save(data).await
+    }
+
+    async fn delete(&self, storage_name: &str) -> StorageResult<()> {
+        if let Some(deleted_tx) = &self.deleted_tx
+            && let Some(data) = self.inner.load(storage_name).await?
+        {
+            let _ = deleted_tx.send(data);
+        }
+        self.inner.delete(storage_name).await
+    }
+}
+
+// The first bundle stored from `source`.
+async fn stored_from(saved_rx: &flume::Receiver<Bytes>, source: &Eid) -> Parsed {
+    loop {
+        // Event-driven wait; the timeout only bounds a regression.
+        let data = tokio::time::timeout(tokio::time::Duration::from_secs(5), saved_rx.recv_async())
+            .await
+            .expect("timeout waiting for the stored bundle")
+            .expect("channel closed");
+        let stored = parse(data).expect("a stored bundle parses");
+        if &stored.bundle.primary.id.source == source {
+            return stored;
+        }
+    }
+}
+
+// `base` with an unrecognised extension block (type 999, block 2) flagged
+// `delete_block_on_failure` inserted between the primary and the payload:
+// a block the header pass schedules for removal.
+fn with_unknown_deletable_block(base: &[u8]) -> Bytes {
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x10u64); // flags: delete_block_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(base[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(base.len() + unknown.len());
+    modified.extend_from_slice(&base[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&base[insert..]);
+    Bytes::from(modified)
+}
+
+// A key provider lending the same keys for every bundle.
+#[cfg(feature = "rfc9173")]
+struct FixedKeys(Vec<Key>);
+
+#[cfg(feature = "rfc9173")]
+impl KeyProvider for FixedKeys {
+    fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+        Box::new(KeySet::new(self.0.clone()))
+    }
+}
+
+// A signing key and an encryption key. Immaterial key values: generated per
+// the no-literal-keys rule.
+#[cfg(feature = "rfc9173")]
+fn generated_keys() -> (Key, Key) {
+    let generated = || {
+        let mut k = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut k).unwrap();
+        KeyType::octet_sequence(k)
+    };
+    let sign_key = Key {
+        key_type: generated(),
+        key_algorithm: Some(KeyAlgorithm::HS256),
+        enc_algorithm: None,
+        operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
+        id: None,
+        key_use: None,
+    };
+    let enc_key = Key {
+        key_type: generated(),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+    (sign_key, enc_key)
+}
+
+// A bundle from `source` to `dest` whose previous node, `previous`, encrypted
+// the Previous Node and Hop Count blocks for this hop and signed the Bundle
+// Age block (5 s): the bundle, and the keys this node holds for them.
+#[cfg(feature = "rfc9173")]
+fn with_protected_per_hop_blocks(source: &Eid, dest: &Eid, previous: &Eid) -> (Bytes, Vec<Key>) {
+    let (built, data) = Builder::new(source.clone(), dest.clone())
+        .add_extension_block(Type::PreviousNode)
+        .unwrap()
+        .build(emit(previous).0.into())
+        .add_extension_block(Type::BundleAge)
+        .unwrap()
+        .build(emit(&5_000u64).0.into())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let number = |block_type: Type| {
+        *built
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == block_type)
+            .expect("the per-hop block is present")
+            .0
+    };
+
+    let (sign_key, enc_key) = generated_keys();
+
+    let mut signer = Signer::new(&built, &data);
+    signer
+        .sign_block(
+            number(Type::BundleAge),
+            signer::Context::HMAC_SHA2(Default::default()),
+            previous.clone(),
+            &sign_key,
+        )
+        .expect("sign the Bundle Age");
+    let signed = parse(Bytes::from(
+        signer.rebuild().expect("rebuild the signed bundle"),
+    ))
+    .unwrap();
+    let mut encryptor = Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            number(Type::PreviousNode),
+            EncryptContext::AES_GCM(Default::default()),
+            previous.clone(),
+            &enc_key,
+        )
+        .expect("encrypt the Previous Node");
+    encryptor
+        .encrypt_block(
+            number(Type::HopCount),
+            EncryptContext::AES_GCM(Default::default()),
+            previous.clone(),
+            &enc_key,
+        )
+        .expect("encrypt the Hop Count");
+    let encrypted = encryptor.rebuild().expect("rebuild the encrypted bundle");
+    (Bytes::from(encrypted), vec![sign_key, enc_key])
+}
+
+// Ingress accepts the security operations on the per-hop blocks this node
+// must replace, and on a Hop Count it holds the key for, before the bundle
+// is first stored: the stored bundle carries each block in plaintext, with
+// the value it arrived with, and no security block remains.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn accepted_per_hop_blocks_are_stored_in_plaintext() {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let previous: Eid = "ipn:0.4.0".parse().unwrap();
+    let (inbound, keys) =
+        with_protected_per_hop_blocks(&source, &"ipn:0.2.99".parse().unwrap(), &previous);
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(keys, None, inbound).await;
+
+    let stored = stored_from(&saved_rx, &source).await;
+    assert!(
+        stored.bundle.blocks.values().all(|b| b.bcb.is_none()
+            && b.bib == BibCoverage::None
+            && !matches!(b.block_type, Type::BlockIntegrity | Type::BlockSecurity)),
+        "every operation on the per-hop blocks is accepted"
+    );
+    assert_eq!(stored.per_hop.previous_node, Some(previous));
+    assert_eq!(stored.per_hop.bundle_age.map(u64::from), Some(5_000));
+    assert_eq!(stored.per_hop.hop_count.map(|h| h.count), Some(1));
+
+    bpa.shutdown().await;
+}
+
+// A bundle without a creation time, from ipn:0.9.1 to REMOTE, requesting
+// deletion reports, whose previous node protected its Bundle Age block
+// (5 s): signed, or encrypted, by ipn:0.4.0, and, where `altered`, changed
+// after so that the operation fails; with the key for it.
+#[cfg(feature = "rfc9173")]
+fn unclocked_with_protected_bundle_age(signed: bool, altered: bool) -> (Bytes, Key) {
+    let previous: Eid = "ipn:0.4.0".parse().unwrap();
+    let (built, data) = Builder::new("ipn:0.9.1".parse().unwrap(), REMOTE.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_report_to("ipn:0.2.1".parse().unwrap())
+        .add_extension_block(Type::BundleAge)
+        .unwrap()
+        // Without a CRC, as an RFC 9173 source leaves a target, so the
+        // alteration reaches the security check.
+        .with_crc_type(CrcType::None)
+        .build(emit(&5_000u64).0.into())
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::default())
+        .unwrap();
+    let age = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::BundleAge)
+        .expect("the Bundle Age is present")
+        .0;
+    let (sign_key, enc_key) = generated_keys();
+    let (protected, key) = if signed {
+        let mut signer = Signer::new(&built, &data);
+        signer
+            .sign_block(
+                age,
+                signer::Context::HMAC_SHA2(Default::default()),
+                previous,
+                &sign_key,
+            )
+            .expect("sign the Bundle Age");
+        let signed = signer.rebuild().expect("rebuild the signed bundle");
+        (signed, sign_key)
+    } else {
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
+            .encrypt_block(
+                age,
+                EncryptContext::AES_GCM(Default::default()),
+                previous,
+                &enc_key,
+            )
+            .expect("encrypt the Bundle Age");
+        let encrypted = encryptor.rebuild().expect("rebuild the encrypted bundle");
+        (encrypted, enc_key)
+    };
+    let mut inbound = Vec::from(protected);
+    if altered {
+        // The last byte of the block's data: the value changes, the CBOR
+        // still decodes, and a ciphertext no longer authenticates.
+        let parsed = parse(Bytes::copy_from_slice(&inbound)).unwrap();
+        let last = usize::try_from(parsed.bundle.blocks[&age].payload_range().end).unwrap() - 1;
+        inbound[last] ^= 0x01;
+    }
+    (Bytes::from(inbound), key)
+}
+
+// A bundle without a creation time cannot lose its Bundle Age, its only
+// expiry signal (RFC 9171 §4.4.2), and this node is the acceptor of every
+// operation on it: one it holds no key for deletes the bundle, "Block
+// unsupported", and one that fails, "Failed security operation", where a
+// bundle with a creation time would have the block replaced from the clock.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_unclocked_bundle_whose_bundle_age_it_cannot_accept_is_deleted() {
+    for (signed, altered, reason) in [
+        (false, false, ReasonCode::BlockUnsupported),
+        (true, false, ReasonCode::BlockUnsupported),
+        (false, true, ReasonCode::FailedSecurityOperation),
+        (true, true, ReasonCode::FailedSecurityOperation),
+    ] {
+        let (inbound, key) = unclocked_with_protected_bundle_age(signed, altered);
+        let keys = if altered { vec![key] } else { Vec::new() };
+        let (bpa, saved_rx, sent_rx) = keyed_node_receiving(keys, None, inbound).await;
+        assert_eq!(
+            deletion_reason(&sent_rx).await,
+            reason,
+            "signed {signed}, altered {altered}"
+        );
+        bpa.shutdown().await;
+        assert_never_stored(&saved_rx, &"ipn:0.9.1".parse().unwrap());
+    }
+}
+
+// A destination behind node 1's peer, and one at node 1, for a service that
+// has not registered.
+#[cfg(feature = "rfc9173")]
+const REMOTE: &str = "ipn:0.2.99";
+#[cfg(feature = "rfc9173")]
+const LOCAL: &str = "ipn:0.1.99";
+
+// Node 1, storing through `SavedBundles`, holding `keys`, with `pack`'s
+// filters, sending status reports, and with a CLA peer for node 2, once it
+// has received `inbound` from that CLA: the node, the bundles it stored,
+// and those it sent.
+#[cfg(feature = "rfc9173")]
+async fn keyed_node_receiving(
+    keys: Vec<Key>,
+    pack: Option<FilterPack>,
+    inbound: Bytes,
+) -> (Bpa, flume::Receiver<Bytes>, flume::Receiver<Bytes>) {
+    let (bpa, saved_rx, _, sent_rx) = keyed_node_receiving_in(keys, pack, inbound, 1).await;
+    (bpa, saved_rx, sent_rx)
+}
+
+// As `keyed_node_receiving`, the bundle sent in `segments` segments through
+// a bounded channel with a spawned producer, so the header pass holds the
+// headers and only a prefix of the payload: the node, the bundles it stored,
+// those it deleted from storage, and those it sent.
+#[cfg(feature = "rfc9173")]
+async fn keyed_node_receiving_in(
+    keys: Vec<Key>,
+    pack: Option<FilterPack>,
+    inbound: Bytes,
+    segments: usize,
+) -> (
+    Bpa,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+) {
+    let (bpa, cla, saved_rx, deleted_rx, forwarded_rx) = keyed_node(keys, pack, None).await;
+    receive_in(&cla, inbound, segments).await;
+    (bpa, saved_rx, deleted_rx, forwarded_rx)
+}
+
+// The node `keyed_node_receiving_in` builds, before it receives anything,
+// its metadata in `metadata` where given: the node, its CLA, the bundles it
+// stored, those it deleted from storage, and those it sent.
+#[cfg(feature = "rfc9173")]
+async fn keyed_node(
+    keys: Vec<Key>,
+    pack: Option<FilterPack>,
+    metadata: Option<Arc<dyn MetadataStorage>>,
+) -> (
+    Bpa,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+) {
+    keyed_node_under(None, keys, pack, metadata).await
+}
+
+// `keyed_node` under a bundle size cap.
+#[cfg(feature = "rfc9173")]
+async fn keyed_node_under(
+    max_bundle_size: Option<NonZeroU64>,
+    keys: Vec<Key>,
+    pack: Option<FilterPack>,
+    metadata: Option<Arc<dyn MetadataStorage>>,
+) -> (
+    Bpa,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+    flume::Receiver<Bytes>,
+) {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let (saved, saved_rx, deleted_rx) = SavedBundles::with_deletions();
+    let mut builder = Bpa::builder()
+        .node_ids(node_ids)
+        .bundle_storage(saved)
+        .status_reports(true)
+        .key_provider(Arc::new(FixedKeys(keys)));
+    if let Some(metadata) = metadata {
+        builder = builder.metadata_storage(metadata);
+    }
+    if let Some(pack) = pack {
+        builder = builder.add_filters(pack);
+    }
+    if let Some(max_bundle_size) = max_bundle_size {
+        builder = builder.max_bundle_size(max_bundle_size);
+    }
+    let bpa = builder.build().await.unwrap();
+    bpa.start(false).await;
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+    (bpa, cla, saved_rx, deleted_rx, forwarded_rx)
+}
+
+// `inbound` received through `cla` in `segments` segments, through a bounded
+// channel with a spawned producer, so the header pass holds the headers and
+// only a prefix of the payload; the transfer is accepted.
+#[cfg(feature = "rfc9173")]
+async fn receive_in(cla: &PipelineCla, inbound: Bytes, segments: usize) {
+    let step = inbound.len().div_ceil(segments);
+    let mut split: Vec<Segment> = (0..inbound.len())
+        .step_by(step)
+        .map(|start| Segment::Next(inbound.slice(start..(start + step).min(inbound.len()))))
+        .collect();
+    if let Some(Segment::Next(last)) = split.pop() {
+        split.push(Segment::Final(last));
+    }
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    // A gate that rejects the bundle returns before draining the rest,
+    // which the producer then stops sending.
+    let producer = tokio::spawn(async move {
+        for segment in split {
+            if hardy_async::channel::Sender::send(&tx, segment)
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut rx)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    drop(rx);
+    producer.await.unwrap();
+}
+
+// Announces `role` on every security operation each block of its types
+// carries: the services present on the block.
+#[cfg(feature = "rfc9173")]
+struct AnnouncesPresent {
+    role: Role,
+    block_types: Vec<Type>,
+}
+
+#[cfg(feature = "rfc9173")]
+impl Classifier for AnnouncesPresent {
+    fn classify(&self, ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+        let mut delta = MetadataDelta::default();
+        for (&n, b) in &ctx.bundle().blocks {
+            if !self.block_types.contains(&b.block_type) {
+                continue;
+            }
+            let present = SecurityServices {
+                confidentiality: b.bcb.is_some(),
+                integrity: b.bib != BibCoverage::None,
+            };
+            delta.roles.insert(n, Roles::each(self.role, present));
+        }
+        Verdict::Continue(delta)
+    }
+}
+
+// Announces the given roles on every block of each type.
+#[cfg(feature = "rfc9173")]
+struct AnnouncesRoles(Vec<(Type, Roles)>);
+
+#[cfg(feature = "rfc9173")]
+impl Classifier for AnnouncesRoles {
+    fn classify(&self, ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+        let mut delta = MetadataDelta::default();
+        for (&n, b) in &ctx.bundle().blocks {
+            if let Some((_, roles)) = self.0.iter().find(|(t, _)| *t == b.block_type) {
+                delta.roles.insert(n, *roles);
+            }
+        }
+        Verdict::Continue(delta)
+    }
+}
+
+// A filter pack announcing this node the acceptor of every security
+// operation on every block of `block_types`.
+#[cfg(feature = "rfc9173")]
+fn accepting(block_types: &[Type]) -> Option<FilterPack> {
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier(
+        "accepts",
+        AnnouncesPresent {
+            role: Role::Acceptor,
+            block_types: block_types.to_vec(),
+        },
+    );
+    Some(pack)
+}
+
+// A filter pack announcing this node the verifier of every security
+// operation on every block of `block_types`.
+#[cfg(feature = "rfc9173")]
+fn verifying(block_types: &[Type]) -> Option<FilterPack> {
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier(
+        "verifies",
+        AnnouncesPresent {
+            role: Role::Verifier,
+            block_types: block_types.to_vec(),
+        },
+    );
+    Some(pack)
+}
+
+// A filter pack announcing the given roles on every block of each type.
+#[cfg(feature = "rfc9173")]
+fn with_roles(roles: &[(Type, Roles)]) -> Option<FilterPack> {
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier("roles", AnnouncesRoles(roles.to_vec()));
+    Some(pack)
+}
+
+// The first status report the node sends.
+#[cfg(feature = "rfc9173")]
+async fn sent_status_report(sent_rx: &flume::Receiver<Bytes>) -> BundleStatusReport {
+    loop {
+        // Event-driven wait; the timeout only bounds a regression.
+        let sent = tokio::time::timeout(Duration::from_secs(5), sent_rx.recv_async())
+            .await
+            .expect("timeout waiting for the status report")
+            .expect("channel closed");
+        let sent = parse(sent).expect("a sent bundle parses");
+        if !sent.bundle.primary.flags.is_admin_record {
+            continue;
+        }
+        let body = sent.bundle.blocks[&1]
+            .payload(&sent.data)
+            .expect("the report's payload is resident");
+        let AdministrativeRecord::BundleStatusReport(status) =
+            hardy_cbor::decode::parse(body).expect("the payload is an admin record");
+        return status;
+    }
+}
+
+// Of what the node stored, none is `source`'s: the caller's completed
+// shutdown is the barrier.
+#[cfg(feature = "rfc9173")]
+fn assert_never_stored(saved_rx: &flume::Receiver<Bytes>, source: &Eid) {
+    assert!(
+        saved_rx.try_iter().all(|data| parse(data)
+            .expect("a stored bundle parses")
+            .bundle
+            .primary
+            .id
+            .source
+            != *source),
+        "the deleted bundle is never stored"
+    );
+}
+
+// A bundle from ipn:0.9.1 to `destination`, with the bundle flags
+// `bundle_flags`, reporting to ipn:0.2.1, which the receiving node routes,
+// carrying an extension block of type 199 with the block flags `flags` and
+// no CRC, so that an alteration of its data reaches the security checks:
+// the bundle as parsed, and the block's number.
+#[cfg(feature = "rfc9173")]
+fn with_block_199(destination: &str, flags: BlockFlags, bundle_flags: Flags) -> (Parsed, u64) {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let (built, data) = Builder::new(source, destination.parse().unwrap())
+        .with_flags(bundle_flags)
+        .with_report_to("ipn:0.2.1".parse().unwrap())
+        .add_extension_block(Type::Unrecognised(199))
+        .unwrap()
+        .with_flags(flags)
+        .with_crc_type(CrcType::None)
+        .build(b"announced".as_slice().into())
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let block = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::Unrecognised(199))
+        .expect("the block is present")
+        .0;
+    (parse(Bytes::from(data)).unwrap(), block)
+}
+
+// The scope under which one source's results share one security block:
+// without the security header in them.
+#[cfg(feature = "rfc9173")]
+fn shared_scope() -> ScopeFlags {
+    ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    }
+}
+
+// `parsed` with `targets` signed by its source, ipn:0.9.1, with `key`, into
+// one BIB.
+#[cfg(feature = "rfc9173")]
+fn signed_by_source(parsed: &Parsed, targets: &[u64], key: &Key) -> Parsed {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let mut signing = Signer::new(&parsed.bundle, &parsed.data);
+    for &n in targets {
+        signing
+            .sign_block(
+                n,
+                signer::Context::HMAC_SHA2(shared_scope()),
+                source.clone(),
+                key,
+            )
+            .expect("sign the target");
+    }
+    parse(Bytes::from(signing.rebuild().expect("rebuild signed"))).unwrap()
+}
+
+// A bundle from ipn:0.9.1 to `destination` carrying an extension block of
+// type 199, with `flags`, which its source signed, with the payload too
+// where `with_payload`, into one BIB, and encrypted nothing: the bundle,
+// the block's number, and the signing key.
+#[cfg(feature = "rfc9173")]
+fn with_signed_block(
+    destination: &str,
+    flags: BlockFlags,
+    with_payload: bool,
+    bundle_flags: Flags,
+) -> (Bytes, u64, Key) {
+    let (parsed, block) = with_block_199(destination, flags, bundle_flags);
+    let targets: Vec<u64> = if with_payload {
+        vec![block, 1]
+    } else {
+        vec![block]
+    };
+    let (sign_key, _) = generated_keys();
+    let signed = signed_by_source(&parsed, &targets, &sign_key);
+    (signed.data, block, sign_key)
+}
+
+// A bundle from ipn:0.9.1 to `destination` carrying an extension block of
+// type 199, with `flags`, which its source encrypted, having first signed it,
+// with the payload too where `with_payload`, into one BIB, which the
+// encryption then covers: the bundle, the block's number, and the keys.
+#[cfg(feature = "rfc9173")]
+fn with_protected_block(
+    destination: &str,
+    flags: BlockFlags,
+    signed: bool,
+    with_payload: bool,
+) -> (Bytes, u64, Vec<Key>) {
+    protected_block(destination, flags, signed, with_payload, false)
+}
+
+// As `with_protected_block`, the block's data altered after signing, where
+// `altered`, so the BIB's operation on it fails.
+#[cfg(feature = "rfc9173")]
+fn protected_block(
+    destination: &str,
+    flags: BlockFlags,
+    signed: bool,
+    with_payload: bool,
+    altered: bool,
+) -> (Bytes, u64, Vec<Key>) {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let (parsed, block) = with_block_199(destination, flags, Flags::default());
+    let targets: Vec<u64> = if with_payload {
+        vec![block, 1]
+    } else {
+        vec![block]
+    };
+    let (sign_key, enc_key) = generated_keys();
+    let signed = if signed {
+        signed_by_source(&parsed, &targets, &sign_key)
+    } else {
+        parsed
+    };
+    let signed = if altered {
+        // The block carries no CRC, so the altered block still parses and
+        // the alteration reaches the security checks.
+        let start = usize::try_from(signed.bundle.blocks[&block].payload_range().start).unwrap();
+        let mut data = signed.data.to_vec();
+        data[start] ^= 0x01;
+        parse(Bytes::from(data)).unwrap()
+    } else {
+        signed
+    };
+    let mut encrypting = Encryptor::new(&signed.bundle, &signed.data);
+    for &n in &targets {
+        encrypting
+            .encrypt_block(
+                n,
+                EncryptContext::AES_GCM(shared_scope()),
+                source.clone(),
+                &enc_key,
+            )
+            .expect("encrypt the target");
+    }
+    (
+        Bytes::from(encrypting.rebuild().expect("rebuild encrypted")),
+        block,
+        vec![sign_key, enc_key],
+    )
+}
+
+// A block a Classifier announces is accepted at the gate: its BCB, the BCB
+// over the encrypted BIB that covers it with it, and its BIB operation are
+// processed and removed before the bundle is first stored, which carries the
+// block in plaintext and no security block.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_block_is_stored_without_its_operations() {
+    let (inbound, block, keys) = with_protected_block(REMOTE, BlockFlags::default(), true, false);
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(keys, accepting(&[Type::Unrecognised(199)]), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        stored.bundle.blocks.values().all(|b| b.bcb.is_none()
+            && b.bib == BibCoverage::None
+            && !matches!(b.block_type, Type::BlockIntegrity | Type::BlockSecurity)),
+        "every operation on the announced block is accepted"
+    );
+    assert_eq!(
+        stored.bundle.blocks[&block].payload(&stored.data),
+        Some(b"announced".as_slice())
+    );
+    bpa.shutdown().await;
+}
+
+// An announced block whose BCB this node holds no key for is a failed
+// acceptance, a block it cannot process (RFC 9171 §5.6 Step 4), which its
+// flags leave to be discarded with its operations.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_block_without_its_key_is_discarded() {
+    let (inbound, block, _) = with_protected_block(REMOTE, BlockFlags::default(), false, false);
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(Vec::new(), accepting(&[Type::Unrecognised(199)]), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    assert!(
+        stored.bundle.blocks.values().all(|b| b.bcb.is_none()),
+        "with its BCB"
+    );
+    bpa.shutdown().await;
+}
+
+// A block announced for acceptance that carries no security operation is a
+// failed acceptance, since the announcement expects one: it is discarded,
+// as RFC 9172 §5.1.1 and §5.1.2 recommend, and its flags demand the
+// reception report, "Missing security operation".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_block_without_a_security_operation_is_discarded() {
+    let (received, block) = with_block_199(
+        REMOTE,
+        BlockFlags {
+            report_on_failure: true,
+            ..BlockFlags::default()
+        },
+        Flags::default(),
+    );
+
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        Vec::new(),
+        with_roles(&[(
+            Type::Unrecognised(199),
+            Roles::each(Role::Acceptor, SecurityServices::BOTH),
+        )]),
+        received.data,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.received.is_some(), "reception asserted");
+    assert_eq!(status.reason, ReasonCode::MissingSecurityOperation);
+    bpa.shutdown().await;
+}
+
+// An announced payload that carries no security operation deletes the
+// bundle, which cannot lose its payload, reported "Missing security
+// operation".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_payload_without_a_security_operation_deletes_the_bundle() {
+    let (received, _) = with_block_199(
+        REMOTE,
+        BlockFlags::default(),
+        Flags {
+            delete_report_requested: true,
+            ..Flags::default()
+        },
+    );
+
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        Vec::new(),
+        with_roles(&[(
+            Type::Payload,
+            Roles::each(Role::Acceptor, SecurityServices::BOTH),
+        )]),
+        received.data,
+    )
+    .await;
+
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::MissingSecurityOperation
+    );
+    bpa.shutdown().await;
+    assert_never_stored(&saved_rx, &"ipn:0.9.1".parse().unwrap());
+}
+
+// An announced block whose encrypted BIB also covers the payload cannot be
+// accepted here, since the payload's BCB operation goes with the block's: a
+// failed acceptance. Removing it from that BIB would mean encrypting the BIB
+// again, which only its BCB's security source may do, and no RFC requires
+// it gone, so it stays as received rather than strip the payload's
+// integrity.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_block_tied_to_the_payload_is_a_failed_acceptance() {
+    let (inbound, block, keys) = with_protected_block(REMOTE, BlockFlags::default(), true, true);
+    let received = parse(inbound.clone()).unwrap();
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(keys, accepting(&[Type::Unrecognised(199)]), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert_eq!(
+        stored.bundle.blocks[&block].payload(&stored.data),
+        received.bundle.blocks[&block].payload(&received.data),
+        "the block stays as received"
+    );
+    assert!(
+        stored
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == Type::BlockIntegrity),
+        "with the BIB"
+    );
+    assert!(
+        stored.bundle.blocks[&1].bcb.is_some(),
+        "the payload travels encrypted"
+    );
+    bpa.shutdown().await;
+}
+
+// With the payload announced too, a block whose encrypted BIB also covers
+// it is accepted with it at a relay, whether the payload arrives whole or in
+// segments: both are stored in plaintext, and no security block remains.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_block_tied_to_an_announced_payload_is_accepted_with_it() {
+    for segments in [1, 3] {
+        let (inbound, block, keys) =
+            with_protected_block(REMOTE, BlockFlags::default(), true, true);
+        let pack = accepting(&[Type::Unrecognised(199), Type::Payload]);
+
+        let (bpa, saved_rx, _, _) = keyed_node_receiving_in(keys, pack, inbound, segments).await;
+
+        let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+        assert!(
+            stored.bcbs.is_empty() && stored.bibs.is_empty(),
+            "{segments} segments: every operation is accepted"
+        );
+        assert_eq!(
+            stored.bundle.blocks[&block].payload(&stored.data),
+            Some(b"announced".as_slice()),
+            "{segments} segments"
+        );
+        assert_eq!(
+            stored.bundle.blocks[&1].payload(&stored.data),
+            Some(b"payload".as_slice()),
+            "{segments} segments"
+        );
+        bpa.shutdown().await;
+    }
+}
+
+// A block a Classifier designates this node to verify, whose BIB operation
+// the header pass checks with the key it holds, travels as received: a
+// verifier changes nothing (RFC 9172 §5.1.2).
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_block_this_node_verifies_travels_as_received() {
+    let (inbound, block, key) =
+        with_signed_block(REMOTE, BlockFlags::default(), false, Flags::default());
+    let received = parse(inbound.clone()).unwrap();
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(vec![key], verifying(&[Type::Unrecognised(199)]), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert_eq!(
+        stored.bundle.blocks[&block].payload(&stored.data),
+        received.bundle.blocks[&block].payload(&received.data),
+        "the block stays as received"
+    );
+    assert_eq!(
+        stored.bundle.blocks[&block].bib, received.bundle.blocks[&block].bib,
+        "under its BIB"
+    );
+    bpa.shutdown().await;
+}
+
+// A designated block whose BIB operation this node holds no key for is a
+// failed verification, a block it cannot process (RFC 9171 §5.6 Step 4):
+// its flags leave it to be discarded with its operation, and demand the
+// reception report, "Block unsupported".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_block_without_its_key_is_discarded() {
+    let (inbound, block, _) = with_signed_block(
+        REMOTE,
+        BlockFlags {
+            report_on_failure: true,
+            ..BlockFlags::default()
+        },
+        false,
+        Flags::default(),
+    );
+
+    let (bpa, saved_rx, sent_rx) =
+        keyed_node_receiving(Vec::new(), verifying(&[Type::Unrecognised(199)]), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    assert!(
+        stored
+            .bundle
+            .blocks
+            .values()
+            .all(|b| b.block_type != Type::BlockIntegrity),
+        "with its BIB"
+    );
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.received.is_some(), "reception asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+    bpa.shutdown().await;
+}
+
+// Where the designated block's flags say "delete bundle if block can't be
+// processed", the failed verification deletes the bundle, reported "Block
+// unsupported".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_block_without_its_key_deletes_the_bundle_its_flags_protect() {
+    let (inbound, _, _) = with_signed_block(
+        REMOTE,
+        BlockFlags {
+            delete_bundle_on_failure: true,
+            ..BlockFlags::default()
+        },
+        false,
+        Flags {
+            delete_report_requested: true,
+            ..Flags::default()
+        },
+    );
+
+    let (bpa, saved_rx, sent_rx) =
+        keyed_node_receiving(Vec::new(), verifying(&[Type::Unrecognised(199)]), inbound).await;
+
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::BlockUnsupported
+    );
+    bpa.shutdown().await;
+    assert_never_stored(&saved_rx, &"ipn:0.9.1".parse().unwrap());
+}
+
+// A designated block that carries no integrity operation is discarded, as
+// RFC 9172 §5.1.2 recommends for a target that policy expected integrity
+// on, and its flags demand the reception report, "Missing security
+// operation".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_block_without_an_integrity_operation_is_discarded() {
+    let (received, block) = with_block_199(
+        REMOTE,
+        BlockFlags {
+            report_on_failure: true,
+            ..BlockFlags::default()
+        },
+        Flags::default(),
+    );
+
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        Vec::new(),
+        with_roles(&[(
+            Type::Unrecognised(199),
+            Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+        )]),
+        received.data,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.received.is_some(), "reception asserted");
+    assert_eq!(status.reason, ReasonCode::MissingSecurityOperation);
+    bpa.shutdown().await;
+}
+
+// A designated payload that carries no integrity operation deletes the
+// bundle, which cannot lose its payload, reported "Missing security
+// operation".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_payload_without_an_integrity_operation_deletes_the_bundle() {
+    let (received, _) = with_block_199(
+        REMOTE,
+        BlockFlags::default(),
+        Flags {
+            delete_report_requested: true,
+            ..Flags::default()
+        },
+    );
+
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        Vec::new(),
+        with_roles(&[(
+            Type::Payload,
+            Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+        )]),
+        received.data,
+    )
+    .await;
+
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::MissingSecurityOperation
+    );
+    bpa.shutdown().await;
+    assert_never_stored(&saved_rx, &"ipn:0.9.1".parse().unwrap());
+}
+
+// A designated block whose BIB operation is in a security context this node
+// does not support is a failed verification, and the BIB is a block it
+// cannot process too: the target's flags discard it, the BIB's discard the
+// BIB, and the BIB's report demand names the reason, "Unknown security
+// operation".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_block_in_an_unsupported_context_is_discarded_with_its_bib() {
+    let (received, block) = with_block_199(
+        REMOTE,
+        BlockFlags {
+            report_on_failure: true,
+            ..BlockFlags::default()
+        },
+        Flags::default(),
+    );
+    // A BIB with an unrecognised security context over the block, flagged
+    // to report and to be discarded if it cannot be processed.
+    let inbound = splice_unrecognised_security_block(&received.data, 11, 7, block, 0x12);
+
+    let (bpa, saved_rx, sent_rx) =
+        keyed_node_receiving(Vec::new(), verifying(&[Type::Unrecognised(199)]), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    assert!(
+        !stored.bundle.blocks.contains_key(&7),
+        "and the BIB with it"
+    );
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.received.is_some(), "reception asserted");
+    assert_eq!(status.reason, ReasonCode::UnknownSecurityOperation);
+    bpa.shutdown().await;
+}
+
+// A designated block this node also accepts is verified by its acceptance:
+// the designation adds nothing, and the block is stored in plaintext
+// without its operations, not discarded for the BCB it arrived under.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_block_this_node_accepts_is_verified_by_its_acceptance() {
+    let (inbound, block, keys) = with_protected_block(REMOTE, BlockFlags::default(), true, false);
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier(
+        "accepts",
+        AnnouncesPresent {
+            role: Role::Acceptor,
+            block_types: vec![Type::Unrecognised(199)],
+        },
+    );
+    pack.ingress_classifier(
+        "verifies",
+        AnnouncesPresent {
+            role: Role::Verifier,
+            block_types: vec![Type::Unrecognised(199)],
+        },
+    );
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(keys, Some(pack), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert_eq!(
+        stored.bundle.blocks[&block].payload(&stored.data),
+        Some(b"announced".as_slice()),
+        "the block is accepted"
+    );
+    assert!(
+        stored.bundle.blocks.values().all(|b| b.bcb.is_none()
+            && b.bib == BibCoverage::None
+            && !matches!(b.block_type, Type::BlockIntegrity | Type::BlockSecurity)),
+        "without its operations"
+    );
+    bpa.shutdown().await;
+}
+
+// A designated payload whose BIB operation this node holds no key for
+// deletes the bundle, of which the payload cannot be lost, reported "Block
+// unsupported": whether the payload is resident at the header pass, which
+// checks it there, or streams past it, where the drain would have.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_payload_without_its_key_deletes_the_bundle() {
+    // Resident: the whole bundle in one segment.
+    let (inbound, _, _) = with_signed_block(
+        REMOTE,
+        BlockFlags::default(),
+        true,
+        Flags {
+            delete_report_requested: true,
+            ..Flags::default()
+        },
+    );
+    let (bpa, saved_rx, sent_rx) =
+        keyed_node_receiving(Vec::new(), verifying(&[Type::Payload]), inbound).await;
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::BlockUnsupported,
+        "resident payload"
+    );
+    bpa.shutdown().await;
+    assert_never_stored(&saved_rx, &"ipn:0.9.1".parse().unwrap());
+
+    // Streaming: a 6 KiB payload in segments, of which only a prefix is
+    // resident at the header pass.
+    let (inbound, _, _) = with_protected_payload(REMOTE, true, false);
+    let (bpa, saved_rx, _, sent_rx) =
+        keyed_node_receiving_in(Vec::new(), verifying(&[Type::Payload]), inbound, 3).await;
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::BlockUnsupported,
+        "streaming payload"
+    );
+    bpa.shutdown().await;
+    assert_never_stored(&saved_rx, &"ipn:0.2.1".parse().unwrap());
+}
+
+// A designated payload that streams past the header pass is checked by the
+// drain with the key this node holds, and the bundle is stored as received.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_payload_is_verified_as_it_streams() {
+    let (inbound, plaintext, keys) = with_protected_payload(REMOTE, true, false);
+
+    let (bpa, saved_rx, _, _) = keyed_node_receiving_in(
+        vec![keys[0].clone()],
+        verifying(&[Type::Payload]),
+        inbound,
+        3,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+    assert_eq!(
+        stored.bundle.blocks[&1].payload(&stored.data),
+        Some(plaintext.as_slice()),
+        "the payload is stored as received"
+    );
+    assert!(
+        stored
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == Type::BlockIntegrity),
+        "under its BIB"
+    );
+    bpa.shutdown().await;
+}
+
+// A bundle from ipn:0.9.1 to a remote node carrying extension blocks of
+// types 199 and 200, which its source signed into one BIB and then
+// encrypted, so the BIB is encrypted with them: the bundle, the two blocks'
+// numbers, and the keys.
+#[cfg(feature = "rfc9173")]
+fn with_blocks_signed_together() -> (Bytes, u64, u64, Vec<Key>) {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let (built, data) = Builder::new(source.clone(), REMOTE.parse().unwrap())
+        .add_extension_block(Type::Unrecognised(199))
+        .unwrap()
+        .build(b"announced".as_slice().into())
+        .add_extension_block(Type::Unrecognised(200))
+        .unwrap()
+        .build(b"unannounced".as_slice().into())
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let number = |block_type| {
+        *built
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == block_type)
+            .expect("the block is present")
+            .0
+    };
+    let targets = [
+        number(Type::Unrecognised(199)),
+        number(Type::Unrecognised(200)),
+    ];
+    let (sign_key, enc_key) = generated_keys();
+    // Without the security header in scope, the results share one BIB.
+    let scope = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let mut signing = Signer::new(&built, &data);
+    for n in targets {
+        signing
+            .sign_block(
+                n,
+                signer::Context::HMAC_SHA2(scope.clone()),
+                source.clone(),
+                &sign_key,
+            )
+            .expect("sign the target");
+    }
+    let signed = parse(Bytes::from(signing.rebuild().expect("rebuild signed"))).unwrap();
+    let mut encrypting = Encryptor::new(&signed.bundle, &signed.data);
+    for n in targets {
+        encrypting
+            .encrypt_block(
+                n,
+                EncryptContext::AES_GCM(scope.clone()),
+                source.clone(),
+                &enc_key,
+            )
+            .expect("encrypt the target");
+    }
+    (
+        Bytes::from(encrypting.rebuild().expect("rebuild encrypted")),
+        targets[0],
+        targets[1],
+        vec![sign_key, enc_key],
+    )
+}
+
+// An announced block whose encrypted BIB also covers a block no Classifier
+// announces cannot be accepted, since the BCB operation on that block goes
+// with the announced one's (RFC 9172 §3.9) and is not this node's to remove:
+// a failed acceptance. Removing it from that BIB would mean encrypting the
+// BIB again, and no RFC requires it gone, so it stays as received, and the
+// other block keeps its ciphertext.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_block_tied_to_an_unannounced_block_is_a_failed_acceptance() {
+    let (inbound, announced, other, keys) = with_blocks_signed_together();
+    let received = parse(inbound.clone()).unwrap();
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(keys, accepting(&[Type::Unrecognised(199)]), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert_eq!(
+        stored.bundle.blocks[&announced].payload(&stored.data),
+        received.bundle.blocks[&announced].payload(&received.data),
+        "the announced block stays as received"
+    );
+    assert!(
+        stored.bundle.blocks[&other].bcb.is_some(),
+        "the other block stays encrypted"
+    );
+    assert_eq!(
+        stored.bundle.blocks[&other].payload(&stored.data),
+        received.bundle.blocks[&other].payload(&received.data),
+        "with its ciphertext"
+    );
+    bpa.shutdown().await;
+}
+
+// A block encrypted here cannot be accepted for integrity alone even where
+// the BIB over it is readable, decrypted by necessity for a neighbour under
+// the same BIB accepted for both services: verifying its integrity needs
+// its plaintext, which only the acceptor of its BCB operation reads. Its
+// acceptance is incomplete, and so is the neighbour's, coupled to a block
+// not accepted for confidentiality: both are discarded, and the BIB they
+// emptied and their BCBs go with them.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_block_accepted_for_integrity_alone_fails_with_its_coupled_neighbour() {
+    let (inbound, both, integrity_only, keys) = with_blocks_signed_together();
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(
+        keys,
+        with_roles(&[
+            (
+                Type::Unrecognised(199),
+                Roles::each(Role::Acceptor, SecurityServices::BOTH),
+            ),
+            (
+                Type::Unrecognised(200),
+                Roles::each(Role::Acceptor, SecurityServices::INTEGRITY),
+            ),
+        ]),
+        inbound,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    for (number, what) in [
+        (integrity_only, "the integrity-only block"),
+        (both, "its neighbour"),
+    ] {
+        assert!(
+            !stored.bundle.blocks.contains_key(&number),
+            "{what} is discarded"
+        );
+    }
+    assert!(
+        stored
+            .bundle
+            .blocks
+            .values()
+            .all(|b| !matches!(b.block_type, Type::BlockIntegrity | Type::BlockSecurity)),
+        "with their security blocks"
+    );
+    bpa.shutdown().await;
+}
+
+// A Hop Count its source signed into one BIB with the payload, in
+// plaintext, couples nothing: a relay holding the key accepts it, and stores
+// it without its BIB operation, which the payload's keeps.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_accepts_a_hop_count_sharing_a_plaintext_bib_with_the_payload() {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let (built, data) = Builder::new(source.clone(), REMOTE.parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let hop_count = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::HopCount)
+        .expect("the Hop Count is present")
+        .0;
+    let (sign_key, _) = generated_keys();
+    // Without the security header in scope, the results share one BIB.
+    let scope = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let mut signing = Signer::new(&built, &data);
+    for n in [hop_count, 1] {
+        signing
+            .sign_block(
+                n,
+                signer::Context::HMAC_SHA2(scope.clone()),
+                source.clone(),
+                &sign_key,
+            )
+            .expect("sign the target");
+    }
+    let inbound = Bytes::from(signing.rebuild().expect("rebuild signed"));
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(vec![sign_key], None, inbound).await;
+
+    let stored = stored_from(&saved_rx, &source).await;
+    assert_eq!(
+        stored.bundle.blocks[&hop_count].bib,
+        BibCoverage::None,
+        "the Hop Count's operation is accepted"
+    );
+    assert!(
+        matches!(stored.bundle.blocks[&1].bib, BibCoverage::Some(_)),
+        "the payload's stays"
+    );
+    bpa.shutdown().await;
+}
+
+// A bundle from ipn:0.9.1 to a remote node carrying a Hop Count and an
+// extension block of type 199, neither carrying a CRC, whose source signed
+// the Hop Count and the `partner` block into one BIB and then encrypted
+// them, so the BIB is encrypted with them: the bundle, the Hop Count's
+// number, the partner's, and the signing and encryption keys.
+#[cfg(feature = "rfc9173")]
+fn with_hop_count_signed_with(partner: Type) -> (Bytes, u64, u64, Key, Key) {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let (built, data) = Builder::new(source.clone(), REMOTE.parse().unwrap())
+        // The Hop Count carries no CRC, as RFC 9173 §3.8.1 and §4.8.1 leave a
+        // target, so that an alteration of its data reaches the security
+        // check rather than the CRC.
+        .add_extension_block(Type::HopCount)
+        .unwrap()
+        .with_flags(BlockFlags {
+            report_on_failure: true,
+            must_replicate: true,
+            ..Default::default()
+        })
+        .with_crc_type(CrcType::None)
+        .build(
+            emit(&HopInfo {
+                limit: NonZeroU8::new(64).unwrap(),
+                count: 1,
+            })
+            .0
+            .into(),
+        )
+        .add_extension_block(Type::Unrecognised(199))
+        .unwrap()
+        .with_crc_type(CrcType::None)
+        .build(b"partner".as_slice().into())
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let number = |block_type| {
+        *built
+            .blocks
+            .iter()
+            .find(|(_, b)| b.block_type == block_type)
+            .expect("the block is present")
+            .0
+    };
+    let (hop_count, partner) = (number(Type::HopCount), number(partner));
+    let (sign_key, enc_key) = generated_keys();
+    // Without the security header in scope, the results share one BIB.
+    let scope = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let mut signing = Signer::new(&built, &data);
+    for n in [hop_count, partner] {
+        signing
+            .sign_block(
+                n,
+                signer::Context::HMAC_SHA2(scope.clone()),
+                source.clone(),
+                &sign_key,
+            )
+            .expect("sign the target");
+    }
+    let signed = parse(Bytes::from(signing.rebuild().expect("rebuild signed"))).unwrap();
+    let mut encrypting = Encryptor::new(&signed.bundle, &signed.data);
+    for n in [hop_count, partner] {
+        encrypting
+            .encrypt_block(
+                n,
+                EncryptContext::AES_GCM(scope.clone()),
+                source.clone(),
+                &enc_key,
+            )
+            .expect("encrypt the target");
+    }
+    (
+        Bytes::from(encrypting.rebuild().expect("rebuild encrypted")),
+        hop_count,
+        partner,
+        sign_key,
+        enc_key,
+    )
+}
+
+// A Hop Count its source signed with the payload and then encrypted with
+// it, so that one encrypted BIB covers both, is accepted at a relay whose
+// Classifier announces the payload, whether the payload arrives whole or in
+// segments: the relay accepts every block that BIB covers, so the BCB
+// operations on them all go together (RFC 9172 §3.9), and both are stored
+// in plaintext with no security block.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_accepting_the_payload_accepts_a_hop_count_tied_to_it() {
+    for segments in [1, 3] {
+        let (inbound, hop_count, _, sign_key, enc_key) = with_hop_count_signed_with(Type::Payload);
+
+        let (bpa, saved_rx, _, _) = keyed_node_receiving_in(
+            vec![sign_key, enc_key],
+            accepting(&[Type::Payload]),
+            inbound,
+            segments,
+        )
+        .await;
+
+        let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+        assert!(
+            stored.bcbs.is_empty() && stored.bibs.is_empty(),
+            "{segments} segments: every operation is accepted"
+        );
+        assert_eq!(
+            stored.bundle.blocks[&1].payload(&stored.data),
+            Some(b"payload".as_slice()),
+            "{segments} segments"
+        );
+        assert!(
+            stored.bundle.blocks[&hop_count].bcb.is_none(),
+            "{segments} segments: the Hop Count is stored in plaintext"
+        );
+        bpa.shutdown().await;
+    }
+}
+
+// A relay without the signing key cannot check a Hop Count's operation in
+// the encrypted BIB it shares with an announced block, so it does not join
+// that block's acceptance: the announced block, tied to a block this node
+// does not accept, is a failed acceptance, which stays as received since
+// removing it would shrink that BIB, and the Hop Count, whose increment is a
+// SHOULD, stays as received too.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_keeps_a_hop_count_it_cannot_check() {
+    let (inbound, hop_count, partner, _, enc_key) =
+        with_hop_count_signed_with(Type::Unrecognised(199));
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(
+        vec![enc_key],
+        accepting(&[Type::Unrecognised(199)]),
+        inbound,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        stored.bundle.blocks[&partner].bcb.is_some()
+            && stored
+                .bundle
+                .blocks
+                .values()
+                .any(|b| b.block_type == Type::BlockIntegrity),
+        "the announced block stays as received, with the BIB"
+    );
+    assert!(
+        stored.bundle.blocks[&hop_count].bcb.is_some(),
+        "the Hop Count stays as received"
+    );
+    bpa.shutdown().await;
+}
+
+// A block this node cannot process, flagged to be discarded, under an
+// encrypted BIB that also covers the payload: RFC 9171 §5.6 Step 4 requires
+// it removed, so a relay holding the keys removes that BIB with it, whole,
+// rather than encrypt the BIB again, and the payload keeps its ciphertext.
+// A relay without them cannot read the BIB, which may cover the block, and
+// keeps the block as received rather than leave the BIB naming a block
+// that no longer exists.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_removes_a_discard_flagged_block_with_its_shared_encrypted_bib() {
+    let flags = BlockFlags {
+        delete_block_on_failure: true,
+        ..BlockFlags::default()
+    };
+    let (inbound, block, keys) = with_protected_block(REMOTE, flags, true, true);
+    let received = parse(inbound.clone()).unwrap();
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(keys, None, inbound.clone()).await;
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block)
+            && !stored
+                .bundle
+                .blocks
+                .values()
+                .any(|b| b.block_type == Type::BlockIntegrity),
+        "the block is removed with the BIB"
+    );
+    assert_eq!(
+        stored.bundle.blocks[&1].payload(&stored.data),
+        received.bundle.blocks[&1].payload(&received.data),
+        "the payload keeps its ciphertext"
+    );
+    bpa.shutdown().await;
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(Vec::new(), None, inbound).await;
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert_eq!(
+        stored.bundle.blocks[&block].payload(&stored.data),
+        received.bundle.blocks[&block].payload(&received.data),
+        "without the keys the block stays as received"
+    );
+    bpa.shutdown().await;
+}
+
+// A Hop Count whose ciphertext does not authenticate is discarded with every
+// security block associated with it (RFC 9172 §5.1.1): the encrypted BIB it
+// shares with another block goes too, whole, so nothing is encrypted again,
+// and the other block keeps its ciphertext without that BIB's operation.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_discards_an_undecryptable_hop_count_with_its_encrypted_bib() {
+    let (inbound, hop_count, partner, sign_key, enc_key) =
+        with_hop_count_signed_with(Type::Unrecognised(199));
+    let received = parse(inbound.clone()).unwrap();
+    let bib = *received
+        .bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::BlockIntegrity)
+        .expect("one encrypted BIB covers both blocks")
+        .0;
+    let last = usize::try_from(received.bundle.blocks[&hop_count].payload_range().end).unwrap() - 1;
+    let mut tampered = inbound.to_vec();
+    tampered[last] ^= 0x01;
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(vec![sign_key, enc_key], None, Bytes::from(tampered)).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&hop_count) && !stored.bundle.blocks.contains_key(&bib),
+        "the Hop Count is discarded with its BIB"
+    );
+    assert_eq!(
+        stored.bundle.blocks[&partner].payload(&stored.data),
+        received.bundle.blocks[&partner].payload(&received.data),
+        "the other block keeps its ciphertext"
+    );
+    bpa.shutdown().await;
+}
+
+// A Hop Count with an operation in a security context this node does not
+// support is not its to accept: the relay stores it with that operation,
+// which it has not checked.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_leaves_a_hop_count_under_an_unsupported_bib() {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let (built, data) = Builder::new(source.clone(), REMOTE.parse().unwrap())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let hop_count = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::HopCount)
+        .expect("the Hop Count is present")
+        .0;
+    let inbound = splice_unrecognised_security_block(&data, 11, 9, hop_count, 0);
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(Vec::new(), None, inbound).await;
+
+    let stored = stored_from(&saved_rx, &source).await;
+    assert_eq!(
+        stored.bundle.blocks[&hop_count].bib,
+        BibCoverage::Some(9),
+        "the unsupported operation stays"
+    );
+    bpa.shutdown().await;
+}
+
+// The bundle's destination is the acceptor of every security operation in it
+// (RFC 9172 §1.4): with no Classifier, a bundle for a local service, here one
+// that has not registered, is stored with its encrypted, signed block in
+// plaintext and no security block.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_local_destination_accepts_every_operation() {
+    let (inbound, block, keys) = with_protected_block(LOCAL, BlockFlags::default(), true, false);
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(keys, None, inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        stored.bundle.blocks.values().all(|b| b.bcb.is_none()
+            && b.bib == BibCoverage::None
+            && !matches!(b.block_type, Type::BlockIntegrity | Type::BlockSecurity)),
+        "every operation is accepted"
+    );
+    assert_eq!(
+        stored.bundle.blocks[&block].payload(&stored.data),
+        Some(b"announced".as_slice())
+    );
+    bpa.shutdown().await;
+}
+
+// At the destination, a block whose encrypted BIB also covers the payload
+// is accepted with the payload, whether the payload arrives whole or in
+// segments: its BCB goes with the payload's, all or none (RFC 9172 §3.9),
+// and the BIB's operation on it is checked over its plaintext, so the
+// bundle is stored with the block and the payload in plaintext and no
+// security block.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_local_destination_accepts_a_block_tied_to_the_payload() {
+    for segments in [1, 3] {
+        let (inbound, block, keys) = with_protected_block(LOCAL, BlockFlags::default(), true, true);
+
+        let (bpa, saved_rx, _, _) = keyed_node_receiving_in(keys, None, inbound, segments).await;
+
+        let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+        assert!(
+            stored.bcbs.is_empty() && stored.bibs.is_empty(),
+            "{segments} segments: every operation is accepted"
+        );
+        assert_eq!(
+            stored.bundle.blocks[&block].payload(&stored.data),
+            Some(b"announced".as_slice()),
+            "{segments} segments"
+        );
+        assert_eq!(
+            stored.bundle.blocks[&1].payload(&stored.data),
+            Some(b"payload".as_slice()),
+            "{segments} segments"
+        );
+        bpa.shutdown().await;
+    }
+}
+
+// A block tied to the payload whose BIB operation fails at the destination
+// is a failed security operation on it: its flags discard it, the payload
+// still accepted, or delete the bundle, which nothing then stores.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_local_destination_checks_a_block_tied_to_the_payload() {
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    for segments in [1, 3] {
+        let (inbound, block, keys) =
+            protected_block(LOCAL, BlockFlags::default(), true, true, true);
+        let (bpa, saved_rx, _, _) = keyed_node_receiving_in(keys, None, inbound, segments).await;
+        let stored = stored_from(&saved_rx, &source).await;
+        assert!(
+            !stored.bundle.blocks.contains_key(&block),
+            "{segments} segments: the block is discarded"
+        );
+        assert!(
+            stored.bcbs.is_empty() && stored.bibs.is_empty(),
+            "{segments} segments: with its operations"
+        );
+        assert_eq!(
+            stored.bundle.blocks[&1].payload(&stored.data),
+            Some(b"payload".as_slice()),
+            "{segments} segments"
+        );
+        bpa.shutdown().await;
+
+        let flags = BlockFlags {
+            delete_bundle_on_failure: true,
+            ..BlockFlags::default()
+        };
+        let (inbound, _, keys) = protected_block(LOCAL, flags, true, true, true);
+        let (bpa, saved_rx, deleted_rx, _) =
+            keyed_node_receiving_in(keys, None, inbound, segments).await;
+        bpa.shutdown().await;
+        assert!(
+            nothing_left_from(&saved_rx, &deleted_rx, &source),
+            "{segments} segments: the bundle is deleted"
+        );
+    }
+}
+
+// A bundle from ipn:0.2.1, node 1's peer, asking for deletion reports, whose
+// primary block its source signed, with the payload too where
+// `with_payload`, in BIBs whose scope includes the primary block: the bundle
+// and the signing key.
+#[cfg(feature = "rfc9173")]
+fn with_signed_primary(with_payload: bool) -> (Bytes, Key) {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (built, data) = Builder::new(source.clone(), "ipn:0.3.99".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let (sign_key, _) = generated_keys();
+    let mut signing = Signer::new(&built, &data);
+    signing
+        .sign_block(
+            0,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .expect("sign the primary block");
+    if with_payload {
+        signing
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                source,
+                &sign_key,
+            )
+            .expect("sign the payload");
+    }
+    (
+        Bytes::from(signing.rebuild().expect("rebuild signed")),
+        sign_key,
+    )
+}
+
+// An announced primary block's BIB is verified and removed, and the primary
+// is stored as received (RFC 9171 §4.3.1), with the CRC its source's signing
+// left in place: so another operation that keeps the primary in its scope,
+// as the payload's BIB does under RFC 9173's default scope, still verifies.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_primary_blocks_bib_is_removed_leaving_the_primary_as_received() {
+    for with_payload in [false, true] {
+        let (inbound, key) = with_signed_primary(with_payload);
+        let received = parse(inbound.clone()).expect("the inbound bundle parses");
+        let (bpa, saved_rx, _) =
+            keyed_node_receiving(vec![key.clone()], accepting(&[Type::Primary]), inbound).await;
+        let stored = stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+        assert_eq!(
+            stored.bundle.blocks[&0].bib,
+            BibCoverage::None,
+            "the primary block's BIB is removed (payload signed: {with_payload})"
+        );
+        assert_ne!(stored.bundle.primary.crc_type, CrcType::None);
+        assert_eq!(
+            stored.bundle.blocks[&0].payload(&stored.data),
+            received.bundle.blocks[&0].payload(&received.data),
+            "the primary is stored as received (payload signed: {with_payload})"
+        );
+        let payload_signed = matches!(stored.bundle.blocks[&1].bib, BibCoverage::Some(_));
+        assert_eq!(payload_signed, with_payload);
+        common::verify_all_bibs(&stored.data, &KeySet::new(vec![key]))
+            .expect("every remaining BIB verifies over the stored primary");
+        bpa.shutdown().await;
+    }
+}
+
+// A BIB on the primary block this node holds no key for is a verifier's
+// skip, and the bundle is stored as received; announced, it is a failed
+// acceptance, and the primary block, which has no flags and which the bundle
+// cannot lose, deletes the bundle before anything is stored.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_announced_primary_block_without_its_key_deletes_the_bundle() {
+    let (inbound, _) = with_signed_primary(false);
+    let (bpa, saved_rx, _) = keyed_node_receiving(Vec::new(), None, inbound.clone()).await;
+    stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+    bpa.shutdown().await;
+
+    let (bpa, saved_rx, sent_rx) =
+        keyed_node_receiving(Vec::new(), accepting(&[Type::Primary]), inbound).await;
+    // Event-driven wait; the timeout only bounds a regression.
+    let sent = tokio::time::timeout(tokio::time::Duration::from_secs(5), sent_rx.recv_async())
+        .await
+        .expect("timeout waiting for the deletion report")
+        .expect("channel closed");
+    let report = parse(sent).expect("the report parses");
+    let body = report.bundle.blocks[&1]
+        .payload(&report.data)
+        .expect("the report's payload is resident");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("the payload is an admin record");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+
+    // The completed shutdown is the barrier: of what the node stored, only
+    // its own report remains, never the deleted bundle.
+    bpa.shutdown().await;
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    assert!(
+        saved_rx.try_iter().all(|data| parse(data)
+            .expect("a stored bundle parses")
+            .bundle
+            .primary
+            .id
+            .source
+            != source),
+        "the deleted bundle is never stored"
+    );
+}
+
 // A block the ingress gate schedules for §E removal (here an unrecognised
-// extension block flagged `delete_block_on_failure`) is kept in the stored
-// bundle — no editing on input — and stripped per attempt ahead of the
-// Egress chain, so the transmitted wire form no longer carries it while the
-// payload survives.
+// extension block flagged `delete_block_on_failure`) leaves the bundle
+// before it is first stored: neither the stored bundle nor the one
+// transmitted carries it, and the payload survives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_removal_applied_at_egress() {
+async fn scheduled_removal_leaves_before_storage() {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let (saved, saved_rx) = SavedBundles::new();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .bundle_storage(saved)
+        .build()
+        .await
+        .unwrap();
     bpa.start(false).await;
 
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -465,27 +2434,11 @@ async fn deferred_removal_applied_at_egress() {
         .await
         .unwrap();
 
-    // Craft a bundle to the remote node carrying an unrecognised block (type
-    // 999, block 2) flagged delete_block_on_failure, inserted between the
-    // primary and the payload.
+    // Craft a bundle to the remote node carrying an unrecognised block
+    // flagged delete_block_on_failure.
     let source: Eid = "ipn:0.9.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
-    let base = build_bundle(&source, &dest, b"payload");
-    let unknown = emit_array(Some(5), |a| {
-        a.emit(&999u64); // unrecognised block type
-        a.emit(&2u64); // block number
-        a.emit(&0x10u64); // flags: delete_block_on_failure
-        a.emit(&0u64); // CRC type: none
-        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
-    });
-    assert_eq!(base[0], 0x9F, "bundle is an indefinite array");
-    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
-    let insert = 1 + primary_len;
-    let mut modified = Vec::with_capacity(base.len() + unknown.len());
-    modified.extend_from_slice(&base[..insert]);
-    modified.extend_from_slice(&unknown);
-    modified.extend_from_slice(&base[insert..]);
-    let inbound = Bytes::from(modified);
+    let inbound = with_unknown_deletable_block(&build_bundle(&source, &dest, b"payload"));
 
     // The crafted bundle really carries the unrecognised block as it arrives.
     let Parsed { bundle: pre, .. } = parse(inbound.clone()).expect("crafted bundle parses");
@@ -507,6 +2460,20 @@ async fn deferred_removal_applied_at_egress() {
         "an unknown deletable block is accepted, not refused"
     );
 
+    let stored = stored_from(&saved_rx, &source).await;
+    assert!(
+        stored
+            .bundle
+            .blocks
+            .values()
+            .all(|b| b.block_type != Type::Unrecognised(999)),
+        "the scheduled removal is applied before the bundle is stored"
+    );
+    assert!(
+        stored.bundle.blocks.contains_key(&1),
+        "the payload survives"
+    );
+
     let forwarded = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         forwarded_rx.recv_async(),
@@ -520,7 +2487,7 @@ async fn deferred_removal_applied_at_egress() {
         fwd.blocks
             .values()
             .all(|b| b.block_type != Type::Unrecognised(999)),
-        "the deferred removal is applied at the egress door"
+        "the transmitted bundle does not carry it"
     );
     assert!(fwd.blocks.contains_key(&1), "the payload survives");
 
@@ -575,12 +2542,82 @@ impl services::Service for CapturingService {
     }
 }
 
-// The deliver-side twin of `deferred_removal_applied_at_egress`: a bundle
-// addressed to a local raw-bundle service, carrying an unrecognised
-// `delete_block_on_failure` block, is delivered with that block stripped —
-// the stored bundle stays as received.
+// The stored record describes the stored bundle: once the scheduled removal
+// is applied, the record's block map is the rebuilt one, without the removed
+// block and with the payload where the stored bytes hold it. Nothing can
+// forward the bundle, so it stays stored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_removal_applied_at_delivery() {
+async fn scheduled_removal_leaves_the_record_describing_the_stored_bundle() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let (saved, saved_rx) = SavedBundles::new();
+    let records = Arc::new(MetadataMemStorage::new(None));
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .bundle_storage(saved)
+        .metadata_storage(records.clone())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+    let inbound = with_unknown_deletable_block(&build_bundle(&source, &dest, b"payload"));
+    let id = parse(inbound.clone())
+        .expect("crafted bundle parses")
+        .bundle
+        .primary
+        .id;
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let stored = stored_from(&saved_rx, &source).await;
+    let record = records
+        .get(&id)
+        .await
+        .unwrap()
+        .expect("the unforwardable bundle stays stored");
+    assert!(
+        record
+            .bpv7
+            .blocks
+            .values()
+            .all(|b| b.block_type != Type::Unrecognised(999)),
+        "the record's block map is the rebuilt one"
+    );
+    assert_eq!(
+        record.bpv7.blocks[&1].extent, stored.bundle.blocks[&1].extent,
+        "the record locates the payload where the stored bytes hold it"
+    );
+
+    bpa.shutdown().await;
+}
+
+// The deliver-side twin of `scheduled_removal_leaves_before_storage`: a
+// bundle addressed to a local raw-bundle service, carrying an unrecognised
+// `delete_block_on_failure` block, is delivered without that block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduled_removal_is_absent_at_delivery() {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
@@ -719,12 +2756,12 @@ fn assert_insert_survives(data: Bytes) {
     assert_eq!(inserted.payload(&out.data), Some(emit(&42u64).0.as_slice()));
 }
 
-/// The scheduled removals apply ahead of the Egress chain: a Rewriter never
-/// sees a block scheduled for removal, and the block it inserts travels,
-/// where a removal applied after it could delete an insert that took the
-/// removed block's number.
+/// The scheduled removals, applied before the bundle is stored, precede the
+/// Egress chain: a Rewriter never sees a block scheduled for removal, and
+/// the block it inserts travels, where a removal applied after it could
+/// delete an insert that took the removed block's number.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_removal_precedes_the_egress_rewriters() {
+async fn scheduled_removal_precedes_the_egress_rewriters() {
     let saw_scheduled = Arc::new(AtomicBool::new(false));
     let mut pack = FilterPack::new("test");
     pack.egress_rewriter(
@@ -804,11 +2841,12 @@ async fn deferred_removal_precedes_the_egress_rewriters() {
     bpa.shutdown().await;
 }
 
-/// The Deliver twin: the scheduled removals apply ahead of the Deliver
-/// chain, so a Deliver Rewriter never sees a block scheduled for removal,
-/// and the raw-bundle service receives its insert.
+/// The Deliver twin: the scheduled removals, applied before the bundle is
+/// stored, precede the Deliver chain, so a Deliver Rewriter never sees a
+/// block scheduled for removal, and the raw-bundle service receives its
+/// insert.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_removal_precedes_the_deliver_chain() {
+async fn scheduled_removal_precedes_the_deliver_chain() {
     let saw_scheduled = Arc::new(AtomicBool::new(false));
     let mut pack = FilterPack::new("test");
     pack.deliver_rewriter(
@@ -976,13 +3014,24 @@ async fn echo_round_trip() {
 // Register a service and a CLA peer; the returned (bpa, sink-holder, forwarded
 // channel, service EID) drive ServiceSink::send directly with multi-segment streams.
 async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<Bytes>, Eid) {
+    streamed_originate_setup_with(None).await
+}
+
+// As `streamed_originate_setup`, storing bundles in `bundles` when given.
+async fn streamed_originate_setup_with(
+    bundles: Option<Arc<dyn BundleStorage>>,
+) -> (Bpa, Arc<EchoService>, flume::Receiver<Bytes>, Eid) {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let mut builder = Bpa::builder().node_ids(node_ids);
+    if let Some(bundles) = bundles {
+        builder = builder.bundle_storage(bundles);
+    }
+    let bpa = builder.build().await.unwrap();
     bpa.start(false).await;
 
     // The service only captures its sink here; the test drives the sink itself.
@@ -1142,6 +3191,51 @@ async fn service_unregister_cancels_parked_send() {
     bpa.shutdown().await;
 }
 
+/// The raw service door carries a bundle as its service built it: a block
+/// CLA ingress would remove is the receiving nodes' to handle by its flags,
+/// so it is stored and forwarded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originate_raw_carries_the_bundle_as_built() {
+    let (saved, saved_rx) = SavedBundles::new();
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup_with(Some(saved)).await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let data = with_unknown_deletable_block(&build_bundle(&source_eid, &dest, b"originated"));
+    originate_raw(&svc, data)
+        .await
+        .expect("origination admits the bundle");
+
+    let stored = stored_from(&saved_rx, &source_eid).await;
+    assert!(
+        stored
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == Type::Unrecognised(999)),
+        "the bundle is stored as built"
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the forwarded bundle")
+    .expect("channel closed");
+    let forwarded = parse(forwarded).expect("the forwarded bundle parses");
+    assert!(
+        forwarded
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == Type::Unrecognised(999)),
+        "the bundle is forwarded as built"
+    );
+
+    bpa.shutdown().await;
+}
+
 /// The source-spoof check holds on the streamed path: a bundle whose source
 /// is not the registered service endpoint is rejected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1165,41 +3259,21 @@ async fn service_streamed_send_rejects_spoofed_source() {
     bpa.shutdown().await;
 }
 
-// Sends `data` through the raw service door and returns the bundle the
-// CLA forwards: origination admitted it.
-#[cfg(feature = "rfc9173")]
-async fn originate_raw_and_forward(
-    svc: &EchoService,
-    forwarded_rx: &flume::Receiver<Bytes>,
-    data: Bytes,
-) -> Parsed {
+// Sends `data` through the raw service door, returning its verdict.
+async fn originate_raw(svc: &EchoService, data: Bytes) -> services::Result<Id> {
     let (tx, mut rx) = hardy_async::channel::bounded(1);
     tx.send(Segment::Final(data)).await.unwrap();
     drop(tx);
-    svc.sink
-        .get()
-        .unwrap()
-        .send(&mut rx)
-        .await
-        .expect("origination admits the bundle");
-    // Event-driven wait; the timeout only bounds a regression.
-    let forwarded = tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        forwarded_rx.recv_async(),
-    )
-    .await
-    .expect("timeout waiting for the forwarded bundle")
-    .expect("channel closed");
-    parse(forwarded).expect("the forwarded bundle parses")
+    svc.sink.get().unwrap().send(&mut rx).await
 }
 
-/// Origination admits a Hop Count block this node cannot decrypt, as
-/// ingress does (its increment is a SHOULD), and the bundle leaves with the
-/// block unchanged.
+/// Origination refuses a Hop Count block a BCB covers: this node's egress
+/// rewrites the block at once, so no security operation on it could reach
+/// its acceptor.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
-    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+async fn service_streamed_send_refuses_a_protected_hop_count() {
+    let (bpa, svc, _forwarded_rx, source_eid) = streamed_originate_setup().await;
 
     // Immaterial key value: generated per the no-literal-keys rule.
     let mut key_bytes = vec![0u8; 32];
@@ -1226,35 +3300,46 @@ async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
         .find(|(_, b)| b.block_type == Type::HopCount)
         .expect("the builder emitted the Hop Count block")
         .0;
+    let mut encryptor = Encryptor::new(&built, &data);
+    encryptor
+        .encrypt_block(
+            hop_count,
+            EncryptContext::AES_GCM(Default::default()),
+            source_eid,
+            &key,
+        )
+        .expect("encrypt the Hop Count block");
     let encrypted = parse(Bytes::from(
-        Encryptor::new(&built, &data)
-            .encrypt_block(
-                hop_count,
-                EncryptContext::AES_GCM(Default::default()),
-                source_eid,
-                &key,
-            )
-            .map_err(|(_, e)| e)
-            .expect("encrypt the Hop Count block")
-            .rebuild()
-            .expect("rebuild the encrypted bundle"),
+        encryptor.rebuild().expect("rebuild the encrypted bundle"),
     ))
     .unwrap();
 
-    let out = originate_raw_and_forward(&svc, &forwarded_rx, encrypted.data.clone()).await;
-    let before = &encrypted.bundle.blocks[&hop_count];
-    let after = out
-        .bundle
-        .blocks
-        .values()
-        .find(|b| b.block_type == Type::HopCount)
-        .expect("the Hop Count block travels");
-    assert!(after.bcb.is_some(), "the block stays encrypted");
-    assert_eq!(
-        after.payload(&out.data),
-        before.payload(&encrypted.data),
-        "the encrypted block travels unchanged"
-    );
+    assert!(matches!(
+        originate_raw(&svc, encrypted.data).await,
+        Err(services::Error::ProtectedPerHopBlock(n)) if n == hop_count
+    ));
+
+    bpa.shutdown().await;
+}
+
+/// Origination refuses a Previous Node block: an originated bundle has no
+/// previous node (RFC 9171 §4.4.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_streamed_send_refuses_a_previous_node() {
+    let (bpa, svc, _forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let (_, data) = Builder::new(source_eid, "ipn:0.2.1".parse().unwrap())
+        .add_extension_block(Type::PreviousNode)
+        .unwrap()
+        .build(emit(&"ipn:0.9.0".parse::<Eid>().unwrap()).0.into())
+        .with_payload(b"a previous node".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+
+    assert!(matches!(
+        originate_raw(&svc, Bytes::from(data)).await,
+        Err(services::Error::PreviousNodeBlock)
+    ));
 
     bpa.shutdown().await;
 }
@@ -1335,11 +3420,24 @@ async fn local_delivery() {
 // payload into `data` as block number 2, flagged must-replicate (required
 // for a payload target) + report-on-failure.
 fn splice_unrecognised_bcb(data: &[u8]) -> Bytes {
-    // ASB CBOR sequence: targets [1], context id 99, context flags 0 (no
-    // parameters), source EID, then one result list per target.
+    splice_unrecognised_security_block(data, 12, 2, 1, 0x03)
+}
+
+// Splice a security block of type `block_type` (11, a BIB, or 12, a BCB),
+// numbered `number`, with an unrecognised security context (id 99), over the
+// block numbered `target`, into `data`, with the block flags `flags`.
+fn splice_unrecognised_security_block(
+    data: &[u8],
+    block_type: u64,
+    number: u64,
+    target: u64,
+    flags: u64,
+) -> Bytes {
+    // ASB CBOR sequence: targets [target], context id 99, context flags 0
+    // (no parameters), source EID, then one result list per target.
     let result_val = [0x41u8, 0xAA]; // result value: bytes(0xAA)
     let source: Eid = "ipn:0.2.1".parse().unwrap();
-    let mut asb = emit(&[1u64]).0;
+    let mut asb = emit(&[target]).0;
     asb.extend(emit(&99u64).0);
     asb.extend(emit(&0u64).0);
     asb.extend(emit(&source).0);
@@ -1350,9 +3448,9 @@ fn splice_unrecognised_bcb(data: &[u8]) -> Bytes {
     }));
 
     let bcb_block = emit_array(Some(5), |a| {
-        a.emit(&12u64); // block type: BCB
-        a.emit(&2u64); // block number
-        a.emit(&0x03u64); // flags: must_replicate | report_on_failure
+        a.emit(&block_type);
+        a.emit(&number);
+        a.emit(&flags);
         a.emit(&0u64); // CRC type: none
         a.emit(&hardy_cbor::encode::Bytes(&asb));
     });
@@ -1368,13 +3466,12 @@ fn splice_unrecognised_bcb(data: &[u8]) -> Bytes {
 }
 
 // A transit bundle carrying a BCB this node cannot understand (unrecognised
-// security context, `report_on_failure` set) is still forwarded, and the
-// requested reception report carries the RFC 9172 `UnknownSecurityOperation`
-// reason rather than the generic `BlockUnsupported`. The bundle is addressed
-// to a remote node so it forwards — a payload-targeting BCB is only ever
-// decrypted at delivery.
+// security context, `report_on_failure` set) is forwarded with it intact: an
+// unsupported operation's flags are its acceptor's, so a relay neither acts
+// on them nor reports it, and the requested reception report carries no
+// reason. The bundle is addressed to a remote node so it forwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reception_report_carries_unknown_security_operation() {
+async fn a_relay_leaves_an_unknown_security_operation_unreported() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
 
     let node_id = IpnNodeId {
@@ -1472,7 +3569,7 @@ async fn reception_report_carries_unknown_security_operation() {
         "Forwarded bundle should still carry the BCB"
     );
 
-    // The reception report goes to the source and carries the RFC 9172 code.
+    // The reception report goes to the source, and names no operation.
     let report = report.expect("Reception report should be emitted");
     assert_eq!(report.bundle.primary.destination, remote_source);
     let body = report
@@ -1485,10 +3582,195 @@ async fn reception_report_carries_unknown_security_operation() {
     let record = hardy_cbor::decode::parse::<AdministrativeRecord>(body)
         .expect("Report payload is an administrative record");
     let AdministrativeRecord::BundleStatusReport(status) = record;
-    assert_eq!(status.reason, ReasonCode::UnknownSecurityOperation);
+    assert_eq!(status.reason, ReasonCode::NoAdditionalInformation);
     assert!(status.received.is_some(), "Reception assertion present");
     assert_eq!(status.bundle_id.source, remote_source);
 
+    bpa.shutdown().await;
+}
+
+// At the destination, a BCB in an unrecognised security context over the
+// payload leaves a payload this node cannot accept: a bundle cannot lose its
+// payload (RFC 9171 §4.1), so the bundle is deleted, "Block unsupported",
+// whatever the payload's flags, here none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_destination_deletes_a_bundle_whose_payload_it_cannot_accept() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            from_ref(&remote_node),
+        )
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (_, data) = Builder::new(remote_source.clone(), "ipn:0.1.99".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(Type::Payload)
+        .unwrap()
+        .with_flags(BlockFlags::default())
+        .build(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let mut inbound = splice_unrecognised_bcb(&data);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let sent = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the deletion report")
+    .expect("Channel closed");
+    let report = parse(sent).expect("the report parses");
+    let body = report.bundle.blocks[&1]
+        .payload(&report.data)
+        .expect("the report's payload is resident");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("the payload is an admin record");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+    bpa.shutdown().await;
+}
+
+// At the bundle's destination, the acceptor of every operation in it (RFC
+// 9172 §1.4), a BIB in an unrecognised security context over an extension
+// block is one this node cannot process: flagged `report_on_failure`, it
+// demands the reception report, with the RFC 9172 `UnknownSecurityOperation`
+// reason; the block it covers, whose operation this node cannot accept, is
+// discarded, and the bundle is kept for its service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_destination_reports_an_unknown_security_operation_it_accepts() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let (saved, saved_rx) = SavedBundles::new();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .bundle_storage(saved)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            from_ref(&remote_node),
+        )
+        .await
+        .unwrap();
+
+    // A bundle for a local service, not yet registered, with an extension
+    // block (type 199, block 2) under a BIB (block 3) in context 99, flagged
+    // report-on-failure.
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (_, data) = Builder::new(remote_source.clone(), "ipn:0.1.99".parse().unwrap())
+        .add_extension_block(Type::Unrecognised(199))
+        .unwrap()
+        .build(b"covered".as_slice().into())
+        .with_payload(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let mut inbound = splice_unrecognised_security_block(&data, 11, 3, 2, 0x02);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let sent = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the reception report")
+    .expect("Channel closed");
+    let report = parse(sent).expect("the report parses");
+    let body = report.bundle.blocks[&1]
+        .payload(&report.data)
+        .expect("the report's payload is resident");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("the payload is an admin record");
+    assert_eq!(status.reason, ReasonCode::UnknownSecurityOperation);
+    assert!(status.deleted.is_none(), "the bundle is kept");
+
+    let stored = stored_from(&saved_rx, &remote_source).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&2),
+        "the covered block is discarded"
+    );
     bpa.shutdown().await;
 }
 
@@ -4693,10 +6975,10 @@ async fn relaxed_gate_admits_unprotected_primary_block() {
     bpa.shutdown().await;
 }
 
-/// RFC 9171 §4.4.2: with the default strict config, a clockless bundle
-/// without a Bundle Age block is rejected at the pre-drain gate.
+/// RFC 9171 §4.4.2: a clockless bundle without a Bundle Age block is
+/// malformed, and its parse refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gate_rejects_clockless_bundle_without_age() {
+async fn a_clockless_bundle_without_age_is_refused() {
     let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
 
     dispatch_inbound(&cla, clockless_ageless_bundle()).await;
@@ -4706,27 +6988,8 @@ async fn gate_rejects_clockless_bundle_without_age() {
     bpa.shutdown().await;
     assert!(
         app_rx.is_empty(),
-        "a clockless bundle without a Bundle Age block must be rejected at the gate"
+        "a clockless bundle without a Bundle Age block must be refused"
     );
-}
-
-/// `bundle_age_required(false)` relaxes the §4.4.2 check: the same bundle
-/// is admitted and delivered.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn relaxed_gate_admits_clockless_bundle_without_age() {
-    let (bpa, cla, app_rx) = gate_fixture(|b| b.bundle_age_required(false)).await;
-
-    dispatch_inbound(&cla, clockless_ageless_bundle()).await;
-
-    // Event-driven wait; the timeout only bounds a regression.
-    let (_, payload) =
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
-            .await
-            .expect("Timeout waiting for delivery")
-            .expect("Channel closed");
-    assert_eq!(payload.as_ref(), b"no clock");
-
-    bpa.shutdown().await;
 }
 
 // A peer removed while its construction is still in flight leaves nothing
@@ -5429,7 +7692,8 @@ async fn adu_originate_refuses_a_zero_lifetime() {
 /// service bytes trip the lifetime/hop admission check, and the
 /// config-gated RFC 9171 validity checks (strict by default) now apply to
 /// raw sends at the same seat — each surfacing as `Dropped(reason)` to the
-/// caller, with nothing admitted.
+/// caller, with nothing admitted. A clockless bundle without a Bundle Age
+/// block is malformed, and the parse refuses it as `InvalidBundle`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_applies_the_admission_gates() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -5465,7 +7729,8 @@ async fn raw_originate_applies_the_admission_gates() {
         )))
     ));
 
-    // Clockless without a Bundle Age block: RFC 9171 §4.4.2.
+    // Clockless without a Bundle Age block: malformed (RFC 9171 §4.4.2),
+    // so its parse refuses it.
     let (_, data) = Builder::new(source_eid.clone(), dest)
         .with_payload(Cow::Borrowed(b"no clock".as_slice()))
         .build(CreationTimestamp::default())
@@ -5473,7 +7738,7 @@ async fn raw_originate_applies_the_admission_gates() {
     let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
     assert!(matches!(
         result,
-        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+        Err(services::Error::InvalidBundle(Bpv7Error::MissingBundleAge))
     ));
 
     // The completed shutdown is the barrier proving the absence.
@@ -5500,12 +7765,12 @@ async fn raw_originate_rejects_a_fragment() {
     let Parsed {
         bundle: raw, data, ..
     } = parse(Bytes::from(data)).expect("parse the built bundle");
-    let editor = Editor::new(&raw, &data)
-        .with_fragment_info(Some(FragmentInfo {
+    let mut editor = Editor::new(&raw, &data);
+    editor
+        .set_fragment_info(Some(FragmentInfo {
             offset: 0,
             total_adu_length: 1024,
         }))
-        .map_err(|(_, e)| e)
         .expect("set fragment info");
     let chunks = editor.rebuild().expect("rebuild the fragment");
     let mut fragment = Chunk::flatten_bytes(chunks, data);
@@ -6333,4 +8598,1755 @@ async fn app_send_streamed_default_buffers_and_delegates() {
         })
     ));
     assert!(sent_rx.is_empty(), "a violating stream never reaches send");
+}
+
+// A bundle from ipn:0.2.1, node 1's peer, so a report to it routes, to
+// `destination`, whose 6 KiB payload, carrying a CRC-32, its source
+// signed, where `signed`, then encrypted where `encrypted`, encrypting the
+// BIB over it too (RFC 9172 §3.9), and asking for deletion reports: the
+// bundle, the payload's plaintext and the keys.
+#[cfg(feature = "rfc9173")]
+fn with_protected_payload(
+    destination: &str,
+    signed: bool,
+    encrypted: bool,
+) -> (Bytes, Vec<u8>, Vec<Key>) {
+    protected_payload(destination, signed, encrypted, CrcType::CRC32_CASTAGNOLI)
+}
+
+// `with_protected_payload`, the payload carrying no CRC, as RFC 9173
+// §3.8.1 and §4.8.1 leave a target, so that a tamper reaches the security
+// check rather than the CRC.
+#[cfg(feature = "rfc9173")]
+fn with_protected_crcless_payload(
+    destination: &str,
+    signed: bool,
+    encrypted: bool,
+) -> (Bytes, Vec<u8>, Vec<Key>) {
+    protected_payload(destination, signed, encrypted, CrcType::None)
+}
+
+#[cfg(feature = "rfc9173")]
+fn protected_payload(
+    destination: &str,
+    signed: bool,
+    encrypted: bool,
+    crc_type: CrcType,
+) -> (Bytes, Vec<u8>, Vec<Key>) {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let plaintext: Vec<u8> = (0..6144u32).map(|i| (i % 239) as u8).collect();
+    let (_, data) = Builder::new(source.clone(), destination.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(Type::Payload)
+        .unwrap()
+        .with_flags(BlockFlags {
+            delete_bundle_on_failure: true,
+            ..Default::default()
+        })
+        .with_crc_type(crc_type)
+        .build(plaintext.as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let (sign_key, enc_key) = generated_keys();
+    let mut data = Bytes::from(data);
+    if signed {
+        let parsed = parse(data).unwrap();
+        let mut signer = Signer::new(&parsed.bundle, &parsed.data);
+        signer
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                source.clone(),
+                &sign_key,
+            )
+            .unwrap();
+        data = Bytes::from(signer.rebuild().unwrap());
+    }
+    if encrypted {
+        let parsed = parse(data).unwrap();
+        let mut encryptor = Encryptor::new(&parsed.bundle, &parsed.data);
+        encryptor
+            .encrypt_block(
+                1,
+                EncryptContext::AES_GCM(ScopeFlags::default()),
+                source,
+                &enc_key,
+            )
+            .unwrap();
+        data = Bytes::from(encryptor.rebuild().unwrap());
+    }
+    (data, plaintext, vec![sign_key, enc_key])
+}
+
+// Whether every bundle node 1 stored from `source` it has since deleted:
+// nothing of the source's is left in storage.
+#[cfg(feature = "rfc9173")]
+fn nothing_left_from(
+    saved_rx: &flume::Receiver<Bytes>,
+    deleted_rx: &flume::Receiver<Bytes>,
+    source: &Eid,
+) -> bool {
+    let from = |rx: &flume::Receiver<Bytes>| {
+        rx.drain()
+            .filter(|data| &parse(data.clone()).unwrap().bundle.primary.id.source == source)
+            .count()
+    };
+    from(saved_rx) == from(deleted_rx)
+}
+
+// The first bundle from `source` node 1 forwards. A status report it sends
+// first must not assert a deletion: a bundle the drain's verdict rejected is
+// deleted after its save, so the save alone does not show it was kept.
+#[cfg(feature = "rfc9173")]
+async fn forwarded_from(sent_rx: &flume::Receiver<Bytes>, source: &Eid) -> Parsed {
+    loop {
+        // Event-driven wait; the timeout only bounds a regression.
+        let sent = tokio::time::timeout(Duration::from_secs(5), sent_rx.recv_async())
+            .await
+            .expect("timeout waiting for the forwarded bundle")
+            .expect("channel closed");
+        let sent = parse(sent).expect("a sent bundle parses");
+        if sent.bundle.primary.flags.is_admin_record {
+            let body = sent.bundle.blocks[&1]
+                .payload(&sent.data)
+                .expect("the report's payload is resident");
+            let AdministrativeRecord::BundleStatusReport(status) =
+                hardy_cbor::decode::parse(body).expect("the payload is an admin record");
+            assert!(
+                status.deleted.is_none(),
+                "the bundle was deleted, {:?}, not forwarded",
+                status.reason
+            );
+            continue;
+        }
+        if &sent.bundle.primary.id.source == source {
+            return sent;
+        }
+    }
+}
+
+// The deletion report node 1 sent for a bundle it received: its reason.
+#[cfg(feature = "rfc9173")]
+async fn deletion_reason(sent_rx: &flume::Receiver<Bytes>) -> ReasonCode {
+    let status = sent_status_report(sent_rx).await;
+    assert!(status.deleted.is_some(), "deletion asserted");
+    status.reason
+}
+
+// The destination accepts the payload's operations at ingress (RFC 9172
+// §1.4, §5.1.1): an encrypted payload, its BIB under the same encryption, is
+// decrypted as it streams, the BIB verified against the plaintext, and the
+// bundle stored with the payload in plaintext, its CRC type as received and
+// the CRC over the plaintext, and no security block. Delivery then has nothing to
+// decrypt. A payload received in plaintext under a BIB goes the same way:
+// the BIB is verified as the payload streams and removed. Whether the
+// payload arrives whole or in segments, which the header pass holds only a
+// prefix of, makes no difference.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_local_destination_stores_an_accepted_payload_in_plaintext() {
+    for segments in [1, 3] {
+        for (signed, encrypted) in [(false, true), (true, true), (true, false)] {
+            let case = format!("{segments} segments, signed {signed}, encrypted {encrypted}");
+            let (inbound, plaintext, keys) = with_protected_payload(LOCAL, signed, encrypted);
+            let (bpa, saved_rx, _, _) =
+                keyed_node_receiving_in(keys, None, inbound, segments).await;
+            let stored = stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+            assert_eq!(
+                stored.bundle.blocks[&1].payload(&stored.data),
+                Some(plaintext.as_slice()),
+                "{case}"
+            );
+            assert!(stored.bcbs.is_empty() && stored.bibs.is_empty(), "{case}");
+            assert_eq!(
+                stored.bundle.blocks[&1].crc_type,
+                CrcType::CRC32_CASTAGNOLI,
+                "{case}"
+            );
+            bpa.shutdown().await;
+        }
+    }
+}
+
+// A relay whose Classifier announces the payload accepts its operations, a
+// node that is not the destination processing a BCB "if directed to do so
+// as a matter of security policy" (RFC 9172 §5.1.1): whether the payload
+// arrives whole or in segments, it is stored in plaintext, without its BCB
+// and BIB, its CRC type as received.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_accepts_an_announced_payload() {
+    for segments in [1, 3] {
+        for (signed, encrypted) in [(false, true), (true, true), (true, false)] {
+            let case = format!("{segments} segments, signed {signed}, encrypted {encrypted}");
+            let (inbound, plaintext, keys) = with_protected_payload(REMOTE, signed, encrypted);
+            let (bpa, saved_rx, _, _) =
+                keyed_node_receiving_in(keys, accepting(&[Type::Payload]), inbound, segments).await;
+            let stored = stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+            assert_eq!(
+                stored.bundle.blocks[&1].payload(&stored.data),
+                Some(plaintext.as_slice()),
+                "{case}"
+            );
+            assert!(stored.bcbs.is_empty() && stored.bibs.is_empty(), "{case}");
+            assert_eq!(
+                stored.bundle.blocks[&1].crc_type,
+                CrcType::CRC32_CASTAGNOLI,
+                "{case}"
+            );
+            bpa.shutdown().await;
+        }
+    }
+}
+
+// A fragment's payload is part of the bundle's, whose operations are
+// accepted after reassembly: a Classifier's announcement of it is passed
+// over, and the fragment is stored as received.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_leaves_an_announced_fragment_payload_as_received() {
+    let (inbound, _, keys) = with_protected_payload(REMOTE, true, true);
+    let fragment = as_fragment(inbound);
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(keys, accepting(&[Type::Payload]), fragment.clone()).await;
+    let stored = stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+    assert_eq!(stored.data, fragment, "stored byte for byte as received");
+    bpa.shutdown().await;
+}
+
+// An acceptor trumps a verification: a Hop Count this node is the acceptor
+// of, kept as received because it holds no key for the BIB over it, is not
+// discarded for a designation that it be verified.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_hop_count_this_node_cannot_check_is_still_kept() {
+    let (inbound, hop_count, _, _, enc_key) = with_hop_count_signed_with(Type::Unrecognised(199));
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(vec![enc_key], verifying(&[Type::HopCount]), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        stored.bundle.blocks[&hop_count].bcb.is_some(),
+        "the Hop Count stays as received"
+    );
+    bpa.shutdown().await;
+}
+
+// Likewise a block announced for acceptance whose acceptance fails and
+// leaves it as received, tied by its encrypted BIB to the payload: its
+// designation for verification does not then discard it as a block
+// encrypted here.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_designated_block_stays_as_its_failed_acceptance_leaves_it() {
+    let (inbound, block, keys) = with_protected_block(REMOTE, BlockFlags::default(), true, true);
+    let received = parse(inbound.clone()).unwrap();
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier(
+        "accepts",
+        AnnouncesPresent {
+            role: Role::Acceptor,
+            block_types: vec![Type::Unrecognised(199)],
+        },
+    );
+    pack.ingress_classifier(
+        "verifies",
+        AnnouncesPresent {
+            role: Role::Verifier,
+            block_types: vec![Type::Unrecognised(199)],
+        },
+    );
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(keys, Some(pack), inbound).await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert_eq!(
+        stored.bundle.blocks[&block].payload(&stored.data),
+        received.bundle.blocks[&block].payload(&received.data),
+        "the block stays as received"
+    );
+    assert!(
+        stored.bundle.blocks[&1].bcb.is_some(),
+        "the payload travels encrypted"
+    );
+    bpa.shutdown().await;
+}
+
+// `data` with one byte of block `block`'s block-type-specific data flipped,
+// so that its ciphertext no longer authenticates.
+#[cfg(feature = "rfc9173")]
+fn with_byte_flipped(data: &Bytes, block: u64) -> Bytes {
+    let parsed = parse(data.clone()).unwrap();
+    let start = usize::try_from(parsed.bundle.blocks[&block].payload_range().start).unwrap();
+    let mut data = data.to_vec();
+    data[start] ^= 0x01;
+    Bytes::from(data)
+}
+
+// A block accepted for confidentiality alone is decrypted and stored in
+// plaintext without its BCB, and the BIB over it, decrypted with it, stays
+// in plaintext for the next node: checked here where the signing key is
+// held, and left unchecked, no failure, where it is not.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_block_accepted_for_confidentiality_keeps_its_bib_in_plaintext() {
+    let (inbound, block, keys) = with_protected_block(REMOTE, BlockFlags::default(), true, false);
+    for held in [keys.clone(), vec![keys[1].clone()]] {
+        let case = format!("{} keys held", held.len());
+        let (bpa, saved_rx, _) = keyed_node_receiving(
+            held,
+            with_roles(&[(
+                Type::Unrecognised(199),
+                Roles::each(Role::Acceptor, SecurityServices::CONFIDENTIALITY),
+            )]),
+            inbound.clone(),
+        )
+        .await;
+
+        let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+        let accepted = &stored.bundle.blocks[&block];
+        assert_eq!(
+            accepted.payload(&stored.data),
+            Some(b"announced".as_slice()),
+            "the block is stored in plaintext, {case}"
+        );
+        assert!(accepted.bcb.is_none(), "without its BCB, {case}");
+        let BibCoverage::Some(bib) = accepted.bib else {
+            panic!("the BIB over it stays, {case}");
+        };
+        assert!(
+            stored.bundle.blocks[&bib].bcb.is_none(),
+            "in plaintext, {case}"
+        );
+        assert!(
+            stored
+                .bundle
+                .blocks
+                .values()
+                .all(|b| b.block_type != Type::BlockSecurity),
+            "and no BCB remains, {case}"
+        );
+        bpa.shutdown().await;
+    }
+}
+
+// A block encrypted here cannot be accepted for integrity alone: its BIB is
+// encrypted with it, and only the acceptor of the BCB operation reads it. A
+// failed acceptance, "Block unsupported".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_block_accepted_for_integrity_while_encrypted_is_a_failed_acceptance() {
+    let (inbound, block, keys) = with_protected_block(
+        REMOTE,
+        BlockFlags {
+            report_on_failure: true,
+            ..BlockFlags::default()
+        },
+        true,
+        false,
+    );
+
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        keys,
+        with_roles(&[(
+            Type::Unrecognised(199),
+            Roles::each(Role::Acceptor, SecurityServices::INTEGRITY),
+        )]),
+        inbound,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.received.is_some(), "reception asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+    bpa.shutdown().await;
+}
+
+// A block accepted for integrity alone, received in plaintext under a BIB,
+// is verified and stored without the BIB.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_block_accepted_for_integrity_is_stored_without_its_bib() {
+    let (inbound, block, key) =
+        with_signed_block(REMOTE, BlockFlags::default(), false, Flags::default());
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(
+        vec![key],
+        with_roles(&[(
+            Type::Unrecognised(199),
+            Roles::each(Role::Acceptor, SecurityServices::INTEGRITY),
+        )]),
+        inbound,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert_eq!(
+        stored.bundle.blocks[&block].payload(&stored.data),
+        Some(b"announced".as_slice()),
+        "the block stays"
+    );
+    assert!(
+        stored
+            .bundle
+            .blocks
+            .values()
+            .all(|b| b.block_type != Type::BlockIntegrity),
+        "without its BIB"
+    );
+    bpa.shutdown().await;
+}
+
+// A service announced that the block does not carry is missing: a block
+// announced for both services, carrying a BIB only, is a failed acceptance,
+// discarded, "Missing security operation".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_service_announced_that_the_block_does_not_carry_is_missing() {
+    let (inbound, block, key) = with_signed_block(
+        REMOTE,
+        BlockFlags {
+            report_on_failure: true,
+            ..BlockFlags::default()
+        },
+        false,
+        Flags::default(),
+    );
+
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        vec![key],
+        with_roles(&[(
+            Type::Unrecognised(199),
+            Roles::each(Role::Acceptor, SecurityServices::BOTH),
+        )]),
+        inbound,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.received.is_some(), "reception asserted");
+    assert_eq!(status.reason, ReasonCode::MissingSecurityOperation);
+    bpa.shutdown().await;
+}
+
+// A block verified for confidentiality has its ciphertext authenticated
+// under the key this node holds, its plaintext going nowhere, and the
+// bundle travels as received, BCB and BIB with it.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_block_verified_for_confidentiality_travels_as_received() {
+    let (inbound, block, keys) = with_protected_block(REMOTE, BlockFlags::default(), true, false);
+    let received = parse(inbound.clone()).unwrap();
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(
+        keys,
+        with_roles(&[(
+            Type::Unrecognised(199),
+            Roles::each(Role::Verifier, SecurityServices::CONFIDENTIALITY),
+        )]),
+        inbound,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        stored.bundle.blocks[&block].bcb.is_some(),
+        "the block stays encrypted"
+    );
+    assert_eq!(
+        stored.data, received.data,
+        "stored byte for byte as received"
+    );
+    bpa.shutdown().await;
+}
+
+// A block verified for confidentiality without its key is a failed
+// verification, a block this node cannot process: discarded, "Block
+// unsupported". The block is encrypted and unsigned, so no encrypted BIB
+// keeps it in the bundle.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_block_verified_for_confidentiality_without_its_key_is_discarded() {
+    let (inbound, block, _) = with_protected_block(
+        REMOTE,
+        BlockFlags {
+            report_on_failure: true,
+            ..BlockFlags::default()
+        },
+        false,
+        false,
+    );
+
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        Vec::new(),
+        with_roles(&[(
+            Type::Unrecognised(199),
+            Roles::each(Role::Verifier, SecurityServices::CONFIDENTIALITY),
+        )]),
+        inbound,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.received.is_some(), "reception asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+    bpa.shutdown().await;
+}
+
+// Ciphertext that does not authenticate is a failed operation: the block
+// is discarded with every security block associated with it (RFC 9172
+// §5.1.1), the encrypted BIB over it whole.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_block_whose_ciphertext_does_not_authenticate_is_discarded() {
+    let (inbound, block, keys) = with_protected_block(REMOTE, BlockFlags::default(), true, false);
+    let corrupted = with_byte_flipped(&inbound, block);
+
+    let (bpa, saved_rx, _) = keyed_node_receiving(
+        keys,
+        with_roles(&[(
+            Type::Unrecognised(199),
+            Roles::each(Role::Verifier, SecurityServices::CONFIDENTIALITY),
+        )]),
+        corrupted,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "the block is discarded"
+    );
+    assert!(
+        stored
+            .bundle
+            .blocks
+            .values()
+            .all(|b| !matches!(b.block_type, Type::BlockIntegrity | Type::BlockSecurity)),
+        "with its security blocks"
+    );
+    bpa.shutdown().await;
+}
+
+// A payload verified for confidentiality is authenticated as it streams,
+// its plaintext going nowhere, and the bundle is stored as received.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_payload_verified_for_confidentiality_is_stored_as_received() {
+    let (inbound, _, keys) = with_protected_payload(REMOTE, true, true);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+
+    let (bpa, saved_rx, _, sent_rx) = keyed_node_receiving_in(
+        vec![keys[1].clone()],
+        with_roles(&[(
+            Type::Payload,
+            Roles::each(Role::Verifier, SecurityServices::CONFIDENTIALITY),
+        )]),
+        inbound.clone(),
+        3,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &source).await;
+    assert_eq!(stored.data, inbound, "stored byte for byte as received");
+    let forwarded = forwarded_from(&sent_rx, &source).await;
+    assert_eq!(forwarded.bundle.primary.id, stored.bundle.primary.id);
+    bpa.shutdown().await;
+}
+
+// As above, for a payload that arrives whole in the header pass: the
+// resident bytes run past the payload's data, through its CRC and the
+// breaks, and the ciphertext authenticated is the payload's alone.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_payload_verified_for_confidentiality_that_arrives_whole_is_stored_as_received() {
+    let (inbound, _, keys) = with_protected_payload(REMOTE, true, true);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        vec![keys[1].clone()],
+        with_roles(&[(
+            Type::Payload,
+            Roles::each(Role::Verifier, SecurityServices::CONFIDENTIALITY),
+        )]),
+        inbound.clone(),
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &source).await;
+    assert_eq!(stored.data, inbound, "stored byte for byte as received");
+    let forwarded = forwarded_from(&sent_rx, &source).await;
+    assert_eq!(forwarded.bundle.primary.id, stored.bundle.primary.id);
+    bpa.shutdown().await;
+}
+
+// A payload verified for confidentiality without its key deletes the
+// bundle, which cannot lose its payload, "Block unsupported".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_payload_verified_for_confidentiality_without_its_key_deletes_the_bundle() {
+    let (inbound, _, _) = with_protected_payload(REMOTE, true, true);
+
+    let (bpa, saved_rx, _, sent_rx) = keyed_node_receiving_in(
+        Vec::new(),
+        with_roles(&[(
+            Type::Payload,
+            Roles::each(Role::Verifier, SecurityServices::CONFIDENTIALITY),
+        )]),
+        inbound,
+        3,
+    )
+    .await;
+
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::BlockUnsupported
+    );
+    bpa.shutdown().await;
+    assert_never_stored(&saved_rx, &"ipn:0.2.1".parse().unwrap());
+}
+
+// A payload whose ciphertext does not authenticate as it streams deletes
+// the bundle, "Failed security operation".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_payload_whose_ciphertext_does_not_authenticate_deletes_the_bundle() {
+    let (inbound, _, keys) = with_protected_crcless_payload(REMOTE, true, true);
+    let corrupted = with_byte_flipped(&inbound, 1);
+
+    let (bpa, saved_rx, deleted_rx, sent_rx) = keyed_node_receiving_in(
+        vec![keys[1].clone()],
+        with_roles(&[(
+            Type::Payload,
+            Roles::each(Role::Verifier, SecurityServices::CONFIDENTIALITY),
+        )]),
+        corrupted,
+        3,
+    )
+    .await;
+
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::FailedSecurityOperation
+    );
+    // The drain staged the bundle before the ciphertext settled, and the
+    // verdict discarded it; the completed shutdown is the barrier.
+    bpa.shutdown().await;
+    assert!(
+        nothing_left_from(&saved_rx, &deleted_rx, &"ipn:0.2.1".parse().unwrap()),
+        "the staged bundle is discarded"
+    );
+}
+
+// A payload accepted for confidentiality alone is decrypted as it streams
+// and stored in plaintext without its BCB, the BIB over it staying in
+// plaintext, checked here where the key is held.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_payload_accepted_for_confidentiality_keeps_its_bib() {
+    let (inbound, plaintext, keys) = with_protected_payload(REMOTE, true, true);
+
+    let (bpa, saved_rx, _, _) = keyed_node_receiving_in(
+        keys,
+        with_roles(&[(
+            Type::Payload,
+            Roles::each(Role::Acceptor, SecurityServices::CONFIDENTIALITY),
+        )]),
+        inbound,
+        3,
+    )
+    .await;
+
+    let stored = stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+    let payload = &stored.bundle.blocks[&1];
+    assert_eq!(
+        payload.payload(&stored.data),
+        Some(plaintext.as_slice()),
+        "the payload is stored in plaintext"
+    );
+    assert!(payload.bcb.is_none(), "without its BCB");
+    let BibCoverage::Some(bib) = payload.bib else {
+        panic!("the BIB over it stays");
+    };
+    assert!(stored.bundle.blocks[&bib].bcb.is_none(), "in plaintext");
+    bpa.shutdown().await;
+}
+
+// A node that accepts a block's confidentiality and verifies its integrity
+// decrypts the block and checks the BIB over it, now plaintext, which
+// stays; without the signing key the verification it was designated fails,
+// "Block unsupported".
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_acceptor_of_confidentiality_may_verify_integrity_too() {
+    let roles = Roles {
+        confidentiality: Some(Role::Acceptor),
+        integrity: Some(Role::Verifier),
+    };
+    let flags = BlockFlags {
+        report_on_failure: true,
+        ..BlockFlags::default()
+    };
+
+    let (inbound, block, keys) = with_protected_block(REMOTE, flags.clone(), true, false);
+    let (bpa, saved_rx, _) = keyed_node_receiving(
+        keys,
+        with_roles(&[(Type::Unrecognised(199), roles)]),
+        inbound,
+    )
+    .await;
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    let accepted = &stored.bundle.blocks[&block];
+    assert!(
+        accepted.bcb.is_none() && matches!(accepted.bib, BibCoverage::Some(_)),
+        "decrypted, verified, the BIB staying"
+    );
+    bpa.shutdown().await;
+
+    let (inbound, block, keys) = with_protected_block(REMOTE, flags, true, false);
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(
+        vec![keys[1].clone()],
+        with_roles(&[(Type::Unrecognised(199), roles)]),
+        inbound,
+    )
+    .await;
+    let stored = stored_from(&saved_rx, &"ipn:0.9.1".parse().unwrap()).await;
+    assert!(
+        !stored.bundle.blocks.contains_key(&block),
+        "unverifiable without the signing key, the block is discarded"
+    );
+    let status = sent_status_report(&sent_rx).await;
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+    bpa.shutdown().await;
+}
+
+// A fragment's payload is verified after reassembly too: a Classifier's
+// designation of it is passed over, and a fragment whose payload this node
+// could not verify is stored as received rather than deleted.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_leaves_a_designated_fragment_payload_as_received() {
+    let (inbound, _, _) = with_protected_payload(REMOTE, true, true);
+    let fragment = as_fragment(inbound);
+
+    let (bpa, saved_rx, _) =
+        keyed_node_receiving(Vec::new(), verifying(&[Type::Payload]), fragment.clone()).await;
+    let stored = stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+    assert_eq!(stored.data, fragment, "stored byte for byte as received");
+    bpa.shutdown().await;
+}
+
+// The destination without the payload's key, for its BCB or for the BIB
+// over it, cannot accept it: the payload, which the bundle cannot lose,
+// deletes the bundle as Block unsupported before anything is stored (RFC
+// 9171 §5.6 Step 4).
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_local_destination_without_the_payloads_key_deletes_the_bundle() {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    for segments in [1, 3] {
+        // The signing key alone, then the encryption key alone.
+        for (signed, encrypted, held) in [(false, true, 0), (true, false, 1)] {
+            let case = format!("{segments} segments, signed {signed}, encrypted {encrypted}");
+            let (inbound, _, keys) = with_protected_payload(LOCAL, signed, encrypted);
+            let (bpa, saved_rx, _, sent_rx) =
+                keyed_node_receiving_in(vec![keys[held].clone()], None, inbound, segments).await;
+            assert_eq!(
+                deletion_reason(&sent_rx).await,
+                ReasonCode::BlockUnsupported,
+                "{case}"
+            );
+            bpa.shutdown().await;
+            assert!(
+                saved_rx
+                    .drain()
+                    .all(|data| parse(data).unwrap().bundle.primary.id.source != source),
+                "{case}: nothing is stored for the deleted bundle"
+            );
+        }
+    }
+}
+
+// A payload whose ciphertext does not authenticate, or whose BIB fails over
+// the plaintext, deletes the bundle as Failed security operation (RFC 9172
+// §5.1.1), and the save the drain staged is discarded: a payload tampered
+// with in transit, and one whose BIB this node checks under another key.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_local_destination_deletes_a_payload_that_fails_its_check() {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    for segments in [1, 3] {
+        for (signed, encrypted, tamper) in [
+            (false, true, true),
+            (true, false, true),
+            (true, false, false),
+            (true, true, false),
+        ] {
+            let case = format!(
+                "{segments} segments, signed {signed}, encrypted {encrypted}, tampered {tamper}"
+            );
+            let (inbound, _, mut keys) = with_protected_crcless_payload(LOCAL, signed, encrypted);
+            let inbound = if tamper {
+                let parsed = parse(inbound.clone()).unwrap();
+                let data = parsed.bundle.blocks[&1].payload_range();
+                let mut tampered = inbound.to_vec();
+                tampered[usize::try_from(data.start).unwrap() + 100] ^= 0xFF;
+                Bytes::from(tampered)
+            } else {
+                keys[0] = generated_keys().0;
+                inbound
+            };
+            let (bpa, saved_rx, deleted_rx, sent_rx) =
+                keyed_node_receiving_in(keys, None, inbound, segments).await;
+            assert_eq!(
+                deletion_reason(&sent_rx).await,
+                ReasonCode::FailedSecurityOperation,
+                "{case}"
+            );
+            bpa.shutdown().await;
+            assert!(
+                nothing_left_from(&saved_rx, &deleted_rx, &source),
+                "{case}: any staged save is discarded"
+            );
+        }
+    }
+}
+
+// A bundle from ipn:0.2.1 to node 1 whose source signed then encrypted its
+// payload, as `with_protected_payload` does, and whose previous node,
+// ipn:0.2.0, then encrypted the Previous Node block it added, under
+// `previous_node_scope`. The bundle and the keys.
+#[cfg(feature = "rfc9173")]
+fn with_protected_payload_and_previous_node(previous_node_scope: ScopeFlags) -> (Bytes, Vec<Key>) {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let previous: Eid = "ipn:0.2.0".parse().unwrap();
+    let plaintext: Vec<u8> = (0..6144u32).map(|i| (i % 239) as u8).collect();
+    let (_, data) = Builder::new(source.clone(), LOCAL.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(Type::PreviousNode)
+        .unwrap()
+        .build(emit(&previous).0.into())
+        .with_payload(plaintext.as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let (sign_key, enc_key) = generated_keys();
+    let parsed = parse(Bytes::from(data)).unwrap();
+    let mut signer = Signer::new(&parsed.bundle, &parsed.data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source.clone(),
+            &sign_key,
+        )
+        .unwrap();
+    let signed = parse(Bytes::from(signer.rebuild().unwrap())).unwrap();
+    let mut encryptor = Encryptor::new(&signed.bundle, &signed.data);
+    encryptor
+        .encrypt_block(
+            1,
+            EncryptContext::AES_GCM(ScopeFlags::default()),
+            source,
+            &enc_key,
+        )
+        .unwrap();
+    let encrypted = parse(Bytes::from(encryptor.rebuild().unwrap())).unwrap();
+    let previous_node = *encrypted
+        .bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::PreviousNode)
+        .expect("the Previous Node is present")
+        .0;
+    let mut encryptor = Encryptor::new(&encrypted.bundle, &encrypted.data);
+    encryptor
+        .encrypt_block(
+            previous_node,
+            EncryptContext::AES_GCM(previous_node_scope),
+            previous,
+            &enc_key,
+        )
+        .unwrap();
+    let data = encryptor.rebuild().unwrap();
+    (Bytes::from(data), vec![sign_key, enc_key])
+}
+
+// A bundle from ipn:0.2.1 to node 1 whose source signed an extension block
+// of type 199 and its 6 KiB payload into one BIB, in plaintext: the bundle,
+// the block's number and the keys.
+#[cfg(feature = "rfc9173")]
+fn with_block_signed_with_the_payload() -> (Bytes, u64, Vec<Key>) {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let plaintext: Vec<u8> = (0..6144u32).map(|i| (i % 239) as u8).collect();
+    let (built, data) = Builder::new(source.clone(), LOCAL.parse().unwrap())
+        .add_extension_block(Type::Unrecognised(199))
+        .unwrap()
+        .build(b"signed".as_slice().into())
+        .with_payload(plaintext.as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let block = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::Unrecognised(199))
+        .expect("the block is present")
+        .0;
+    let (sign_key, enc_key) = generated_keys();
+    // Without the security header in scope, the results share one BIB.
+    let scope = ScopeFlags {
+        include_security_header: false,
+        ..ScopeFlags::default()
+    };
+    let mut signing = Signer::new(&built, &data);
+    for n in [block, 1] {
+        signing
+            .sign_block(
+                n,
+                signer::Context::HMAC_SHA2(scope.clone()),
+                source.clone(),
+                &sign_key,
+            )
+            .expect("sign the target");
+    }
+    (
+        Bytes::from(signing.rebuild().expect("rebuild signed")),
+        block,
+        vec![sign_key, enc_key],
+    )
+}
+
+// A block signed into one BIB with the payload is accepted with it at the
+// destination, whether the payload arrives whole or in segments, which the
+// header pass holds only a prefix of: the bundle is stored with the block
+// and no BIB.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_local_destination_accepts_a_block_signed_with_the_payload() {
+    for segments in [1, 3] {
+        let (inbound, block, keys) = with_block_signed_with_the_payload();
+        let (bpa, saved_rx, _, _) = keyed_node_receiving_in(keys, None, inbound, segments).await;
+        let stored = stored_from(&saved_rx, &"ipn:0.2.1".parse().unwrap()).await;
+        assert!(stored.bibs.is_empty(), "{segments} segments");
+        assert_eq!(
+            stored.bundle.blocks[&block].payload(&stored.data),
+            Some(b"signed".as_slice()),
+            "{segments} segments"
+        );
+        bpa.shutdown().await;
+    }
+}
+
+// The encrypted BIB over an encrypted payload, which the gate decrypts by
+// necessity as the payload's acceptor, is checked against the payload's
+// plaintext all the same: the bundle is stored with the payload in
+// plaintext and no security block, and a BIB that fails under another key
+// deletes it.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_local_destination_checks_a_payload_bib_the_gate_decrypted() {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    for segments in [1, 3] {
+        let (inbound, keys) = with_protected_payload_and_previous_node(ScopeFlags::default());
+        let (bpa, saved_rx, _, _) = keyed_node_receiving_in(keys, None, inbound, segments).await;
+        let stored = stored_from(&saved_rx, &source).await;
+        assert!(
+            stored.bcbs.is_empty() && stored.bibs.is_empty(),
+            "{segments} segments: every operation is accepted"
+        );
+        bpa.shutdown().await;
+
+        let (inbound, mut keys) = with_protected_payload_and_previous_node(ScopeFlags::default());
+        keys[0] = generated_keys().0;
+        let (bpa, saved_rx, deleted_rx, sent_rx) =
+            keyed_node_receiving_in(keys, None, inbound, segments).await;
+        assert_eq!(
+            deletion_reason(&sent_rx).await,
+            ReasonCode::FailedSecurityOperation,
+            "{segments} segments"
+        );
+        bpa.shutdown().await;
+        assert!(
+            nothing_left_from(&saved_rx, &deleted_rx, &source),
+            "{segments} segments: any staged save is discarded"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fragments: security on a fragment is processed after reassembly (RFC 9172
+// §5.2).
+// ---------------------------------------------------------------------------
+
+// `data` as fragment 0 of a bundle of 1 MiB, every block as it is.
+#[cfg(feature = "rfc9173")]
+fn as_fragment(data: Bytes) -> Bytes {
+    let parsed = parse(data).unwrap();
+    let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+    editor
+        .set_fragment_info(Some(FragmentInfo {
+            offset: 0,
+            total_adu_length: 1 << 20,
+        }))
+        .expect("set the fragment info");
+    let chunks = editor.rebuild().expect("rebuild the fragment");
+    Chunk::flatten_bytes(chunks, parsed.data)
+}
+
+// `data` fragmented `cut` bytes into its payload, every block in both
+// fragments: the payload's operations ride in fragment 0, as RFC 9171 §5.8
+// has them, and in fragment 1 as blocks replicated in every fragment.
+#[cfg(feature = "rfc9173")]
+fn fragments(data: &Bytes, cut: usize) -> (Bytes, Bytes) {
+    let parsed = parse(data.clone()).unwrap();
+    let payload = parsed.bundle.blocks[&1]
+        .payload(&parsed.data)
+        .expect("the payload is resident")
+        .to_vec();
+    let total_adu_length = payload.len() as u64;
+    let fragment = |range: Range<usize>| {
+        let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
+                offset: range.start as u64,
+                total_adu_length,
+            }))
+            .expect("set the fragment info");
+        editor
+            .restore_block(1)
+            .expect("restore the payload")
+            .with_data(payload[range].to_vec().into())
+            .rebuild();
+        let chunks = editor.rebuild().expect("rebuild the fragment");
+        Chunk::flatten_bytes(chunks, parsed.data.clone())
+    };
+    (fragment(0..cut), fragment(cut..payload.len()))
+}
+
+// The first whole bundle, no fragment, stored from `source`.
+#[cfg(feature = "rfc9173")]
+async fn stored_whole_from(saved_rx: &flume::Receiver<Bytes>, source: &Eid) -> Parsed {
+    loop {
+        let stored = stored_from(saved_rx, source).await;
+        if stored.bundle.primary.id.fragment_info.is_none() {
+            return stored;
+        }
+    }
+}
+
+// Metadata storage that reports every fragment parked for reassembly: each
+// successful swap into `AduFragment`, by bundle id.
+#[cfg(feature = "rfc9173")]
+struct FragmentParks {
+    inner: MetadataMemStorage,
+    parked_tx: flume::Sender<Id>,
+}
+
+#[cfg(feature = "rfc9173")]
+impl FragmentParks {
+    fn new() -> (Arc<Self>, flume::Receiver<Id>) {
+        let (parked_tx, parked_rx) = flume::unbounded();
+        (
+            Arc::new(Self {
+                inner: MetadataMemStorage::new(None),
+                parked_tx,
+            }),
+            parked_rx,
+        )
+    }
+}
+
+#[cfg(feature = "rfc9173")]
+#[async_trait]
+impl MetadataStorage for FragmentParks {
+    async fn get(&self, bundle_id: &Id) -> StorageResult<Option<Bundle>> {
+        self.inner.get(bundle_id).await
+    }
+
+    async fn insert(&self, bundle: &Bundle) -> StorageResult<bool> {
+        self.inner.insert(bundle).await
+    }
+
+    async fn swap_status(
+        &self,
+        bundle_id: &Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> StorageResult<bool> {
+        let swapped = self.inner.swap_status(bundle_id, expected, status).await?;
+        if swapped && matches!(status, BundleStatus::AduFragment { .. }) {
+            let _ = self.parked_tx.send(bundle_id.clone());
+        }
+        Ok(swapped)
+    }
+
+    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> StorageResult<bool> {
+        self.inner.tombstone_if(bundle_id, expected).await
+    }
+
+    async fn tombstone(&self, bundle_id: &Id) -> StorageResult<()> {
+        self.inner.tombstone(bundle_id).await
+    }
+
+    async fn start_recovery(&self) {
+        self.inner.start_recovery().await;
+    }
+
+    async fn confirm_exists(
+        &self,
+        bundle_id: &Id,
+    ) -> StorageResult<Option<(BundleMetadata, BundleStatus)>> {
+        self.inner.confirm_exists(bundle_id).await
+    }
+
+    async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+        self.inner.remove_unconfirmed(stream).await
+    }
+
+    async fn reset_peer_queue(&self, peer: u32) -> StorageResult<u64> {
+        self.inner.reset_peer_queue(peer).await
+    }
+
+    async fn reset_peer_ack_pending(&self, peer: u32) -> StorageResult<u64> {
+        self.inner.reset_peer_ack_pending(peer).await
+    }
+
+    async fn reset_service_queue(&self, service: &Eid) -> StorageResult<u64> {
+        self.inner.reset_service_queue(service).await
+    }
+
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+        self.inner.poll_expiry(stream).await
+    }
+
+    async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> StorageResult<()> {
+        self.inner.poll_waiting(stream).await
+    }
+
+    async fn poll_service_waiting(
+        &self,
+        source: Eid,
+        stream: &dyn Sender<Bundle>,
+    ) -> StorageResult<()> {
+        self.inner.poll_service_waiting(source, stream).await
+    }
+
+    async fn poll_adu_fragments(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+    ) -> StorageResult<()> {
+        self.inner.poll_adu_fragments(stream, status).await
+    }
+
+    async fn poll_pending(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+        limit: usize,
+    ) -> StorageResult<()> {
+        self.inner.poll_pending(stream, status, limit).await
+    }
+}
+
+// The next fragment parked for reassembly.
+#[cfg(feature = "rfc9173")]
+async fn parked(parked_rx: &flume::Receiver<Id>) -> Id {
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(Duration::from_secs(5), parked_rx.recv_async())
+        .await
+        .expect("timeout waiting for the park")
+        .expect("channel closed")
+}
+
+// Decides whether this node reassembles every bundle it classifies.
+#[cfg(feature = "rfc9173")]
+struct Reassembles(Option<bool>);
+
+#[cfg(feature = "rfc9173")]
+impl Classifier for Reassembles {
+    fn classify(&self, _ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+        let mut delta = MetadataDelta::default();
+        delta.reassemble = self.0;
+        Verdict::Continue(delta)
+    }
+}
+
+// A filter pack whose Classifier decides reassembly as `decision`.
+#[cfg(feature = "rfc9173")]
+fn reassembling(decision: Option<bool>) -> Option<FilterPack> {
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier("reassembles", Reassembles(decision));
+    Some(pack)
+}
+
+// A bundle from ipn:0.2.1 to `destination` with a per-hop block of
+// `block_type`, a Previous Node naming ipn:0.2.0, a Bundle Age of 5 s or a
+// Hop Count of 1 of 64, which the previous node signed where `signed` and
+// encrypted otherwise, under a scope that leaves the primary block out
+// where `primary_excluded`, asking for deletion reports: the bundle and the
+// key.
+#[cfg(feature = "rfc9173")]
+fn with_protected_per_hop_block(
+    destination: &str,
+    block_type: Type,
+    signed: bool,
+    primary_excluded: bool,
+) -> (Bytes, Key) {
+    let previous: Eid = "ipn:0.2.0".parse().unwrap();
+    let scope = ScopeFlags {
+        include_primary_block: !primary_excluded,
+        ..ScopeFlags::default()
+    };
+    let body = if block_type == Type::PreviousNode {
+        emit(&previous).0
+    } else if block_type == Type::BundleAge {
+        emit(&5_000u64).0
+    } else {
+        emit(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .0
+    };
+    let (built, data) = Builder::new("ipn:0.2.1".parse().unwrap(), destination.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(block_type)
+        .unwrap()
+        .build(body.into())
+        .with_payload(b"payload".as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let number = *built
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == block_type)
+        .expect("the per-hop block is present")
+        .0;
+    let (sign_key, enc_key) = generated_keys();
+    if signed {
+        let mut signer = Signer::new(&built, &data);
+        signer
+            .sign_block(
+                number,
+                signer::Context::HMAC_SHA2(scope),
+                previous,
+                &sign_key,
+            )
+            .expect("sign the block");
+        let signed = signer.rebuild().expect("rebuild the signed bundle");
+        (Bytes::from(signed), sign_key)
+    } else {
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
+            .encrypt_block(number, EncryptContext::AES_GCM(scope), previous, &enc_key)
+            .expect("encrypt the block");
+        let encrypted = encryptor.rebuild().expect("rebuild the encrypted bundle");
+        (Bytes::from(encrypted), enc_key)
+    }
+}
+
+// A bundle without a creation time from ipn:0.2.1 to a destination behind
+// node 1's peer, carrying a Previous Node (ipn:0.2.0), a Bundle Age (5 s)
+// and a Hop Count (1 of 64), none under an operation, and a 6 KiB payload
+// its source signed in plaintext, asking for deletion reports: the bundle,
+// the payload and the signing key.
+#[cfg(feature = "rfc9173")]
+fn with_per_hop_blocks_and_signed_payload() -> (Bytes, Vec<u8>, Key) {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let plaintext: Vec<u8> = (0..6144u32).map(|i| (i % 239) as u8).collect();
+    let (built, data) = Builder::new(source.clone(), REMOTE.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .add_extension_block(Type::PreviousNode)
+        .unwrap()
+        .build(emit(&"ipn:0.2.0".parse::<Eid>().unwrap()).0.into())
+        .add_extension_block(Type::BundleAge)
+        .unwrap()
+        .build(emit(&5_000u64).0.into())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(64).unwrap(),
+            count: 1,
+        })
+        .with_payload(plaintext.as_slice().into())
+        .build(CreationTimestamp::default())
+        .unwrap();
+    let (sign_key, _) = generated_keys();
+    let mut signer = Signer::new(&built, &data);
+    signer
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            source,
+            &sign_key,
+        )
+        .expect("sign the payload");
+    let signed = signer.rebuild().expect("rebuild the signed bundle");
+    (Bytes::from(signed), plaintext, sign_key)
+}
+
+// A bundle without a creation time from ipn:0.9.1 to a local service, its
+// Bundle Age (5 s) under no operation and its 6 KiB payload in plaintext,
+// reporting to ipn:0.2.1: the bundle and the payload.
+#[cfg(feature = "rfc9173")]
+fn unclocked_with_bundle_age() -> (Bytes, Vec<u8>) {
+    let plaintext: Vec<u8> = (0..6144u32).map(|i| (i % 239) as u8).collect();
+    let (_, data) = Builder::new("ipn:0.9.1".parse().unwrap(), LOCAL.parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_report_to("ipn:0.2.1".parse().unwrap())
+        .add_extension_block(Type::BundleAge)
+        .unwrap()
+        .build(emit(&5_000u64).0.into())
+        .with_payload(plaintext.as_slice().into())
+        .build(CreationTimestamp::default())
+        .unwrap();
+    (Bytes::from(data), plaintext)
+}
+
+// A BIB over a fragment's payload is checked after reassembly, never
+// against the fragment's partial payload: fragment 0 of a bundle whose
+// payload is signed in plaintext carries that BIB (RFC 9171 §5.8), and a
+// relay forwards the fragment as received, whether it arrives whole or in
+// segments.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_leaves_a_fragments_plaintext_payload_bib_unchecked() {
+    let (inbound, _, keys) = with_protected_payload(REMOTE, true, false);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let fragment = as_fragment(inbound);
+
+    for segments in [1, 3] {
+        let (bpa, saved_rx, _, sent_rx) =
+            keyed_node_receiving_in(keys.clone(), None, fragment.clone(), segments).await;
+        let stored = stored_from(&saved_rx, &source).await;
+        assert_eq!(
+            stored.data, fragment,
+            "{segments} segments: stored as received"
+        );
+        let forwarded = forwarded_from(&sent_rx, &source).await;
+        assert_eq!(forwarded.bundle.primary.id, stored.bundle.primary.id);
+        bpa.shutdown().await;
+    }
+}
+
+// The destination reassembles the fragments of a bundle whose payload its
+// source signed in plaintext, and accepts the operation over the whole (RFC
+// 9172 §5.2): the reassembled bundle keeps fragment 0's BIB over the
+// restored payload, and crosses the door to be stored in plaintext without
+// it, the check passed. Fragment 1 is received once fragment 0 is parked
+// for reassembly.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_destination_verifies_a_signed_payload_once_reassembled() {
+    let (inbound, plaintext, keys) = with_protected_payload(LOCAL, true, false);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, saved_rx, _, _) = keyed_node(keys, None, Some(parks)).await;
+
+    receive_in(&cla, first.clone(), 1).await;
+    assert_eq!(
+        stored_from(&saved_rx, &source).await.data,
+        first,
+        "fragment 0 is stored as received"
+    );
+    assert!(parked(&parked_rx).await.fragment_info.is_some());
+    receive_in(&cla, second, 3).await;
+
+    let reassembled = stored_whole_from(&saved_rx, &source).await;
+    assert_eq!(
+        reassembled.bundle.blocks[&1].payload(&reassembled.data),
+        Some(plaintext.as_slice())
+    );
+    assert_eq!(
+        reassembled.bibs.len(),
+        1,
+        "the whole carries fragment 0's BIB over the payload"
+    );
+    let accepted = stored_whole_from(&saved_rx, &source).await;
+    assert_eq!(
+        accepted.bundle.blocks[&1].payload(&accepted.data),
+        Some(plaintext.as_slice())
+    );
+    assert!(
+        accepted.bibs.is_empty() && accepted.bcbs.is_empty(),
+        "the destination accepted the whole's operation"
+    );
+    bpa.shutdown().await;
+}
+
+// A fragment tampered in transit fails the check the destination makes over
+// the reassembled whole: the bundle is deleted at the door it re-enters,
+// "Failed security operation", and nothing of it is left in storage.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_tampered_fragment_fails_the_check_over_the_reassembled_payload() {
+    let (inbound, _, keys) = with_protected_crcless_payload(LOCAL, true, false);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    // The last byte of the second fragment's payload: the value changes,
+    // and the fragment, carrying no CRC, still parses.
+    let tampered = {
+        let parsed = parse(second).unwrap();
+        let mut data = parsed.data.to_vec();
+        let last = usize::try_from(parsed.bundle.blocks[&1].payload_range().end).unwrap() - 1;
+        data[last] ^= 0x01;
+        Bytes::from(data)
+    };
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, saved_rx, deleted_rx, sent_rx) = keyed_node(keys, None, Some(parks)).await;
+
+    receive_in(&cla, first, 1).await;
+    parked(&parked_rx).await;
+    receive_in(&cla, tampered, 1).await;
+
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::FailedSecurityOperation
+    );
+    bpa.shutdown().await;
+    assert!(nothing_left_from(&saved_rx, &deleted_rx, &source));
+}
+
+// The destination reassembles the fragments of a bundle whose payload its
+// source signed and then encrypted, the BIB under the same encryption: the
+// reassembled bundle keeps fragment 0's BCB and BIB over the restored
+// ciphertext, and the destination decrypts and verifies the whole, storing
+// it in plaintext without them.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_destination_decrypts_an_encrypted_payload_once_reassembled() {
+    let (inbound, plaintext, keys) = with_protected_payload(LOCAL, true, true);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, saved_rx, _, _) = keyed_node(keys, None, Some(parks)).await;
+
+    receive_in(&cla, first, 1).await;
+    parked(&parked_rx).await;
+    receive_in(&cla, second, 3).await;
+
+    let reassembled = stored_whole_from(&saved_rx, &source).await;
+    assert!(
+        !reassembled.bcbs.is_empty() && reassembled.bundle.blocks[&1].bcb.is_some(),
+        "the whole carries fragment 0's BCB over the payload"
+    );
+    assert_ne!(
+        reassembled.bundle.blocks[&1].payload(&reassembled.data),
+        Some(plaintext.as_slice()),
+        "the restored payload is the ciphertext"
+    );
+    let accepted = stored_whole_from(&saved_rx, &source).await;
+    assert_eq!(
+        accepted.bundle.blocks[&1].payload(&accepted.data),
+        Some(plaintext.as_slice())
+    );
+    assert!(accepted.bibs.is_empty() && accepted.bcbs.is_empty());
+    bpa.shutdown().await;
+}
+
+// A fragment's per-hop blocks are processed as any bundle's (RFC 9171
+// §5.4), being the forwarder's writes to the fragment: the header pass
+// accepts the operation over one, computed over the fragment as one whose
+// scope leaves the primary block out is, and the fragment is stored with
+// the block in plaintext, its value as received, and no security block,
+// then forwarded as a fragment. A Previous Node whose operation this node
+// cannot accept, holding no key for it, or whose signature covers the
+// primary block as it was before fragmentation, is a failed acceptance on
+// a fragment as on any bundle: discarded, as its flags decide.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_fragments_per_hop_blocks_are_accepted_as_any_bundles() {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    for (block_type, signed, primary_excluded, held) in [
+        (Type::PreviousNode, true, true, true),
+        (Type::BundleAge, false, true, true),
+        (Type::HopCount, true, true, true),
+        (Type::HopCount, false, true, true),
+        (Type::PreviousNode, true, true, false),
+        (Type::PreviousNode, true, false, true),
+    ] {
+        let accepted = held && primary_excluded;
+        let case = format!(
+            "{block_type:?} signed {signed}, primary excluded {primary_excluded}, key held {held}"
+        );
+        let (inbound, key) =
+            with_protected_per_hop_block(REMOTE, block_type, signed, primary_excluded);
+        let fragment = as_fragment(inbound);
+        let keys = if held { vec![key] } else { Vec::new() };
+        let (bpa, saved_rx, sent_rx) = keyed_node_receiving(keys, None, fragment).await;
+
+        let stored = stored_from(&saved_rx, &source).await;
+        assert!(stored.bundle.primary.id.fragment_info.is_some(), "{case}");
+        assert!(stored.bibs.is_empty() && stored.bcbs.is_empty(), "{case}");
+        let block = stored
+            .bundle
+            .blocks
+            .values()
+            .find(|b| b.block_type == block_type);
+        if accepted {
+            let value = block
+                .expect("the accepted block stays")
+                .payload(&stored.data)
+                .expect("the block is resident");
+            let received: Vec<u8> = if block_type == Type::PreviousNode {
+                emit(&"ipn:0.2.0".parse::<Eid>().unwrap()).0
+            } else if block_type == Type::BundleAge {
+                emit(&5_000u64).0
+            } else {
+                emit(&HopInfo {
+                    limit: NonZeroU8::new(64).unwrap(),
+                    count: 1,
+                })
+                .0
+            };
+            assert_eq!(value, received.as_slice(), "{case}");
+        } else {
+            assert!(block.is_none(), "{case}: the block is discarded");
+        }
+        let forwarded = forwarded_from(&sent_rx, &source).await;
+        assert_eq!(
+            forwarded.bundle.primary.id, stored.bundle.primary.id,
+            "{case}"
+        );
+        bpa.shutdown().await;
+    }
+}
+
+// Fragment 0 of a bundle whose source signed then encrypted its payload,
+// and whose previous node encrypted the Previous Node block under a scope
+// that leaves the primary block out, at the destination: the Previous Node
+// is accepted and stored in plaintext, and the source's encrypted BIB, under
+// the source's BCB, is read on no per-hop block's account, so it rides the
+// fragment untouched to reassembly, where its BCB can authenticate again.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_fragments_source_bib_is_not_read_on_a_per_hop_blocks_account() {
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (inbound, keys) = with_protected_payload_and_previous_node(ScopeFlags {
+        include_primary_block: false,
+        ..ScopeFlags::default()
+    });
+    let received = parse(inbound.clone()).unwrap();
+    let bib = *received
+        .bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| b.block_type == Type::BlockIntegrity)
+        .expect("the source's BIB is present")
+        .0;
+    let fragment = as_fragment(inbound);
+    let (bpa, saved_rx, _) = keyed_node_receiving(keys, None, fragment).await;
+
+    let stored = stored_from(&saved_rx, &source).await;
+    assert!(stored.bundle.primary.id.fragment_info.is_some());
+    let previous_node = stored
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == Type::PreviousNode)
+        .expect("the Previous Node is accepted and kept");
+    assert!(
+        previous_node.bcb.is_none(),
+        "the Previous Node is stored in plaintext"
+    );
+    assert!(
+        stored.bundle.blocks[&bib].bcb.is_some(),
+        "the source's BIB rides the fragment encrypted"
+    );
+    assert!(
+        stored.bundle.blocks[&1].bcb.is_some(),
+        "the payload rides the fragment encrypted"
+    );
+    bpa.shutdown().await;
+}
+
+// A transit fragment is forwarded as any bundle is: its Previous Node
+// replaced, its Bundle Age advanced by its dwell here and its Hop Count
+// incremented (RFC 9171 §5.4), none being under an operation, and the
+// operation over its payload untouched, for the node that reassembles the
+// bundle to check.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_relay_forwards_a_fragment_with_its_per_hop_blocks_replaced() {
+    let (inbound, plaintext, key) = with_per_hop_blocks_and_signed_payload();
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let fragment = as_fragment(inbound);
+    let (bpa, saved_rx, sent_rx) = keyed_node_receiving(vec![key], None, fragment.clone()).await;
+
+    assert_eq!(
+        stored_from(&saved_rx, &source).await.data,
+        fragment,
+        "stored as received"
+    );
+    let forwarded = forwarded_from(&sent_rx, &source).await;
+    assert!(forwarded.bundle.primary.id.fragment_info.is_some());
+    let block = |block_type: Type| {
+        forwarded
+            .bundle
+            .blocks
+            .values()
+            .find(|b| b.block_type == block_type)
+            .expect("the block is present")
+            .payload(&forwarded.data)
+            .expect("the block is resident")
+    };
+    let previous_node: Eid =
+        hardy_cbor::decode::parse(block(Type::PreviousNode)).expect("a node ID");
+    assert_eq!(
+        previous_node,
+        "ipn:0.1.0".parse().unwrap(),
+        "the Previous Node names this node"
+    );
+    let age: u64 = hardy_cbor::decode::parse(block(Type::BundleAge)).expect("an age");
+    assert!(age >= 5_000, "the Bundle Age advanced: {age}");
+    let hops: HopInfo = hardy_cbor::decode::parse(block(Type::HopCount)).expect("a hop count");
+    assert_eq!(hops.count, 2, "the Hop Count incremented");
+    assert_eq!(
+        forwarded.bundle.blocks[&1].payload(&forwarded.data),
+        Some(plaintext.as_slice())
+    );
+    assert!(
+        matches!(forwarded.bundle.blocks[&1].bib, BibCoverage::Some(_)),
+        "the payload's BIB travels"
+    );
+    bpa.shutdown().await;
+}
+
+// A fragment without a creation time passes the lifetime gate on its Bundle
+// Age, under no operation, to reassembly: the whole, with fragment 0's
+// Bundle Age as received, is stored.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn an_unclocked_fragment_passes_the_gate_to_reassembly() {
+    let (inbound, plaintext) = unclocked_with_bundle_age();
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, saved_rx, _, _) = keyed_node(Vec::new(), None, Some(parks)).await;
+
+    receive_in(&cla, first, 1).await;
+    parked(&parked_rx).await;
+    receive_in(&cla, second, 1).await;
+
+    let reassembled = stored_whole_from(&saved_rx, &source).await;
+    assert!(!reassembled.bundle.primary.id.timestamp.is_clocked());
+    assert!(reassembled.per_hop.bundle_age.is_some());
+    assert_eq!(
+        reassembled.bundle.blocks[&1].payload(&reassembled.data),
+        Some(plaintext.as_slice())
+    );
+    bpa.shutdown().await;
+}
+
+// An ADU whose total length exceeds the size cap is never rebuilt: the
+// whole would be materialised in memory and then refused by the cap as it
+// re-entered the door. Each fragment is dropped at reassembly as it
+// arrives, "Depleted storage", reported, and nothing whole is stored.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_fragment_of_an_adu_over_the_size_cap_is_dropped() {
+    let (inbound, _) = unclocked_with_bundle_age();
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    // Each fragment is under the cap; the 6 KiB ADU is over it.
+    let (first, second) = fragments(&inbound, 3072);
+    let (bpa, cla, saved_rx, _, sent_rx) =
+        keyed_node_under(NonZeroU64::new(4096), Vec::new(), None, None).await;
+
+    receive_in(&cla, first, 1).await;
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::DepletedStorage);
+
+    receive_in(&cla, second, 1).await;
+    let status = sent_status_report(&sent_rx).await;
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::DepletedStorage);
+
+    bpa.shutdown().await;
+    assert!(
+        saved_rx.try_iter().all(|data| {
+            let stored = parse(data).expect("a stored bundle parses");
+            stored.bundle.primary.id.source != source
+                || stored.bundle.primary.id.fragment_info.is_some()
+        }),
+        "nothing whole is stored"
+    );
+}
+
+// A Classifier claims a transit fragment set for reassembly here
+// (`MetadataDelta::reassemble`): the fragments are held, and the whole is
+// rebuilt and forwarded as routed, the operation over its payload untouched.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_classifier_claims_a_transit_fragment_set_for_reassembly() {
+    let (inbound, plaintext, keys) = with_protected_payload(REMOTE, true, false);
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let (first, second) = fragments(&inbound, 4000);
+    let (parks, parked_rx) = FragmentParks::new();
+    let (bpa, cla, _, _, sent_rx) = keyed_node(keys, reassembling(Some(true)), Some(parks)).await;
+
+    receive_in(&cla, first, 1).await;
+    parked(&parked_rx).await;
+    receive_in(&cla, second, 1).await;
+
+    let forwarded = forwarded_from(&sent_rx, &source).await;
+    assert!(
+        forwarded.bundle.primary.id.fragment_info.is_none(),
+        "the whole is forwarded"
+    );
+    assert_eq!(
+        forwarded.bundle.blocks[&1].payload(&forwarded.data),
+        Some(plaintext.as_slice())
+    );
+    assert_eq!(forwarded.bibs.len(), 1, "a relay accepts nothing");
+    bpa.shutdown().await;
+}
+
+// A Classifier declines to reassemble a fragment addressed here: it is
+// dropped at the gate and reported, and nothing is stored, since a raw
+// fragment is never delivered.
+#[cfg(feature = "rfc9173")]
+#[tokio::test]
+async fn a_classifier_declines_a_fragment_addressed_here() {
+    let (inbound, _, keys) = with_protected_payload(LOCAL, true, false);
+    let fragment = as_fragment(inbound);
+    let (bpa, saved_rx, sent_rx) =
+        keyed_node_receiving(keys, reassembling(Some(false)), fragment).await;
+    assert_eq!(
+        deletion_reason(&sent_rx).await,
+        ReasonCode::NoAdditionalInformation
+    );
+    bpa.shutdown().await;
+    assert_never_stored(&saved_rx, &"ipn:0.2.1".parse().unwrap());
 }

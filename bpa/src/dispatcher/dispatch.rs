@@ -1,8 +1,52 @@
 use futures::{FutureExt, join, select_biased};
 
 use super::*;
+use crate::routing::{Decision, DispatchAction};
 
 impl Dispatcher {
+    /// The local service a bundle no route matched waits for: its lookup
+    /// EID (the route key, else the destination) when that is local and the
+    /// lookup names the default table, which a registration can satisfy.
+    pub(super) fn awaited_service(
+        &self,
+        bundle: &Bpv7Bundle,
+        metadata: &bundle::BundleMetadata,
+    ) -> Option<Eid> {
+        let key = metadata.routing_key();
+        if key.unknown_table().is_some() {
+            return None;
+        }
+        self.node_ids
+            .local_service_eid(key.lookup_eid(&bundle.primary.destination))
+    }
+
+    /// Whether `decision` delivers the bundle here: to the administrative
+    /// endpoint or a service, or, matching no route, to the local service it
+    /// waits for.
+    pub(super) fn delivers_locally(
+        &self,
+        bundle: &Bpv7Bundle,
+        metadata: &bundle::BundleMetadata,
+        decision: &Decision,
+    ) -> bool {
+        match decision.action {
+            Some(DispatchAction::AdminEndpoint | DispatchAction::Deliver(_)) => true,
+            Some(_) => false,
+            None => self.awaited_service(bundle, metadata).is_some(),
+        }
+    }
+
+    /// Whether this node reassembles `bundle`, a fragment: as a Classifier
+    /// decided (`MetadataDelta::reassemble`), else where `decision` delivers
+    /// it here, the destination reassembling what it receives in fragments
+    /// (RFC 9171 §5.9) and a relay forwarding them.
+    pub(super) fn reassembles(&self, bundle: &bundle::Bundle, decision: &Decision) -> bool {
+        bundle
+            .metadata
+            .reassemble()
+            .unwrap_or_else(|| self.delivers_locally(&bundle.bpv7, &bundle.metadata, decision))
+    }
+
     /// Queue a bundle for dispatch processing.
     /// The caller must have claimed the bundle (`Dispatching`), or be
     /// re-queueing one recovered still queued (`DispatchPending`); the send's
@@ -64,8 +108,9 @@ impl Dispatcher {
     /// | Result | Action | Status Transition |
     /// |--------|--------|-------------------|
     /// | `Drop` | Delete bundle with reason | `Dispatching` → Tombstone |
+    /// | any, a fragment this node reassembles (`reassembles`) | Queue for reassembly | `Dispatching` → `AduFragment` |
     /// | `AdminEndpoint` | Handle administrative record | `Dispatching` → Tombstone |
-    /// | `Deliver` (fragment) | Queue for reassembly | `Dispatching` → `AduFragment` |
+    /// | `Deliver` (a fragment a Classifier declined) | Drop, reported | `Dispatching` → Tombstone |
     /// | `Deliver` (whole) | Queue to the service | `Dispatching` → `DeliverPending` |
     /// | `Deliver` (service gone) | Wait for a service | `Dispatching` → `WaitingForService` |
     /// | `Forward` | Queue to CLA peer | `Dispatching` → `ForwardPending` |
@@ -87,7 +132,7 @@ impl Dispatcher {
         // re-check it to close the park-vs-poll window (see park_bundle). A
         // Forward result names the peer, whose egress queue carries the
         // adjacency.
-        let decision = self.rib.decide(&bundle);
+        let decision = self.rib.decide(&bundle.bpv7, &bundle.metadata);
         self.execute_dispatch_action(bundle, decision, cla_registry)
             .await
     }
@@ -111,12 +156,12 @@ impl Dispatcher {
     ) {
         if self.rib.table_changed_since(&decision.seen) {
             debug!("Routing changed during the drain, deciding again");
-            decision = self.rib.decide(&bundle);
+            decision = self.rib.decide(&bundle.bpv7, &bundle.metadata);
         }
 
         match decision.action {
             Some(routing::DispatchAction::AdminEndpoint) => self.dispatch_bundle(bundle).await,
-            Some(routing::DispatchAction::Deliver(_)) if bundle.id().fragment_info.is_some() => {
+            _ if bundle.id().fragment_info.is_some() && self.reassembles(&bundle, &decision) => {
                 self.dispatch_bundle(bundle).await
             }
             _ => {
@@ -139,6 +184,12 @@ impl Dispatcher {
         decision: routing::Decision,
         cla_registry: &cla::registry::ClaRegistry,
     ) {
+        // A fragment this node reassembles is held until the whole can be
+        // rebuilt, whatever its route: the whole is then routed as any
+        // bundle, delivered or forwarded, its security operations processed
+        // at the door it re-enters (RFC 9172 §5.2).
+        let fragment = bundle.id().fragment_info.is_some();
+        let reassembles = fragment && self.reassembles(&bundle, &decision);
         let routing::Decision { action, seen } = decision;
 
         // Expiry checkpoint: the reaper defers the hand-off statuses
@@ -160,32 +211,34 @@ impl Dispatcher {
                     self.delete_bundle(bundle).await
                 }
             }
+            _ if reassembles => self.reassemble(bundle).await,
             Some(routing::DispatchAction::AdminEndpoint) => {
                 self.administrative_bundle(bundle).await
             }
+            Some(routing::DispatchAction::Deliver(_)) if fragment => {
+                // A Classifier declined to reassemble it, and a raw fragment
+                // is never delivered: dropped, as the ingress gate drops one.
+                debug!("A fragment declined for reassembly cannot be delivered; dropped");
+                self.drop_bundle(bundle, ReasonCode::NoAdditionalInformation)
+                    .await
+            }
             Some(routing::DispatchAction::Deliver(service)) => {
-                // Check for reassembly
-                if bundle.id().fragment_info.is_some() {
-                    // Reassemble the bundle before delivery
-                    self.reassemble(bundle).await
-                } else {
-                    // Queue to the service's delivery channel
-                    if let Err(bundle) = service.deliver(bundle).await {
-                        // The service unregistered between the RIB lookup and
-                        // the send: park for the next registration, under
-                        // the canonical registration EID stored at
-                        // construction — the exact key the re-registration
-                        // poll matches.
-                        debug!("Service delivery queue closed, parking bundle");
-                        self.park_bundle(
-                            bundle,
-                            bundle::BundleStatus::WaitingForService {
-                                service: service.eid().clone(),
-                            },
-                            &seen,
-                        )
-                        .await
-                    }
+                // Queue to the service's delivery channel
+                if let Err(bundle) = service.deliver(bundle).await {
+                    // The service unregistered between the RIB lookup and
+                    // the send: park for the next registration, under
+                    // the canonical registration EID stored at
+                    // construction — the exact key the re-registration
+                    // poll matches.
+                    debug!("Service delivery queue closed, parking bundle");
+                    self.park_bundle(
+                        bundle,
+                        bundle::BundleStatus::WaitingForService {
+                            service: service.eid().clone(),
+                        },
+                        &seen,
+                    )
+                    .await
                 }
             }
             Some(routing::DispatchAction::Forward { peer, next_hop }) => {
@@ -208,14 +261,7 @@ impl Dispatcher {
                 // default, which no registration can satisfy.
                 debug!("Storing bundle until a forwarding opportunity arises");
 
-                let key = bundle.metadata.routing_key();
-                let service = match key.unknown_table() {
-                    Some(_) => None,
-                    None => self
-                        .node_ids
-                        .local_service_eid(key.lookup_eid(&bundle.primary().destination)),
-                };
-                let parked = match service {
+                let parked = match self.awaited_service(&bundle.bpv7, &bundle.metadata) {
                     Some(service) => bundle::BundleStatus::WaitingForService { service },
                     None => bundle::BundleStatus::Waiting,
                 };

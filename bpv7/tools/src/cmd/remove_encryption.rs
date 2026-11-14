@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpv7::{
-    bpsec::key::KeySet,
+    bpsec::{edit::BPSecEditor, key::KeySet},
     editor::{Chunk, Editor},
 };
 #[derive(Parser, Debug)]
@@ -41,12 +41,10 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let editor = hardy_bpv7::bpsec::edit::remove_encryption(
-            Editor::new(&raw, &data),
-            self.block,
-            &key_store,
-        )
-        .map_err(|(_, e)| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
+        let mut editor = Editor::new(&raw, &data).with_key_source(&key_store);
+        editor
+            .remove_encryption(self.block)
+            .map_err(|e| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
 
         let chunks = editor
             .rebuild()

@@ -99,10 +99,9 @@ pub struct Command {
     #[arg(long)]
     no_payload_crc: bool,
 
-    /// Relax RFC9171 ingress validity checks on received bundles.
+    /// Relax the RFC 9171 validity check on received bundles.
     ///
-    /// Accepts echoes whose primary block has no CRC/BIB, and bundles with an
-    /// unclocked creation timestamp and no Bundle Age block. Some peers (e.g.
+    /// Accepts echoes whose primary block has no CRC/BIB. Some peers (e.g.
     /// dtn7-rs's dtnecho2) reflect bundles without a primary-block CRC. The
     /// reflected payload is still verified by the byte-for-byte comparison.
     #[arg(long)]

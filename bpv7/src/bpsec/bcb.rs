@@ -1,5 +1,3 @@
-use alloc::boxed::Box;
-
 use hardy_cbor::{
     decode::{FromCbor, parse},
     encode::{Array, Encoder, ToCbor},
@@ -10,10 +8,15 @@ use smallvec::SmallVec;
 use crate::bpsec::rfc9173;
 use crate::{
     HashMap, block,
-    bpsec::{Context, Error, key, parse},
-    crc, eid,
+    bpsec::{Context, Error, parse},
+    eid,
     reader::Reader,
 };
+
+#[cfg(feature = "bpsec")]
+mod keyed;
+#[cfg(feature = "bpsec")]
+pub use keyed::Decryptor;
 /// A parsed BCB (Block Confidentiality Block) security operation.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -29,17 +32,18 @@ pub enum Operation {
 /// Arguments passed to a BCB decryption operation.
 pub struct OperationArgs<'a> {
     /// The EID of the security source that created this BCB.
-    pub bpsec_source: &'a eid::Eid,
+    pub source: &'a eid::Eid,
     /// The block number of the block being decrypted.
     pub target: u64,
     /// The block number of the BCB itself.
-    pub source: u64,
+    pub security_block: u64,
     /// A view of the bundle's blocks for accessing related data during decryption.
     pub blocks: &'a dyn Reader<'a>,
 }
 
 impl Operation {
-    /// Returns `true` if this operation uses an unrecognised security context.
+    /// Whether this node cannot process the operation, its security context
+    /// being one it does not support.
     pub fn is_unsupported(&self) -> bool {
         self.unsupported_error().is_some()
     }
@@ -48,7 +52,7 @@ impl Operation {
     /// [`Error::UnrecognisedContext`] for an unrecognised security context
     /// id, [`Error::UnsupportedOperation`] for a recognised context with
     /// unrecognised parameters. `None` when the operation is supported.
-    pub fn unsupported_error(&self) -> Option<Error> {
+    pub(crate) fn unsupported_error(&self) -> Option<Error> {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(operation) => operation
@@ -66,99 +70,11 @@ impl Operation {
     ///
     /// The answer is about the primary as part of another target's input:
     /// an operation whose target is the primary block covers it regardless.
-    pub fn scope_includes_primary(&self) -> bool {
+    pub(crate) fn scope_includes_primary(&self) -> bool {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(operation) => operation.scope_includes_primary(),
             Self::Unrecognised(..) => true,
-        }
-    }
-
-    /// Returns true if multiple security operations can share the same security
-    /// context parameters (and thus be in the same BCB).
-    ///
-    /// BCB-AES-GCM (RFC 9173) returns false because each encryption requires a
-    /// unique IV, which is stored in the context parameters.
-    ///
-    /// Future contexts (e.g., COSE-based) may return true if they store per-target
-    /// IVs in the results rather than shared parameters. The operation instance
-    /// can inspect its parameters to determine this.
-    pub fn can_share(&self) -> bool {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(_) => false, // IV in context parameters requires separate blocks
-            // Unknown contexts: assume they cannot share (conservative default)
-            Self::Unrecognised(..) => false,
-        }
-    }
-
-    /// Decrypts the target block using the provided key source.
-    #[allow(unused_variables)]
-    pub fn decrypt<K>(
-        &self,
-        key_source: &K,
-        args: OperationArgs,
-    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error>
-    where
-        K: key::KeySource + ?Sized,
-    {
-        // RFC 9172 Section 3.9: CRC must be removed from BCB targets.
-        // Note: BCBs cannot target the primary block, so no block 0 exemption needed.
-        if let Some((target_block, _)) = args.blocks.block(args.target)
-            && !matches!(target_block.crc_type, crc::CrcType::None)
-        {
-            return Err(Error::CrcPresent);
-        }
-
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => op.decrypt(key_source, args),
-            Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
-        }
-    }
-
-    /// Encrypts the target block using this operation's context parameters
-    /// (e.g. AES-GCM scope flags), looking up the key on the bpsec source
-    /// EID via `key_source`. The target's plaintext is read from
-    /// `args.blocks.block(args.target)`. Returns a fresh operation carrying
-    /// the newly generated per-context state (e.g. a new AES-GCM IV) along
-    /// with the ciphertext; `self` is left untouched so the caller can
-    /// decide whether to replace the original entry.
-    ///
-    /// Works equally on an operation just constructed in memory (with
-    /// caller-chosen context parameters) and on one parsed from a wire
-    /// BCB — the method only inspects this operation's parameters and
-    /// the bytes in `args.blocks`.
-    #[allow(unused_variables)]
-    pub fn encrypt<K>(
-        &self,
-        key_source: &K,
-        args: OperationArgs,
-    ) -> Result<(Self, Box<[u8]>), Error>
-    where
-        K: key::KeySource + ?Sized,
-    {
-        // RFC 9172 Section 3.9: CRC must be removed from BCB targets.
-        if let Some((target_block, _)) = args.blocks.block(args.target)
-            && !matches!(target_block.crc_type, crc::CrcType::None)
-        {
-            return Err(Error::CrcPresent);
-        }
-
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => {
-                let key = key_source
-                    .key(args.bpsec_source, &[key::Operation::Encrypt])
-                    .ok_or(Error::NoKey)?;
-                let (new_op, ciphertext) = rfc9173::bcb_aes_gcm::Operation::encrypt(
-                    key,
-                    op.parameters.flags.clone(),
-                    args,
-                )?;
-                Ok((Self::AES_GCM(new_op), ciphertext))
-            }
-            Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
         }
     }
 
@@ -206,28 +122,13 @@ impl OperationSet {
         &self.operations
     }
 
-    /// Returns `true` if any operation in this set uses an unrecognised context.
-    pub fn is_unsupported(&self) -> bool {
-        self.operations.values().any(|op| op.is_unsupported())
-    }
-
     /// The error describing why this set is unsupported (the first
     /// unsupported operation's [`Operation::unsupported_error`]), or `None`
     /// when every operation is supported.
-    pub fn unsupported_error(&self) -> Option<Error> {
+    pub(crate) fn unsupported_error(&self) -> Option<Error> {
         self.operations
             .values()
             .find_map(|op| op.unsupported_error())
-    }
-
-    /// Returns true if this BCB's context allows multiple targets to share
-    /// security context parameters.
-    pub fn can_share(&self) -> bool {
-        // All operations in a set share the same context, so check any one
-        self.operations
-            .values()
-            .next()
-            .is_some_and(|op| op.can_share())
     }
 
     /// Per-OperationSet structural validation of this BCB against the
@@ -240,15 +141,15 @@ impl OperationSet {
     /// not checked here (it needs every operation in view at once).
     ///
     /// Shared by the structural parser ([`crate::parse`]) and the keyed
-    /// [`crate::checks::verify`] pass as the single source of truth for
-    /// the per-OperationSet BCB rules.
+    /// [`Parsed::check`](crate::parse::Parsed::check) pass as the single
+    /// source of truth for the per-OperationSet BCB rules.
     ///
     /// # Panics
     ///
     /// Panics if `bcb_block_number` is not in `blocks`. The caller looked
     /// the BCB up in `blocks` to obtain this OperationSet; passing a
     /// different block set is a caller error, not a recoverable state.
-    pub fn check<'a, B>(&self, bcb_block_number: u64, blocks: &'a B) -> Result<(), Error>
+    pub(crate) fn check<'a, B>(&self, bcb_block_number: u64, blocks: &'a B) -> Result<(), Error>
     where
         B: Reader<'a> + ?Sized,
     {

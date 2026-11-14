@@ -57,20 +57,28 @@ impl Command {
         let bundle_data = self.input.read_all()?;
 
         // Structural parse + keyed BPSec validation in one pass.
+        let parsed = parse_with_keys(bundle_data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
+        // The bundle as its destination reads it: each block shows the
+        // coverage and BIB verification of the accepted copy, which keeps the
+        // original's block numbers.
+        let accepted = accepted_copy(&parsed, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt bundle: {e}"))?;
+        // Section A diagnostics — OR of the block-kind and security-kind
+        // report facts, from the parser's classification.
+        let report_unsupported = parsed.classification.report_unsupported_block
+            || parsed.classification.report_unsupported_security;
         let parse::Parsed {
             data: bundle_data,
-            bundle: raw,
+            bundle: mut raw,
             bcbs: bcb_ops,
-            bibs: bib_ops,
-        } = parse_with_keys(bundle_data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
-
-        // Section A diagnostics — OR of the block-kind and security-kind
-        // report facts. (Errors propagate from parse_with_keys; here we
-        // re-run the classify pass to read the flags.)
-        let report_unsupported = checks::classify_unsupported(&raw.blocks, &bcb_ops, &bib_ops, &[])
-            .map(|c| c.report_unsupported_block || c.report_unsupported_security)
-            .unwrap_or(false);
+            ..
+        } = parsed;
+        for (n, block) in &mut raw.blocks {
+            if let Some(accepted_block) = accepted.bundle.blocks.get(n) {
+                block.bib = accepted_block.bib;
+            }
+        }
 
         // Decode the known extension blocks (PreviousNode / BundleAge /
         // HopCount) once into typed fields. BCB-protected bodies stay
@@ -89,8 +97,8 @@ impl Command {
                 self.output,
                 &BlockSecurity {
                     keys: key_store,
-                    bib_ops,
                     bcb_ops,
+                    accepted,
                 },
             ),
             OutputFormat::Json | OutputFormat::JsonPretty => dump_json(
@@ -104,12 +112,13 @@ impl Command {
 }
 
 /// The BPSec material `dump_block` needs to verify and decrypt blocks:
-/// the key set plus the parsed BIB/BCB operation sets. Bundled so the
-/// markdown path threads one value instead of three.
+/// the key set, the original's BCB operation sets, and the accepted copy
+/// whose plaintext BIBs it verifies against. Bundled so the markdown path
+/// threads one value instead of three.
 struct BlockSecurity {
     keys: bpsec::key::KeySet,
-    bib_ops: HashMap<u64, bpsec::bib::OperationSet>,
     bcb_ops: HashMap<u64, bpsec::bcb::OperationSet>,
+    accepted: parse::Parsed,
 }
 
 /// The typed values decoded from a bundle's known extension blocks, plus
@@ -420,9 +429,9 @@ fn dump_block(
 
         match verify_block(
             block_number,
-            blocks,
-            data,
-            &security.bib_ops,
+            &security.accepted.bundle.blocks,
+            &security.accepted.data,
+            &security.accepted.bibs,
             &security.keys,
         ) {
             Err(e) => output.append_str(format!("Error {e}\n\n"))?,

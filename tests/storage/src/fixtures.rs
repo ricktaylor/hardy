@@ -55,9 +55,9 @@ pub fn ingress_bundle() -> bundle::Bundle {
         Some("ipn:1.0".parse().unwrap()),
         Some(ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap())),
     );
-    metadata.extensions.previous_node = Some("ipn:1.0".parse().unwrap());
-    metadata.extensions.age = Some(Duration::from_millis(1234));
-    metadata.extensions.hop_count = Some(HopInfo {
+    metadata.per_hop.previous_node = Some("ipn:1.0".parse().unwrap());
+    metadata.per_hop.bundle_age = Some(1234.into());
+    metadata.per_hop.hop_count = Some(HopInfo {
         limit: NonZeroU8::new(32).unwrap(),
         count: 3,
     });

@@ -19,23 +19,22 @@
 //! An edit that would make a malformed bundle is refused at call time
 //! instead of failing at [`finish`](ExtensionEditor::finish) or at the
 //! receiver's decoders. What the structural parser rejects — a
-//! `report_on_failure` flag the bundle forbids, an unrecognised CRC type —
-//! is refused with the parser's own error. Previous Node, Bundle Age, or
+//! `report_on_failure` flag the bundle forbids, an unrecognised CRC type,
+//! a bundle without a creation time losing its Bundle Age block (RFC 9171
+//! §4.4.2) — is refused with the parser's own error. Previous Node, Bundle Age, or
 //! Hop Count data that does not decode as its type is refused as
-//! [`UndecodableBody`](Error::UndecodableBody): the parser never decodes
-//! those bodies, but a receiving BPA does, with the same decoders.
+//! [`UndecodableBody`](Error::UndecodableBody), decoded as the parser
+//! decodes a received one.
 //!
 //! Receiver policy over a well-formed bundle is the caller's to decide, not
-//! refused here: RFC 9171 §4.4.2's Bundle Age requirement on a bundle
-//! without a clock, hop limits, and how a receiver treats blocks it does
-//! not support.
+//! refused here: hop limits, and how a receiver treats blocks it does not
+//! support.
 //!
 //! Edits accumulate in memory; nothing is materialised until
 //! [`finish`](ExtensionEditor::finish).
 
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 
-use hardy_cbor::decode::parse_exact;
 use thiserror::Error;
 
 // Aliased `Error`s: this module's own `Error` is the refusal enum below.
@@ -43,11 +42,9 @@ use crate::{
     Error as Bpv7Error,
     block::{BibCoverage, Flags, Type},
     bundle::Bundle,
-    bundle_age::BundleAge,
     crc::{CrcType, Error as CrcError},
     editor::{Chunk, Editor, Error as EditorError},
-    eid::Eid,
-    hop_info::HopInfo,
+    parse::PerHopFields,
 };
 
 /// Errors from scoped editing — each refused operation names its reason,
@@ -81,8 +78,7 @@ pub enum Error {
     Invalid(#[from] Bpv7Error),
 
     /// Previous Node, Bundle Age, or Hop Count data that does not decode as
-    /// its type. The structural parser never decodes these bodies; a
-    /// receiving BPA does, with the same decoders.
+    /// its type, which the parser rejects in a received block.
     #[error("{block_type:?} block data does not decode")]
     UndecodableBody {
         /// The well-known type the data was checked as.
@@ -106,22 +102,20 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// directly from the parse products; edits are in-memory until
 /// [`finish`](Self::finish) materialises them.
 pub struct ExtensionEditor<'a> {
-    // Consuming-builder inner editor: taken and replaced around each
-    // operation. `None` only transiently inside an operation.
-    editor: Option<Editor<'a>>,
-    edited: bool,
-    // The primary block is out of scope, so its verdict is fixed at
+    editor: Editor<'a>,
+    // The primary block is out of scope, so its verdicts are fixed at
     // construction.
     report_on_failure_forbidden: bool,
+    bundle_age_required: bool,
 }
 
 impl<'a> ExtensionEditor<'a> {
     /// Builds an editor over the bundle and its resident wire bytes.
     pub fn new(original: &'a Bundle, source_data: &'a [u8]) -> Self {
         Self {
-            editor: Some(Editor::new(original, source_data)),
-            edited: false,
+            editor: Editor::new(original, source_data),
             report_on_failure_forbidden: original.primary.forbids_report_on_failure(),
+            bundle_age_required: !original.primary.id.timestamp.is_clocked(),
         }
     }
 
@@ -169,28 +163,14 @@ impl<'a> ExtensionEditor<'a> {
         }
         check_body(block_type, &data)?;
 
-        let editor = self
-            .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.push_block(block_type) {
-            Ok(builder) => {
-                let block_number = builder.block_number();
-                self.editor = Some(
-                    builder
-                        .with_flags(flags)
-                        .with_crc_type(crc_type)
-                        .with_data(Cow::Owned(data.into_vec()))
-                        .rebuild(),
-                );
-                self.edited = true;
-                Ok(block_number)
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
-        }
+        let builder = self.editor.push_block(block_type)?;
+        let block_number = builder.block_number();
+        builder
+            .with_flags(flags)
+            .with_crc_type(crc_type)
+            .with_data(Cow::Owned(data.into_vec()))
+            .rebuild();
+        Ok(block_number)
     }
 
     /// Replaces an extension block's block-specific data, keeping its flags
@@ -208,49 +188,31 @@ impl<'a> ExtensionEditor<'a> {
         let block_type = self.check_target(block_number)?;
         check_body(block_type, &data)?;
 
-        let editor = self
-            .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.update_block(block_number) {
-            Ok(builder) => {
-                self.editor = Some(builder.with_data(Cow::Owned(data.into_vec())).rebuild());
-                self.edited = true;
-                Ok(())
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
-        }
+        self.editor
+            .update_block(block_number)?
+            .with_data(Cow::Owned(data.into_vec()))
+            .rebuild();
+        Ok(())
     }
 
     /// Removes an extension block.
     ///
     /// # Errors
     ///
-    /// [`ReservedBlock`](Error::ReservedBlock),
-    /// [`NoSuchBlock`](Error::NoSuchBlock),
-    /// [`ReservedType`](Error::ReservedType), or [`Covered`](Error::Covered)
-    /// for a target outside the scope.
+    /// - [`ReservedBlock`](Error::ReservedBlock),
+    ///   [`NoSuchBlock`](Error::NoSuchBlock),
+    ///   [`ReservedType`](Error::ReservedType), or
+    ///   [`Covered`](Error::Covered) for a target outside the scope.
+    /// - [`Invalid`](Error::Invalid) for the Bundle Age block of a bundle
+    ///   without a creation time, which RFC 9171 §4.4.2 requires.
     pub fn remove(&mut self, block_number: u64) -> Result<()> {
-        self.check_target(block_number)?;
-
-        let editor = self
-            .editor
-            .take()
-            .expect("the editor is present between operations");
-        match editor.remove_block(block_number) {
-            Ok(editor) => {
-                self.editor = Some(editor);
-                self.edited = true;
-                Ok(())
-            }
-            Err((editor, e)) => {
-                self.editor = Some(editor);
-                Err(e.into())
-            }
+        let block_type = self.check_target(block_number)?;
+        if self.bundle_age_required && block_type == Type::BundleAge {
+            return Err(Bpv7Error::MissingBundleAge.into());
         }
+
+        self.editor.remove_block(block_number)?;
+        Ok(())
     }
 
     // The scoped refusals for an edit target, checked against the editor's
@@ -260,11 +222,7 @@ impl<'a> ExtensionEditor<'a> {
         if block_number <= 1 {
             return Err(Error::ReservedBlock(block_number));
         }
-        let editor = self
-            .editor
-            .as_ref()
-            .expect("the editor is present between operations");
-        let Some((block, _)) = editor.block(block_number) else {
+        let Some((block, _)) = self.editor.block(block_number) else {
             return Err(Error::NoSuchBlock(block_number));
         };
         if matches!(block.block_type, Type::BlockIntegrity | Type::BlockSecurity) {
@@ -280,37 +238,31 @@ impl<'a> ExtensionEditor<'a> {
 
     /// Whether any operation has been applied since construction.
     pub fn is_modified(&self) -> bool {
-        self.edited
+        self.editor.generation() > 0
     }
 
     /// Materialises the accumulated edits: `None` when nothing was edited,
     /// otherwise the rebuilt structural bundle and the chunks that assemble
     /// the rewritten wire form.
     pub fn finish(self) -> Result<Option<(Bundle, Vec<Chunk>)>> {
-        if !self.edited {
+        if !self.is_modified() {
             return Ok(None);
         }
         self.editor
-            .expect("the editor is present between operations")
             .rebuild_bundle()
             .map(Some)
             .map_err(Error::Editor)
     }
 }
 
-// A well-known extension block's data must decode as its type, exactly as
-// the receive path decodes it: the structural parser never looks inside
-// these bodies, so a malformed one would otherwise ship. Other types are
-// opaque here.
+// A well-known extension block's data must decode as its type, as the
+// parser requires of a received one: a malformed body is refused here rather
+// than by the next node's parser. Other types are opaque here.
 fn check_body(block_type: Type, data: &[u8]) -> Result<()> {
-    let decoded = match block_type {
-        Type::PreviousNode => parse_exact::<Eid>(data).map(drop).map_err(Bpv7Error::from),
-        Type::BundleAge => parse_exact::<BundleAge>(data).map(drop),
-        Type::HopCount => parse_exact::<HopInfo>(data).map(drop),
-        _ => Ok(()),
-    };
-    decoded.map_err(|source| Error::UndecodableBody {
-        block_type,
-        source: Box::new(source),
-    })
+    PerHopFields::default()
+        .decode(block_type, data)
+        .map_err(|source| Error::UndecodableBody {
+            block_type,
+            source: Box::new(source),
+        })
 }
