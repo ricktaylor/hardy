@@ -18,7 +18,9 @@ pub trait KeyProvider: Send + Sync {
     /// (primary block + blocks map), and `data` its resident bytes. At an
     /// input door `data` may be only a prefix — the header blocks and
     /// whatever of the payload has arrived — so a block's extent can run
-    /// past its end; at the output doors it is the whole bundle. The decoded
+    /// past its end. At the egress door it is a prefix of the stored bundle
+    /// that reaches the payload's data, so every block the output stages edit
+    /// or read lies within it, and at delivery the whole bundle. The decoded
     /// extension fields (`previous_node`, `age`, `hop_count`) are *not*
     /// available here — keyed BPSec hasn't run yet — so an implementation
     /// that needs them must decode the relevant extension blocks itself.
@@ -33,5 +35,23 @@ pub(crate) struct NullKeyProvider;
 impl KeyProvider for NullKeyProvider {
     fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
         Box::new(KeySet::EMPTY)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use alloc::{boxed::Box, vec::Vec};
+
+    use hardy_bpv7::bpsec::key::{Key, KeySet, KeySource};
+
+    use super::KeyProvider;
+
+    /// A [`KeyProvider`] of fixed keys, for a pass that needs them.
+    pub(crate) struct Keys(pub(crate) Vec<Key>);
+
+    impl KeyProvider for Keys {
+        fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+            Box::new(KeySet::new(self.0.clone()))
+        }
     }
 }

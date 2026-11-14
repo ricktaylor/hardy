@@ -58,11 +58,11 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let editor = Editor::new(&raw, &data);
+        let mut editor = Editor::new(&raw, &data).with_key_source(&key_store);
 
         let mut block_builder = editor
             .update_block(self.block_number)
-            .map_err(|(_, e)| anyhow::anyhow!("Failed to update block: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to update block: {e}"))?;
 
         // Update payload if provided
         if let Some(payload_str) = &self.payload {
@@ -84,7 +84,7 @@ impl Command {
             block_builder = block_builder.with_crc_type(crc_type.into());
         }
 
-        let editor = block_builder.rebuild();
+        block_builder.rebuild();
 
         let chunks = editor
             .rebuild()

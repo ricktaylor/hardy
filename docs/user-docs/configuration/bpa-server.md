@@ -261,20 +261,17 @@ registered service has claimed.
 
 ## `rfc9171-validity` — RFC 9171 Validity Checks
 
-These control SHOULD-level requirements from RFC 9171 that can be
-relaxed for interoperability with other implementations. They are the
-BPA's own configuration-gated checks, not registered filters.
+This controls a SHOULD-level requirement from RFC 9171 that can be relaxed for interoperability with other implementations. It is the BPA's own configuration-gated check, not a registered filter.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `primary-block-integrity` | `true`, `false` | `true` | Require the primary block to be protected by CRC or BIB. Set `false` for interop with dtn7-rs and other implementations that omit CRCs. |
-| `bundle-age-required` | `true`, `false` | `true` | Require a Bundle Age block when creation timestamp is zero. Set `false` for peers without a clock that omit Bundle Age. |
+| `primary-block-integrity` | `true`, `false` | `true` | Require the primary block to be protected by CRC or BIB, on arrival and when forwarding. Set `false` for interop with dtn7-rs and other implementations that omit CRCs. |
 
 ## `ipn-legacy-nodes` — IPN Legacy Re-encode
 
-Rewrites 3-element IPN EIDs (RFC 9758) to legacy 2-element format for peers that require the older encoding: a built-in of the BPA's per-hop rewrite, applied to the transmitted wire form only.
+Rewrites 3-element IPN EIDs (RFC 9758) to legacy 2-element format for peers that require the older encoding: a built-in of the BPA's per-hop rewrite, applied to the transmitted wire form only. Only EIDs with a non-default allocator, such as `ipn:977000.100.1`, change: default-allocator EIDs such as `ipn:10.1` are in the 2-element format already.
 
-A bundle carrying a BPSec operation that covers the primary block, as its target or through its scope, cannot be re-encoded without breaking that operation. RFC 9173's default scope includes the primary block, so this covers an ordinary signed or encrypted bundle unless its sender's scope leaves the primary out; an encrypted BIB counts whatever its scope, since its ciphertext hides it. Such a bundle is deleted at a matching next hop, not re-routed, with a deletion status report giving "Unexpected security operation" if the bundle requests one and status reports are enabled. A drop here means the system as a whole is misconfigured: a sender protecting the primary block and a route through a peer that needs the legacy encoding cannot both hold, so either the sender's security policy should leave the primary out of its scope (which cannot help a bundle whose BIB is encrypted), or the route should avoid the legacy peer. RFC 9172 §7.1 notes that this reason code may identify such a misconfiguration of security policy. Separately, a Previous Node or Bundle Age block that this node must update but cannot, because it is encrypted beside an encrypted BIB that may cover it, holds the bundle in `Waiting` until it expires.
+A bundle whose primary block needs the re-encode, and that carries a BPSec operation covering that block as its target or through its scope, cannot be re-encoded without breaking that operation. RFC 9173's default scope includes the primary block, so this covers an ordinary signed or encrypted bundle with a non-default-allocator EID in its primary block unless its sender's scope leaves the primary out; an encrypted BIB counts whatever its scope, since its ciphertext hides it. Such a bundle is deleted at a matching next hop, not re-routed, with a deletion status report giving "Unexpected security operation" if the bundle requests one and status reports are enabled. A drop here means the system as a whole is misconfigured: a sender protecting such a primary block and a route through a peer that needs the legacy encoding cannot both hold, so either the sender's security policy should leave the primary out of its scope (which cannot help a bundle whose BIB is encrypted), or the route should avoid the legacy peer. RFC 9172 §7.1 notes that this reason code may identify such a misconfiguration of security policy.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|

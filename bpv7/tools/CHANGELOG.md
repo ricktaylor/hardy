@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Fixed
+- `verify`, `validate` and `inspect` read a bundle as its destination would: on a copy, they remove the encryption of every block the supplied keys decrypt, with the encrypted BIB coupled to each, and verify every BIB over the plaintext; a block whose key is missing stays encrypted, and any other failure is reported. The editing commands resolve a block an encrypted BIB may cover on demand, with the same keys, and no command decrypts an encrypted BIB it does not need.
 - `inspect` lists a non-fragment bundle's primary flags: every flag after "Is a fragment", and the report-to note, sat inside the fragment check, so only a fragment's flags were printed. The note that status time is requested without reports now appears only when the bundle requests no status report at all, not whenever one of the four is unrequested.
 
 ### Removed

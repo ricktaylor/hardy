@@ -1,8 +1,8 @@
-use core::{str::from_utf8, time::Duration};
+use core::str::from_utf8;
 
 use hardy_bpv7::{
     eid::{Eid, NodeId},
-    hop_info::HopInfo,
+    parse::PerHopFields,
     primary_block::PrimaryBlock,
 };
 use hardy_cbor::decode::{Head, Marker, parse, parse_exact};
@@ -61,38 +61,6 @@ struct Provenance {
     origin: Origin,
 }
 
-/// Decoded well-known extension-block fields, derived from the bundle's bytes.
-///
-/// A cache, not a source of truth: produced by the parse pipelines
-/// (`bundle::parse`) and recorded here whenever the bundle's bytes are parsed
-/// — at ingress, on local build, or on re-parse. It mirrors the *stored*
-/// bytes, which stay as received: the per-attempt rewrites at Egress and
-/// Deliver (the per-hop update, a Rewriter's edits) never touch it, and
-/// must not — the expiry arithmetic reads the as-received Bundle Age.
-/// Nothing re-validates it after the fact.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ExtensionFields {
-    /// EID of the node that last forwarded the bundle (Previous Node block).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub previous_node: Option<Eid>,
-    /// Age of the bundle, used when the source node has no clock (Bundle Age block).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub age: Option<Duration>,
-    /// Hop limit and current hop count for the bundle (Hop Count block).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub hop_count: Option<HopInfo>,
-}
-
 // Output of the classifier chain: persisted, cleared and re-derived at
 // restart re-admission. The class field arrives with the policy tranche
 // (see bpa/docs/filter_subsystem_design.md).
@@ -116,6 +84,21 @@ struct Classification {
         serde(default, skip_serializing_if = "RoutingKey::is_unset")
     )]
     routing: RoutingKey,
+    // Whether egress adds a Bundle Age block the bundle lacks.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "core::ops::Not::not")
+    )]
+    add_bundle_age: bool,
+    // Whether this node reassembles the fragment, where a Classifier
+    // decided; `None` leaves it to the route. Persisted as the rest of the
+    // chain's output is: a fragment's reassembly runs on the processing
+    // pool, after the dispatch queue, from the record alone.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    reassemble: Option<bool>,
     // Policy-epoch stamp for lazy restart re-admission — engine bookkeeping
     // with no accessor at all.
     #[cfg_attr(
@@ -129,8 +112,8 @@ struct Classification {
 ///
 /// Partitioned by write discipline: provenance (write-once arrival facts,
 /// read via [`received_at`](Self::received_at) / [`origin`](Self::origin)),
-/// the [`extensions`](Self::extensions) cache of parser-decoded extension
-/// fields, the classification group (annotation slots and the routing inputs,
+/// the [`per_hop`](Self::per_hop) cache of the parser-decoded per-hop
+/// blocks, the classification group (annotation slots and the routing inputs,
 /// written only through the crate-private delta-apply path), and BPA
 /// infrastructure references (crate-private). There is no `Default`: a
 /// defaulted provenance would fabricate a `received_at` and an origin, so
@@ -141,24 +124,17 @@ pub struct BundleMetadata {
     // Write-once arrival facts.
     #[cfg_attr(feature = "serde", serde(flatten))]
     provenance: Provenance,
-    /// Parser-derived cache of decoded extension-block fields.
+    /// The decoded per-hop blocks: a cache, not a source of truth, recorded
+    /// whenever the bundle's bytes are parsed — at ingress, on local build,
+    /// or on re-parse. It mirrors the *stored* bytes: the per-attempt
+    /// rewrites at Egress and Deliver (the per-hop update, a Rewriter's
+    /// edits) never touch it, and must not — the expiry arithmetic reads the
+    /// as-received Bundle Age. Nothing re-validates it after the fact.
     #[cfg_attr(feature = "serde", serde(flatten))]
-    pub extensions: ExtensionFields,
+    pub per_hop: PerHopFields,
     // Classifier-chain output: annotation slots and the routing inputs.
     #[cfg_attr(feature = "serde", serde(flatten))]
     classification: Classification,
-    // Wire-scoped block removals derived at ingress: RFC 9172 §5.1.1
-    // failure-drops and honoured `delete_block_on_failure` unknowns. The
-    // stored bundle is kept as received — no editing on input — so these
-    // ride the record and are applied per transmission/delivery attempt at
-    // the output doors (egress rewrite, deliver strip). A cache of a pure
-    // derivation over the received bytes + keys, re-derived at restart
-    // re-admission; crate-private, fixed machinery only (never a filter).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Vec::is_empty")
-    )]
-    pub(crate) to_remove: Vec<u64>,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
 }
@@ -175,9 +151,8 @@ impl BundleMetadata {
                 received_at,
                 origin,
             },
-            extensions: ExtensionFields::default(),
+            per_hop: PerHopFields::default(),
             classification: Classification::default(),
-            to_remove: Vec::new(),
             storage_name: None,
         }
     }
@@ -205,11 +180,11 @@ impl BundleMetadata {
         Self::new(OffsetDateTime::now_utc(), Origin::Originated)
     }
 
-    /// Completes the record with the parse-derived extension fields, so
+    /// Completes the record with the parse-decoded per-hop blocks, so
     /// construction stays a single expression.
     #[must_use]
-    pub fn with_extensions(mut self, extensions: ExtensionFields) -> Self {
-        self.extensions = extensions;
+    pub fn with_per_hop(mut self, per_hop: PerHopFields) -> Self {
+        self.per_hop = per_hop;
         self
     }
 
@@ -224,14 +199,14 @@ impl BundleMetadata {
     /// field. Lives here because both fallback inputs are this record's —
     /// the primary block is the caller's argument.
     pub fn creation_time(&self, primary: &PrimaryBlock) -> OffsetDateTime {
-        super::creation_time(primary, self.extensions.age, self.received_at())
+        super::creation_time(primary, self.per_hop.bundle_age, self.received_at())
     }
 
     /// When the bundle's lifetime ends:
     /// [`creation_time`](Self::creation_time) plus the primary block's
     /// lifetime, saturating.
     pub fn expiry(&self, primary: &PrimaryBlock) -> OffsetDateTime {
-        super::expiry(primary, self.extensions.age, self.received_at())
+        super::expiry(primary, self.per_hop.bundle_age, self.received_at())
     }
 
     /// Whether [`expiry`](Self::expiry) has already passed.
@@ -242,6 +217,26 @@ impl BundleMetadata {
     /// How the bundle entered this BPA's custody.
     pub fn origin(&self) -> &Origin {
         &self.provenance.origin
+    }
+
+    /// The node this bundle came from, for routing and filters: the peer
+    /// node ID the CLA announced, which identifies the node it received the
+    /// bundle from; else the Previous Node block's node ID (RFC 9171
+    /// §4.4.1), which that node wrote about itself; else the bundle's
+    /// source, `primary`'s. Both raw facts stay readable, through
+    /// [`origin`](Self::origin) and [`per_hop`](Self::per_hop).
+    pub fn previous_node(&self, primary: &PrimaryBlock) -> Eid {
+        match self.origin() {
+            Origin::Ingress {
+                peer_node: Some(node),
+                ..
+            } => node.clone().into(),
+            _ => self
+                .per_hop
+                .previous_node
+                .clone()
+                .unwrap_or_else(|| primary.id.source.clone()),
+        }
     }
 
     /// The `{table, key}` lookup inputs the Classifier chain derived — what
@@ -259,6 +254,21 @@ impl BundleMetadata {
     /// The Classifier-derived routing table, if one is set.
     pub fn route_table(&self) -> Option<&TableId> {
         self.classification.routing.table.as_ref()
+    }
+
+    /// Whether egress adds a Bundle Age block to this bundle, if it carries
+    /// none: ingress marks a bundle whose Bundle Age it discarded, and a
+    /// Classifier sets or clears the mark (see
+    /// [`MetadataDelta::add_bundle_age`]).
+    pub fn add_bundle_age(&self) -> bool {
+        self.classification.add_bundle_age
+    }
+
+    /// Whether this node reassembles the bundle, a fragment, as a Classifier
+    /// decided (see [`MetadataDelta::reassemble`]): `None` leaves it to the
+    /// route, the destination reassembling and a relay forwarding.
+    pub fn reassemble(&self) -> Option<bool> {
+        self.classification.reassemble
     }
 
     /// Reads an annotation slot, decoding the stored value.
@@ -331,6 +341,12 @@ impl BundleMetadata {
         if let Some(key) = delta.route_key {
             self.classification.routing.key = Some(key);
         }
+        if let Some(add) = delta.add_bundle_age {
+            self.classification.add_bundle_age = add;
+        }
+        if let Some(reassemble) = delta.reassemble {
+            self.classification.reassemble = Some(reassemble);
+        }
     }
 
     /// Clears the classification group for re-derivation (restart
@@ -340,13 +356,17 @@ impl BundleMetadata {
     pub(crate) fn clear_classification(&mut self, epoch: PolicyEpoch) {
         self.classification.slots.clear();
         self.classification.routing = RoutingKey::default();
+        self.classification.add_bundle_age = false;
+        self.classification.reassemble = None;
         self.classification.epoch = epoch;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::filter::slots::Blob;
+    use hardy_bpv7::eid::IpnNodeId;
+
+    use crate::{bundle::tests::test_bundle, filter::slots::Blob};
 
     use super::*;
 
@@ -367,8 +387,9 @@ mod tests {
         delta.set(&handle::<u32>("vendor.mark"), &7);
         delta.route_table = Some(TableId::new(3));
         delta.route_key = Some("ipn:9.0".parse().unwrap());
+        delta.add_bundle_age = Some(true);
+        delta.reassemble = Some(false);
         metadata.apply(delta);
-        metadata.to_remove = vec![4, 5];
 
         let json = serde_json::to_string(&metadata).unwrap();
         let loaded: BundleMetadata = serde_json::from_str(&json).unwrap();
@@ -499,6 +520,8 @@ mod tests {
         md.apply(MetadataDelta {
             route_table: Some(TableId::new(1)),
             route_key: Some("ipn:0.2.1".parse().unwrap()),
+            add_bundle_age: Some(true),
+            reassemble: Some(true),
             ..Default::default()
         });
 
@@ -506,6 +529,8 @@ mod tests {
 
         assert!(md.route_key().is_none());
         assert!(md.route_table().is_none());
+        assert!(!md.add_bundle_age());
+        assert!(md.reassemble().is_none());
     }
 
     #[test]
@@ -536,5 +561,38 @@ mod tests {
         md.apply(delta);
 
         assert_eq!(md.slot(&h_reader), None);
+    }
+
+    // `previous_node` overlays the CLA's peer on the Previous Node block's
+    // node ID, which stands only where the CLA announced none, and that on
+    // the bundle's source, and leaves both raw facts readable.
+    #[test]
+    fn previous_node_prefers_the_cla_peer() {
+        let peer = NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 3,
+        });
+        let block: Eid = "ipn:0.4.0".parse().unwrap();
+
+        let bundle = test_bundle("ipn:0.99.1", "ipn:0.5.1");
+        let primary = bundle.primary();
+
+        let mut md = BundleMetadata::ingress("test".into(), Some(peer.clone()), None);
+        md.per_hop.previous_node = Some(block.clone());
+        assert_eq!(md.previous_node(primary), peer.clone().into());
+        assert!(matches!(
+            md.origin(),
+            Origin::Ingress { peer_node: Some(p), .. } if *p == peer
+        ));
+        assert_eq!(md.per_hop.previous_node, Some(block.clone()));
+
+        let mut md = BundleMetadata::ingress("test".into(), None, None);
+        md.per_hop.previous_node = Some(block.clone());
+        assert_eq!(md.previous_node(primary), block);
+
+        assert_eq!(
+            BundleMetadata::originated().previous_node(primary),
+            primary.id.source
+        );
     }
 }

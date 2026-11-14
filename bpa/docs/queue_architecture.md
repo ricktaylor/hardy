@@ -42,7 +42,7 @@ graph LR
 
 **Active queues** have continuous consumers with storage-backed hybrid channels (fast in-memory path with storage-backed slow path for backpressure):
 
-- **Dispatch** (`DispatchPending`, claimed to `Dispatching` on dequeue) — MPSC. Multiple producers (status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes, restart); fresh CLA arrivals, reassembled bundles, and local originations execute their gate routing decision on the arriving task, transiting it only for the admin-endpoint and fragment arms. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
+- **Dispatch** (`DispatchPending`, claimed to `Dispatching` on dequeue) — MPSC. Multiple producers (status reports, and the re-dispatch paths — gated queue sweeps, parks, transfer outcomes and cancelled transfers, restart); fresh CLA arrivals, reassembled bundles, and local originations execute their gate routing decision on the arriving task, transiting it only for the admin-endpoint and fragment arms. Single receiver task that spawns work into a `BoundedTaskPool` for concurrent processing
 - **Egress** (`ForwardPending { peer, queue }`) — MPSC per peer per policy queue. Any dispatch worker can produce. Single poller per queue feeds the CLA
 - **Deliver** (`DeliverPending { service }`) — MPSC per registered service, the local analogue of a peer's egress queue. Any dispatch worker can produce. A single consumer per service claims each bundle to `DeliveryAckPending` and offers it via `on_deliver`
 
@@ -136,7 +136,7 @@ Tombstone entries are reaped by the same mechanism: once `creation_timestamp + l
 
 The reaper and a processing block may act on the same bundle concurrently. This race is benign because `BundleStorage` is the ground truth for bundle existence.
 
-A processing block that has dequeued a bundle's metadata calls `BundleStorage::load()` to retrieve the binary data before processing. Under the streaming-pipeline API (`load(storage_name, stream: &dyn Sender<Bytes>)` — see [streaming_pipeline_design.md](streaming_pipeline_design.md) §3.1) the data flows through the supplied byte stream; if the reaper has already deleted the data, `load()` returns the corresponding error and no bytes are pushed. The processing block then checks `has_expired()`:
+A processing block that has dequeued a bundle's metadata calls `BundleStorage::load()` to retrieve the binary data before processing. Under the streaming-pipeline API (`load(storage_name) -> Option<Box<dyn Receiver<Segment>>>` — see [streaming_pipeline_design.md](streaming_pipeline_design.md) §3.1) the data flows through the returned segment stream; if the reaper has already deleted the data, `load()` returns `None` and no stream is opened. The processing block then checks `has_expired()`:
 
 - **Expired** — the reaper got there first and already sent the status report. The processing block silently cleans up the metadata. No duplicate report
 - **Not expired** — genuine storage failure (`DepletedStorage`). The processing block sends a deletion status report with the appropriate reason code

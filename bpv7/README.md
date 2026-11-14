@@ -56,6 +56,7 @@ Enabled by default via the `rfc9173` feature flag:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `rfc9173` | yes | RFC 9173 security contexts (BIB-HMAC-SHA2, BCB-AES-GCM, key wrap). Enables `hmac`, `sha2`, `aes-gcm`, `aes-kw`, `rand` |
+| `bpsec` | yes, through `rfc9173` | BPSec processing, both sides: the keyed check (`Parsed::check`), the decrypting reader, the editor's security edits, the signer and the encryptor. Every security-context feature enables it; without it the crate still parses, classifies and removes security blocks by their flags |
 | `std` | no | Enables system clock access (`CreationTimestamp::now()`) and propagates `std` to dependencies |
 | `serde` | no | Enables `Serialize`/`Deserialize` on bundle types. Requires `std` |
 | `critical-section` | no | Atomic fallback via `portable-atomic` for targets without native CAS (e.g. Cortex-M0) |
@@ -77,8 +78,8 @@ let (bundle, cbor) = Builder::new(source, destination)
     .unwrap();
 
 // Parse it back. `parse::parse` is the structural entry point; layer
-// keyed BPSec validation on top with the primitives in `hardy_bpv7::checks`
-// (`classify_*`, `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
+// keyed BPSec validation on top with `Parsed::check` (`hardy_bpv7::bpsec::checks`)
+// and `hardy_bpv7::rewrite`; the parser classifies what this node cannot process.
 use hardy_bpv7::parse;
 let parsed = parse::parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
 assert_eq!(parsed.bundle.primary.id, bundle.primary.id);
