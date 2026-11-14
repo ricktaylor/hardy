@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use hardy_async::watcher::WatchMode;
+use hardy_otel::LogLevel;
 use serde::{Deserialize, Serialize};
-use tracing::Level;
 
 /// File watch configuration.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -24,27 +24,6 @@ impl From<WatchConfig> for Option<WatchMode> {
             WatchConfig::Native => Some(WatchMode::Native),
             WatchConfig::Poll => Some(WatchMode::Poll),
         }
-    }
-}
-
-mod log_level_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::str::FromStr;
-    use tracing::Level;
-
-    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(level.as_str())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Level::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -71,10 +50,6 @@ fn default_config_path() -> PathBuf {
     default_config_dir().join("tvr")
 }
 
-fn default_log_level() -> Level {
-    Level::INFO
-}
-
 fn default_bpa_address() -> String {
     "http://[::1]:50051".to_string()
 }
@@ -97,8 +72,8 @@ fn default_grpc_listen() -> std::net::SocketAddr {
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
     // Logging level. Default: `INFO`.
-    #[serde(default = "default_log_level", with = "log_level_serde")]
-    pub log_level: Level,
+    #[serde(default)]
+    pub log_level: LogLevel,
 
     // The address of the BPA gRPC server. Default: `"http://[::1]:50051"`.
     #[serde(default = "default_bpa_address")]
@@ -167,8 +142,10 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serial_test::serial;
+    use tracing::Level;
+
+    use super::*;
 
     // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
@@ -207,7 +184,7 @@ mod tests {
     #[serial]
     fn empty_config_has_defaults() {
         let config = write_and_load("empty.yaml", "");
-        assert_eq!(config.log_level, Level::INFO);
+        assert_eq!(config.log_level.get(), Level::INFO);
         assert_eq!(config.bpa_address, "http://[::1]:50051");
         assert_eq!(config.agent_name, "hardy-tvr");
         assert_eq!(config.priority, 100);
@@ -235,7 +212,7 @@ watch: poll
 grpc-listen: "[::]:9999"
 "#,
         );
-        assert_eq!(config.log_level, Level::DEBUG);
+        assert_eq!(config.log_level.get(), Level::DEBUG);
         assert_eq!(config.bpa_address, "http://10.0.0.1:50051");
         assert_eq!(config.agent_name, "my-tvr");
         assert_eq!(config.priority, 200);
@@ -259,7 +236,7 @@ agent-name = "toml-tvr"
 priority = 50
 "#,
         );
-        assert_eq!(config.log_level, Level::WARN);
+        assert_eq!(config.log_level.get(), Level::WARN);
         assert_eq!(config.bpa_address, "http://10.0.0.2:50051");
         assert_eq!(config.agent_name, "toml-tvr");
         assert_eq!(config.priority, 50);
@@ -277,7 +254,7 @@ priority = 50
     "priority": 1
 }"#,
         );
-        assert_eq!(config.log_level, Level::ERROR);
+        assert_eq!(config.log_level.get(), Level::ERROR);
         assert_eq!(config.agent_name, "json-tvr");
         assert_eq!(config.priority, 1);
     }
@@ -297,7 +274,7 @@ priority = 50
         let config = Config::load(Some(path)).unwrap();
 
         assert_eq!(
-            config.log_level,
+            config.log_level.get(),
             Level::DEBUG,
             "env var should override log level"
         );
@@ -359,7 +336,7 @@ log-level: warn
 this-field-does-not-exist: 42
 "#,
         );
-        assert_eq!(config.log_level, Level::WARN);
+        assert_eq!(config.log_level.get(), Level::WARN);
     }
 
     // Contact plan path is preserved.

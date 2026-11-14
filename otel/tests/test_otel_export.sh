@@ -115,7 +115,7 @@ log_step "Running OTEL export test harness..."
 cd "$WORKSPACE_DIR"
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$OTEL_PORT"
 log_info "OTLP endpoint: $OTEL_EXPORTER_OTLP_ENDPOINT"
-cargo test -p hardy-otel --test otel_export_test -- --ignored --nocapture 2>&1
+cargo test -p hardy-otel --features otlp --test otel_export_test -- --ignored --nocapture 2>&1
 
 # --- Check results ---
 log_step "Output directory contents:"

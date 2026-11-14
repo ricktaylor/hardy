@@ -8,24 +8,27 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-otel = "0.2"
+hardy-otel = { version = "0.3", features = ["serde", "otlp"] }
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-otel).
 
 ## Overview
 
-hardy-otel bridges the [`metrics`](https://docs.rs/metrics) crate facade to
-the OpenTelemetry SDK, so that Hardy binaries can emit metrics via standard
-Rust macros (`metrics::counter!`, `metrics::gauge!`, `metrics::histogram!`)
-and have them exported as OTLP telemetry. It also wires up the `tracing`
-subscriber with OpenTelemetry trace and log exporters in a single `init()`
-call.
+hardy-otel sets up logging for Hardy binaries. `LogLevel` is the `log-level` key every binary's configuration carries (default `info`, overridden by `RUST_LOG`), and a single `init()` call installs the `tracing` subscriber at that level and returns an `OtelGuard` to hold until exit.
 
-Used by hardy-bpa-server, hardy-tcpclv4-server, and hardy-tvr -- any Hardy
-binary that exports OTEL telemetry.
+With the `otlp` feature, `init()` also wires the subscriber to OpenTelemetry trace and log exporters, and bridges the [`metrics`](https://docs.rs/metrics) crate facade to the OpenTelemetry SDK, so that Hardy binaries can emit metrics via standard Rust macros (`metrics::counter!`, `metrics::gauge!`, `metrics::histogram!`) and have them exported as OTLP telemetry. Without it, `init()` installs console logging only, and the OpenTelemetry stack is not compiled in.
+
+Used by hardy-bpa-server, hardy-tcpclv4-server, and hardy-tvr, each of which turns `otlp` on through its own default `otel` feature, and by the mtcp interop CLA for logging alone.
 
 ## Features
+
+- **`LogLevel`** -- parses `error`, `warn`, `info`, `debug`, `trace` (any case) or `1`-`5`; (de)serializes with the `serde` feature
+- **One `init()` in both builds** -- console logging without `otlp`, the full export stack with it
+- Feature flag: `serde` -- `Serialize`/`Deserialize` for `LogLevel`
+- Feature flag: `otlp` -- the OpenTelemetry exporters and `metrics` recorder below
+
+With `otlp`:
 
 - **Gauge state tracking** -- increment, decrement, and set operations via
   atomic CAS, mapping the `metrics` push model to OTEL's record-based gauges
@@ -48,10 +51,12 @@ binary that exports OTEL telemetry.
 
 ```rust
 // In your binary's main():
+// `config.log_level` is a `hardy_otel::LogLevel`, read from the
+// binary's configuration (`LogLevel::default()` is `info`).
 let _guard = hardy_otel::init(
     env!("CARGO_PKG_NAME"),
     env!("CARGO_PKG_VERSION"),
-    tracing::Level::INFO,
+    config.log_level,
 );
 
 // Now use metrics macros anywhere in your crate:
@@ -59,7 +64,7 @@ metrics::counter!("bundles.received").increment(1);
 metrics::gauge!("bundles.pending", "reason" => "no_route").increment(1.0);
 metrics::histogram!("dispatch.latency").record(0.042);
 
-// OtelGuard flushes pending telemetry on drop.
+// With `otlp`, OtelGuard flushes pending telemetry on drop.
 ```
 
 ## Documentation

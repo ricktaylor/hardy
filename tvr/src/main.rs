@@ -1,6 +1,7 @@
 use clap::Parser;
 use hardy_async::TaskPool;
 use hardy_bpa::bpa::BpaRegistration;
+use hardy_otel::init;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -29,21 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config = config::Config::load(args.config)?;
 
-    #[cfg(feature = "otel")]
-    let _guard = hardy_otel::init(PKG_NAME, PKG_VERSION, config.log_level);
-
-    #[cfg(not(feature = "otel"))]
-    {
-        use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
-        let filter = EnvFilter::builder()
-            .with_default_directive(
-                tracing_subscriber::filter::LevelFilter::from_level(config.log_level).into(),
-            )
-            .from_env_lossy();
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_filter(filter))
-            .init();
-    }
+    let _guard = init(PKG_NAME, PKG_VERSION, config.log_level);
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
 

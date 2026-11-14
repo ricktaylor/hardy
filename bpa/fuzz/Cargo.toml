@@ -10,6 +10,9 @@ cargo-fuzz = true
 
 [features]
 default = []
+# Export the harness's traces, metrics, and logs over OTLP; without it,
+# hardy_otel::init logs to the console only.
+otel = ["hardy-otel/otlp"]
 postgres-storage = ["dep:hardy-postgres-storage"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
@@ -18,7 +21,7 @@ instrument = ["hardy-bpa/instrument","hardy-sqlite-storage?/instrument","hardy-l
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hardy-otel = { version = "0.2", path = "../../otel" }
+hardy-otel = { version = "0.3", path = "../../otel" }
 hardy-async = { version = "0.2", path = "../../async" }
 hardy-bpv7 = { version = "0.6", path = "../../bpv7" }
 hardy-bpa = { path = ".." }
