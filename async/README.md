@@ -20,7 +20,7 @@ hardy-async provides runtime-agnostic async primitives used by all Hardy crates 
 ## Features
 
 - **TaskPool** -- manages cancellable tasks with three-phase graceful shutdown (signal, close, wait). Derives `Clone` for shared ownership across components
-- **BoundedTaskPool** -- extends TaskPool with semaphore-based concurrency limiting and backpressure. Default limit matches available CPU parallelism
+- **BoundedTaskPool** -- extends TaskPool with `Semaphore`-based concurrency limiting and backpressure. Default limit matches available CPU parallelism
 - **`spawn!` macro** -- tracing-instrumented task spawning with `follows_from` span relationships
 - **Signal handling** (`signal` feature) -- `signal::listen_for_cancel(&TaskPool)` registers SIGTERM and Ctrl+C handlers
 - **Hierarchical cancellation** -- `child_token()` creates tokens that cancel independently but cascade from parent shutdown

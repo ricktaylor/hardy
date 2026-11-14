@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Semaphore` and `OwnedSemaphorePermit`: a runtime-agnostic permit budget shared between tasks (over `tokio::sync::Semaphore`), whose clones share one budget; it is never closed, so acquiring cannot fail. The BPA's egress lanes are such a budget, shared by a peer's queue pollers.
 
 ### Changed
+- `BoundedTaskPool` bounds its tasks with `Semaphore` rather than `tokio::sync::Semaphore`, so it names no runtime type; behaviour is unchanged, and the limit is clamped to the runtime's maximum permit count as `Semaphore::new` does.
 - **BREAKING:** `signal::listen_for_cancel` now requires the `signal` feature; callers must enable it. The `tokio` feature no longer enables tokio's `signal` feature, so builds without `signal` no longer pull in tokio's signal driver and mio.
 
 ## [0.2.0]

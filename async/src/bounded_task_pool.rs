@@ -1,8 +1,10 @@
 //! Bounded task pool for managing tasks with concurrency limits.
 //!
 //! This module provides [`BoundedTaskPool`], which extends [`TaskPool`] with
-//! a concurrency limit via an internal semaphore. Tasks are spawned only after
-//! acquiring a permit, providing backpressure when the pool is at capacity.
+//! a concurrency limit via an internal [`Semaphore`]. Tasks are spawned only
+//! after acquiring a permit, providing backpressure when the pool is at
+//! capacity. It names no runtime type: spawning goes through [`TaskPool`] and
+//! the limit through [`Semaphore`], so it follows them to any backend.
 //!
 //! # Pattern
 //!
@@ -16,11 +18,13 @@
 //! # Example
 //!
 //! ```no_run
+//! use core::num::NonZeroUsize;
+//!
 //! use hardy_async::bounded_task_pool::BoundedTaskPool;
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! // Create a pool with at most 4 concurrent tasks
-//! let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
+//! let pool = BoundedTaskPool::new(NonZeroUsize::new(4).unwrap());
 //!
 //! for i in 0..100 {
 //!     // spawn() waits if 4 tasks are already running
@@ -33,15 +37,17 @@
 //! # });
 //! ```
 
-use alloc::sync::Arc;
-use core::future::Future;
+use core::{future::Future, num::NonZeroUsize};
 
-use crate::{join_handle::JoinHandle, task_pool::TaskPool};
+use crate::{
+    CancellationToken, available_parallelism, join_handle::JoinHandle, semaphore::Semaphore,
+    task_pool::TaskPool,
+};
 
 /// A task pool with bounded concurrency.
 ///
-/// `BoundedTaskPool` wraps a [`TaskPool`] and adds a semaphore to limit the
-/// number of concurrent tasks. The [`spawn`](BoundedTaskPool::spawn) method
+/// `BoundedTaskPool` wraps a [`TaskPool`] and adds a [`Semaphore`] to limit
+/// the number of concurrent tasks. The [`spawn`](BoundedTaskPool::spawn) method
 /// is async and will wait for a permit before spawning if the pool is at
 /// capacity.
 ///
@@ -65,7 +71,7 @@ use crate::{join_handle::JoinHandle, task_pool::TaskPool};
 #[derive(Clone)]
 pub struct BoundedTaskPool {
     inner: TaskPool,
-    semaphore: Arc<tokio::sync::Semaphore>,
+    semaphore: Semaphore,
 }
 
 impl BoundedTaskPool {
@@ -83,10 +89,10 @@ impl BoundedTaskPool {
     /// // Allow up to 8 concurrent tasks
     /// let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(8).unwrap());
     /// ```
-    pub fn new(max_concurrent: core::num::NonZeroUsize) -> Self {
+    pub fn new(max_concurrent: NonZeroUsize) -> Self {
         Self {
             inner: TaskPool::new(),
-            semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent.into())),
+            semaphore: Semaphore::new(max_concurrent),
         }
     }
 
@@ -117,12 +123,7 @@ impl BoundedTaskPool {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore closed unexpectedly");
+        let permit = self.semaphore.acquire_owned().await;
 
         self.inner.spawn(async move {
             let result = task.await;
@@ -136,7 +137,7 @@ impl BoundedTaskPool {
     /// Use this to check cancellation status or pass to tasks that need
     /// to listen for shutdown signals.
     #[inline]
-    pub fn cancel_token(&self) -> &crate::CancellationToken {
+    pub fn cancel_token(&self) -> &CancellationToken {
         self.inner.cancel_token()
     }
 
@@ -146,7 +147,7 @@ impl BoundedTaskPool {
     /// pool. However, when the parent pool is cancelled, all child tokens are
     /// also cancelled.
     #[inline]
-    pub fn child_token(&self) -> crate::CancellationToken {
+    pub fn child_token(&self) -> CancellationToken {
         self.inner.cancel_token().child_token()
     }
 
@@ -178,108 +179,98 @@ impl Default for BoundedTaskPool {
     // Uses [`crate::available_parallelism()`] to determine the limit,
     // which queries the OS when the `std` feature is enabled, or returns 1 otherwise.
     fn default() -> Self {
-        Self::new(crate::available_parallelism())
+        Self::new(available_parallelism())
     }
 }
 
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
+    use futures::{pin_mut, poll};
+    use tokio::sync::oneshot;
+
     use super::*;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    use core::time::Duration;
 
-    #[tokio::test]
-    async fn test_bounded_pool_limits_concurrency() {
-        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
-        let concurrent = Arc::new(AtomicUsize::new(0));
-        let max_concurrent = Arc::new(AtomicUsize::new(0));
-
-        let mut handles = vec![];
-
-        for _ in 0..10 {
-            let concurrent = concurrent.clone();
-            let max_concurrent = max_concurrent.clone();
-
-            let handle = pool
-                .spawn(async move {
-                    let current = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-
-                    // Update max if this is higher
-                    let mut max = max_concurrent.load(Ordering::SeqCst);
-                    while current > max {
-                        match max_concurrent.compare_exchange_weak(
-                            max,
-                            current,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        ) {
-                            Ok(_) => break,
-                            Err(m) => max = m,
-                        }
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    concurrent.fetch_sub(1, Ordering::SeqCst);
-                })
-                .await;
-
-            handles.push(handle);
-        }
-
-        // Wait for all tasks
-        for handle in handles {
-            handle.await.unwrap();
-        }
-
-        // Max concurrent should never exceed 2
-        assert!(max_concurrent.load(Ordering::SeqCst) <= 2);
+    // A task that runs until `release` fires (or its sender drops), then
+    // reports `id` on `done`.
+    async fn hold(release: oneshot::Receiver<()>, done: flume::Sender<u32>, id: u32) {
+        _ = release.await;
+        _ = done.send(id);
     }
 
+    // With every permit held by a running task, a further spawn waits; it
+    // proceeds as soon as one of those tasks finishes, and never before.
     #[tokio::test]
-    async fn test_bounded_pool_default_uses_available_parallelism() {
-        let pool = BoundedTaskPool::default();
-        let expected: usize = crate::available_parallelism().into();
+    async fn spawn_waits_while_every_permit_is_held() {
+        let pool = BoundedTaskPool::new(NonZeroUsize::new(2).unwrap());
+        let (done_tx, done_rx) = flume::unbounded();
 
-        // We can't directly inspect the semaphore, but we can verify the pool works
-        assert!(!pool.is_cancelled());
+        let (release_a, held_a) = oneshot::channel();
+        let (release_b, held_b) = oneshot::channel();
+        pool.spawn(hold(held_a, done_tx.clone(), 1)).await;
+        pool.spawn(hold(held_b, done_tx.clone(), 2)).await;
 
-        // Verify we can spawn at least one task
-        let handle = pool.spawn(async { 42 }).await;
-        assert_eq!(handle.await.unwrap(), 42);
+        let third = pool.spawn(async { 3 });
+        pin_mut!(third);
+        assert!(poll!(third.as_mut()).is_pending(), "both permits are held");
 
+        _ = release_a.send(());
+        assert_eq!(done_rx.recv_async().await.unwrap(), 1);
+        let third = third.await;
+        assert_eq!(third.await.unwrap(), 3);
+
+        // Shutdown waits for the task still holding a permit, so free it.
+        drop(release_b);
         pool.shutdown().await;
-        assert!(pool.is_cancelled());
-
-        // Just verify expected is reasonable
-        assert!(expected >= 1);
     }
 
+    // The default pool admits as many concurrent tasks as the host has
+    // parallelism, and no more.
     #[tokio::test]
-    async fn test_bounded_pool_shutdown() {
-        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
-        let completed = Arc::new(AtomicUsize::new(0));
+    async fn the_default_limit_is_available_parallelism() {
+        let pool = BoundedTaskPool::default();
+        let limit = available_parallelism().get();
+        let (done_tx, _done_rx) = flume::unbounded();
 
-        for _ in 0..4 {
-            let completed = completed.clone();
+        let mut releases = Vec::with_capacity(limit);
+        for id in 0..limit {
+            let (release, held) = oneshot::channel();
+            releases.push(release);
+            pool.spawn(hold(held, done_tx.clone(), id as u32)).await;
+        }
+        let next = pool.spawn(async {});
+        pin_mut!(next);
+        assert!(
+            poll!(next.as_mut()).is_pending(),
+            "the default limit is reached"
+        );
+
+        drop(releases);
+        next.await.await.unwrap();
+        pool.shutdown().await;
+    }
+
+    // Shutdown cancels the pool's token and waits for every running task to
+    // finish, so each cancellation-aware task has exited when it returns.
+    #[tokio::test]
+    async fn shutdown_waits_for_running_tasks() {
+        let pool = BoundedTaskPool::new(NonZeroUsize::new(4).unwrap());
+        let (done_tx, done_rx) = flume::unbounded();
+
+        for id in 0..4 {
             let cancel = pool.cancel_token().clone();
-
+            let done = done_tx.clone();
             pool.spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
-                        _ = cancel.cancelled() => {
-                            completed.fetch_add(1, Ordering::SeqCst);
-                            break;
-                        }
-                    }
-                }
+                cancel.cancelled().await;
+                _ = done.send(id);
             })
             .await;
         }
+        drop(done_tx);
 
         pool.shutdown().await;
-
-        // All tasks should have completed
-        assert_eq!(completed.load(Ordering::SeqCst), 4);
+        assert!(pool.is_cancelled());
+        let mut finished: Vec<u32> = done_rx.drain().collect();
+        finished.sort_unstable();
+        assert_eq!(finished, vec![0, 1, 2, 3]);
     }
 }

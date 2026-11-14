@@ -28,7 +28,7 @@ This hierarchy supports scenarios where a service spawns subtasks that might nee
 
 ## Bounded Task Pool
 
-`BoundedTaskPool` extends the task pool pattern with a semaphore-based concurrency limit. When the configured number of tasks are already running, further spawn calls block until a slot becomes available.
+`BoundedTaskPool` extends the task pool pattern with a concurrency limit: a `TaskPool` for spawning and a [`Semaphore`](#semaphore) for the limit, so it names no runtime type and follows those two to any backend. When the configured number of tasks are already running, further spawn calls block until a slot becomes available.
 
 This provides natural backpressure. A component processing a stream of incoming bundles won't spawn unbounded tasks - it will slow down when the processing pool is saturated. The limit prevents memory exhaustion from queued work and keeps resource usage predictable.
 

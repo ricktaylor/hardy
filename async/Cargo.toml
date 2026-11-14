@@ -42,3 +42,5 @@ flume = { version = "0.12", optional = true }
 
 [dev-dependencies]
 hardy-async = { path = ".", features = ["tokio"] }
+# The doctests build a multi-threaded runtime (`Runtime::new`).
+tokio = { version = "1", features = ["rt-multi-thread"] }
