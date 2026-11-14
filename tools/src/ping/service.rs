@@ -599,6 +599,7 @@ impl hardy_bpa::services::Service for Service {
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> hardy_bpa::services::Result<()> {

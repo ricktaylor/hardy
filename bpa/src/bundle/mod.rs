@@ -126,6 +126,15 @@ impl Bundle {
         )
     }
 
+    /// The bundle's age at `now`: the time since its
+    /// [`creation_time`](Self::creation_time), so for an unclocked source
+    /// the Bundle Age at arrival plus the time since. Clamped at zero: a
+    /// clocked creation time ahead of `now` is a disagreement between the
+    /// source's clock and this node's, not a negative age.
+    pub fn age_at(&self, now: OffsetDateTime) -> core::time::Duration {
+        (now - self.creation_time()).try_into().unwrap_or_default()
+    }
+
     /// Whether [`expiry`](Self::expiry) has already passed.
     #[inline]
     pub fn has_expired(&self) -> bool {
@@ -272,6 +281,45 @@ pub mod tests {
             diff < Duration::milliseconds(1),
             "Age fallback: expected {expected}, got {actual}, diff {diff}"
         );
+    }
+
+    // A clocked bundle's age is the time since its creation timestamp.
+    #[test]
+    fn age_at_clocked_is_time_since_creation() {
+        let bundle = make_bundle(
+            CreationTimestamp::now(),
+            None,
+            core::time::Duration::from_secs(3600),
+        );
+        let now = bundle.creation_time() + Duration::seconds(5);
+        assert_eq!(bundle.age_at(now), core::time::Duration::from_secs(5));
+    }
+
+    // An unclocked bundle's age is its Bundle Age at arrival plus the time
+    // since it arrived.
+    #[test]
+    fn age_at_unclocked_adds_time_since_arrival() {
+        let age = core::time::Duration::from_secs(60);
+        let bundle = make_bundle(
+            CreationTimestamp::default(),
+            Some(age),
+            core::time::Duration::from_secs(3600),
+        );
+        let now = bundle.metadata.received_at() + Duration::seconds(2);
+        assert_eq!(bundle.age_at(now), age + core::time::Duration::from_secs(2));
+    }
+
+    // A clocked creation time ahead of this node's clock is age zero, not
+    // negative.
+    #[test]
+    fn age_at_future_creation_time_is_zero() {
+        let bundle = make_bundle(
+            CreationTimestamp::now(),
+            None,
+            core::time::Duration::from_secs(3600),
+        );
+        let now = bundle.creation_time() - Duration::seconds(5);
+        assert_eq!(bundle.age_at(now), core::time::Duration::ZERO);
     }
 
     // Expiry = creation_time + lifetime

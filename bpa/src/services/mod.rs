@@ -211,6 +211,13 @@ pub trait Application: Send + Sync {
     /// `WaitingForService`; a subsequent registration on the same EID
     /// re-delivers it.
     ///
+    /// `age` is the bundle's age when delivered: the time since its
+    /// creation, per [RFC 9171 Section 5.5] (from the creation timestamp
+    /// for a clocked source, else from the Bundle Age block), including the
+    /// time the bundle spent in this BPA before delivery. It is never
+    /// negative: a clocked creation time ahead of this node's clock reads as
+    /// zero.
+    ///
     /// `total_len` is the exact number of payload bytes the stream will
     /// deliver — the sum of all segment payload lengths — carried as `u64`
     /// so it remains valid on 32-bit targets. An implementation may size
@@ -219,10 +226,13 @@ pub trait Application: Send + Sync {
     /// An implementation that needs the whole payload in memory buffers the
     /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
     /// whose errors convert into this module's [`enum@Error`] via `?`.
+    ///
+    /// [RFC 9171 Section 5.5]: https://datatracker.ietf.org/doc/html/rfc9171#section-5.5
     async fn on_deliver(
         &self,
         bundle_id: &Id,
         expiry: time::OffsetDateTime,
+        age: Duration,
         ack_requested: bool,
         total_len: u64,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -378,8 +388,13 @@ pub trait Service: Send + Sync {
     ///
     /// The stream carries the raw bundle bytes (the service can parse them
     /// if needed); `bundle_id` is the identity of the delivered bundle and
-    /// `expiry` is calculated from bundle metadata by the dispatcher. The
-    /// implementation pulls
+    /// `expiry` is calculated from bundle metadata by the dispatcher. `age`
+    /// is the bundle's age when delivered: the time since its creation, per
+    /// [RFC 9171 Section 5.5] (from the creation timestamp for a clocked
+    /// source, else from the Bundle Age block), including the time the
+    /// bundle spent in this BPA before delivery — which the bundle bytes do
+    /// not record. It is never negative: a clocked creation time ahead of
+    /// this node's clock reads as zero. The implementation pulls
     /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
     /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
     /// carry empty bytes) completes the delivery.
@@ -399,10 +414,13 @@ pub trait Service: Send + Sync {
     /// An implementation that needs the whole bundle in memory buffers the
     /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
     /// whose errors convert into this module's [`enum@Error`] via `?`.
+    ///
+    /// [RFC 9171 Section 5.5]: https://datatracker.ietf.org/doc/html/rfc9171#section-5.5
     async fn on_deliver(
         &self,
         bundle_id: &Id,
         expiry: time::OffsetDateTime,
+        age: Duration,
         total_len: u64,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> Result<()>;
@@ -470,6 +488,7 @@ pub(crate) mod tests {
             &self,
             _: &Id,
             _: time::OffsetDateTime,
+            _: Duration,
             _: u64,
             _: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
         ) -> Result<()> {

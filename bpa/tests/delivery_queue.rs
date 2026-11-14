@@ -70,6 +70,7 @@ impl services::Service for HoldService {
         &self,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {

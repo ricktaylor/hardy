@@ -15,10 +15,12 @@ package service;
 //   - Receives only payload data; BPA handles bundle construction/parsing
 //   - Suitable for user applications that don't need bundle header access
 //   - Send provides destination, payload, lifetime, and options
-//   - Receive provides source, payload, expiry, and ack flag
+//   - Receive provides the bundle ID (whose source component is the
+//     sender), payload, expiry, age, and ack flag
 //
 // Service API (low-level):
-//   - Receives complete bundles as raw CBOR-encoded bytes
+//   - Receives complete bundles as raw CBOR-encoded bytes, with the
+//     bundle ID, expiry, and age
 //   - Service constructs outgoing bundles using bpv7::Builder
 //   - Suitable for system services like echo, SAND that need header access
 //   - BPA validates service-constructed bundles (security boundary)
@@ -347,6 +349,14 @@ message AppReceiveRequest {
   // fails the delivery without it. Can be used for status correlation;
   // the source endpoint ID of the bundle sender is its source component.
   string bundle_id = 5;
+
+  // The bundle's age when delivered, in milliseconds: the time since its
+  // creation (RFC 9171 Section 5.5), from the creation timestamp for a
+  // clocked source, else from the Bundle Age block, including the time
+  // the bundle spent in the BPA before delivery. Never negative: a
+  // creation time ahead of the BPA's clock reads as zero. Required: the
+  // client SDK fails the delivery without it.
+  optional uint64 age = 6;
 }
 
 // =============================================================================
@@ -382,4 +392,13 @@ message ServiceReceiveRequest {
   // fails the delivery without it, even though the id is derivable from
   // the parsed bundle. Can be used for status correlation.
   string bundle_id = 3;
+
+  // The bundle's age when delivered, in milliseconds: the time since its
+  // creation (RFC 9171 Section 5.5), from the creation timestamp for a
+  // clocked source, else from the Bundle Age block, including the time
+  // the bundle spent in the BPA before delivery, which the bundle data
+  // does not record. Never negative: a creation time ahead of the BPA's
+  // clock reads as zero. Required: the client SDK fails the delivery
+  // without it.
+  optional uint64 age = 4;
 }

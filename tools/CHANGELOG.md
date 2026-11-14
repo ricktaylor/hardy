@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- `bp ping`'s reply service adapts to the `hardy-bpa` `Service::on_deliver` signature, which gains the delivered bundle's age (unused: the RTT is measured from this node's own send and receive times).
 - `bp ping`'s built-in TCPCLv4 CLA declares its transfer MRU to the BPA at registration, folding it into the negotiated size cap.
 - `bp ping --tls-insecure` and `--tls-ca` now conflict at argument parsing (previously both were accepted and rejected later at CLA startup), and problems with the CA directory are reported through the TCPCLv4 TLS loader's messages.
 

@@ -139,6 +139,8 @@ impl Dispatcher {
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
     use hardy_bpv7::{
         bundle::Id,
         eid::{Eid, IpnNodeId, NodeId},
@@ -499,6 +501,7 @@ mod tests {
             &self,
             bundle_id: &Id,
             _expiry: time::OffsetDateTime,
+            _age: Duration,
             _total_len: u64,
             stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
         ) -> crate::services::Result<()> {

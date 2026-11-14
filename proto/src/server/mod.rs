@@ -3,8 +3,11 @@
 //! This module provides gRPC server implementations that allow remote CLAs,
 //! services, and applications to connect to a BPA instance.
 
-use super::*;
+use core::time::Duration;
+
 use hardy_async::sync::spin::Once;
+
+use super::*;
 use proxy::*;
 
 mod application;
@@ -17,6 +20,11 @@ fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
         seconds: (t.unix_timestamp_nanos() / 1_000_000_000) as i64,
         nanos: (t.unix_timestamp_nanos() % 1_000_000_000) as i32,
     }
+}
+
+// The wire's millisecond durations, saturating at `u64::MAX`.
+fn to_millis(d: Duration) -> u64 {
+    d.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 /// Configuration for the gRPC server.

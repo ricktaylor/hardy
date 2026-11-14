@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, sync::Arc};
+use core::time::Duration;
 
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
@@ -61,6 +62,7 @@ impl Service for DecapService {
         &self,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
+        _age: Duration,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> ServiceResult<()> {

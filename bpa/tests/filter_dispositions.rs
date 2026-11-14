@@ -312,6 +312,7 @@ impl services::Application for SendingApp {
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         _ack_requested: bool,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -382,6 +383,7 @@ impl services::Service for CapturingService {
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {

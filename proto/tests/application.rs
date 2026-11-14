@@ -13,12 +13,14 @@ use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 // A mock Application that records lifecycle callbacks and incoming payloads.
 struct MockApplication {
     registered: AtomicBool,
     received: AtomicBool,
     received_id: hardy_async::sync::spin::Mutex<Option<hardy_bpv7::bundle::Id>>,
+    received_age: hardy_async::sync::spin::Mutex<Option<Duration>>,
     status_notified: AtomicBool,
     sink: hardy_async::sync::spin::Mutex<Option<Box<dyn ApplicationSink>>>,
 }
@@ -29,6 +31,7 @@ impl MockApplication {
             registered: AtomicBool::new(false),
             received: AtomicBool::new(false),
             received_id: hardy_async::sync::spin::Mutex::new(None),
+            received_age: hardy_async::sync::spin::Mutex::new(None),
             status_notified: AtomicBool::new(false),
             sink: hardy_async::sync::spin::Mutex::new(None),
         }
@@ -52,11 +55,13 @@ impl Application for MockApplication {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
+        age: Duration,
         _ack_requested: bool,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
         *self.received_id.lock() = Some(bundle_id.clone());
+        *self.received_age.lock() = Some(age);
         self.received.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -181,10 +186,12 @@ async fn app_cli_04_receive_payload() {
         ..Default::default()
     };
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    // Whole milliseconds: the wire's resolution.
+    let age = Duration::from_millis(90_061);
     let mut payload = hardy_bpa::Bytes::from_static(b"hello");
     let total_len = payload.len() as u64;
     server_app
-        .on_deliver(&bundle_id, expiry, false, total_len, &mut payload)
+        .on_deliver(&bundle_id, expiry, age, false, total_len, &mut payload)
         .await
         .expect("Delivery should succeed");
 
@@ -199,6 +206,11 @@ async fn app_cli_04_receive_payload() {
         .expect("MockApplication should have recorded the bundle id");
     assert_eq!(received_id, bundle_id, "bundle id must round-trip the wire");
     assert_eq!(received_id.source, source);
+    assert_eq!(
+        *app.received_age.lock(),
+        Some(age),
+        "age must round-trip the wire"
+    );
 
     // Clean up
     drop(app.take_sink());

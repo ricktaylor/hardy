@@ -13,6 +13,8 @@ reflected. The response is submitted to the BPA for normal forwarding.
 - [`EchoService`] — the service implementation, one instance per registered endpoint.
 */
 
+use core::time::Duration;
+
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     async_trait,
@@ -173,6 +175,7 @@ impl hardy_bpa::services::Service for EchoService {
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> hardy_bpa::services::Result<()> {
