@@ -9,20 +9,20 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-The `MetadataStorage` trait contract is verified by the shared storage harness (16 tests, all pass). Recovery is only partly verified: the harness exercises `MetadataStorage::start_recovery()` (META-12) and `confirm_exists()` (META-05), but META-13 calls `remove_unconfirmed()` with no row marked unconfirmed, so its removal path is untested. On SQLite that path also fails on any unconfirmed row: its `UPDATE … RETURNING bundle` reads the column after the update nulls it, and recovery panics. The BPA's `storage/recover.rs` orchestrates these trait methods during restart.
+The `MetadataStorage` trait contract is verified by the shared storage harness (16 tests, all pass). Recovery is verified end to end: the harness exercises `MetadataStorage::start_recovery()` (META-12), `confirm_exists()` (META-05) and the removal of unconfirmed records by `remove_unconfirmed()` (META-13). The BPA's `storage/recover.rs` orchestrates these trait methods during restart.
 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
 | 7.2 | Metadata storage | **Pass** | META-01..16 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
 | 7.2.1 | Store/retrieve metadata | **Pass** | META-01 (insert and get), META-03 (status update by compare-and-swap) |
 | 7.2.2 | Configurable database location | **Pass** | SQL-01 (`test_configuration_custom_db_dir`) |
-| 7.3 | Recovery after restart | **Partial** | META-05 (confirm_exists) + META-12 (start_recovery); META-13 marks nothing unconfirmed, so `remove_unconfirmed`'s removal path is untested |
+| 7.3 | Recovery after restart | **Pass** | META-05 (confirm_exists) + META-12 (start_recovery) + META-13 (remove_unconfirmed) |
 
 ## 2. Test Inventory
 
 ### Generic harness tests (via `tests/storage/`)
 
-16 integration tests run against SQLite: 15 via `storage_meta_tests!(sqlite, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. See [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §3.5 for registration details and §4 for test scenarios.
+16 integration tests run against SQLite: 14 via `storage_meta_tests!(sqlite, ...)` plus the dedicated `meta_05_confirm_exists` and `meta_13_remove_unconfirmed` recovery tests. See [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §3.5 for registration details and §4 for test scenarios.
 
 All 16 pass. No failures or skips.
 

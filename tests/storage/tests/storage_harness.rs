@@ -15,6 +15,12 @@ mod sqlite_recovery {
         let (_dir, store) = storage_tests::sqlite_meta_setup();
         storage_tests::metadata_suite::meta_05_confirm_exists(store).await;
     }
+
+    #[tokio::test]
+    async fn meta_13_remove_unconfirmed() {
+        let (_dir, store) = storage_tests::sqlite_meta_setup();
+        storage_tests::metadata_suite::meta_13_remove_unconfirmed(store).await;
+    }
 }
 
 // PostgreSQL metadata storage (requires --features postgres + a running postgres instance)
@@ -29,6 +35,12 @@ mod postgres_recovery {
     async fn meta_05_confirm_exists() {
         let (_guard, store) = storage_tests::postgres_meta_setup().await;
         storage_tests::metadata_suite::meta_05_confirm_exists(store).await;
+    }
+
+    #[tokio::test]
+    async fn meta_13_remove_unconfirmed() {
+        let (_guard, store) = storage_tests::postgres_meta_setup().await;
+        storage_tests::metadata_suite::meta_13_remove_unconfirmed(store).await;
     }
 }
 

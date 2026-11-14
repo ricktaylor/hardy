@@ -587,11 +587,47 @@ pub async fn meta_12_recovery(store: Arc<dyn MetadataStorage>) {
 }
 
 /// META-13: Remove Unconfirmed
+///
+/// A record that recovery marks unconfirmed and nothing confirms is an
+/// orphan: `remove_unconfirmed()` reports it to the stream and removes it.
+/// Only applicable to persistent backends.
 pub async fn meta_13_remove_unconfirmed(store: Arc<dyn MetadataStorage>) {
-    let bundle = fixtures::random_bundle();
-    assert!(store.insert(&bundle).await.unwrap());
+    let orphan = fixtures::random_bundle();
+    let confirmed = fixtures::random_bundle();
+    assert!(store.insert(&orphan).await.unwrap());
+    assert!(store.insert(&confirmed).await.unwrap());
+
+    store.start_recovery().await;
+    assert!(
+        store
+            .confirm_exists(confirmed.id())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     let sink = super::VecSink::<bundle::Bundle>::new();
     store.remove_unconfirmed(&sink).await.unwrap();
-    // Should complete without error
+    let removed: Vec<_> = sink.into_inner().iter().map(|b| b.id().clone()).collect();
+    assert_eq!(
+        removed,
+        [orphan.id().clone()],
+        "only the orphan is reported"
+    );
+
+    assert!(store.get(orphan.id()).await.unwrap().is_none());
+    assert!(store.get(confirmed.id()).await.unwrap().is_some());
+
+    // The orphan is gone for good: a second recovery finds nothing to remove
+    store.start_recovery().await;
+    assert!(
+        store
+            .confirm_exists(confirmed.id())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.remove_unconfirmed(&sink).await.unwrap();
+    assert!(sink.into_inner().is_empty());
 }
