@@ -4,7 +4,7 @@
 use bytes::Bytes;
 use hardy_bpv7::parse;
 use hex_literal::hex;
-/// Parse both inputs and compare their bundles for semantic equivalence.
+// Parse both inputs and compare their bundles for semantic equivalence.
 fn eq(a: &[u8], b: &[u8]) -> bool {
     let a = parse::parse(Bytes::copy_from_slice(a)).expect("parse a");
     let b = parse::parse(Bytes::copy_from_slice(b)).expect("parse b");
@@ -57,11 +57,15 @@ fn different_primary_destination_detected() {
 
 #[test]
 fn missing_block_detected() {
-    // ORIGINAL minus the BundleAge block — different type set.
-    let no_age = hex!(
-        "9F88070000820282010282028202018202820201820018281A000F424085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    // ORIGINAL plus a Hop Count block — different type set.
+    let with_hop_count = hex!(
+        "9F88070000820282010282028202018202820201820018281A000F4240"
+        "8507020000 4100"           // BundleAge block 2, age 0
+        "850A030000 4482181E00"     // HopCount block 3, limit 30, count 0
+        "85010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164"
+        "FF"
     );
-    assert!(!eq(ORIGINAL, &no_age));
+    assert!(!eq(ORIGINAL, &with_hop_count));
 }
 
 // --- block flags ---
@@ -190,10 +194,11 @@ fn different_hop_count_content_detected() {
 
 #[test]
 fn previous_node_identical() {
-    // PreviousNode (type 6) block, EID = ipn:1.1 = [2,[1,1]] = 82 02 82 01 01 (5 bytes).
+    // PreviousNode (type 6) block, node ID ipn:1.0 = [2,[1,0]] = 82 02 82 01 00 (5 bytes).
     let bundle = hex!(
         "9F88070000820282010282028202018202820201820018281A000F4240"
-        "8506020000458202820101"   // PreviousNode block 2, body = ipn:1.1
+        "8506020000458202820100"   // PreviousNode block 2, body = ipn:1.0
+        "8507030000 4100"          // BundleAge block 3, age 0
         "85010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164"
         "FF"
     );
@@ -202,16 +207,18 @@ fn previous_node_identical() {
 
 #[test]
 fn different_previous_node_detected() {
-    // PreviousNode ipn:1.1 = [2,[1,1]] vs ipn:2.1 = [2,[2,1]].
+    // PreviousNode ipn:1.0 = [2,[1,0]] vs ipn:2.0 = [2,[2,0]].
     let pn_1_1 = hex!(
         "9F88070000820282010282028202018202820201820018281A000F4240"
-        "8506020000458202820101"   // PreviousNode block 2, body = ipn:1.1
+        "8506020000458202820100"   // PreviousNode block 2, body = ipn:1.0
+        "8507030000 4100"          // BundleAge block 3, age 0
         "85010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164"
         "FF"
     );
     let pn_2_1 = hex!(
         "9F88070000820282010282028202018202820201820018281A000F4240"
-        "8506020000458202820201"   // PreviousNode block 2, body = ipn:2.1
+        "8506020000458202820200"   // PreviousNode block 2, body = ipn:2.0
+        "8507030000 4100"          // BundleAge block 3, age 0
         "85010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164"
         "FF"
     );

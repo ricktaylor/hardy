@@ -38,10 +38,13 @@ pub struct InputChain {
 }
 
 /// The Deliver hook's frozen chain: Rewriters (sequential) then Verifiers
-/// (parallel).
+/// (parallel), with the hook's payload peek.
 pub struct DeliverChain {
     pub rewriters: Box<[RewriterEntry]>,
     pub verifiers: Box<[VerifierEntry]>,
+    /// P: the largest payload peek the Deliver Verifiers declare, which the
+    /// delivery door holds before they run; 0 for none.
+    pub peek: usize,
 }
 
 /// The four per-hook chains frozen by
@@ -56,10 +59,11 @@ pub struct FilterChains {
 
 impl FilterChains {
     /// Splices the per-hook chains in registration order and folds each
-    /// input chain's peek.
+    /// peek-bearing chain's peek.
     pub fn freeze(packs: Vec<FilterPack>) -> Self {
         let mut ingress_peek = 0;
         let mut originate_peek = 0;
+        let mut deliver_peek = 0;
         let mut ingress_verifiers = Vec::new();
         let mut originate_verifiers = Vec::new();
         let mut deliver_verifiers = Vec::new();
@@ -89,7 +93,11 @@ impl FilterChains {
                 &mut originate_classifiers,
                 &mut originate_peek,
             );
-            deliver_verifiers.extend(pack.deliver_verifiers);
+            drain_pending(
+                pack.deliver_verifiers,
+                &mut deliver_verifiers,
+                &mut deliver_peek,
+            );
             egress_rewriters.extend(pack.egress_rewriters);
             deliver_rewriters.extend(pack.deliver_rewriters);
         }
@@ -109,14 +117,16 @@ impl FilterChains {
             deliver: DeliverChain {
                 rewriters: deliver_rewriters.into_boxed_slice(),
                 verifiers: deliver_verifiers.into_boxed_slice(),
+                peek: deliver_peek,
             },
         }
     }
 }
 
-// The one peek-fold: every input-hook pending list drains through here into
-// its own chain's peek, so a future hook that forgets the fold is a missing
-// call, not a silently dropped peek declaration.
+// The one peek-fold: every pending list (the input hooks' and the Deliver
+// Verifiers') drains through here into its own chain's peek, so a future
+// hook that forgets the fold is a missing call, not a silently dropped peek
+// declaration.
 fn drain_pending<E>(pending: Vec<Pending<E>>, out: &mut Vec<E>, chain_peek: &mut usize) {
     for p in pending {
         let (peek, entry) = p.into_parts();

@@ -58,6 +58,15 @@ Follow standard Rust naming (Clippy enforces most of it):
 - Crate names are `hardy-<name>` (hyphenated) on disk and `hardy_<name>` when imported.
 - Prefer descriptive names over abbreviations, but keep domain terms from the RFCs intact (`eid`, `cla`, `bpsec`, `bib`, `bcb`) — they are the vocabulary of the codebase.
 
+## Local Closures
+
+A closure bound to a name inside a function is a convenience that costs the reader a lookup, so it has to earn its place:
+
+- Name a local closure only for a predicate the function applies more than once. One applied once is written inline where it is applied, with its comment.
+- A predicate two functions share is a private function of the module, with its comment stated once, not a closure written again in each.
+- A closure takes no boolean parameter (`encrypted(true)` says nothing at the call site), returns no `Option` that callers read only through `is_some`, and takes no `&&T` parameter shaped to be handed to `.filter`: write the `.filter(|x| …)` inline instead.
+- Keep closures that are the thing itself: a key provider, a sort key, a `map_err` conversion, a constructor handed to a combinator.
+
 ## Imports and `use` Blocks
 
 Organise `use` statements into up to three blocks, each separated by a single blank line, in this order:
@@ -141,6 +150,8 @@ pub use self::error::Error;
 Control an item's visibility **at its own definition**, using `pub` or `pub(crate)` on the item. Do not widen or restrict visibility indirectly through re-exports or wrapper modules elsewhere — the `pub` keyword on the declaration is the single source of truth for how visible something is.
 
 Inside a module that is itself private or `pub(crate)`, write plain `pub`, not `pub(crate)`. The enclosing module already caps visibility, so `pub(crate)` is redundant noise (the codebase does not rely on `unreachable_pub`).
+
+The module caps only the paths that name an item. A type that escapes it through a public signature (an enum variant's payload, a public field, a return type) carries its methods with it: a `pub` method on it can be called wherever a value of the type can be reached. Mark such a method `pub(crate)` unless it is meant as public API. Its associated functions, which need the type's path, stay plain `pub`.
 
 Re-export public API at the crate root where it aids discoverability, but document each item at its definition, not at the re-export.
 

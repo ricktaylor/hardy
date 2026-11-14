@@ -1,22 +1,25 @@
-// `Bpv7Error` disambiguates the bpv7 wire-format error from this crate's
-// `Error` in scope via the parent module.
-use hardy_bpv7::{
-    Error as Bpv7Error,
-    block::Payload,
-    bpsec,
-    parse::{self, Parsed},
-    status_report::ReasonCode,
-};
+use hardy_bpv7::{editor::Chunk, status_report::ReasonCode};
 
-use super::*;
-use crate::services::registry::{Service, ServiceImpl};
+use super::{
+    output::{LoadedBundle, PayloadReceiver, pull_headers},
+    *,
+};
+use crate::{
+    filter::Verdict,
+    keys::derive_keys,
+    rebuilt_headers::RebuiltHeaders,
+    services::registry::{Service, ServiceImpl},
+};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub(super) async fn deliver_bundle(&self, service: Arc<Service>, bundle: bundle::Bundle) {
-        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
+        // Open the stored bundle and hold it until its headers are resident:
+        // what the service receives streams on from the store.
+        let Some((mut bundle, stream)) = self.load_or_drop(bundle).await else {
             return;
         };
+        let loaded = pull_headers(&bundle.bpv7, stream, self.filters.deliver.peek).await;
 
         // The claim key and every park in the offer use the canonical
         // registration EID stored at construction — the exact key
@@ -62,7 +65,7 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Delivery,
-            self.offer_to_service(service, service_eid, bundle, data, seen)
+            self.offer_to_service(service, service_eid, bundle, loaded, seen)
                 .await,
         )
         .await
@@ -70,110 +73,76 @@ impl Dispatcher {
 
     /// Offer a claimed bundle to its service. Runs strictly inside the
     /// `DeliveryAckPending` claim: every exit is an [`OfferOutcome`] the
-    /// caller resolves, so the claim cannot dangle.
+    /// caller resolves, so the claim cannot dangle. The record keeps the
+    /// stored bundle's block index throughout: a rebuild is the attempt's
+    /// alone.
     async fn offer_to_service(
         &self,
         service: Arc<Service>,
         service_eid: Eid,
-        mut bundle: bundle::Bundle,
-        data: Bytes,
+        bundle: bundle::Bundle,
+        mut loaded: LoadedBundle,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // The §E removals the ingress gate deferred apply first, so the
-        // Deliver chain sees the bundle as it will be delivered, and the
-        // strip can never delete a Rewriter's insert into a removed block's
-        // number.
-        let data = self.strip_removed_blocks(&mut bundle, data);
-
-        // Deliver chain: Rewriters (transport-block strip), then Verifiers.
-        let (bundle, mut data) = match self.filters.run_deliver(bundle, data, &*self.key_provider) {
-            filter::ChainOutcome::Continue(bundle, data) => (bundle, data),
-            filter::ChainOutcome::Drop(bundle, reason) => {
-                return OfferOutcome::Dropped(bundle, reason);
-            }
-        };
-
         let delivery_result = match &service.service {
             ServiceImpl::LowLevel(svc) => {
-                // Pass raw bundle bytes to low-level services: the whole
-                // bundle is in hand, so it travels as a single Final segment.
-                let total_len = data.len() as u64;
-                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
-                    .await
+                // A raw service receives the bundle: the rebuilt header region
+                // when a Deliver Rewriter edited, else the stored bundle as
+                // loaded, the payload streaming on from the store either way.
+                let chunks = match self.run_deliver_stages(&bundle, &loaded.resident) {
+                    Ok(chunks) => chunks,
+                    Err(reason) => return OfferOutcome::Dropped(bundle, reason),
+                };
+                match chunks {
+                    Some(chunks) => {
+                        let head = loaded.resident.clone();
+                        let mut stream = RebuiltHeaders::new(chunks, &head, &mut loaded);
+                        let total_len = stream.total_len(bundle.bpv7.encoded_len());
+                        svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut stream)
+                            .await
+                    }
+                    None => {
+                        let total_len = bundle.bpv7.encoded_len();
+                        svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut loaded)
+                            .await
+                    }
+                }
             }
             ServiceImpl::Application(app) => {
-                // Extract and decrypt payload for Application.
-                // KeyProvider needs a &Bundle; scope the parse
-                // as a match expression so the parse OperationSets
-                // (which contain `Rc<…>` and are therefore `!Send`) are
-                // dropped at the arm boundary, before any `.await` in
-                // this async fn. Consume `data` into the parse and work
-                // from the authoritative buffer it returns (the streaming
-                // path concatenates pushes), converting the payload to an
-                // owned `Bytes` (zero-copy for the unencrypted case via
-                // `slice_ref`) before the arm ends.
-                let payload_result = match parse::parse(data) {
-                    Ok(Parsed {
-                        data: buf,
-                        bundle: raw,
-                        bcbs: bcb_ops,
-                        ..
-                    }) => {
-                        let key_source = self.key_source(&raw, &buf);
-                        match bpsec::DecryptingReader::new(
-                            &raw.blocks,
-                            &buf,
-                            &bcb_ops,
-                            &*key_source,
-                        )
-                        .into_block_data(1)
-                        .and_then(|p| p.ok_or(Bpv7Error::Altered))
-                        {
-                            Ok(Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
-                            Ok(Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Err(e) => Err(e),
-                };
+                // An Application receives the payload alone, streaming from
+                // the store as it is read. The Deliver stages run on the held
+                // headers and peek for their verdict: a Rewriter edits
+                // neither the payload nor its protection.
+                if let Err(reason) = self.run_deliver_stages(&bundle, &loaded.resident) {
+                    return OfferOutcome::Dropped(bundle, reason);
+                }
 
-                let mut payload = match payload_result {
-                    Err(Bpv7Error::InvalidBPSec(bpsec::Error::NoKey)) => {
-                        // TODO: We are unable to decrypt the payload, what do we do?
-                        // For now, park for the next registration (which may
-                        // bring usable keys).
-                        debug!("Failed to decrypt payload: No valid keys");
-                        return OfferOutcome::Parked(
-                            bundle,
-                            bundle::BundleStatus::WaitingForService {
-                                service: service_eid,
-                            },
-                            seen,
-                        );
-                    }
-                    Err(e) => {
-                        // Other decryption error - skip delivery
-                        debug!("Received an invalid payload: {e}");
+                // The payload as stored. Its security operations were the
+                // destination's to accept at ingress (RFC 9172 §1.4), where
+                // this node decrypted it into the store or refused the
+                // bundle, so one still under a BCB here is a record no door
+                // of this build wrote: dropped, as the gate drops a bundle
+                // its destination cannot accept.
+                let block = bundle
+                    .bpv7
+                    .blocks
+                    .get(&1)
+                    .trace_expect("A stored bundle has no payload block");
+                if block.bcb.is_some() {
+                    debug!("Payload still encrypted at delivery; dropped");
+                    return OfferOutcome::Dropped(bundle, Some(ReasonCode::BlockUnsupported));
+                }
 
-                        // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
-
-                        return OfferOutcome::Dropped(
-                            bundle,
-                            Some(ReasonCode::BlockUnintelligible),
-                        );
-                    }
-                    Ok(payload) => payload,
-                };
-
-                // As for low-level services, the whole payload is in hand,
-                // so it travels as a single Final segment.
-                let total_len = payload.len() as u64;
+                // Announced at its stored data length, the ADU's, known
+                // before the first byte.
+                let mut stream = PayloadReceiver::new(&bundle.bpv7, loaded);
+                let total_len = stream.total_len();
                 app.on_deliver(
                     bundle.id(),
                     bundle.expiry(),
                     bundle.primary().flags.app_ack_requested,
                     total_len,
-                    &mut payload,
+                    &mut stream,
                 )
                 .await
             }
@@ -195,5 +164,224 @@ impl Dispatcher {
         }
 
         OfferOutcome::Completed(bundle)
+    }
+
+    // The Deliver stages on one editor over the record's block index and
+    // `data`, the stored bundle's resident bytes: the Rewriters, then the
+    // Verifiers over the editor's edits, so nothing is materialised for them.
+    // With no Rewriters and no Verifiers no editor is built, and the keys are
+    // derived only when a stage reads through them. `Err` carries the
+    // dropping Verifier's reason; `Ok` carries the rebuild's chunks when a
+    // Rewriter edited. The bytes were validated at ingress and every edit was
+    // checked when it was staged, so a failed rebuild is a BPA or bpv7 bug,
+    // and fatal.
+    fn run_deliver_stages(
+        &self,
+        bundle: &bundle::Bundle,
+        data: &[u8],
+    ) -> Result<Option<Vec<Chunk>>, Option<ReasonCode>> {
+        if !self.filters.has_deliver_rewriters() && !self.filters.has_deliver_verifiers() {
+            return Ok(None);
+        }
+        let keys = derive_keys(&bundle.bpv7, data, &*self.key_provider);
+        let mut editor = Editor::new(&bundle.bpv7, data);
+        self.filters
+            .rewrite_deliver(&mut editor, &bundle.metadata, &*keys);
+        if let Verdict::Drop(reason) =
+            self.filters
+                .verify_deliver(&editor, data, &bundle.metadata, &*keys)
+        {
+            return Err(reason);
+        }
+        Ok(editor.is_modified().then(|| {
+            editor
+                .rebuild()
+                .trace_expect("The delivery rewrite failed to rebuild the bundle")
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "rfc9173")]
+    use hardy_bpv7::{
+        bundle::Id,
+        eid::{IpnNodeId, NodeId},
+        status_report::AdministrativeRecord,
+    };
+
+    use super::*;
+    #[cfg(feature = "rfc9173")]
+    use crate::{
+        bpa::{Bpa, BpaRegistration},
+        bundle::Origin,
+        dispatcher::tests::encrypted_payload_to,
+        node_ids::NodeIds,
+        storage::{
+            BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
+            Result as StorageResult,
+        },
+        stream::{Receiver, Segment, Sender, buffer_stream},
+    };
+
+    // Bundle storage that hands each deleted bundle's bytes to a receiver.
+    #[cfg(feature = "rfc9173")]
+    struct DeletingStore {
+        inner: BundleMemStorage,
+        deleted_tx: flume::Sender<Bytes>,
+    }
+
+    #[cfg(feature = "rfc9173")]
+    impl DeletingStore {
+        fn new() -> (Arc<Self>, flume::Receiver<Bytes>) {
+            let (deleted_tx, deleted_rx) = flume::unbounded();
+            (
+                Arc::new(Self {
+                    inner: BundleMemStorage::new(None, None),
+                    deleted_tx,
+                }),
+                deleted_rx,
+            )
+        }
+    }
+
+    #[cfg(feature = "rfc9173")]
+    #[async_trait]
+    impl BundleStorage for DeletingStore {
+        async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> StorageResult<()> {
+            self.inner.recover(stream).await
+        }
+
+        async fn load(&self, storage_name: &str) -> StorageResult<Option<Bytes>> {
+            self.inner.load(storage_name).await
+        }
+
+        async fn save(&self, data: Bytes) -> StorageResult<Arc<str>> {
+            self.inner.save(data).await
+        }
+
+        async fn delete(&self, storage_name: &str) -> StorageResult<()> {
+            if let Some(data) = self.inner.load(storage_name).await? {
+                let _ = self.deleted_tx.send(data);
+            }
+            self.inner.delete(storage_name).await
+        }
+    }
+
+    // An application that hands each delivered payload to a receiver. It
+    // keeps its sink: dropping the sink unregisters the application.
+    #[cfg(feature = "rfc9173")]
+    struct RecordingApp {
+        sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+        delivered_tx: flume::Sender<Bytes>,
+    }
+
+    #[cfg(feature = "rfc9173")]
+    #[async_trait]
+    impl services::Application for RecordingApp {
+        async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+            self.sink.call_once(|| sink);
+        }
+
+        async fn on_unregister(&self) {}
+
+        async fn on_deliver(
+            &self,
+            _bundle_id: &Id,
+            _expiry: time::OffsetDateTime,
+            _ack_requested: bool,
+            total_len: u64,
+            stream: &mut dyn Receiver<Segment>,
+        ) -> services::Result<()> {
+            let payload = buffer_stream(stream, total_len).await?;
+            let _ = self.delivered_tx.send(payload);
+            Ok(())
+        }
+
+        async fn on_status_notify(
+            &self,
+            _bundle_id: &Id,
+            _from: &Eid,
+            _kind: services::StatusNotify,
+            _reason: ReasonCode,
+            _timestamp: Option<time::OffsetDateTime>,
+        ) {
+        }
+    }
+
+    // A stored record whose payload is still under a BCB, one written before
+    // the destination accepted at ingress, is not handed to the application
+    // as ciphertext and does not wait for a key: it is dropped as the gate
+    // drops a bundle its destination cannot accept, "Block unsupported",
+    // and the deletion is reported.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn a_payload_still_encrypted_at_delivery_is_dropped_unsupported() {
+        let (bpv7, data) = encrypted_payload_to("ipn:0.1.9");
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let (bundle_store, deleted_rx) = DeletingStore::new();
+        let node_ids = NodeIds::try_from(
+            [NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            })]
+            .as_slice(),
+        )
+        .unwrap();
+        let bpa = Bpa::builder()
+            .node_ids(node_ids)
+            .metadata_storage(metadata_store.clone())
+            .bundle_storage(bundle_store.clone())
+            .status_reports(true)
+            .build()
+            .await
+            .unwrap();
+        bpa.start(false).await;
+
+        // The record, parked for service 9 as stored.
+        let storage_name = bundle_store.save(data.clone()).await.unwrap();
+        let mut record = bundle::Bundle::new(
+            bpv7,
+            bundle::BundleMetadata::new(time::OffsetDateTime::now_utc(), Origin::Recovered),
+        );
+        record.metadata.storage_name = Some(storage_name);
+        record.status = bundle::BundleStatus::WaitingForService {
+            service: "ipn:0.1.9".parse().unwrap(),
+        };
+        assert!(metadata_store.insert(&record).await.unwrap());
+
+        // Registration polls the park and offers the record.
+        let (delivered_tx, delivered_rx) = flume::unbounded();
+        bpa.register_application(
+            hardy_bpv7::eid::Service::Ipn(9),
+            Arc::new(RecordingApp {
+                sink: hardy_async::sync::spin::Once::new(),
+                delivered_tx,
+            }),
+        )
+        .await
+        .unwrap();
+
+        // The timeouts only bound a regression.
+        let deleted =
+            tokio::time::timeout(core::time::Duration::from_secs(5), deleted_rx.recv_async())
+                .await
+                .expect("the record is deleted")
+                .expect("the store is open");
+        assert_eq!(deleted, data, "the encrypted record is deleted");
+
+        // The first delivery is the deletion report, not the ciphertext.
+        let delivered = tokio::time::timeout(
+            core::time::Duration::from_secs(5),
+            delivered_rx.recv_async(),
+        )
+        .await
+        .expect("the deletion is reported to the application")
+        .expect("the application is registered");
+        let AdministrativeRecord::BundleStatusReport(status) =
+            hardy_cbor::decode::parse(&delivered).expect("the first delivery is the report");
+        assert!(status.deleted.is_some(), "deletion asserted");
+        assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+        bpa.shutdown().await;
     }
 }

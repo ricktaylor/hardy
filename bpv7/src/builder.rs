@@ -263,11 +263,7 @@ impl<'a> Builder<'a> {
         };
 
         let mut blocks = HashMap::new();
-        let mut trailer = PayloadTrailer {
-            digest: None,
-            declared: payload_len,
-            received: 0,
-        };
+        let mut trailer = None;
         let mut data = try_emit_array(None, |a| {
             // Emit primary block — extent captured in the outer wire
             // stream, exactly as `build` does.
@@ -285,66 +281,19 @@ impl<'a> Builder<'a> {
                 blocks.insert(block_number, block.build(block_number, a)?);
             }
 
-            // The payload block header, hand-assembled to stop at the
-            // byte-string head: the payload bytes and the CRC value are
-            // supplied by the stream and the trailer.
-            let mut header = alloc::vec![if matches!(payload_crc_type, crc::CrcType::None) {
-                0x85
-            } else {
-                0x86
-            }];
-            header.extend(emit(&block::Type::Payload).0);
-            header.extend(emit(&1u64).0);
-            header.extend(emit(&payload_flags).0);
-            header.extend(emit(&payload_crc_type).0);
-            header.extend(emit(&BytesHeader(payload_len)).0);
-            let data_start = header.len() as u64;
-
-            // The trailer digest covers the block's bytes exactly as
-            // `crc::append_crc_value` digests them: the header now, the
-            // payload as it streams, the CRC head byte and zeroed value at
-            // finish. An unrecognised CRC type errors here.
-            if !matches!(payload_crc_type, crc::CrcType::None) {
-                let mut digest = crc::Digest::new(payload_crc_type)
-                    .map_err(|e| Error::InternalError(e.into()))?;
-                digest.push(&header);
-                trailer.digest = Some(digest);
-            }
-
+            let (header, payload_trailer) =
+                streamed_payload_header(&payload_flags, payload_crc_type, payload_len)?;
+            trailer = Some(payload_trailer);
             let extent = a.emit(&Raw(&header));
-
-            // The block's extents span the full future wire form (the
-            // parser's `Partial` convention): the payload bytes and the CRC
-            // field (head byte + big-endian value) follow the prefix on the
-            // wire, so `encoded_len`/`payload_range` are exact while the
-            // resident-slice accessors return `None` on the prefix alone.
-            let crc_field_len = match payload_crc_type {
-                crc::CrcType::CRC16_X25 => 3,
-                crc::CrcType::CRC32_CASTAGNOLI => 5,
-                _ => 0,
-            };
-            // `payload_len` is the caller's declaration: a length whose wire
-            // form would pass `u64::MAX` is refused, as the parser refuses
-            // the same extents, rather than wrapping into a short bundle. The
-            // outer break follows the extent, so `encoded_len` (the extent's
-            // end plus one) must be representable too.
-            let too_long = || Error::PayloadLengthOverflow(payload_len);
-            let data_end = data_start.checked_add(payload_len).ok_or_else(too_long)?;
-            let extent_end = (extent.start as u64)
-                .checked_add(data_end)
-                .and_then(|end| end.checked_add(crc_field_len))
-                .filter(|end| end.checked_add(1).is_some())
-                .ok_or_else(too_long)?;
             blocks.insert(
                 1,
-                block::Block {
-                    block_type: block::Type::Payload,
-                    flags: payload_flags,
-                    crc_type: payload_crc_type,
-                    data: data_start..data_end,
-                    extent: extent.start as u64..extent_end,
-                    ..Default::default()
-                },
+                streamed_payload_block(
+                    payload_flags,
+                    payload_crc_type,
+                    header.len() as u64,
+                    extent.start as u64,
+                    payload_len,
+                )?,
             );
             Ok::<_, Error>(())
         })?;
@@ -358,9 +307,85 @@ impl<'a> Builder<'a> {
         Ok(StreamBuild {
             bundle: bundle::Bundle { primary, blocks },
             prefix: data.into(),
-            trailer,
+            trailer: trailer.expect("the payload header is emitted"),
         })
     }
+}
+
+// The payload block's header for a payload of `payload_len` bytes supplied
+// as a stream, hand-assembled to stop at the byte-string head, and the
+// trailer that terminates its wire form: the payload bytes and the CRC value
+// follow from the stream and the trailer. The trailer's digest covers the
+// block's bytes exactly as `crc::append_crc_value` digests them: the header
+// now, the payload as it streams, the CRC head byte and zeroed value at
+// finish. An unrecognised CRC type errors here. Shared by
+// `Builder::build_stream` and the editor's streamed rebuild, so the two
+// frame a streamed payload identically.
+pub(crate) fn streamed_payload_header(
+    flags: &block::Flags,
+    crc_type: crc::CrcType,
+    payload_len: u64,
+) -> Result<(Vec<u8>, PayloadTrailer), Error> {
+    let mut header = alloc::vec![if matches!(crc_type, crc::CrcType::None) {
+        0x85
+    } else {
+        0x86
+    }];
+    header.extend(emit(&block::Type::Payload).0);
+    header.extend(emit(&1u64).0);
+    header.extend(emit(flags).0);
+    header.extend(emit(&crc_type).0);
+    header.extend(emit(&BytesHeader(payload_len)).0);
+    let mut trailer = PayloadTrailer {
+        digest: None,
+        declared: payload_len,
+        received: 0,
+    };
+    if !matches!(crc_type, crc::CrcType::None) {
+        let mut digest = crc::Digest::new(crc_type).map_err(|e| Error::InternalError(e.into()))?;
+        digest.push(&header);
+        trailer.digest = Some(digest);
+    }
+    Ok((header, trailer))
+}
+
+// The payload block's index entry for a streamed payload whose `header_len`
+// byte header starts at `extent_start` in the outer stream: its extents span
+// the full future wire form (the parser's `Partial` convention), the payload
+// bytes and the CRC field (head byte + big-endian value) following the
+// header, so `encoded_len`/`payload_range` are exact while the resident-slice
+// accessors return `None` on the header alone. A `payload_len` whose wire
+// form would pass `u64::MAX` is refused, as the parser refuses the same
+// extents, rather than wrapping into a short bundle; the outer break follows
+// the extent, so `encoded_len` (the extent's end plus one) must be
+// representable too.
+pub(crate) fn streamed_payload_block(
+    flags: block::Flags,
+    crc_type: crc::CrcType,
+    header_len: u64,
+    extent_start: u64,
+    payload_len: u64,
+) -> Result<block::Block, Error> {
+    let crc_field_len = match crc_type {
+        crc::CrcType::CRC16_X25 => 3,
+        crc::CrcType::CRC32_CASTAGNOLI => 5,
+        _ => 0,
+    };
+    let too_long = || Error::PayloadLengthOverflow(payload_len);
+    let data_end = header_len.checked_add(payload_len).ok_or_else(too_long)?;
+    let extent_end = extent_start
+        .checked_add(data_end)
+        .and_then(|end| end.checked_add(crc_field_len))
+        .filter(|end| end.checked_add(1).is_some())
+        .ok_or_else(too_long)?;
+    Ok(block::Block {
+        block_type: block::Type::Payload,
+        flags,
+        crc_type,
+        data: header_len..data_end,
+        extent: extent_start..extent_end,
+        ..Default::default()
+    })
 }
 
 /// The output of [`Builder::build_stream`]: the parsed bundle view, the

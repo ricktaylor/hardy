@@ -200,14 +200,24 @@ pub enum ConcatError {
 /// beyond `max_size` bytes.
 ///
 /// This is the interim consumer both ends of a segment stream share until
-/// bundle storage can spool a stream directly; a capacity hint (e.g. from a
-/// wire schema that announces sizes up front) is a natural extension when a
-/// real streaming producer lands. An empty stream (a bare
+/// bundle storage can spool a stream directly. An empty stream (a bare
 /// `Final(Bytes::new())`) yields empty bytes — the caller's parser rejects
 /// those as it would any non-bundle.
 pub async fn concat_stream<R: Receiver<Segment> + ?Sized>(
     stream: &mut R,
     max_size: usize,
+) -> core::result::Result<crate::Bytes, ConcatError> {
+    concat(stream, max_size, 0).await
+}
+
+// The accumulator both public functions share. `expected` is the length the
+// caller knows the stream to have, or 0: a stream that arrives in more than
+// one segment is gathered into one allocation of that size, rather than
+// grown as the segments come.
+async fn concat<R: Receiver<Segment> + ?Sized>(
+    stream: &mut R,
+    max_size: usize,
+    expected: usize,
 ) -> core::result::Result<crate::Bytes, ConcatError> {
     // The first segment is held as-is until a second arrives, so a
     // single-`Final` stream (the whole-buffer convenience methods) is
@@ -234,14 +244,16 @@ pub async fn concat_stream<R: Receiver<Segment> + ?Sized>(
         if let Some(current) = concat.as_mut() {
             current.extend_from_slice(&data);
         } else if let Some(head) = first.take() {
+            let len = head.len() + data.len();
             let mut current = match head.try_into_mut() {
                 Ok(head) => head,
                 Err(head) => {
-                    let mut current = crate::BytesMut::with_capacity(head.len() + data.len());
+                    let mut current = crate::BytesMut::with_capacity(expected.max(len));
                     current.extend_from_slice(&head);
                     current
                 }
             };
+            current.reserve(expected.max(len) - current.len());
             current.extend_from_slice(&data);
             concat = Some(current);
         } else {
@@ -308,7 +320,7 @@ pub async fn buffer_stream<R: Receiver<Segment> + ?Sized>(
 ) -> core::result::Result<crate::Bytes, BufferError> {
     let total_len =
         usize::try_from(total_len).map_err(|_| BufferError::Unaddressable { total_len })?;
-    let data = concat_stream(stream, total_len)
+    let data = concat(stream, total_len, total_len)
         .await
         .map_err(|e| match e {
             ConcatError::Cancelled => BufferError::Cancelled,
