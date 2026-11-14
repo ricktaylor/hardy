@@ -55,7 +55,22 @@ The `hardy-otel` crate has no formal LLRs — it is internal infrastructure. The
 | `otel_unit_mapping` | `metrics_otel.rs` | 17 | All `metrics::Unit` variants → UCUM codes |
 | `macro_multiple_label_values_are_distinct` | `metrics_otel.rs` | 2 | Distinct label values → separate instruments |
 
-**Total: 26 unit tests, ~46 assertions.**
+**Total: 25 unit tests, ~46 assertions** (`otlp` feature).
+
+### Log Level Tests (`tests/log_level.rs`)
+
+| Test Function | Assertions | Scope |
+| :--- | :--- | :--- |
+| `default_is_info` | 1 | `LogLevel::default()` is `info` |
+| `names_parse_in_any_case` | 10 | Level names, lower and upper case |
+| `numeric_forms_parse` | 5 | `1`..`5` → `ERROR`..`TRACE` |
+| `unknown_names_are_refused` | 5 | `ParseLogLevelError` naming the input |
+| `display_writes_the_lowercase_name` | 5 | `Display` writes the config spelling |
+| `deserializes_from_a_name` | 1 | `serde`: deserialize from a name |
+| `serializes_the_lowercase_name_and_parses_back` | 10 | `serde`: serialize, then parse back |
+| `an_unknown_name_is_refused` | 1 | `serde`: refusal carries the parse error |
+
+**Total: 8 tests (3 under the `serde` feature).**
 
 ### Integration Tests (`tests/test_otel_export.sh`)
 
@@ -71,9 +86,10 @@ Uses a minimal OpenTelemetry Collector (contrib image) with file exporters. Test
 
 | Section | Scenario | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| UTP-OTEL-01 | Metrics bridge unit tests | 26 | 26 | Complete |
+| UTP-OTEL-01 | Metrics bridge unit tests | 25 | 25 | Complete |
+| UTP-OTEL-01 §3.0 | `LogLevel` tests | 8 | 8 | Complete |
 | OTEL-01..03 | OTLP export integration (traces, metrics, logs) | 3 | 3 | Complete (`test_otel_export.sh`) |
-| | **Total** | **29** | **29** | **100%** |
+| | **Total** | **36** | **36** | **100%** |
 
 ## 4. Line Coverage
 
@@ -117,4 +133,4 @@ Note: `lib.rs` is not unit-tested but is fully covered by the OTEL export integr
 
 ## 6. Conclusion
 
-26 unit tests verify the `metrics_otel.rs` recorder bridge across all three instrument types at three levels: direct trait calls, `Recorder` API, and `metrics::*!()` macros. The gauge state tracking (AtomicU64 CAS loop) has 7 dedicated unit tests plus 5 macro-level tests. The `lib.rs` initialisation and OTLP export path is verified by the OTEL export integration test (`tests/test_otel_export.sh`), which confirms traces (spans), metrics (counters, gauges, histograms), and structured logs reach an OTLP collector. This integration test covers all server binaries — bpa-server, tcpclv4-server, and tvr all use the same `hardy_otel::init()` call.
+25 unit tests verify the `metrics_otel.rs` recorder bridge across all three instrument types at three levels: direct trait calls, `Recorder` API, and `metrics::*!()` macros. The gauge state tracking (AtomicU64 CAS loop) has 7 dedicated unit tests plus 5 macro-level tests. The `otlp.rs` initialisation and OTLP export path is verified by the OTEL export integration test (`tests/test_otel_export.sh`), which confirms traces (spans), metrics (counters, gauges, histograms), and structured logs reach an OTLP collector. This integration test covers all server binaries — bpa-server, tcpclv4-server, and tvr all use the same `hardy_otel::init()` call.

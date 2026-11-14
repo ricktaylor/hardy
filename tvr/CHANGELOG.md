@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- The `otel` feature is on by default: the agent exports traces, metrics, and logs over OTLP when a collector is configured. Build with `--no-default-features` for console logging only.
+- Logging is set up by `hardy-otel` in every build: `log-level` is parsed by its `LogLevel` (names in any case, or `1`-`5`), and the console-only subscriber used without the `otel` feature is its `init`. Configuration files are unchanged.
+
 ## [0.2.0]
 
 ### Changed

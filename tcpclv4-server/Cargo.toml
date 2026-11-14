@@ -9,8 +9,8 @@ repository.workspace = true
 publish = false
 
 [features]
-default = []
-otel = ["dep:hardy-otel"]
+default = ["otel"]
+otel = ["hardy-otel/otlp"]
 instrument = [
     "tracing/attributes",
     "hardy-bpa/instrument",
@@ -23,11 +23,10 @@ hardy-tcpclv4 = { version = "0.4", path = "../tcpclv4", features = ["serde"] }
 hardy-bpa = { version = "0.2", path = "../bpa" }
 hardy-proto = { version = "0.2", path = "../proto" }
 hardy-async = { version = "0.2", path = "../async", features = ["signal"] }
-hardy-otel = { version = "0.2", path = "../otel", optional = true }
+hardy-otel = { version = "0.3", path = "../otel", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = { version = "0.1", default-features = false }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 directories = "6"
 serde = { version = "1", features = ["derive"] }

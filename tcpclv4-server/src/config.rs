@@ -1,29 +1,8 @@
 use std::path::PathBuf;
 
+use hardy_otel::LogLevel;
 use hardy_tcpclv4::config::Config as ClaConfig;
 use serde::{Deserialize, Serialize};
-use tracing::Level;
-
-mod log_level_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::str::FromStr;
-    use tracing::Level;
-
-    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(level.as_str())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Level::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
 
 // Returns the default config directory, platform-specific:
 // - Linux: /etc/hardy/
@@ -46,10 +25,6 @@ fn default_config_dir() -> PathBuf {
 
 fn default_config_path() -> PathBuf {
     default_config_dir().join("tcpclv4")
-}
-
-fn default_log_level() -> Level {
-    Level::INFO
 }
 
 fn default_bpa_address() -> String {
@@ -75,8 +50,8 @@ pub struct Config {
     // Logging level for the tracing subscriber.
     //
     // Default: `INFO`.
-    #[serde(default = "default_log_level", with = "log_level_serde")]
-    pub log_level: Level,
+    #[serde(default)]
+    pub log_level: LogLevel,
 
     // The gRPC endpoint of the BPA to register with.
     //
@@ -158,6 +133,7 @@ mod tests {
         tls::{ClientAuth, Error as TlsError},
     };
     use serial_test::serial;
+    use tracing::Level;
 
     use super::*;
     use crate::server::Tcpclv4Server;
@@ -177,7 +153,7 @@ mod tests {
         let config = write_and_load("empty.toml", "");
         assert_eq!(config.bpa_address, "http://[::1]:50051");
         assert_eq!(config.cla_name, env!("CARGO_PKG_NAME"));
-        assert_eq!(config.log_level, Level::INFO);
+        assert_eq!(config.log_level.get(), Level::INFO);
         assert!(
             config.cla.listeners.is_none(),
             "absent maps to the registered default listener"
@@ -211,7 +187,7 @@ keepalive-interval = 30
         );
         assert_eq!(config.bpa_address, "http://10.0.0.1:50051");
         assert_eq!(config.cla_name, "test-cla");
-        assert_eq!(config.log_level, Level::DEBUG);
+        assert_eq!(config.log_level.get(), Level::DEBUG);
         assert_eq!(
             config.cla.listeners.unwrap(),
             vec![std::net::SocketAddr::from(([0, 0, 0, 0], 9999))]
@@ -239,7 +215,7 @@ cla:
         );
         assert_eq!(config.bpa_address, "http://10.0.0.2:50051");
         assert_eq!(config.cla_name, "yaml-cla");
-        assert_eq!(config.log_level, Level::WARN);
+        assert_eq!(config.log_level.get(), Level::WARN);
         assert_eq!(config.cla.segment_mru, Some(NonZeroU64::new(4096).unwrap()));
     }
 
@@ -257,7 +233,7 @@ cla:
         );
         assert_eq!(config.bpa_address, "http://10.0.0.3:50051");
         assert_eq!(config.cla_name, "json-cla");
-        assert_eq!(config.log_level, Level::ERROR);
+        assert_eq!(config.log_level.get(), Level::ERROR);
     }
 
     // Environment variables override config file values.
@@ -292,7 +268,7 @@ log-level = "warn"
             "non-overridden value should come from file"
         );
         assert_eq!(
-            config.log_level,
+            config.log_level.get(),
             Level::ERROR,
             "env var should override log level"
         );
@@ -332,7 +308,7 @@ log-level = "warn"
         unsafe { std::env::remove_var("HARDY_TCPCLV4_CONFIG_FILE") };
 
         let config = result.expect("the loader's own env var must not be a schema error");
-        assert_eq!(config.log_level, Level::WARN);
+        assert_eq!(config.log_level.get(), Level::WARN);
     }
 
     // Missing config file returns an error.

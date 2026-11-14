@@ -125,7 +125,7 @@ debounce window.
 
 ## Metrics
 
-When running with the `otel` feature and an OTLP exporter, the
+When an OTLP collector is configured (the `otel` feature is on by default), the
 following metrics are available:
 
 | Metric | Type | Description |

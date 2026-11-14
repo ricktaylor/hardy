@@ -10,6 +10,8 @@ Consolidated OpenTelemetry integration providing logs, traces, and metrics expor
 
 - **Hide complexity.** OpenTelemetry's Rust ecosystem involves multiple crates with non-trivial configuration. This library encapsulates the complexity into a single `init()` function.
 
+- **One logging setup, with or without export.** The configured log level and the console subscriber are the same whether or not telemetry is exported, so binaries own neither.
+
 - **Guard-based lifecycle.** Telemetry resources must be flushed and shut down properly. The `OtelGuard` ensures providers are cleaned up when the application exits.
 
 ## Architecture Overview
@@ -39,7 +41,7 @@ All providers use OTLP export over gRPC (via tonic) to a collector at `localhost
 
 Rather than requiring applications to configure each provider separately, `init()` sets up all three signal types with sensible defaults. It returns an `OtelGuard` that the caller must keep alive; dropping the guard triggers provider shutdown with proper flushing.
 
-This trades flexibility for simplicity - most Hardy applications need identical telemetry configuration. The `level` parameter sets the default log level, which can be overridden at runtime via the `RUST_LOG` environment variable (e.g. `RUST_LOG=debug` or `RUST_LOG=hardy_bpa=trace`).
+This trades flexibility for simplicity - most Hardy applications need identical telemetry configuration. The `level` parameter (a `LogLevel`) sets the default log level, which can be overridden at runtime via the `RUST_LOG` environment variable (e.g. `RUST_LOG=debug` or `RUST_LOG=hardy_bpa=trace`).
 
 ### tracing as the Instrumentation Framework
 
@@ -85,15 +87,19 @@ Export strategies differ by signal type:
 - **Traces and logs** use batch export - events accumulate and are sent in batches to reduce overhead
 - **Metrics** use periodic export - aggregated values are sent at regular intervals
 
+### Light Core, OTLP Behind a Feature
+
+The crate has two layers. The core, always built, is `LogLevel` and a console-only `init()`: every Hardy binary needs a configured log level and a subscriber, including builds that export nothing, and those should not compile the OpenTelemetry and tonic stack. The `otlp` feature swaps in the exporting `init()` described above.
+
+Both builds expose the same `init(pkg_name, pkg_ver, level) -> OtelGuard`; without `otlp` the guard holds nothing. A binary therefore calls `init()` unconditionally and holds the guard, with no `cfg` of its own: whether telemetry is exported is decided only by which hardy-otel features are enabled. Splitting by feature rather than by crate keeps the one place that owns the subscriber, so the console and export builds cannot drift in filtering or `RUST_LOG` handling.
+
+`LogLevel` wraps `tracing::Level` rather than exposing it so the config spelling has one owner: it parses names in any case and the numeric forms `1`–`5`, writes the lowercase name, and defaults to `info`, so a config struct needs only `#[serde(default)]`.
+
 ## Integration
 
-### With hardy-bpa-server
+hardy-bpa-server, hardy-tcpclv4-server, and hardy-tvr each depend on hardy-otel unconditionally for `LogLevel` and `init()`, and carry an `otel` feature, on by default, that enables `hardy-otel/otlp`. Each calls `init()` at startup with its configured `log-level` and holds the guard for its lifetime. Building with `--no-default-features` (plus whichever other features are wanted) leaves the OpenTelemetry stack out and logs to the console only.
 
-When compiled with the `otel` feature, the server calls `hardy_otel::init()` at startup and holds the guard for its lifetime.
-
-### With hardy-tcpclv4-server
-
-Similar integration for the standalone TCPCLv4 server.
+The mtcp interop CLA uses the core alone.
 
 ## Standards Compliance
 

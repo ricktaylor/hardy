@@ -5,8 +5,8 @@ use hardy_async::watcher::WatchMode;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::Service;
 use hardy_eid_patterns::EidPattern;
+use hardy_otel::LogLevel;
 use serde::{Deserialize, Serialize};
-use tracing::Level;
 
 use crate::error::Error;
 
@@ -35,31 +35,6 @@ pub(crate) fn default_config_dir() -> std::path::PathBuf {
 
 fn default_config_path() -> std::path::PathBuf {
     default_config_dir().join("bpa")
-}
-
-fn default_log_level() -> Level {
-    Level::INFO
-}
-
-mod log_level_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::str::FromStr;
-    use tracing::Level;
-
-    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(level.as_str())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Level::from_str(&s).map_err(serde::de::Error::custom)
-    }
 }
 
 // A positive duration, written as a humantime string (e.g. `30s`, `10m`,
@@ -174,8 +149,8 @@ pub struct BuiltInServicesConfig {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     // Logging level (default: INFO)
-    #[serde(default = "default_log_level", with = "log_level_serde")]
-    pub log_level: Level,
+    #[serde(default)]
+    pub log_level: LogLevel,
 
     // Whether to generate and dispatch bundle status reports; absent
     // defers to the BPA default.
@@ -295,6 +270,7 @@ mod tests {
     #[cfg(feature = "tcpclv4")]
     use hardy_tcpclv4::tls::ClientAuth;
     use serial_test::serial;
+    use tracing::Level;
 
     use super::*;
 
@@ -317,7 +293,7 @@ mod tests {
     )]
     fn empty_config_has_defaults() {
         let config = write_and_load("empty.yaml", "");
-        assert_eq!(config.log_level, Level::INFO);
+        assert_eq!(config.log_level.get(), Level::INFO);
         // Absent knobs stay unset, deferring to the BPA builder defaults.
         assert!(config.status_reports.is_none());
         assert!(config.poll_channel_depth.is_none());
@@ -354,7 +330,7 @@ admin-endpoints:
   - "ipn:42.0"
 "#,
         );
-        assert_eq!(config.log_level, Level::DEBUG);
+        assert_eq!(config.log_level.get(), Level::DEBUG);
         assert_eq!(config.status_reports, Some(true));
         assert_eq!(config.poll_channel_depth.map(|v| v.get()), Some(32));
     }
@@ -400,7 +376,7 @@ status-reports = true
 poll-channel-depth = 64
 "#,
         );
-        assert_eq!(config.log_level, Level::WARN);
+        assert_eq!(config.log_level.get(), Level::WARN);
         assert_eq!(config.status_reports, Some(true));
         assert_eq!(config.poll_channel_depth.map(|v| v.get()), Some(64));
     }
@@ -416,7 +392,7 @@ poll-channel-depth = 64
     "status-reports": true
 }"#,
         );
-        assert_eq!(config.log_level, Level::ERROR);
+        assert_eq!(config.log_level.get(), Level::ERROR);
         assert_eq!(config.status_reports, Some(true));
     }
 
@@ -435,7 +411,7 @@ poll-channel-depth = 64
         unsafe { std::env::remove_var("HARDY_BPA_SERVER_STATUS_REPORTS") };
 
         assert_eq!(
-            config.log_level,
+            config.log_level.get(),
             Level::DEBUG,
             "env var should override log level"
         );
@@ -674,7 +650,7 @@ storage:
         unsafe { std::env::remove_var("HARDY_BPA_SERVER_CONFIG_FILE") };
 
         let config = result.expect("the loader's own env var must not be a schema error");
-        assert_eq!(config.log_level, Level::WARN);
+        assert_eq!(config.log_level.get(), Level::WARN);
     }
 
     // Unknown keys are refused with the known keys listed, at the top

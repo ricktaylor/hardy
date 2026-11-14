@@ -1961,7 +1961,6 @@ dependencies = [
  "tokio",
  "trace-err",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2150,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-otel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dashmap",
  "metrics",
@@ -2159,6 +2158,9 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
@@ -2292,7 +2294,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2350,7 +2351,6 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
