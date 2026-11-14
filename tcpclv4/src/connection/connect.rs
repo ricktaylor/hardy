@@ -322,6 +322,7 @@ impl Connector {
                 sink,
                 connection::Connection { tx, local_addr },
                 remote_addr,
+                connection::Origin::Dialled,
                 peer_init.node_id,
             )
             .await;

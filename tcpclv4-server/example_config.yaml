@@ -3,6 +3,12 @@
 # An empty list disables listening (dial-only).
 #listeners: ["[::]:4556"]
 
+# Peers to keep connected, as host:port. Each is resolved via DNS and dialled
+# at startup, and dialled again whenever no session to it remains (the peer
+# restarted, or the link went away), at most once every 5 seconds. Both ends
+# may list each other: each forwards over the sessions it dialled.
+#peers: ["bpa2:4556"]
+
 # The Maximum Receive Unit (MRU) for a single TCP segment payload, in bytes.
 # This defines the largest single block of data that can be received in one go.
 #segment-mru: 16384
@@ -11,7 +17,10 @@
 # This is the largest bundle that can be received over this CLA.
 #transfer-mru: 1073741824 # (1 GiB)
 
-# The maximum number of idle incoming connections to keep open per remote IP address.
+# A soft cap on the sessions pooled per peer socket address (IP address and
+# port), active plus idle. A busy pool below it dials another session, but only
+# to an address this node has dialled before; a session that finishes a
+# transfer above it is closed. 0 disables pooling.
 #max-idle-connections: 6
 
 # The maximum number of transfers accepted but not yet resolved with an outcome, per peer (zero is rejected).

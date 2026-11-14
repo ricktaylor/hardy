@@ -87,9 +87,9 @@ impl Tcpclv4Builder {
         self
     }
 
-    /// Idle connections retained per remote address for reuse by later transfers; zero disables pooling.
+    /// Soft cap on the sessions pooled per remote address, active plus idle; zero disables pooling.
     ///
-    /// Default: 6.
+    /// A busy pool under the cap dials another session, if its address was reached by dialling; a session that finishes a transfer over the cap is closed rather than kept idle. Default: 6.
     pub fn max_idle_connections(mut self, limit: usize) -> Self {
         self.max_idle_connections = limit;
         self

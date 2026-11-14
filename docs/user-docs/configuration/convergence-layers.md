@@ -42,7 +42,7 @@ The schema is strict: an unknown key in a TCPCLv4 section (including its `tls` b
 | `listeners` | List of IP:port strings | `["[::]:4556"]` | The listening addresses, one entry per listener. Use `["[::]:4556"]` for all interfaces or `["127.0.0.1:4556"]` for localhost only; absent defaults to the IANA-registered `[::]:4556`, and an empty list (`[]`) disables listening for a dial-only node. |
 | `segment-mru` | Positive integer (bytes) | `16384` | Maximum Receive Unit for a single TCP segment payload. Increase to `65536` for high-bandwidth links. Zero is a startup error. |
 | `transfer-mru` | Positive integer (bytes) | `1073741824` (1 GiB) | Maximum bundle size that can be received. Zero is a startup error. |
-| `max-idle-connections` | Non-negative integer | `6` | Maximum idle incoming connections per remote IP address. Increase for high-fan-in topologies; `0` disables pooling. |
+| `max-idle-connections` | Non-negative integer | `6` | Soft cap on the sessions pooled per peer socket address (IP address and port), active plus idle. A busy pool below it dials another session, but only to an address this node has dialled; a session that finishes a transfer above it is closed. `0` disables pooling. |
 | `max-outstanding-transfers` | Positive integer | `16` | Maximum transfers accepted but not yet resolved with an outcome, per peer. Bounds the bundles held in memory by in-flight and queued transfers to each peer; when reached, further forwards to that peer are held unanswered, which is the flow control back to the BPA. Zero is a configuration error. |
 | `connection-rate-limit` | Positive integer (per second) | `64` | Maximum incoming connections accepted per second; the listener delays accepts beyond this rate. Zero is a startup error. |
 
@@ -135,6 +135,7 @@ above. The TCPCLv4 options are flattened to the top level (not nested).
 | `bpa-address` | URL string | *Required* | BPA gRPC endpoint to connect to. |
 | `cla-name` | String | *Required* | Name to register with the BPA. |
 | `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. |
+| `peers` | List of `host:port` strings | `[]` | Peers to keep connected. Each is resolved via DNS and dialled at startup, and dialled again whenever no session to it remains (the peer restarted, or the link went away), at most once every 5 seconds. Two nodes may list each other: each forwards over the sessions it dialled. |
 
 The default configuration file is `hardy-tcpclv4.yaml` in the current
 directory. Environment variable prefix is `HARDY_TCPCLV4_`.

@@ -2283,6 +2283,7 @@ dependencies = [
  "directories",
  "hardy-async",
  "hardy-bpa",
+ "hardy-bpv7",
  "hardy-otel",
  "hardy-proto",
  "hardy-tcpclv4",
