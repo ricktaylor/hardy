@@ -284,7 +284,7 @@ impl Dispatcher {
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node).
         if hv.parsed.bundle.primary.id.source != *expected_source {
-            return Err(Error::InvalidDestination(
+            return Err(Error::InvalidSource(
                 hv.parsed.bundle.primary.id.source.clone(),
             ));
         }

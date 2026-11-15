@@ -67,6 +67,11 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
+    /// A raw bundle's source EID is not the sending registration's
+    /// endpoint; carries the bundle's source.
+    #[error("Bundle source {0} is not the registration's endpoint")]
+    InvalidSource(Eid),
+
     /// The bundle is a fragment. Fragmentation is a forwarding-time action
     /// (RFC 9171 §5.8) — a source never emits fragments — so the raw
     /// originate door rejects a service-built fragment outright.
@@ -466,9 +471,11 @@ pub trait ServiceSink: Send + Sync {
     ///
     /// The service delivers `bpv7::Builder`-constructed bundle bytes segment
     /// by segment, and the BPA parses and validates the assembled bundle
-    /// (security boundary - services are not trusted). Dropping the sender
-    /// before a [`Segment::Final`](crate::stream::Segment::Final) cancels
-    /// the send and returns [`Error::StreamCancelled`].
+    /// (security boundary - services are not trusted). A bundle whose
+    /// source is not this registration's endpoint is rejected with
+    /// [`Error::InvalidSource`]. Dropping the sender before a
+    /// [`Segment::Final`](crate::stream::Segment::Final) cancels the send
+    /// and returns [`Error::StreamCancelled`].
     ///
     /// A caller holding a complete bundle in memory sends it as a
     /// one-segment stream, since `Bytes` implements [`stream::Receiver`](crate::stream::Receiver):
