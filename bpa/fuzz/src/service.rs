@@ -70,7 +70,7 @@ impl hardy_bpa::services::Application for PipeService {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {
+    async fn on_unregister(&self, _endpoint: &Eid) {
         if self.sink.get().is_none() {
             panic!("Extra unregister!");
         }
@@ -78,6 +78,7 @@ impl hardy_bpa::services::Application for PipeService {
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,

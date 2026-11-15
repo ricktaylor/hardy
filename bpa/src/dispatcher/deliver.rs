@@ -98,8 +98,14 @@ impl Dispatcher {
                 // Pass raw bundle bytes to low-level services: the whole
                 // bundle is in hand, so it travels as a single Final segment.
                 let total_len = data.len() as u64;
-                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
-                    .await
+                svc.on_deliver(
+                    service.eid(),
+                    bundle.id(),
+                    bundle.expiry(),
+                    total_len,
+                    &mut data,
+                )
+                .await
             }
             ServiceImpl::Application(app) => {
                 // Extract and decrypt payload for Application.
@@ -169,6 +175,7 @@ impl Dispatcher {
                 // so it travels as a single Final segment.
                 let total_len = payload.len() as u64;
                 app.on_deliver(
+                    service.eid(),
                     bundle.id(),
                     bundle.expiry(),
                     bundle.primary().flags.app_ack_requested,

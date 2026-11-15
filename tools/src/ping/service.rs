@@ -586,7 +586,7 @@ impl hardy_bpa::services::Service for Service {
         self.sink.get_or_init(|| sink);
     }
 
-    async fn on_unregister(&self) {
+    async fn on_unregister(&self, _endpoint: &Eid) {
         // Nothing to do
     }
 
@@ -597,6 +597,7 @@ impl hardy_bpa::services::Service for Service {
     // see bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,

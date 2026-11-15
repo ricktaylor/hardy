@@ -92,6 +92,22 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
         unimplemented!("not needed for CLA fuzzing")
     }
 
+    async fn register_service_endpoints(
+        &self,
+        _service_ids: &[hardy_bpv7::eid::Service],
+        _service: Arc<dyn hardy_bpa::services::Service>,
+    ) -> hardy_bpa::services::Result<Vec<hardy_bpv7::eid::Eid>> {
+        unimplemented!("not needed for CLA fuzzing")
+    }
+
+    async fn register_application_endpoints(
+        &self,
+        _service_ids: &[hardy_bpv7::eid::Service],
+        _application: Arc<dyn hardy_bpa::services::Application>,
+    ) -> hardy_bpa::services::Result<Vec<hardy_bpv7::eid::Eid>> {
+        unimplemented!("not needed for CLA fuzzing")
+    }
+
     async fn register_dynamic_service(
         &self,
         _service: Arc<dyn hardy_bpa::services::Service>,

@@ -128,10 +128,11 @@ impl Service for RecordingService {
         let _ = self.eid_tx.send(endpoint.clone());
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
         _total_len: u64,
@@ -162,10 +163,11 @@ impl Application for RecordingApp {
         let _ = self.eid_tx.send(source.clone());
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
         _ack_requested: bool,
@@ -304,10 +306,14 @@ async fn service_id_taken_by_an_application_is_refused() {
     else {
         panic!("a taken service id must fail build()");
     };
-    let Error::Service { service_id, source } = &err else {
+    let Error::Service {
+        service_ids,
+        source,
+    } = &err
+    else {
         panic!("expected Service, got {err:?}");
     };
-    assert_eq!(*service_id, ServiceId::Ipn(1));
+    assert_eq!(*service_ids, [ServiceId::Ipn(1)]);
     assert!(
         matches!(**source, services::Error::ServiceIdInUse(_)),
         "{source:?}"
@@ -327,8 +333,9 @@ async fn administrative_service_id_is_refused() {
     assert!(
         matches!(
             &err,
-            Error::Service { service_id: ServiceId::Ipn(0), source }
-                if matches!(**source, services::Error::AdministrativeEndpoint(_))
+            Error::Service { service_ids, source }
+                if *service_ids == [ServiceId::Ipn(0)]
+                    && matches!(**source, services::Error::AdministrativeEndpoint(_))
         ),
         "{err:?}"
     );
@@ -347,10 +354,14 @@ async fn service_id_without_a_node_id_for_its_scheme_is_refused() {
     else {
         panic!("an unresolvable service id must fail build()");
     };
-    let Error::Service { service_id, source } = &err else {
+    let Error::Service {
+        service_ids,
+        source,
+    } = &err
+    else {
         panic!("expected Service, got {err:?}");
     };
-    assert_eq!(*service_id, ServiceId::Dtn("echo".into()));
+    assert_eq!(*service_ids, [ServiceId::Dtn("echo".into())]);
     assert!(matches!(**source, services::Error::NodeId(_)), "{source:?}");
 }
 
@@ -401,9 +412,13 @@ async fn service_conversion_failure_names_the_service() {
     else {
         panic!("a failed conversion must fail build()");
     };
-    let Error::ServiceConversion { service_id, source } = &err else {
+    let Error::ServiceConversion {
+        service_ids,
+        source,
+    } = &err
+    else {
         panic!("expected ServiceConversion, got {err:?}");
     };
-    assert_eq!(*service_id, ServiceId::Ipn(9));
+    assert_eq!(*service_ids, [ServiceId::Ipn(9)]);
     assert!(source.is::<ConfigError>(), "{source:?}");
 }

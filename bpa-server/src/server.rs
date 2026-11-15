@@ -226,10 +226,10 @@ impl BpaServer {
                     if services.is_empty() {
                         warn!("built-in-services.echo: no endpoints configured, skipping");
                     } else {
-                        for service_id in services {
-                            let echo: Arc<dyn Service> = Arc::new(EchoService::new());
-                            builder = builder.service(service_id, echo);
-                        }
+                        // One instance serves every echo endpoint, all or
+                        // none.
+                        let echo: Arc<dyn Service> = Arc::new(EchoService::new());
+                        builder = builder.service_endpoints(services, echo);
                     }
                 }
             }

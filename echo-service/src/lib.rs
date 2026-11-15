@@ -10,10 +10,14 @@ reflected. The response is submitted to the BPA for normal forwarding.
 
 # Key types
 
-- [`EchoService`] — the service implementation, one instance per registered endpoint.
+- [`EchoService`] — the service implementation; one instance serves every
+  endpoint it is registered on, answering each request from the endpoint
+  that was pinged.
 */
 
-use hardy_async::sync::spin::Once;
+use std::{collections::HashMap, sync::Arc};
+
+use hardy_async::sync::spin::Mutex;
 use hardy_bpa::{
     async_trait,
     services::StatusNotify,
@@ -32,10 +36,12 @@ use tracing::{debug, warn};
 ///
 /// When a bundle is delivered to a registered endpoint, the service builds a
 /// fresh response bundle reflecting the payload back to the sender and submits
-/// it to the BPA. This is the DTN equivalent of ICMP echo (ping).
+/// it to the BPA. This is the DTN equivalent of ICMP echo (ping). One instance
+/// may be registered on several endpoints: each has its own sink, and a
+/// response is sent through the sink of the endpoint that was pinged.
 pub struct EchoService {
-    /// Communication channel back to the BPA, set once during registration.
-    sink: Once<Box<dyn hardy_bpa::services::ServiceSink>>,
+    /// The communication channel back to the BPA for each registered endpoint.
+    sinks: Mutex<HashMap<Eid, Arc<dyn hardy_bpa::services::ServiceSink>>>,
 }
 
 impl Default for EchoService {
@@ -45,19 +51,24 @@ impl Default for EchoService {
 }
 
 impl EchoService {
-    /// Creates a new `EchoService` with no BPA sink attached.
+    /// Creates a new `EchoService`, registered on no endpoint.
     pub fn new() -> Self {
-        EchoService { sink: Once::new() }
+        EchoService {
+            sinks: Mutex::new(HashMap::new()),
+        }
     }
 
+    /// Unregisters every endpoint this service is registered on.
     pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
+        let sinks: Vec<_> = self.sinks.lock().values().cloned().collect();
+        for sink in sinks {
             sink.unregister().await;
         }
     }
 
-    async fn echo(&self, data: hardy_bpa::Bytes) -> Result<(), hardy_bpa::Error> {
-        let Some(sink) = self.sink.get() else {
+    async fn echo(&self, endpoint: &Eid, data: hardy_bpa::Bytes) -> Result<(), hardy_bpa::Error> {
+        // The sink is cloned out, so the lock is not held across the send.
+        let Some(sink) = self.sinks.lock().get(endpoint).cloned() else {
             return Ok(());
         };
 
@@ -141,14 +152,14 @@ impl EchoService {
 
 #[async_trait]
 impl hardy_bpa::services::Service for EchoService {
-    /// Stores the BPA sink for later use when echoing bundles.
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::services::ServiceSink>) {
-        self.sink.call_once(|| sink);
+    /// Stores the endpoint's sink, for echoing bundles delivered to it.
+    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn hardy_bpa::services::ServiceSink>) {
+        self.sinks.lock().insert(endpoint.clone(), Arc::from(sink));
     }
 
-    /// No-op; no resources to release beyond the sink itself.
-    async fn on_unregister(&self) {
-        // Nothing to clean up
+    /// Releases the endpoint's sink.
+    async fn on_unregister(&self, endpoint: &Eid) {
+        self.sinks.lock().remove(endpoint);
     }
 
     /// No-op; the echo service does not act on status reports.
@@ -171,13 +182,14 @@ impl hardy_bpa::services::Service for EchoService {
     // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
+        endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> hardy_bpa::services::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
-        self.echo(data).await.map_err(Into::into)
+        self.echo(endpoint, data).await.map_err(Into::into)
     }
 }
 

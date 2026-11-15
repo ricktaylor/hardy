@@ -134,10 +134,11 @@ impl services::Application for TestApp {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
@@ -183,10 +184,11 @@ impl services::Service for EchoService {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
@@ -552,9 +554,10 @@ impl services::Service for CapturingService {
     async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
         self.sink.call_once(|| sink);
     }
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
@@ -3901,10 +3904,11 @@ impl services::Application for FailingApp {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
@@ -5181,10 +5185,11 @@ impl services::Application for BlockingNotifyApp {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,

@@ -1,9 +1,13 @@
-use hardy_async::async_trait;
+use alloc::vec::Vec;
+
+use hardy_async::closeable;
 use hardy_bpv7::eid::Eid;
 use portable_atomic::{AtomicU32, Ordering};
+use trace_err::*;
 use tracing::{error, info};
 
-use crate::{Arc, Bytes, HashMap, Weak, bundle, dispatcher, node_ids, routing, services, storage};
+use super::sink::Sink;
+use crate::{Arc, HashMap, bundle, dispatcher, node_ids, routing, services, storage};
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -12,6 +16,7 @@ use crate::{Arc, Bytes, HashMap, Weak, bundle, dispatcher, node_ids, routing, se
 // 4. No blocking/sleeping while holding lock
 
 /// Distinguishes between low-level Service and high-level Application registrations
+#[derive(Clone)]
 pub enum ServiceImpl {
     /// Low-level service with full bundle access
     LowLevel(Arc<dyn services::Service>),
@@ -132,126 +137,14 @@ impl core::fmt::Debug for Service {
     }
 }
 
-/// Sink implementation for both Service and Application traits
-struct Sink {
-    service: Weak<Service>,
-    /// Full EID for this service (pre-resolved at activation time)
-    eid: Eid,
-    registry: Arc<ServiceRegistry>,
-    rib: Arc<routing::Rib>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
-}
-
-impl Sink {
-    async fn unregister_inner(&self) {
-        if let Some(service) = self.service.upgrade()
-            && let Err(e) = self.registry.unregister(service, &self.rib).await
-        {
-            error!("Failed to unregister service: {e}");
-        }
-    }
-}
-
-#[async_trait]
-impl services::ServiceSink for Sink {
-    async fn unregister(&self) {
-        self.unregister_inner().await
-    }
-
-    async fn send(
-        &self,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        let service = self
-            .service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
-        // A service that unregisters mid-send must not originate its bundle:
-        // the registration's token races every pull, so teardown wakes this
-        // stream immediately — even parked behind a stalled producer — and
-        // the send surfaces as cancelled. Sink-side, so the dispatcher's
-        // stream consumers stay registration-agnostic.
-        let mut stream = crate::stream::CancellableReceiver {
-            inner: stream,
-            token: service.cancel.clone(),
-        };
-        self.dispatcher.originate_raw(&self.eid, &mut stream).await
-    }
-}
-
-#[async_trait]
-impl services::ApplicationSink for Sink {
-    async fn unregister(&self) {
-        self.unregister_inner().await
-    }
-
-    async fn send(
-        &self,
-        destination: Eid,
-        data: Bytes,
-        lifetime: core::time::Duration,
-        options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
-        self.dispatcher
-            .originate(self.eid.clone(), destination, data, lifetime, options)
-            .await
-    }
-
-    async fn send_streamed(
-        &self,
-        destination: Eid,
-        total_len: u64,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-        lifetime: core::time::Duration,
-        options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        let service = self
-            .service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
-        // Registration teardown wakes an in-flight send exactly as on the
-        // raw door: the token races every pull, sink-side.
-        let mut stream = crate::stream::CancellableReceiver {
-            inner: stream,
-            token: service.cancel.clone(),
-        };
-        self.dispatcher
-            .originate_streamed(
-                self.eid.clone(),
-                destination,
-                total_len,
-                &mut stream,
-                lifetime,
-                options,
-            )
-            .await
-    }
-}
-
-impl Drop for Sink {
-    fn drop(&mut self) {
-        if let Some(service) = self.service.upgrade() {
-            let registry = self.registry.clone();
-            let rib = self.rib.clone();
-            hardy_async::spawn!(self.registry.tasks, "sink_drop_cleanup", async move {
-                if let Err(e) = registry.unregister(service, &rib).await {
-                    error!("Failed to unregister service: {e}");
-                }
-            });
-        }
-    }
-}
-
 type ServiceMap = HashMap<hardy_bpv7::eid::Service, Arc<Service>>;
 
+// One configured registration: a service or application and the ids it
+// registers on, all or none.
+type PendingRegistration = (Vec<hardy_bpv7::eid::Service>, ServiceImpl);
+
 pub struct ServiceRegistryBuilder {
-    services: Vec<(hardy_bpv7::eid::Service, ServiceImpl)>,
+    services: Vec<PendingRegistration>,
 }
 
 impl ServiceRegistryBuilder {
@@ -261,29 +154,30 @@ impl ServiceRegistryBuilder {
         }
     }
 
-    // Parks a configured registration, refusing every service id that
-    // activation would: the administrative endpoint, one already taken, and
-    // one whose scheme has no node id. Activation happens in
-    // [`ServiceRegistry::start`], after storage recovery — registrations
-    // must not race the consistency check — so configuration errors are
-    // surfaced here, where the build can fail.
+    // Parks a configured registration on `service_ids`, refusing every id
+    // that activation would: the administrative endpoint, one whose scheme
+    // has no node id, and one taken by this or an earlier registration.
+    // Activation happens in [`ServiceRegistry::start`], after storage
+    // recovery — registrations must not race the consistency check — so
+    // configuration errors are surfaced here, where the build can fail.
     pub fn insert(
         &mut self,
-        service_id: hardy_bpv7::eid::Service,
+        service_ids: Vec<hardy_bpv7::eid::Service>,
         service: ServiceImpl,
         node_ids: &node_ids::NodeIds,
     ) -> services::Result<()> {
-        if node_ids::service_is_admin_endpoint(&service_id) {
-            return Err(services::Error::AdministrativeEndpoint(
-                service_id.to_string(),
-            ));
+        resolve_endpoints(&service_ids, node_ids)?;
+        if let Some(taken) = service_ids.iter().find(|service_id| {
+            self.services
+                .iter()
+                .any(|(ids, _)| ids.contains(service_id))
+        }) {
+            return Err(services::Error::ServiceIdInUse(taken.to_string()));
         }
-        if self.services.iter().any(|(id, _)| *id == service_id) {
-            return Err(services::Error::ServiceIdInUse(service_id.to_string()));
+        for service_id in &service_ids {
+            info!("Inserted service: {service_id}");
         }
-        node_ids.resolve_eid(&service_id)?;
-        info!("Inserted service: {service_id}");
-        self.services.push((service_id, service));
+        self.services.push((service_ids, service));
         Ok(())
     }
 
@@ -306,9 +200,10 @@ pub struct ServiceRegistry {
     services: hardy_async::sync::spin::Mutex<ServiceMap>,
     // Builder-configured registrations, parked until `start` activates them
     // after storage recovery.
-    pending: hardy_async::sync::spin::Mutex<Vec<(hardy_bpv7::eid::Service, ServiceImpl)>>,
+    pending: hardy_async::sync::spin::Mutex<Vec<PendingRegistration>>,
     next_dynamic: AtomicU32,
-    tasks: hardy_async::TaskPool,
+    // Shared with `Sink`, whose drop cleanup is spawned here.
+    pub(super) tasks: hardy_async::TaskPool,
 }
 
 impl ServiceRegistry {
@@ -322,13 +217,13 @@ impl ServiceRegistry {
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) {
         let pending = core::mem::take(&mut *self.pending.lock());
-        for (service_id, service) in pending {
+        for (service_ids, service) in pending {
             // Validated at build; a failure here is a bug, not a config error.
             if let Err(e) = self
-                .register(&service_id, service, node_ids, rib, dispatcher)
+                .register_endpoints(&service_ids, service, node_ids, rib, dispatcher)
                 .await
             {
-                error!("Failed to activate configured service {service_id}: {e}");
+                error!("Failed to activate configured service {service_ids:?}: {e}");
             }
         }
     }
@@ -361,14 +256,15 @@ impl ServiceRegistry {
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
-        self.register(
-            &service_id,
+        self.register_endpoints(
+            &[service_id],
             ServiceImpl::LowLevel(service),
             node_ids,
             rib,
             dispatcher,
         )
         .await
+        .map(single_eid)
     }
 
     pub async fn register_application(
@@ -379,14 +275,15 @@ impl ServiceRegistry {
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
-        self.register(
-            &service_id,
+        self.register_endpoints(
+            &[service_id],
             ServiceImpl::Application(application),
             node_ids,
             rib,
             dispatcher,
         )
         .await
+        .map(single_eid)
     }
 
     /// Register a service with a dynamically assigned IPN service number.
@@ -420,41 +317,85 @@ impl ServiceRegistry {
         hardy_bpv7::eid::Service::Ipn(id)
     }
 
-    async fn register(
+    // Registers one service or application on every id in `service_ids`,
+    // all or none: every id is validated, and the set is published under
+    // one lock, before any registration goes live. Each id then becomes its
+    // own registration, with its own delivery queue and sink. Returns the
+    // EIDs in `service_ids` order.
+    pub async fn register_endpoints(
         self: &Arc<Self>,
-        service_id: &hardy_bpv7::eid::Service,
+        service_ids: &[hardy_bpv7::eid::Service],
         service: ServiceImpl,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> services::Result<Eid> {
-        if node_ids::service_is_admin_endpoint(service_id) {
-            return Err(services::Error::AdministrativeEndpoint(
-                service_id.to_string(),
+    ) -> services::Result<Vec<Eid>> {
+        let eids = resolve_endpoints(service_ids, node_ids)?;
+
+        // Construct every registration complete — the delivery queue and
+        // canonical EID are constructor arguments — then publish them all
+        // atomically with the duplicate check: nothing reachable is ever
+        // half-built, the RIB (added below) only ever sees a deliverable
+        // service, and a taken id publishes none of the set. Each channel's
+        // creation-time poll recovers any DeliverPending bundles left over
+        // from a previous registration under the same EID.
+        let registrations: Vec<_> = service_ids
+            .iter()
+            .zip(&eids)
+            .map(|(service_id, eid)| {
+                let (tx, rx) = dispatcher.new_delivery_channel(eid);
+                let registration =
+                    Service::new(service.clone(), service_id.clone(), eid.clone(), tx);
+                (registration, rx)
+            })
+            .collect();
+        if let Err(e) = self.publish(&registrations) {
+            // The losers close the channels they opened: each channel
+            // spawns its storage poller at creation, and dropping the
+            // sender does not close it — an unclosed loser parks that
+            // poller until store shutdown.
+            for (registration, _) in &registrations {
+                registration.close_queue();
+            }
+            return Err(e);
+        }
+
+        for (registration, rx) in registrations {
+            self.activate(registration, rx, rib, dispatcher).await;
+        }
+        Ok(eids)
+    }
+
+    // Publishes every registration, or none if any service id is taken.
+    fn publish(
+        &self,
+        registrations: &[(Arc<Service>, closeable::Receiver<bundle::Bundle>)],
+    ) -> services::Result<()> {
+        let mut services = self.services.lock();
+        if let Some((taken, _)) = registrations
+            .iter()
+            .find(|(registration, _)| services.contains_key(&registration.service_id))
+        {
+            return Err(services::Error::ServiceIdInUse(
+                taken.service_id.to_string(),
             ));
         }
-        let eid = node_ids.resolve_eid(service_id)?;
-
-        // Construct the service complete — the delivery queue and canonical
-        // EID are constructor arguments — then publish atomically with the
-        // duplicate check: nothing reachable is ever half-built, and the
-        // RIB (added below) only ever sees a deliverable service. The
-        // channel's creation-time poll recovers any DeliverPending bundles
-        // left over from a previous registration under the same EID.
-        let (tx, rx) = dispatcher.new_delivery_channel(&eid);
-        let service = Service::new(service, service_id.clone(), eid.clone(), tx);
-        {
-            let mut services = self.services.lock();
-            if services.contains_key(service_id) {
-                // The loser closes the channel it opened: the channel
-                // spawns its storage poller at creation, and dropping the
-                // sender does not close it — an unclosed loser parks that
-                // poller until store shutdown.
-                service.close_queue();
-                return Err(services::Error::ServiceIdInUse(service_id.to_string()));
-            }
-            services.insert(service_id.clone(), service.clone());
+        for (registration, _) in registrations {
+            services.insert(registration.service_id.clone(), registration.clone());
         }
+        Ok(())
+    }
+
+    // Brings one published registration live: its delivery queue, its
+    // route, then `on_register` with its own sink.
+    async fn activate(
+        self: &Arc<Self>,
+        service: Arc<Service>,
+        rx: closeable::Receiver<bundle::Bundle>,
+        rib: &Arc<routing::Rib>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) {
+        let eid = service.eid().clone();
         dispatcher.start_delivery_queue(service.clone(), rx);
 
         let _ = rib.add_service(eid.clone(), service.clone()).await;
@@ -477,16 +418,15 @@ impl ServiceRegistry {
         // each bundle out of WaitingForService with a status CAS.
         {
             let dispatcher = dispatcher.clone();
-            let eid = eid.clone();
             hardy_async::spawn!(self.tasks, "post_registration_poll", async move {
                 dispatcher.poll_service_waiting(&eid).await;
             });
         }
         metrics::gauge!("bpa.service.registered").increment(1.0);
-        Ok(eid)
+        info!("Registered service: {}", service.eid());
     }
 
-    async fn unregister(
+    pub(super) async fn unregister(
         &self,
         service: Arc<Service>,
         rib: &Arc<routing::Rib>,
@@ -517,8 +457,8 @@ impl ServiceRegistry {
         rib.remove_service(&eid, service.clone()).await;
 
         match &service.service {
-            ServiceImpl::LowLevel(svc) => svc.on_unregister().await,
-            ServiceImpl::Application(app) => app.on_unregister().await,
+            ServiceImpl::LowLevel(svc) => svc.on_unregister(&eid).await,
+            ServiceImpl::Application(app) => app.on_unregister(&eid).await,
         }
 
         info!("Unregistered service: {eid}");
@@ -526,8 +466,41 @@ impl ServiceRegistry {
     }
 }
 
+// Resolves each id of a multi-endpoint registration to its EID, refusing
+// the set if any id is the administrative endpoint, has no node id for its
+// scheme, or appears twice.
+fn resolve_endpoints(
+    service_ids: &[hardy_bpv7::eid::Service],
+    node_ids: &node_ids::NodeIds,
+) -> services::Result<Vec<Eid>> {
+    if service_ids.is_empty() {
+        return Err(services::Error::NoServiceIds);
+    }
+    let mut eids = Vec::with_capacity(service_ids.len());
+    for (i, service_id) in service_ids.iter().enumerate() {
+        if node_ids::service_is_admin_endpoint(service_id) {
+            return Err(services::Error::AdministrativeEndpoint(
+                service_id.to_string(),
+            ));
+        }
+        if service_ids[..i].contains(service_id) {
+            return Err(services::Error::ServiceIdInUse(service_id.to_string()));
+        }
+        eids.push(node_ids.resolve_eid(service_id)?);
+    }
+    Ok(eids)
+}
+
+// The one EID a single-id registration resolved to.
+fn single_eid(mut eids: Vec<Eid>) -> Eid {
+    eids.pop()
+        .trace_expect("a single-id registration resolves exactly one EID")
+}
+
 #[cfg(test)]
 mod tests {
+    use hardy_async::async_trait;
+
     use crate::bpa::{Bpa, BpaRegistration};
 
     struct TestApp {
@@ -553,9 +526,10 @@ mod tests {
         ) {
             self.sink.call_once(|| sink);
         }
-        async fn on_unregister(&self) {}
+        async fn on_unregister(&self, _endpoint: &Eid) {}
         async fn on_deliver(
             &self,
+            _endpoint: &Eid,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _expiry: time::OffsetDateTime,
             _ack_requested: bool,
@@ -647,10 +621,11 @@ mod tests {
         ) {
         }
 
-        async fn on_unregister(&self) {}
+        async fn on_unregister(&self, _endpoint: &Eid) {}
 
         async fn on_deliver(
             &self,
+            _endpoint: &Eid,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _expiry: time::OffsetDateTime,
             _total_len: u64,
@@ -684,7 +659,7 @@ mod tests {
         ] {
             let service = ServiceImpl::LowLevel(Arc::new(TestService));
             assert!(matches!(
-                builder.insert(admin, service, &node_ids),
+                builder.insert(vec![admin], service, &node_ids),
                 Err(services::Error::AdministrativeEndpoint(_))
             ));
         }
@@ -692,7 +667,7 @@ mod tests {
         // The neighbouring non-zero id remains registrable.
         let service = ServiceImpl::LowLevel(Arc::new(TestService));
         builder
-            .insert(hardy_bpv7::eid::Service::Ipn(1), service, &node_ids)
+            .insert(vec![hardy_bpv7::eid::Service::Ipn(1)], service, &node_ids)
             .expect("ipn service 1 is not the admin endpoint");
     }
 }

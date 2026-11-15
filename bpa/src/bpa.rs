@@ -11,7 +11,10 @@ use crate::{
     otel_metrics,
     policy::FlowControllerFactory,
     routing::{self, Rib, RoutingAgent},
-    services::{self, Service, registry::ServiceRegistry},
+    services::{
+        self, Service,
+        registry::{ServiceImpl, ServiceRegistry},
+    },
     storage::store::Store,
 };
 
@@ -171,6 +174,29 @@ pub trait BpaRegistration: Send + Sync {
         service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
+
+    /// Register one low-level Service on several endpoints, all or none.
+    ///
+    /// Each id becomes its own registration: the service's
+    /// [`on_register`](services::Service::on_register) is called once per
+    /// endpoint with that endpoint's own sink. Returns the endpoint EIDs in
+    /// `service_ids` order. An id that is taken, repeated, the
+    /// administrative endpoint, or has no node id for its scheme fails the
+    /// whole call, and no endpoint is registered.
+    async fn register_service_endpoints(
+        &self,
+        service_ids: &[hardy_bpv7::eid::Service],
+        service: Arc<dyn Service>,
+    ) -> services::Result<Vec<hardy_bpv7::eid::Eid>>;
+
+    /// Register one high-level Application on several endpoints, all or
+    /// none, as [`register_service_endpoints`](Self::register_service_endpoints)
+    /// does for a Service.
+    async fn register_application_endpoints(
+        &self,
+        service_ids: &[hardy_bpv7::eid::Service],
+        application: Arc<dyn services::Application>,
+    ) -> services::Result<Vec<hardy_bpv7::eid::Eid>>;
 
     /// Register a low-level Service with a dynamically assigned service ID.
     async fn register_dynamic_service(
@@ -346,6 +372,40 @@ impl BpaRegistration for Bpa {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
+    async fn register_service_endpoints(
+        &self,
+        service_ids: &[hardy_bpv7::eid::Service],
+        service: Arc<dyn services::Service>,
+    ) -> services::Result<Vec<hardy_bpv7::eid::Eid>> {
+        self.service_registry
+            .register_endpoints(
+                service_ids,
+                ServiceImpl::LowLevel(service),
+                &self.node_ids,
+                &self.rib,
+                &self.dispatcher,
+            )
+            .await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, application)))]
+    async fn register_application_endpoints(
+        &self,
+        service_ids: &[hardy_bpv7::eid::Service],
+        application: Arc<dyn services::Application>,
+    ) -> services::Result<Vec<hardy_bpv7::eid::Eid>> {
+        self.service_registry
+            .register_endpoints(
+                service_ids,
+                ServiceImpl::Application(application),
+                &self.node_ids,
+                &self.rib,
+                &self.dispatcher,
+            )
+            .await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
     async fn register_dynamic_service(
         &self,
         service: Arc<dyn services::Service>,
@@ -439,10 +499,11 @@ mod tests {
             self.sink.call_once(|| sink);
         }
 
-        async fn on_unregister(&self) {}
+        async fn on_unregister(&self, _endpoint: &Eid) {}
 
         async fn on_deliver(
             &self,
+            _endpoint: &Eid,
             _bundle_id: &Id,
             _expiry: OffsetDateTime,
             _ack_requested: bool,

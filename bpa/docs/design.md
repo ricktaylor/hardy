@@ -306,6 +306,12 @@ Conversion is deferred to `build()`, which runs them in configuration order and 
 
 The builder is for components known when the BPA is constructed. `BpaRegistration::register_*` remains the path for a component registering afterwards — a remote CLA over gRPC, a service created at runtime — and the two never share a name: the builder's methods configure, `register_*` registers.
 
+### Multi-endpoint services
+
+One Service or Application may be registered on several endpoints, through `BpaRegistration::register_service_endpoints` / `register_application_endpoints`, or `BpaBuilder::service_endpoints` / `application_endpoints`. Each endpoint is its own registration, exactly as if registered alone: its own delivery queue, its own route, and its own sink, which originates bundles only from that endpoint. The service learns of each separately — `on_register` is called once per endpoint, every `on_deliver` names the endpoint the bundle was delivered to, and `on_unregister` names the endpoint that went away — so dropping one endpoint's sink unregisters that endpoint alone. A single-endpoint registration is the same with one id.
+
+A multi-endpoint registration is all or none. The local registry resolves every id and publishes the set under one lock before any goes live, so an id that is taken, repeated, the administrative endpoint, or has no node id for its scheme refuses the whole set and nothing reaches the service. A gRPC stream carries one endpoint, so `RemoteBpa` registers one stream per id instead; it cannot be atomic at the BPA, and on a failed id it closes the endpoints it already registered before returning the error, so the service sees `on_register` and then `on_unregister` for each of them. Carrying several endpoints on one stream is a `service.proto` change, rejected for now in favour of keeping the wire protocol unchanged.
+
 ## Future Work
 
 ### Key Provider Infrastructure

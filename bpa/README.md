@@ -57,6 +57,10 @@ bpa.start(false).await;
 bpa.register_cla(name, cla, policy, init).await?;
 bpa.register_routing_agent(name, agent).await?;
 
+// One service on several endpoints, all or none: on_register is called
+// once per endpoint, each with its own sink
+bpa.register_service_endpoints(&[Service::Ipn(7), Service::Dtn("echo".into())], echo).await?;
+
 // Clean shutdown
 bpa.shutdown().await;
 ```
