@@ -192,6 +192,7 @@ pub async fn register_endpoint_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
     service: Arc<dyn hardy_bpa::services::Service>,
+    lanes: Lanes,
 ) -> hardy_bpa::services::Result<eid::Eid> {
     let mut svc_client = service_client::ServiceClient::connect(grpc_addr.clone())
         .await
@@ -228,6 +229,7 @@ pub async fn register_endpoint_service(
                     register_request::ServiceId::Dtn(service_name.into())
                 }
             }),
+            lanes: proto::lanes::on_wire(lanes),
         }),
     )
     .await
@@ -259,7 +261,13 @@ pub async fn register_endpoint_service(
     });
 
     // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
+    let proxy = RpcProxy::run(
+        channel_sender,
+        channel_receiver,
+        handler,
+        Side::Client,
+        delivery_handlers(lanes),
+    );
 
     // Call on_register()
     service.on_register(&eid, Box::new(Sink { proxy })).await;

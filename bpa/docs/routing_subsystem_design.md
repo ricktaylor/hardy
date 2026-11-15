@@ -115,7 +115,7 @@ Operators who want specific service ranges to be rejected rather than deferred c
 
 ### Structure
 
-The peer table maps auto-incrementing peer IDs to `Peer` structs. Each peer holds its own FlowController (which owns queue assignment) and one queue poller per policy queue.
+The peer table maps auto-incrementing peer IDs to `Peer` structs. Each peer holds its own FlowController (which owns queue assignment) and one queue poller per policy queue, sharing the peer's lanes (see [Policy Subsystem Design](policy_subsystem_design.md#one-controller-per-peer-draining-into-lanes)).
 
 ### CLA Registry Mapping
 
@@ -307,6 +307,8 @@ See also: the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`) for detailed s
 
 6. QUEUE POLLER (forward_bundle)
    Dequeue bundle
+   Claim it: ForwardPending → ForwardAckPending (a duplicate copy loses)
+   Load the stored bundle; its headers become resident
    Run the Egress chain (registered Rewriters)
    Update: Previous Node, Hop Count, Bundle Age
 

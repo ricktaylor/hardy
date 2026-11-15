@@ -9,6 +9,7 @@ use hardy_bpa::{
     cla::{
         self, Cla, ClaAddress, ClaAddressType, ClaInit, ForwardBundleResult, Sink, TransferOutcome,
     },
+    lanes::Lanes,
 };
 use hardy_bpv7::bundle::Id;
 
@@ -43,6 +44,7 @@ pub struct Tcpclv4 {
     connection_rate_limit: NonZeroU32,
     segment_mru: NonZeroU64,
     transfer_mru: NonZeroU64,
+    max_outstanding_transfers: NonZeroUsize,
 
     // Computed at construction
     tls: Option<Arc<tls::Tls>>,
@@ -84,6 +86,7 @@ impl Tcpclv4 {
             connection_rate_limit,
             segment_mru,
             transfer_mru,
+            max_outstanding_transfers,
             tls,
             registry: Arc::new(connection::ConnectionRegistry::new(
                 max_idle_connections,
@@ -96,16 +99,17 @@ impl Tcpclv4 {
     }
 
     /// The entity's set-once registration declarations, for the embedder
-    /// to pass to `register_cla`: a TCP address type and the configured
-    /// transfer MRU as the declared receive limit, which the BPA folds
-    /// into the effective `max_bundle_size` reported back at
+    /// to pass to `register_cla`: a TCP address type, one lane per
+    /// outstanding transfer the entity admits to a peer, and the
+    /// configured transfer MRU as the declared receive limit, which the
+    /// BPA folds into the effective `max_bundle_size` reported back at
     /// registration. The MRU here is the pre-registration declaration:
     /// once registered, sessions advertise the effective (possibly
     /// smaller) clamped MRU.
     pub fn cla_init(&self) -> ClaInit {
         ClaInit {
             address_type: Some(ClaAddressType::Tcp),
-            lane_count: None,
+            lanes: Lanes::Limited(lane_count(self.max_outstanding_transfers)),
             max_bundle_size: Some(self.transfer_mru),
         }
     }
@@ -302,6 +306,14 @@ impl Cla for Tcpclv4 {
     }
 }
 
+// The lanes the entity declares for `max_outstanding_transfers`: one per
+// transfer it admits to a peer, since a forward beyond that waits for
+// admission holding its loaded bundle. A count past `u32::MAX` (64-bit
+// only) declares `u32::MAX` lanes; the BPA's egress cap is far lower.
+fn lane_count(max_outstanding_transfers: NonZeroUsize) -> NonZeroU32 {
+    NonZeroU32::try_from(max_outstanding_transfers).unwrap_or(NonZeroU32::MAX)
+}
+
 // Peers can close at random times, so a transfer is retried this many
 // times before falling back to a last try on a busy session.
 const DIAL_ATTEMPTS: usize = 5;
@@ -417,6 +429,27 @@ mod tests {
         ) -> cla::Result<()> {
             Ok(())
         }
+    }
+
+    // The entity declares one lane per transfer it admits to a peer, so the
+    // BPA offers it no more forwards at once than it would accept: the
+    // default admission bound, and a configured one.
+    #[test]
+    fn declares_a_lane_per_outstanding_transfer() {
+        let default = Tcpclv4::builder().build().unwrap();
+        assert_eq!(
+            default.cla_init().lanes,
+            Lanes::Limited(NonZeroU32::new(16).unwrap())
+        );
+
+        let configured = Tcpclv4::builder()
+            .max_outstanding_transfers(NonZeroUsize::new(3).unwrap())
+            .build()
+            .unwrap();
+        assert_eq!(
+            configured.cla_init().lanes,
+            Lanes::Limited(NonZeroU32::new(3).unwrap())
+        );
     }
 
     // The transfer MRU sessions advertise is the configured value folded

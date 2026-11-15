@@ -1,9 +1,10 @@
-use core::num::{NonZeroU32, NonZeroU64};
+use core::num::NonZeroU64;
 
 use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
 
+use crate::lanes::Lanes;
 pub use crate::stream::Segment;
 
 pub(crate) mod peers;
@@ -233,22 +234,18 @@ pub struct ClaInit {
     /// against the CLA, but no lookup consults the record.
     pub address_type: Option<ClaAddressType>,
 
-    /// The CLA's lane count: its honest parallelism, the number of
-    /// transfers it can usefully carry in flight at once.
+    /// The CLA's lanes: how many transfers to one peer it can usefully
+    /// carry in flight at once. Default: [`Lanes::Serial`].
     ///
-    /// `None` declares no limit: the CLA is effectively unconstrained (a
-    /// datagram CL), and every forward arrives with lane `None`, each
-    /// transfer travelling on a new lane from the infinite pool. `Some(n)`
-    /// declares `n` explicit lanes, indexed `0..n`; a zero count is
-    /// unrepresentable by construction.
-    ///
-    /// Lanes are parallel transport channels — QUIC streams, DSCP classes,
-    /// separate TCP connections — carrying in-flight transfers with no
-    /// explicit priority among them. Scheduling and prioritisation live in
-    /// the BPA's egress policy, which decides what is forwarded onto each
-    /// lane; the CLA simply transmits what arrives on a lane, and one
-    /// lane's in-flight transfer must not head-of-line block another's.
-    pub lane_count: Option<NonZeroU32>,
+    /// The BPA keeps at most that many forwards in flight to each peer,
+    /// across all of the peer's policy queues, further bounded by its
+    /// egress seat cap
+    /// ([`BpaBuilder::egress_lane_cap`](crate::builder::BpaBuilder::egress_lane_cap)):
+    /// one for `Serial`, the smaller of `n` and the cap for `Limited(n)`,
+    /// and the cap for `Unlimited`. An egress policy can pin bundles to the
+    /// first [`MAX_PINNED_LANES`](crate::lanes::MAX_PINNED_LANES) lanes of
+    /// a `Limited(n)` CLA.
+    pub lanes: Lanes,
 
     /// The CLA's declared receive limit (`None` = no CLA-side limit).
     ///
@@ -367,12 +364,18 @@ pub trait Cla: Send + Sync {
     /// Forwards a bundle, delivered as a stream of segments, to a specific CLA
     /// address over a given lane.
     ///
-    /// Lane `None` requests a new lane from the infinite pool — the
-    /// default for CLAs that declare no lane limit, where every transfer
-    /// travels on its own fresh lane (a datagram CL). `Some(i)` directs
-    /// the transfer onto explicit lane `i`. As a safety net, a CLA that
-    /// declares explicit lanes but still receives `None` should pick a
-    /// lane arbitrarily (e.g. at random) rather than fail the transfer.
+    /// Lane `None` leaves the lane to the CLA: the next free one, or a
+    /// fresh one for a CLA that declares [`Lanes::Unlimited`]. `Some(i)`
+    /// directs the transfer onto explicit lane `i` of a CLA that declares
+    /// [`Lanes::Limited`]. As a safety net, a CLA that declares explicit
+    /// lanes but still receives `None` should pick a lane arbitrarily
+    /// (e.g. at random) rather than fail the transfer.
+    ///
+    /// Unless the CLA declares [`Lanes::Serial`], forwards to one peer
+    /// overlap: the BPA keeps up to the peer's effective lanes of calls in
+    /// flight (see [`ClaInit::lanes`]), each holding its lane until it
+    /// returns, and they may complete in any order.
+    ///
     /// Mirroring [`Sink::dispatch`] on the egress side, the
     /// implementation pulls [`Segment::Next`] items from `stream` until
     /// [`Segment::Final`] (which may carry empty bytes) completes the

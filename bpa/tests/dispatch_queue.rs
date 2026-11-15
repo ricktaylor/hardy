@@ -18,6 +18,7 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     bundle::{Bundle, BundleMetadata, BundleStatus},
+    lanes::Lanes,
     node_ids::NodeIds,
     services,
     storage::{self, MetadataMemStorage, MetadataStorage},
@@ -309,7 +310,7 @@ async fn stale_poller_duplicate_never_redelivers() {
     // the service pushes them through `dispatch_bundle` into the queue.
     let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
     drop(originator_release_tx);
-    bpa.register_service(Service::Ipn(9), originator.clone())
+    bpa.register_service(Service::Ipn(9), originator.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -345,7 +346,7 @@ async fn stale_poller_duplicate_never_redelivers() {
     // the arm signal, keeping the fast path closed. (Every timeout below
     // only bounds a regression.)
     let (svc, started_rx, release_tx) = CountingHoldService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
     tokio::time::timeout(tokio::time::Duration::from_secs(10), queued_rx.recv_async())
@@ -381,7 +382,7 @@ async fn stale_poller_duplicate_never_redelivers() {
     // joins the processing pool.
     let (marker_svc, marker_started_rx, marker_release_tx) = CountingHoldService::new();
     drop(marker_release_tx);
-    bpa.register_service(Service::Ipn(8), marker_svc.clone())
+    bpa.register_service(Service::Ipn(8), marker_svc.clone(), Lanes::Serial)
         .await
         .unwrap();
     tokio::time::timeout(
@@ -574,7 +575,7 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // into the queue.
     let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
     drop(originator_release_tx);
-    bpa.register_service(Service::Ipn(9), originator.clone())
+    bpa.register_service(Service::Ipn(9), originator.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -609,7 +610,7 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // service queues A, whose dequeue claim parks at the gate.
     let (svc_a, a_started_rx, a_release_tx) = CountingHoldService::new();
     drop(a_release_tx);
-    bpa.register_service(Service::Ipn(7), svc_a.clone())
+    bpa.register_service(Service::Ipn(7), svc_a.clone(), Lanes::Serial)
         .await
         .unwrap();
     tokio::time::timeout(
@@ -626,7 +627,7 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // A.)
     let (svc_b, b_started_rx, b_release_tx) = CountingHoldService::new();
     drop(b_release_tx);
-    bpa.register_service(Service::Ipn(8), svc_b.clone())
+    bpa.register_service(Service::Ipn(8), svc_b.clone(), Lanes::Serial)
         .await
         .unwrap();
     tokio::time::timeout(

@@ -12,9 +12,13 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     bundle::{Bundle, BundleMetadata, BundleStatus},
     cla,
+    lanes::Lanes,
     node_ids::NodeIds,
     services,
-    storage::{self, MetadataMemStorage, MetadataStorage},
+    storage::{
+        self, BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage,
+        RecoveryResponse,
+    },
     stream::{Receiver, Segment, Sender},
 };
 use hardy_bpv7::{
@@ -169,7 +173,7 @@ async fn unregister_sweeps_queued_deliveries() {
 
     let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
     let (svc_a, delivered_a_rx, started_rx, release_tx) = HoldService::new();
-    bpa.register_service(Service::Ipn(7), svc_a.clone())
+    bpa.register_service(Service::Ipn(7), svc_a.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -257,7 +261,7 @@ async fn unregister_sweeps_queued_deliveries() {
     // A later registration on the same EID recovers the swept bundle.
     let (svc_b, delivered_b_rx, _started_b_rx, release_b_tx) = HoldService::new();
     drop(release_b_tx); // complete deliveries immediately
-    bpa.register_service(Service::Ipn(7), svc_b.clone())
+    bpa.register_service(Service::Ipn(7), svc_b.clone(), Lanes::Serial)
         .await
         .unwrap();
     let delivered = tokio::time::timeout(
@@ -463,7 +467,7 @@ async fn registration_does_not_await_the_post_registration_poll() {
     drop(svc_release_tx); // complete deliveries immediately
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        bpa.register_service(Service::Ipn(9), svc.clone()),
+        bpa.register_service(Service::Ipn(9), svc.clone(), Lanes::Serial),
     )
     .await
     .expect("registration awaited the parked poll — the spawn regressed")
@@ -490,4 +494,138 @@ async fn registration_does_not_await_the_post_registration_poll() {
     );
 
     bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// An unregistration during a claimed delivery's load
+// ---------------------------------------------------------------------------
+
+/// Delegates to [`BundleMemStorage`], signalling each load's entry and
+/// parking it until the test drops the release sender.
+struct GatedLoadStorage {
+    inner: BundleMemStorage,
+    entered_tx: flume::Sender<()>,
+    release_rx: flume::Receiver<()>,
+}
+
+#[async_trait]
+impl BundleStorage for GatedLoadStorage {
+    async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> storage::Result<()> {
+        self.inner.recover(stream).await
+    }
+
+    async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
+        let _ = self.entered_tx.send(());
+        let _ = self.release_rx.recv_async().await;
+        self.inner.load(storage_name).await
+    }
+
+    async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
+        self.inner.save(data).await
+    }
+
+    async fn delete(&self, storage_name: &str) -> storage::Result<()> {
+        self.inner.delete(storage_name).await
+    }
+}
+
+// A service that unregisters while its claimed delivery's data loads is
+// never handed the bundle: the delivery parks it as WaitingForService, and
+// the next registration on the same EID delivers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unregister_during_the_load_parks_the_delivery() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let (entered_tx, entered_rx) = flume::unbounded();
+    let (release_tx, release_rx) = flume::bounded::<()>(1);
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .bundle_storage(Arc::new(GatedLoadStorage {
+            inner: BundleMemStorage::new(None, None),
+            entered_tx,
+            release_rx,
+        }))
+        // The cache would serve the small bundle's load itself.
+        .no_cache()
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // Service A completes every delivery it is handed.
+    let (svc_a, delivered_a_rx, started_a_rx, release_a_tx) = HoldService::new();
+    drop(release_a_tx);
+    bpa.register_service(Service::Ipn(7), svc_a.clone(), Lanes::Serial)
+        .await
+        .unwrap();
+
+    let cla = Arc::new(IngressCla {
+        sink: hardy_async::sync::spin::Once::new(),
+    });
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let (bundle, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
+        .with_lifetime(Duration::from_secs(24 * 60 * 60))
+        .with_payload(Cow::Borrowed(b"loading".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let id = bundle.primary.id;
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // The delivery has claimed the bundle and is loading its data: service A
+    // unregisters meanwhile, then the load completes.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), entered_rx.recv_async())
+        .await
+        .expect("Timeout waiting for the delivery's load")
+        .expect("Storage gone");
+    svc_a.sink.get().unwrap().unregister().await;
+    drop(release_tx);
+
+    // A later registration on the same EID is delivered the parked bundle.
+    let (svc_b, delivered_b_rx, _started_b_rx, release_b_tx) = HoldService::new();
+    drop(release_b_tx);
+    bpa.register_service(Service::Ipn(7), svc_b.clone(), Lanes::Serial)
+        .await
+        .unwrap();
+    let delivered = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        delivered_b_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the parked bundle's delivery")
+    .expect("Service gone");
+    assert_eq!(
+        delivered, id,
+        "the next registration is delivered the bundle"
+    );
+
+    // shutdown() joins every delivery task, so anything handed to service
+    // A has been recorded by now.
+    bpa.shutdown().await;
+    assert!(
+        started_a_rx.is_empty() && delivered_a_rx.is_empty(),
+        "the departing service is never handed the bundle"
+    );
+    assert!(delivered_b_rx.is_empty(), "no duplicate deliveries");
 }

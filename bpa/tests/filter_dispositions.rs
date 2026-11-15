@@ -32,6 +32,7 @@ use hardy_bpa::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, Verifier, VerifyContext,
         pack::FilterPack, slots::MetadataDelta,
     },
+    lanes::Lanes,
     node_ids::NodeIds,
     services,
     storage::{
@@ -452,7 +453,7 @@ async fn register_service(bpa: &Bpa) -> (Arc<CapturingService>, flume::Receiver<
         sink: hardy_async::sync::spin::Once::new(),
         delivered_tx,
     });
-    bpa.register_service(Service::Ipn(42), service.clone())
+    bpa.register_service(Service::Ipn(42), service.clone(), Lanes::Serial)
         .await
         .unwrap();
     (service, delivered_rx)
@@ -781,7 +782,7 @@ async fn originate(bpa: &Bpa) -> services::Result<Id> {
     let app = Arc::new(SendingApp {
         sink: hardy_async::sync::spin::Once::new(),
     });
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     let options = services::SendOptions {
@@ -1670,7 +1671,7 @@ async fn the_adu_doors_hold_the_declared_peek() {
         let app = Arc::new(SendingApp {
             sink: hardy_async::sync::spin::Once::new(),
         });
-        bpa.register_application(Service::Ipn(42), app.clone())
+        bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
             .await
             .unwrap();
         let sink = app.sink.get().unwrap();

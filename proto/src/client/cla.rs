@@ -1,4 +1,6 @@
-use core::num::{NonZeroU32, NonZeroU64};
+use core::num::NonZeroU64;
+
+use hardy_bpa::lanes::Lanes;
 
 use super::*;
 use proto::cla::*;
@@ -252,7 +254,7 @@ pub async fn register_cla(
                 .into()
             }),
             max_bundle_size: init.max_bundle_size.map(NonZeroU64::get),
-            lane_count: init.lane_count.map(NonZeroU32::get),
+            lanes: proto::lanes::on_wire(init.lanes),
         }),
     )
     .await
@@ -288,7 +290,20 @@ pub async fn register_cla(
     });
 
     // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
+    // A CLA declaring lanes takes that many concurrent forwards; a serial
+    // or unlimited one keeps the default bound, which is an unlimited CLA's
+    // ceiling on concurrent remote forwards however many the BPA offers.
+    let handlers = match init.lanes {
+        Lanes::Limited(n) => handlers_for_lanes(n),
+        Lanes::Serial | Lanes::Unlimited => default_handlers(),
+    };
+    let proxy = RpcProxy::run(
+        channel_sender,
+        channel_receiver,
+        handler,
+        Side::Client,
+        handlers,
+    );
 
     // Call on_register(). An absent cap means none was negotiated — a far
     // BPA that predates the field (its cap is unknowable) or one with no

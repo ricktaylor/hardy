@@ -10,7 +10,7 @@ use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     bpa::BpaRegistration,
-    cla::{ClaAddressType, ClaInit},
+    cla::{ClaAddressType, ClaInit}, lanes::Lanes,
 };
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
@@ -54,10 +54,11 @@ async fn main() -> anyhow::Result<()> {
 
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     // The configured inbound framing bound doubles as the declared
-    // receive limit (0 = unbounded, declared as no limit).
+    // receive limit (0 = unbounded, declared as no limit). Each forward
+    // dials its own connection, but the CLA declares no parallelism.
     let init = ClaInit {
         address_type: Some(ClaAddressType::Tcp),
-        lane_count: None,
+        lanes: Lanes::Serial,
         max_bundle_size: NonZeroU64::new(config.cla.max_bundle_size),
     };
     let cla = Arc::new(cla::Cla::new(config.cla));

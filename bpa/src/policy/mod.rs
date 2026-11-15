@@ -27,6 +27,20 @@ pub trait FlowController: Send + Sync {
 
     /// Forwards a bundle from the given policy queue (an index in
     /// `0..queue_count()`).
+    ///
+    /// The queue's poller calls this once per bundle, each call on a task
+    /// of its own: the peer's pollers together keep up to the peer's
+    /// effective lanes of calls in flight — the CLA's declared lane count
+    /// bounded by the BPA's egress seat cap — so calls, for one queue or
+    /// several, overlap and may complete in any order. A call holds its
+    /// lane until it returns, and once every lane is held the pollers pull
+    /// nothing more.
+    ///
+    /// A controller that paces by awaiting before it transmits holds its
+    /// lane meanwhile, and up to that many such awaits run at once: a
+    /// per-call delay paces each lane, so the aggregate rate is the
+    /// per-lane rate times the lanes. A controller enforcing a peer-wide
+    /// rate shares one budget (a token bucket) across its calls.
     async fn forward(&self, queue: u32, bundle: bundle::Bundle);
 }
 

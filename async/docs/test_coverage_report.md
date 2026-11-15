@@ -16,9 +16,9 @@ The `hardy-async` crate has no formal LLRs -- it is internal infrastructure. The
 | **TaskPool** | Spawn and graceful shutdown | Pass | `task_pool.rs::test_task_pool_spawn_and_shutdown` |
 | **TaskPool** | Child token independent cancellation | Pass | `task_pool.rs::test_child_token_independent_cancellation` |
 | **TaskPool** | Parent cancellation cascades to child | Pass | `task_pool.rs::test_parent_cancels_child` |
-| **BoundedTaskPool** | Concurrency limit enforced | Pass | `bounded_task_pool.rs::test_bounded_pool_limits_concurrency` |
-| **BoundedTaskPool** | Default uses available parallelism | Pass | `bounded_task_pool.rs::test_bounded_pool_default_uses_available_parallelism` |
-| **BoundedTaskPool** | Graceful shutdown completes all tasks | Pass | `bounded_task_pool.rs::test_bounded_pool_shutdown` |
+| **BoundedTaskPool** | Concurrency limit enforced | Pass | `bounded_task_pool.rs::spawn_waits_while_every_permit_is_held` |
+| **BoundedTaskPool** | Default uses available parallelism | Pass | `bounded_task_pool.rs::the_default_limit_is_available_parallelism` |
+| **BoundedTaskPool** | Graceful shutdown completes all tasks | Pass | `bounded_task_pool.rs::shutdown_waits_for_running_tasks` |
 | **sync::Mutex** | Lock, try\_lock, into\_inner, get\_mut | Pass | `sync/mod.rs::mutex_basic`, `mutex_hashmap`, `mutex_try_lock`, `mutex_into_inner`, `mutex_get_mut` |
 | **sync::RwLock** | Read, write, try\_read, try\_write, into\_inner, get\_mut | Pass | `sync/mod.rs::rwlock_basic`, `rwlock_try_locks`, `rwlock_into_inner`, `rwlock_get_mut` |
 | **sync::spin::Mutex / RwLock** | Spinlock lock, try\_lock, read, write | Pass | `sync/spin.rs::mutex_basic`, `mutex_hashmap`, `mutex_try_lock`, `rwlock_basic`, `rwlock_try_locks` |
@@ -42,9 +42,15 @@ The `hardy-async` crate has no formal LLRs -- it is internal infrastructure. The
 
 | Test Function | Scope |
 | :--- | :--- |
-| `test_bounded_pool_limits_concurrency` | Spawn 10 tasks with limit 2, verify max concurrent never exceeds 2 |
-| `test_bounded_pool_default_uses_available_parallelism` | Default constructor works, spawns and completes a task |
-| `test_bounded_pool_shutdown` | Spawn 4 cancellation-aware tasks, shutdown, verify all completed |
+| `spawn_waits_while_every_permit_is_held` | With every permit held by a running task, a further spawn waits until one finishes |
+| `the_default_limit_is_available_parallelism` | The default pool admits `available_parallelism` concurrent tasks and no more |
+| `shutdown_waits_for_running_tasks` | Shutdown cancels the token and waits for every running task to finish |
+
+#### Semaphore (`semaphore.rs`) -- 1 test, `#[tokio::test]`
+
+| Test Function | Scope |
+| :--- | :--- |
+| `permits_are_held_until_dropped` | Once every permit is held an acquire waits, and a dropped permit is handed back |
 
 #### sync::Mutex / sync::RwLock (`sync/mod.rs`) -- 9 tests, `#[test]`
 
@@ -129,7 +135,7 @@ Per-file breakdown:
 | :--- | :--- | :--- | :--- | :--- |
 | `lib.rs` | 3 | 3 | 100% | Re-exports only |
 | `sync/mod.rs` | 102 | 105 | 97% | Mutex + RwLock wrappers |
-| `bounded_task_pool.rs` | 138 | 142 | 97% | Semaphore-based pool |
+| `bounded_task_pool.rs` | 138 | 142 | 97% | `TaskPool` + `Semaphore` pool |
 | `sync/spin.rs` | 112 | 124 | 90% | Spin-based Mutex, RwLock, Once |
 | `task_pool.rs` | 66 | 76 | 87% | Core task pool + cancel token |
 | `notify.rs` | 0 | 12 | 0% | Thin tokio::sync::Notify wrapper — no unit tests |
@@ -144,7 +150,7 @@ Tests use straightforward inline `#[test]` and `#[tokio::test]` modules within t
 - TaskPool and BoundedTaskPool tests require the `tokio` feature (gated with `#[cfg(all(test, feature = "tokio"))]`)
 - sync::Mutex / sync::RwLock tests require the `std` feature (gated with `#[cfg(all(test, feature = "std"))]`)
 - sync::spin tests are unconditional (`#[cfg(test)]`)
-- BoundedTaskPool concurrency test uses `AtomicUsize` with CAS to track maximum concurrent tasks
+- BoundedTaskPool tests hold permits with tasks blocked on `oneshot` channels and observe a waiting spawn with `poll!`, with no timing
 
 ## 6. Key Gaps
 

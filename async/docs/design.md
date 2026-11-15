@@ -28,11 +28,15 @@ This hierarchy supports scenarios where a service spawns subtasks that might nee
 
 ## Bounded Task Pool
 
-`BoundedTaskPool` extends the task pool pattern with a semaphore-based concurrency limit. When the configured number of tasks are already running, further spawn calls block until a slot becomes available.
+`BoundedTaskPool` extends the task pool pattern with a concurrency limit: a `TaskPool` for spawning and a [`Semaphore`](#semaphore) for the limit, so it names no runtime type and follows those two to any backend. When the configured number of tasks are already running, further spawn calls block until a slot becomes available.
 
 This provides natural backpressure. A component processing a stream of incoming bundles won't spawn unbounded tasks - it will slow down when the processing pool is saturated. The limit prevents memory exhaustion from queued work and keeps resource usage predictable.
 
 The default concurrency limit matches the available CPU parallelism, which is sensible for CPU-bound work but can be overridden for I/O-bound tasks or resource-constrained environments.
+
+## Semaphore
+
+`Semaphore` is a permit budget shared between tasks, each holding a clone: a task holds an `OwnedSemaphorePermit` while it occupies a slot, and dropping the permit hands the slot back. Where `BoundedTaskPool` bounds the tasks one spawner starts, a `Semaphore` bounds work started by several — the BPA's egress lanes are one budget per peer, shared by all of the peer's queue pollers, each taking a permit before it pulls a bundle and moving it into the forward it spawns. It is never closed, so acquiring cannot fail.
 
 ## Spawn Macro
 

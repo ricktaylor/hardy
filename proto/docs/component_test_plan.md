@@ -45,6 +45,7 @@ The tests utilize a **Mock Server** approach:
 | **APP-CLI-03** | **Send Bundle** | Call `send("ipn:2.1", payload, lifetime)` | Receives `SendRequest { destination: "ipn:2.1", payload: ..., lifetime: ... }`.<br>Replies `SendResponse`. | Implemented |
 | **APP-CLI-04** | **Receive Bundle** | Await `next_message()` | Server injects `ReceiveBundleRequest`.<br>Client yields `AppMsg::ReceiveBundle(...)`. | Implemented |
 | **APP-CLI-05** | **Status Notification** | Await `next_message()` | Server injects `StatusNotifyRequest`.<br>Client yields `AppMsg::StatusNotify(...)`. | Implemented |
+| **APP-CLI-06** | **Delivery lanes** | Register with `Lanes::Limited(3)`, `Lanes::Unlimited`, then `Lanes::Serial`. | The BPA's `register_application` receives each declaration intact; the default (serial) travels as an absent `lanes`. | Implemented |
 
 ### Suite 2: CLA Client Proxy
 
@@ -57,6 +58,7 @@ The tests utilize a **Mock Server** approach:
 | **CLA-CLI-03** | **Forward Bundle** | Await `next_message()` | Server injects `ForwardBundleRequest`.<br>Client yields `ClaMsg::ForwardBundle(...)`. | Implemented |
 | **CLA-CLI-04** | **Add Peer** | Call `add_peer(node_id, address)` | Receives `AddPeerRequest`.<br>Replies `AddPeerResponse`. | Implemented |
 | **CLA-CLI-05** | **Remove Peer** | Call `remove_peer(node_id)` | Receives `RemovePeerRequest`.<br>Replies `RemovePeerResponse`. | Implemented |
+| **CLA-CLI-09** | **Declared lanes bound the client** | Register declaring `available_parallelism + 2` lanes; the server pushes that many forwards to a CLA holding each. | Every forward is in flight at the CLA at once: the client proxy's handler bound grows with the declaration, not the host's core count. | Implemented |
 
 ### Suite 3: Service Client Proxy
 
@@ -68,6 +70,8 @@ The tests utilize a **Mock Server** approach:
 | **SVC-CLI-02** | **Send Raw Bundle** | Call `sink.send(bundle_bytes)` | Receives `ServiceSendRequest { data: ... }`.<br>Replies `SendResponse { bundle_id }`. | Implemented |
 | **SVC-CLI-03** | **Receive Raw Bundle** | Server injects `ServiceReceiveRequest`. | Client trait receives `on_deliver(bundle_id, stream, expiry, total_len)`. | Implemented |
 | **SVC-CLI-04** | **Status Notification** | Server injects `StatusNotifyRequest`. | Client trait receives `on_status_notify(...)`. | Implemented |
+| **SVC-CLI-07** | **Delivery lanes** | Register with `Lanes::Limited(6)`, `Lanes::Unlimited`, then `Lanes::Serial`. | The BPA's `register_service` receives each declaration intact; the default (serial) travels as an absent `lanes`. | Implemented |
+| **SVC-CLI-08** | **Delivery lanes end to end** | A remote service declaring `available_parallelism + 2` lanes, holding each delivery, behind a server on a real BPA with the delivery cap raised to match; a local application originates one more bundle than lanes. | That many deliveries are in flight across the wire at once — the client proxy makes room for them whatever the host's core count — never more; the last starts once one is released. | Implemented |
 
 ### Suite 4: Routing Agent Client Proxy
 
@@ -119,6 +123,8 @@ Unregistration does not use explicit protocol messages. Closing the stream is th
 | **SRV-02** | **Sink available after register** | `on_register` stores a sink. | `sink()` returns `Ok(Arc<dyn Sink>)`. | Implemented |
 | **SRV-03** | **Sink unavailable after unregister** | Sink has been taken. | `sink()` returns `Err(Unavailable)`. | Implemented |
 | **SRV-04** | **Spin lock not held across await** | `unregister()` called, BPA callback re-enters `on_unregister()`. | No deadlock. Spin lock released before `sink.unregister().await`. | Implemented |
+| **SRV-08** | **Registration error codes** | Map `ServiceIdInUse`, `AdministrativeEndpoint`, a node-id error and `Disconnected`; then raw registrations of a taken id on the service and application endpoints of a server over a real BPA. | `AlreadyExists`, `InvalidArgument`, `InvalidArgument`, `Unavailable`; the raw registrations end the client's stream with `AlreadyExists`. | Implemented |
+| **SRV-07** | **Service lanes on the wire** | `RegisterRequest.lanes` absent, `limited` 4, and `limited` 0; then a raw `RegisterRequest` with `limited: 0` on the service and application endpoints of a server over a real BPA. | Absent maps to serial, `limited` 4 to four lanes; `limited` 0 is `InvalidArgument`, and the raw registrations end the client's stream with that status. Nothing registers: the id stays free. | Implemented |
 
 ## 4. Execution Strategy
 

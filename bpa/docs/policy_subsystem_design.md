@@ -35,7 +35,8 @@ This document describes the BPA's egress policy subsystem: the per-peer queues a
 │   │  queue 0  │   │  queue 1  │   ...    │  queue M-1  │  hybrid     │
 │   └─────┬─────┘   └─────┬─────┘          └──────┬──────┘  channels   │
 └─────────┼───────────────┼───────────────────────┼────────────────────┘
-          │ one poller per queue: controller.forward(queue, bundle)
+          │ one poller per queue, sharing the peer's lanes:
+          │ controller.forward(queue, bundle) per free lane
           ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │ FlowController (one per peer)                                        │
@@ -48,16 +49,17 @@ This document describes the BPA's egress policy subsystem: the per-peer queues a
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Dispatcher::forward_bundle                                           │
 │                                                                      │
-│   1. claim ForwardPending → ForwardAckPending                        │
-│   2. update extension blocks (Previous Node, Hop Count, Bundle Age)  │
-│   3. Egress chain (Rewriters, then Verifiers)                        │
-│   4. Cla::forward(lane, cla_addr, bundle_id, total_len, stream)      │
+│   1. claim ForwardPending → ForwardAckPending (duplicates lose)      │
+│   2. load the stored bundle; its headers become resident             │
+│   3. update extension blocks (Previous Node, Hop Count, Bundle Age)  │
+│   4. Egress chain (Rewriters, then Verifiers)                        │
+│   5. Cla::forward(lane, cla_addr, bundle_id, total_len, stream)      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 The subsystem is three traits in `bpa/src/policy/mod.rs`. **`FlowControllerFactory`** is the policy bound to a CLA: it declares the policy's queue count and builds one `FlowController` per peer. **`FlowController`** assigns each bundle a queue (`queue_for()`) and, called by that queue's poller (`forward(queue, bundle)`), decides when the bundle leaves and on which lane directive. **`EgressQueue`** is the transmission endpoint for one lane directive.
 
-Two counts meet in the controller: the policy's **queue count** (M, `queue_count()`) counts places where bundles wait, and the CLA's **lane count** (N, `ClaInit::lane_count`) counts transfers in flight. The controller maps one onto the other, so a policy works unchanged over any CLA.
+Two counts meet in the controller: the policy's **queue count** (M, `queue_count()`) counts places where bundles wait, and the CLA's **lanes** (N, `ClaInit::lanes`) count transfers in flight. The controller maps one onto the other, so a policy works unchanged over any CLA. A third bound is the BPA's own: the peer keeps at most its effective lanes of forwards in flight across all its queues, which the egress seat cap bounds ([below](#one-controller-per-peer-draining-into-lanes)).
 
 `queue_for()` takes no per-bundle input, so every bundle takes the controller's own assignment. The classification input — the traffic class assigned by the Classifier chains ([Filter Subsystem Design](filter_subsystem_design.md#metadatadelta-and-the-traffic-class)) — remains in scope and is designed in the [redesign](policy_subsystem_redesign.md).
 
@@ -67,9 +69,9 @@ Two counts meet in the controller: the policy's **queue count** (M, `queue_count
 
 A routed bundle needs somewhere to wait until the link can take it. That place is per peer, so a slow or dark link holds back only its own traffic, and it is where ordering and rate decisions are made without involving routing or the CLA.
 
-Lanes are the CLA's side. As the `ClaInit::lane_count` rustdoc (`bpa/src/cla/mod.rs`) defines them, lanes are parallel transport channels — QUIC streams, DSCP classes, separate TCP connections — carrying in-flight transfers with no priority among them: the policy decides what goes onto each lane, the CLA transmits what arrives, and one lane's in-flight transfer must not head-of-line block another's.
+Lanes are the CLA's side. As the `Lanes` rustdoc (`bpa/src/lanes/mod.rs`) defines them for a CLA, lanes are parallel transport channels — QUIC streams, DSCP classes, separate TCP connections — carrying in-flight transfers with no priority among them: the policy decides what goes onto each lane, the CLA transmits what arrives, and one lane's in-flight transfer must not head-of-line block another's.
 
-`lane_count` is an `Option<NonZeroU32>`: `None` declares no limit (an effectively unconstrained CLA, such as a datagram CL), `Some(n)` declares lanes `0..n`, and zero is unrepresentable. It is part of the set-once `ClaInit` snapshotted at registration, so a CLA whose parallelism changes re-registers. The controller reaches the lanes through its `EgressQueueSet`: a required `next_free` queue that transmits with lane `None`, letting the CLA pick its next free lane, and one `pinned` queue per declared lane.
+`Lanes` is an enum: `Serial` (one transfer at a time, the default for a CLA that declares nothing), `Limited(n)` declaring explicit lanes `0..n` (zero is unrepresentable), or `Unlimited` (an effectively unconstrained CLA, such as a datagram CL). It is part of the set-once `ClaInit` snapshotted at registration, so a CLA whose parallelism changes re-registers. The controller reaches the lanes through its `EgressQueueSet`: a required `next_free` queue that transmits with lane `None`, letting the CLA pick its next free lane, and one `pinned` queue per explicit lane of a `Limited` CLA, up to `lanes::MAX_PINNED_LANES` (256). A CLA may declare more lanes, which the BPA logs at registration: a policy then pins to only the first 256, while forwards on the next free lane still reach every lane.
 
 ### A total queue model
 
@@ -77,11 +79,15 @@ Lanes are the CLA's side. As the `ClaInit::lane_count` rustdoc (`bpa/src/cla/mod
 
 The persisted status requires this. A queued bundle's status is `ForwardPending { peer, queue, next_hop }`, and the queue's channel recovers spilled bundles by that `(peer, queue)` identity (`BundleStatus::same_queue`), so every assignment must name a channel that exists; clamping rather than rejecting keeps a buggy policy from stranding the bundle. `Option` appears only at the lane directive, where `None` means something. Queue indices carry no fixed priority: relative priority is the policy's decision, and index 0 is guaranteed only as the clamp target.
 
-### One controller per peer, draining serially
+### One controller per peer, draining into lanes
 
-`Peer::start` builds the controller from the CLA's factory, then one hybrid channel and one poller per policy queue, and only then publishes the peer, so a reachable peer always has a working controller. The controller owns all per-peer scheduler state for the peer's lifetime; on peer removal the channels close, the pollers exit once drained, and the controller is dropped.
+`Peer::start` builds the controller from the CLA's factory, then one hybrid channel and one poller per policy queue, and only then publishes the peer, so a reachable peer always has a working controller. The controller owns all per-peer scheduler state for the peer's lifetime; on peer removal the channels close, the pollers exit once drained and their in-flight forwards have finished, and the controller is dropped.
 
-Each poller awaits `controller.forward(queue, bundle)` before taking the next bundle, and `EgressQueue::forward` returns only when the CLA answers `Cla::forward`. Both pacing levers follow from that. A controller that rate-limits awaits before transmitting, so its channel fills and further bundles spill to storage — shaping neither drops bundles nor grows memory. A CLA paces the BPA by when it answers: answering `Accepted` early frees the queue while the acknowledgement is in flight, and a CLA at capacity withholds its answer.
+The pollers drain their queues into the peer's **effective lanes**, from the CLA's declared `Lanes` and the BPA's egress seat cap (`BpaBuilder::egress_lane_cap`, default 8): one for `Serial`, which a CLA that declares nothing gets (`ClaInit::default()`, or a gRPC CLA sending no `lanes`); the declared count bounded by the cap for `Limited`; and the cap for `Unlimited`. The lanes are a budget of permits shared by all of the peer's queue pollers, so the CLA's declaration holds whatever the policy's queue count. A poller takes a lane before it pulls a bundle, and the bundle's `controller.forward(queue, bundle)` runs as a task of its own on the registry's task pool, holding the lane until `EgressQueue::forward` returns — when the CLA answers `Cla::forward`. While every lane is busy the pollers pull nothing more; a poller whose queue is empty holds no lane while it waits, so an idle queue leaves the peer's lanes to its busy ones. The cap exists whatever the declaration, because each in-flight forward holds its loaded bundle until the CLA answers: a peer's worst case is the cap times the largest bundle in memory. A cap of 1 forwards to each peer serially, one bundle at a time in queue order. The default is above one so that a CLA declaring several lanes, as TCPCLv4 does, has concurrent offers out of the box: an offer streams the whole bundle to the CLA, so one offer at a time caps a peer at one bundle per offer however fast the link. A CLA that declares nothing keeps serial offers, since it may not tolerate overlapping forwards completing out of order.
+
+Offers start in queue order and may complete out of order. Bundles carry no ordering guarantee, and nothing downstream depends on per-peer completion order: each offer claims its own bundle out of `ForwardPending` and resolves only that claim, and the peer sweeps (`reset_peer_queue`, `reset_peer_ack_pending`) are status-conditioned, so an in-flight offer neither blocks nor is undone by them. A peer removed mid-offer resets up to its lanes of claimed bundles from `ForwardAckPending` to `Waiting`, each re-sent at the next routing event — as it reset the one in-flight offer before lanes, and as it resets every accepted transfer. An offer whose claim is swept while its data is still loading is never made: `forward_bundle` re-checks the claim once the load returns.
+
+Both pacing levers follow, per lane. A controller that rate-limits by awaiting before it transmits holds its lane; once every lane is held, the channel fills and further bundles spill to storage — shaping neither drops bundles nor grows memory. Up to the peer's lanes of such awaits run at once, so a per-call delay paces each lane and the aggregate rate is the per-lane rate times the lanes; a controller enforcing a peer-wide rate shares one budget (a token bucket) across its calls. A CLA paces the BPA by when it answers: answering `Accepted` early frees the lane while the acknowledgement is in flight, and a CLA at capacity withholds its answers, so the pollers stop pulling once every lane awaits one.
 
 ### Hybrid Channel Architecture
 
@@ -100,7 +106,7 @@ Each policy queue is a hybrid memory/storage channel (`bpa/src/storage/channel.r
     Any state ──► Closing (channel closed)
 ```
 
-Memory stays bounded per queue whatever the arrival rate, and a full queue never blocks or fails the sender. Every send pays the status write; the fast path saves the storage re-read. Delivery is at-least-once, so `forward_bundle` claims each bundle with a conditional swap to `ForwardAckPending` before offering it, and a duplicate copy loses the swap.
+Memory stays bounded per queue whatever the arrival rate, and a full queue never blocks or fails the sender. Every send pays the status write; the fast path saves the storage re-read. Delivery is at-least-once, so `forward_bundle` claims each bundle with a conditional swap to `ForwardAckPending` before loading its data and offering it: a duplicate copy loses the swap, at the cost of one metadata compare-and-swap, never a read of the bundle.
 
 #### Hysteresis and congestion signalling
 
@@ -136,7 +142,7 @@ Peer removal and CLA unregistration close the peer's channels first, so no new s
 - **Routing** hands the policy a peer through `ClaRegistry::forward`, which returns the bundle if the peer has vanished, and the dispatcher parks it in `Waiting`. Peer selection, ECMP included, is complete before the policy sees the bundle.
 - **Filters** run the Egress chain inside `forward_bundle` on every transmission attempt, in memory only, so a re-routed bundle is re-filtered with fresh context.
 - **Storage** provides the queue channels, the peer sweeps, and restart recovery; status semantics are in the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`), recovery in [Storage Subsystem Design](storage_subsystem_design.md#crash-recovery).
-- **gRPC** carries `lane_count` at registration (`optional uint32`, where 0 is rejected) and a lane on each forward, but no policy.
+- **gRPC** carries the `lanes` declaration at registration (the shared `lanes.Lanes` message: absent is serial, and a `limited` 0 is rejected) and a lane on each forward, but no policy.
 
 ## Standards Compliance
 

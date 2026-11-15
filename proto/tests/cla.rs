@@ -1,4 +1,4 @@
-//! CLA client proxy tests (CLA-CLI-01 through CLA-CLI-06).
+//! CLA client proxy tests (CLA-CLI-01 through CLA-CLI-09).
 //!
 //! Verify the CLA client correctly maps Rust trait calls to cla.proto
 //! messages via the gRPC proxy.
@@ -10,6 +10,7 @@ use core::num::{NonZeroU32, NonZeroU64};
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::cla::{self, ClaAddress, ClaInit, ForwardBundleResult};
+use hardy_bpa::lanes::Lanes;
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -364,7 +365,7 @@ async fn cla_cli_06_deferred_outcome() {
 async fn cla_cli_07_cla_init_round_trip() {
     let declared = ClaInit {
         address_type: Some(hardy_bpa::cla::ClaAddressType::Tcp),
-        lane_count: Some(NonZeroU32::new(4).unwrap()),
+        lanes: Lanes::Limited(NonZeroU32::new(4).unwrap()),
         max_bundle_size: Some(NonZeroU64::new(1024 * 1024).unwrap()),
     };
     let effective = NonZeroU64::new(512 * 1024).unwrap();
@@ -428,4 +429,128 @@ async fn cla_cli_08_absent_declarations_round_trip_as_none() {
     // Clean up
     drop(cla.take_sink());
     server_tasks.shutdown().await;
+}
+
+// A remote CLA whose forwards announce themselves and hold until the test
+// releases them, recording the most ever in flight at once.
+struct HoldingCla {
+    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn cla::Sink>>>,
+    entered_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    release: Arc<tokio::sync::Semaphore>,
+    in_flight: std::sync::atomic::AtomicUsize,
+    max_in_flight: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl cla::Cla for HoldingCla {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
+        *self.sink.lock() = Some(sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn forward(
+        &self,
+        _lane: Option<u32>,
+        _cla_addr: &ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+    ) -> cla::Result<ForwardBundleResult> {
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+        let _ = self.entered_tx.send(());
+        self.release
+            .acquire()
+            .await
+            .expect("release semaphore open")
+            .forget();
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        Ok(ForwardBundleResult::Sent)
+    }
+}
+
+// CLA-CLI-09: a remote CLA declaring more lanes than the client has CPUs
+// takes that many forwards at once: the client proxy's handler bound grows
+// with the declaration, so a bound sized by CPU count alone cannot cap it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cla_cli_09_declared_lanes_bound_the_client_not_its_cpus() {
+    let bpa = Arc::new(MockBpa::new());
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
+
+    let lanes = hardy_async::available_parallelism().get() + 2;
+    let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let cla = Arc::new(HoldingCla {
+        sink: hardy_async::sync::spin::Mutex::new(None),
+        entered_tx,
+        release: release.clone(),
+        in_flight: std::sync::atomic::AtomicUsize::new(0),
+        max_in_flight: std::sync::atomic::AtomicUsize::new(0),
+    });
+    RemoteBpa::new(grpc_addr)
+        .register_cla(
+            "test-cla".to_string(),
+            cla.clone(),
+            None,
+            ClaInit {
+                lanes: Lanes::Limited(NonZeroU32::new(u32::try_from(lanes).unwrap()).unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("registration should succeed");
+    let server_cla = bpa
+        .last_cla
+        .lock()
+        .clone()
+        .expect("BPA should have the server-side CLA");
+
+    let forwards = (0..lanes)
+        .map(|_| {
+            let server_cla = server_cla.clone();
+            tokio::spawn(async move {
+                let mut bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
+                let total_len = bundle.len() as u64;
+                let bundle_id = hardy_bpv7::bundle::Id {
+                    source: "ipn:0.9.1".parse().unwrap(),
+                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                    fragment_info: None,
+                };
+                server_cla
+                    .forward(
+                        None,
+                        &ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap()),
+                        &bundle_id,
+                        total_len,
+                        &mut bundle,
+                    )
+                    .await
+                    .expect("forward should succeed")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Every forward is in flight at the CLA at once. The timeout only
+    // bounds a regression: a CPU-count bound would hold the rest back.
+    for _ in 0..lanes {
+        tokio::time::timeout(std::time::Duration::from_secs(10), entered_rx.recv())
+            .await
+            .expect("a declared lane was held back")
+            .expect("CLA gone");
+    }
+    assert_eq!(cla.in_flight.load(Ordering::SeqCst), lanes);
+
+    release.add_permits(lanes);
+    for forward in forwards {
+        assert!(matches!(forward.await.unwrap(), ForwardBundleResult::Sent));
+    }
+    drop(cla.sink.lock().take());
+    server_tasks.shutdown().await;
+    assert_eq!(cla.max_in_flight.load(Ordering::SeqCst), lanes);
 }

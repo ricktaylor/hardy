@@ -212,9 +212,15 @@ async fn run_routing_session(
     let handler = Box::new(Handler {
         agent: agent.clone(),
     });
-    agent
-        .proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
+    agent.proxy.call_once(|| {
+        RpcProxy::run(
+            channel_sender,
+            channel_receiver,
+            handler,
+            Side::Server,
+            default_handlers(),
+        )
+    });
 }
 
 /// Create a new RoutingAgent gRPC service.

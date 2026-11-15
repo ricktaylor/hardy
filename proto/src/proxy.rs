@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::{
+    num::{NonZeroU32, NonZeroUsize},
+    sync::atomic::{AtomicU32, Ordering},
+};
 use std::collections::HashMap;
 
 use hardy_async::sync::spin::Mutex;
@@ -43,6 +46,25 @@ pub trait ProxyHandler: Send + Sync {
 /// returns immediately (reader is dead, no one to correlate the response).
 type PendingMap<R> =
     Arc<Mutex<Option<HashMap<u32, tokio::sync::oneshot::Sender<Result<R, tonic::Status>>>>>>;
+
+/// The default bound on the inbound requests one proxy handles at once: the
+/// available parallelism, which suits requests that are short or
+/// CPU-bound. A component whose inbound requests are long round trips it
+/// declares as lanes sizes its proxy with [`handlers_for_lanes`] instead.
+pub fn default_handlers() -> NonZeroUsize {
+    hardy_async::available_parallelism()
+}
+
+/// The bound on the inbound requests one proxy handles at once for a
+/// component declaring `lanes` concurrent ones (a service's delivery
+/// lanes, a CLA's forward lanes): enough handlers for that many to be in
+/// flight together, plus [`default_handlers`] more, so the component's
+/// other requests (status notifications, peer events) never queue behind
+/// its lanes. The sum, rather than the larger of the two, keeps that
+/// headroom whatever the lane count.
+pub fn handlers_for_lanes(lanes: NonZeroU32) -> NonZeroUsize {
+    default_handlers().saturating_add(usize::try_from(lanes.get()).unwrap_or(usize::MAX))
+}
 
 /// Writer half: reads from a channel and sends on the gRPC outbound stream.
 ///
@@ -105,6 +127,7 @@ where
         pending: PendingMap<R::Msg>,
         handler: Arc<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
         tasks: hardy_async::TaskPool,
+        handlers: NonZeroUsize,
     ) -> Self {
         Self {
             stream,
@@ -113,7 +136,7 @@ where
             handler,
             tasks,
             permits: Arc::new(tokio::sync::Semaphore::new(
-                hardy_async::available_parallelism().get(),
+                handlers.get().min(tokio::sync::Semaphore::MAX_PERMITS),
             )),
         }
     }
@@ -264,37 +287,16 @@ where
         }
     }
 
-    /// Synchronous receive-then-send for the pre-proxy handshake phase.
-    /// Used before `run()` is called, when the caller owns both halves directly.
-    pub async fn recv<F, Fut>(
-        channel_sender: &mut Sender<S>,
-        channel_receiver: &mut tonic::Streaming<R>,
-        f: F,
-    ) -> Result<(), tonic::Status>
-    where
-        F: FnOnce(R::Msg) -> Fut,
-        Fut: Future<Output = Result<S::Msg, tonic::Status>>,
-    {
-        let msg = channel_receiver
-            .message()
-            .await?
-            .ok_or(tonic::Status::unavailable("Server shut down"))?;
-
-        let msg_id = msg.msg_id();
-        let msg = f(msg.msg()?).await?;
-
-        channel_sender
-            .send(S::compose(msg_id, msg))
-            .await
-            .map_err(|e| tonic::Status::unavailable(format!("Server shut down: {e}")))
-    }
-
     /// Start the proxy.
     ///
     /// `side` selects the request-id parity for this end (see [`Side`]); the
-    /// two ends of a connection must pass opposite sides. The reader, writer,
-    /// and per-request handlers all run on one task pool. Call `shutdown()` to
-    /// cancel and drain them, or drop the proxy to cancel them.
+    /// two ends of a connection must pass opposite sides. `handlers` bounds
+    /// how many inbound requests are handled at once ([`default_handlers`],
+    /// or [`handlers_for_lanes`] for a component declaring lanes); further
+    /// requests wait for a handler without stalling the reader. The reader,
+    /// writer, and per-request handlers all run on one task pool. Call
+    /// `shutdown()` to cancel and drain them, or drop the proxy to cancel
+    /// them.
     ///
     /// After this call, use `call()` to send messages and await responses.
     pub fn run(
@@ -302,6 +304,7 @@ where
         channel_receiver: tonic::Streaming<R>,
         handler: Box<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
         side: Side,
+        handlers: NonZeroUsize,
     ) -> Self {
         let tasks = hardy_async::TaskPool::new();
         let (write_tx, write_rx) = tokio::sync::mpsc::channel(16);
@@ -318,6 +321,7 @@ where
             pending.clone(),
             Arc::from(handler),
             tasks.clone(),
+            handlers,
         );
         hardy_async::spawn!(tasks, "rpc_proxy_reader", async move { reader.run().await });
 
@@ -387,6 +391,52 @@ where
             return;
         }
         self.tasks.shutdown().await;
+    }
+}
+
+impl<T, R> RpcProxy<Result<T, tonic::Status>, R>
+where
+    R: RecvMsg + Send + 'static,
+    R::Msg: Send,
+    T: SendMsg + Send + 'static,
+    T::Msg: Send,
+{
+    /// Synchronous receive-then-send for the server's pre-proxy handshake
+    /// phase. Used before `run()` is called, when the caller owns both
+    /// halves directly.
+    ///
+    /// A handshake `f` rejects is relayed to the client as the stream's
+    /// terminal status before the error is returned, so a rejected
+    /// registration reaches the client as its own status rather than as a
+    /// closed stream.
+    pub async fn recv<F, Fut>(
+        channel_sender: &mut Sender<Result<T, tonic::Status>>,
+        channel_receiver: &mut tonic::Streaming<R>,
+        f: F,
+    ) -> Result<(), tonic::Status>
+    where
+        F: FnOnce(R::Msg) -> Fut,
+        Fut: Future<Output = Result<T::Msg, tonic::Status>>,
+    {
+        let msg = channel_receiver
+            .message()
+            .await?
+            .ok_or(tonic::Status::unavailable("Server shut down"))?;
+
+        let msg_id = msg.msg_id();
+        let msg = match f(msg.msg()?).await {
+            Ok(msg) => msg,
+            Err(status) => {
+                // Best effort: a client already gone has no use for it.
+                let _ = channel_sender.send(Err(status.clone())).await;
+                return Err(status);
+            }
+        };
+
+        channel_sender
+            .send(Ok(T::compose(msg_id, msg)))
+            .await
+            .map_err(|e| tonic::Status::unavailable(format!("Server shut down: {e}")))
     }
 }
 

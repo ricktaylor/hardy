@@ -72,7 +72,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Null Policy** | The null policy declares one queue and releases every bundle to the `next_free` lane directive without rate limiting. | `src/policy/null_policy.rs` | Null policy; CLA with `lane_count = Some(2)` | `queue_count() = 1`; every bundle forwarded with lane `None` |
+| **Null Policy** | The null policy declares one queue and releases every bundle to the `next_free` lane directive without rate limiting. | `src/policy/null_policy.rs` | Null policy; CLA with `lanes = Limited(2)` | `queue_count() = 1`; every bundle forwarded with lane `None` |
 | **Queue Assignment** | The controller assigns each bundle a queue with `queue_for()`, which takes no per-bundle input; the total queue model means queue 0 always exists. | `src/policy/mod.rs` | Controller: `queue_count() = 2`, `queue_for() -> 1` | Bundle queued on queue 1 |
 
 ### 3.4 Service Registry Logic
@@ -95,6 +95,20 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Duplicate Data** | Handle overlapping/duplicate fragments. | `src/storage/adu_reassembly.rs` | 1. Frag 1/2<br>2. Frag 1/2 | Result: `None` (Pending, no error) |
 | **Missing Head** | Detect missing offset 0 fragment. | `src/storage/adu_reassembly.rs` | 1. Frag 2/2 (End) | Result: `None` (Pending) or Log Warning. |
 | **Length Mismatch** | Detect fragments claiming different total lengths. | `src/storage/adu_reassembly.rs` | 1. Frag A (Total=100)<br>2. Frag B (Total=200) | Result: `None` (Drop/Error). |
+
+### 3.5a Dispatcher Logic (Hand-off Claims)
+
+*Objective: Verify that forwarding and delivery claim a queued bundle before loading its data, and that the load resolves what it refuses, in `src/dispatcher/`.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Duplicate Loses Before Loading** | A duplicate copy of a queued bundle, delivered by the at-least-once channel, loses the claim without loading the bundle's data. | `src/dispatcher/forward.rs`, `src/dispatcher/deliver.rs` | A queued bundle offered (the CLA accepts, holding the claim) or delivered; then its duplicate copy | One load, one offer or delivery; the first copy's claim or resolution stands. |
+| **Expired Before the Claim** | An expired queued bundle is dropped before it is claimed or loaded. | `src/dispatcher/forward.rs`, `src/dispatcher/deliver.rs` | An expired `ForwardPending` or `DeliverPending` bundle | No load, no offer or delivery; dropped as `LifetimeExpired`. |
+| **Missing Data After the Claim** | A claimed bundle whose data has gone is dropped from its claim, so the claim never dangles. | `src/dispatcher/forward.rs`, `src/dispatcher/deliver.rs` | A queued bundle whose data was deleted | No offer or delivery; dropped with a `DepletedStorage` deletion report. |
+| **Expired After the Load** | A claimed bundle found expired once its load returns is dropped, data and all, rather than left to the reaper, which defers the claim — whether or not its data is still there. | `src/dispatcher/mod.rs` | An expired `ForwardAckPending` bundle, with its data, and with its data deleted | Dropped with exactly one `LifetimeExpired` report; data deleted. |
+| **Departing Service's Queued Copies** | A delivery consumer whose service has begun unregistering leaves the copies still buffered in its queue: their bundles are the sweep's, or queued again for the next registration. | `src/dispatcher/deliver.rs` | A queued bundle, its registration cancelled | No claim, no load, no delivery; the bundle stays `DeliverPending`. |
+| **Peer Removed During the Load** | A forward whose claim a peer removal sweeps while its data loads makes no offer. | `src/dispatcher/forward.rs` | A queued bundle; both peer sweeps run while its load is held | No offer; the bundle stays `Waiting` for the sweep's poll. |
+| **Swept Claim** | A claim a sweep moved on during the load is left to the sweep: the drop, conditioned on the claimed status, loses. | `src/dispatcher/mod.rs` | A `ForwardAckPending` bundle reset to `Waiting`, its data deleted | Still `Waiting`; no report. |
 
 ### 3.6 Storage Logic (Quotas & Eviction)
 
@@ -139,6 +153,9 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Cascading Cleanup** | Verify unregistering CLA removes peers. | `src/cla/registry.rs` | 1. Reg CLA -> Add Peer A.<br>2. Unregister CLA. | Result: Peer A removed from RIB. |
 | **Queue Selection** | Verify the controller's assignment selects the peer queue. | `src/cla/peers.rs` | Controller: `queue_for() -> 1`<br>Policy: 2 queues | Result: Bundle sent via queue 1. |
 | **Queue Fallback** | Verify an out-of-range index is clamped to queue 0. | `src/cla/peers.rs` | Controller: `queue_for() -> 99`<br>Policy: 2 queues | Result: Bundle sent via queue 0 (the clamp); warning logged. |
+| **Effective Lanes** | A seat's lanes are its resource's hint bounded by the seat cap. | `src/lanes.rs` | Hint `Some(3)`, `Some(12)`, `None`; cap 8 | 3, 8, 8. |
+| **Lane Drain** | The bounded drain behind the egress and delivery seats fills its lanes in queue order, leaves the queue alone while they are busy, pulls one item per freed lane (completions may reorder), drains serially with one lane, and once the queue closes returns only after its in-flight hand-offs complete. Queues sharing a budget share its lanes in waiting order, and an idle queue holds none. | `src/lanes.rs` | Queue of 5; 2 lanes; test-completed hand-offs. Two queues on one budget of 2; an idle and a busy queue on a budget of 1. | Items 0 and 1 start, 3 stay queued; completing 1 then 0 starts 2 then 3; after close the drain is pending until the last hand-off completes. Two queues never exceed 2 together; the idle queue leaves the lane to the busy one, and its arrival waits its turn. |
+| **Peer Poller** | A peer queue's poller pulls no bundle without a free lane, and a closed queue's poller returns only once its forwards have finished. | `src/cla/peers.rs` | Queue of 5, 2 lanes, a holding controller; then queue of 2, closed with both forwards held | 3 bundles stay in the channel while both lanes are held, 2 after one frees; the poller is pending until the last forward finishes. |
 
 ### 3.9 Reaper Logic (TTL Scheduling)
 

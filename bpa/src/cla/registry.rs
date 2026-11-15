@@ -1,8 +1,7 @@
-use core::num::NonZeroU32;
-
 use hardy_bpv7::eid::{Eid, NodeId};
 
 use super::*;
+use crate::lanes::MAX_PINNED_LANES;
 
 // CLA registry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -15,7 +14,7 @@ pub struct Cla {
     pub policy: Arc<dyn policy::FlowControllerFactory>,
     // Snapshotted from the `ClaInit` declarations at registration.
     pub address_type: Option<ClaAddressType>,
-    pub lane_count: Option<NonZeroU32>,
+    pub lanes: Lanes,
 
     name: Arc<str>,
     // Cancelled at unregistration; every in-flight stream of this
@@ -201,7 +200,7 @@ impl ClaRegistryBuilder {
     pub fn build(
         self,
         node_ids: &Arc<node_ids::NodeIds>,
-        poll_channel_depth: usize,
+        egress: peers::EgressConfig,
         rib: &Arc<routing::Rib>,
         store: &Arc<storage::store::Store>,
     ) -> Arc<ClaRegistry> {
@@ -213,7 +212,7 @@ impl ClaRegistryBuilder {
             rib: rib.clone(),
             store: store.clone(),
             peers,
-            poll_channel_depth,
+            egress,
             tasks: hardy_async::TaskPool::new(),
         })
     }
@@ -229,7 +228,8 @@ pub struct ClaRegistry {
     rib: Arc<routing::Rib>,
     store: Arc<storage::store::Store>,
     peers: Arc<peers::PeerTable>,
-    poll_channel_depth: usize,
+    // Every peer's egress seat settings.
+    egress: peers::EgressConfig,
     tasks: hardy_async::TaskPool,
 }
 
@@ -309,7 +309,7 @@ impl ClaRegistry {
                 cancel: hardy_async::CancellationToken::new(),
                 cla,
                 address_type: init.address_type,
-                lane_count: init.lane_count,
+                lanes: init.lanes,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
                 policy: policy
@@ -340,6 +340,12 @@ impl ClaRegistry {
 
         metrics::gauge!("bpa.cla.registered").increment(1.0);
         info!("Registered CLA: {name}");
+        if entry.lanes.explicit() > MAX_PINNED_LANES {
+            info!(
+                "CLA {name} declares {} lanes; an egress policy can pin bundles to only the first {MAX_PINNED_LANES}",
+                entry.lanes.explicit()
+            );
+        }
 
         Ok(node_ids)
     }
@@ -413,7 +419,7 @@ impl ClaRegistry {
         // Construct the peer complete, then publish: the table only ever
         // holds working peers.
         let peer = peers::Peer::start(
-            self.poll_channel_depth,
+            self.egress,
             cla.clone(),
             peer_id,
             cla_addr.clone(),

@@ -30,9 +30,17 @@ This document details the unit test cases for the `hardy-async` module. This cra
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Concurrency Limit** | Spawn 10 tasks with limit 2, verify max concurrent never exceeds 2. | `bounded_task_pool.rs` | `BoundedTaskPool::new(2)`, spawn 10 tasks with AtomicUsize counter | Peak concurrency == 2. |
-| **Default Parallelism** | Default constructor uses `available_parallelism`. | `bounded_task_pool.rs` | `BoundedTaskPool::default()`, spawn 1 task | Task completes successfully. |
-| **Shutdown Completion** | Spawn 4 cancellation-aware tasks, shutdown, verify all completed. | `bounded_task_pool.rs` | `BoundedTaskPool::new(2)`, spawn 4, `shutdown().await` | All 4 tasks complete; all cancel tokens triggered. |
+| **Concurrency Limit** | Hold every permit with running tasks; a further spawn waits until one finishes. | `bounded_task_pool.rs` | `BoundedTaskPool::new(2)`, spawn 2 held tasks, spawn a third | Third pending; proceeds once a held task finishes. |
+| **Default Parallelism** | The default limit is `available_parallelism`. | `bounded_task_pool.rs` | `BoundedTaskPool::default()`, spawn that many held tasks, then one more | The extra spawn waits; proceeds once the held tasks finish. |
+| **Shutdown Completion** | Spawn 4 cancellation-aware tasks, shutdown, verify all completed. | `bounded_task_pool.rs` | `BoundedTaskPool::new(4)`, spawn 4, `shutdown().await` | The token is cancelled and all 4 tasks have finished. |
+
+### 2.2a Semaphore
+
+*Objective: Verify the shared permit budget.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Permits Held Until Dropped** | Hold every permit; a further acquire waits until one is dropped. | `semaphore.rs` | `Semaphore::new(2)`, acquire 2, acquire a third | Third pending; ready once a held permit is dropped. |
 
 ### 2.3 sync::Mutex
 

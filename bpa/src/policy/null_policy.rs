@@ -70,10 +70,10 @@ mod tests {
         }
     }
 
-    // A CLA declaring pinned lanes must not panic the null policy (remote,
-    // once the v1 wire carries `lane_count`): its single queue transmits
-    // with the next-free directive, so the pinned endpoints stay idle and
-    // every bundle — whatever queue index it arrives with — goes next-free.
+    // A CLA declaring pinned lanes, local or remote, must not panic the
+    // null policy: its single queue transmits with the next-free directive,
+    // so the pinned endpoints stay idle and every bundle — whatever queue
+    // index it arrives with — goes next-free.
     #[tokio::test]
     async fn declared_lanes_are_tolerated_on_the_next_free_endpoint() {
         let (tx, rx) = flume::unbounded();

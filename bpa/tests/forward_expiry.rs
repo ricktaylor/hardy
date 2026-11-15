@@ -14,6 +14,7 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     cla,
+    lanes::Lanes,
     node_ids::NodeIds,
     services,
     storage::{MetadataMemStorage, MetadataStorage},
@@ -256,7 +257,7 @@ async fn expiry_mid_transfer_rig() -> (
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = CaptureService::new();
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    bpa.register_service(Service::Ipn(9), reports.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -469,7 +470,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
     bpa.start(false).await;
 
     let (reports, reports_rx) = CaptureService::new();
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    bpa.register_service(Service::Ipn(9), reports.clone(), Lanes::Serial)
         .await
         .unwrap();
 

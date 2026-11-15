@@ -21,23 +21,11 @@ pub enum Error {
     #[error("There is already a service registered as {0}")]
     ServiceIdInUse(String),
 
-    /// The provided DTN service name is syntactically invalid.
-    #[error("Invalid dtn service name {0}")]
-    DtnInvalidServiceName(String),
-
     /// The service id denotes the node's administrative endpoint, which is
     /// structurally registered and cannot be claimed by a service
     /// (RFC 9758 Section 5.7).
     #[error("Service id {0} identifies the administrative endpoint (RFC 9758 Section 5.7)")]
     AdministrativeEndpoint(String),
-
-    /// No IPN node ID is configured on this BPA, so IPN services cannot register.
-    #[error("There is no ipn node id configured")]
-    NoIpnNodeId,
-
-    /// No DTN node ID is configured on this BPA, so DTN services cannot register.
-    #[error("There is no dtn node id configured")]
-    NoDtnNodeId,
 
     /// The sink has been dropped or the BPA has shut down.
     #[error("The sink is disconnected")]
@@ -78,6 +66,11 @@ pub enum Error {
     /// The bundle's destination EID is not valid for sending.
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
+
+    /// A raw bundle's source EID is not the sending registration's
+    /// endpoint; carries the bundle's source.
+    #[error("Bundle source {0} is not the registration's endpoint")]
+    InvalidSource(Eid),
 
     /// The bundle is a fragment. Fragmentation is a forwarding-time action
     /// (RFC 9171 §5.8) — a source never emits fragments — so the raw
@@ -209,6 +202,11 @@ pub trait Application: Send + Sync {
     async fn on_unregister(&self);
 
     /// Called when a bundle payload is delivered to this application as a stream of segments.
+    ///
+    /// Deliveries arrive one at a time unless the application declared more
+    /// delivery lanes at registration ([`Lanes`](crate::lanes::Lanes)); then
+    /// up to that many calls run concurrently and may complete in any
+    /// order.
     ///
     /// The implementation pulls
     /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
@@ -390,6 +388,11 @@ pub trait Service: Send + Sync {
 
     /// Called when a bundle is delivered to this service as a stream of segments.
     ///
+    /// Deliveries arrive one at a time unless the service declared more
+    /// delivery lanes at registration ([`Lanes`](crate::lanes::Lanes)); then
+    /// up to that many calls run concurrently and may complete in any
+    /// order.
+    ///
     /// The stream carries the raw bundle bytes (the service can parse them
     /// if needed); `bundle_id` is the identity of the delivered bundle and
     /// `expiry` is calculated from bundle metadata by the dispatcher. The
@@ -468,9 +471,11 @@ pub trait ServiceSink: Send + Sync {
     ///
     /// The service delivers `bpv7::Builder`-constructed bundle bytes segment
     /// by segment, and the BPA parses and validates the assembled bundle
-    /// (security boundary - services are not trusted). Dropping the sender
-    /// before a [`Segment::Final`](crate::stream::Segment::Final) cancels
-    /// the send and returns [`Error::StreamCancelled`].
+    /// (security boundary - services are not trusted). A bundle whose
+    /// source is not this registration's endpoint is rejected with
+    /// [`Error::InvalidSource`]. Dropping the sender before a
+    /// [`Segment::Final`](crate::stream::Segment::Final) cancels the send
+    /// and returns [`Error::StreamCancelled`].
     ///
     /// A caller holding a complete bundle in memory sends it as a
     /// one-segment stream, since `Bytes` implements [`stream::Receiver`](crate::stream::Receiver):

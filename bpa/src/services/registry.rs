@@ -3,7 +3,10 @@ use hardy_bpv7::eid::Eid;
 use portable_atomic::{AtomicU32, Ordering};
 use tracing::{error, info};
 
-use crate::{Arc, Bytes, HashMap, Weak, bundle, dispatcher, node_ids, routing, services, storage};
+use crate::{
+    Arc, Bytes, HashMap, Weak, bundle, dispatcher, lanes::Lanes, node_ids, routing, services,
+    storage,
+};
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -31,17 +34,21 @@ pub struct Service {
     // This registration's delivery queue (the local analogue of a peer's
     // egress queues).
     tx: storage::channel::Sender,
+    // The delivery lanes declared at registration, bounded by the delivery
+    // seat cap when the delivery queue starts.
+    pub lanes: Lanes,
 }
 
 impl Service {
     /// The sole constructor: a reachable `Service` always carries its live
-    /// delivery queue and its canonical registration EID, so no consumer
-    /// can observe a half-built registration.
+    /// delivery queue, its canonical registration EID, and its snapshotted
+    /// declarations, so no consumer can observe a half-built registration.
     pub fn new(
         service: ServiceImpl,
         service_id: hardy_bpv7::eid::Service,
         eid: Eid,
         tx: storage::channel::Sender,
+        lanes: Lanes,
     ) -> Arc<Self> {
         Arc::new(Self {
             service,
@@ -49,6 +56,7 @@ impl Service {
             cancel: hardy_async::CancellationToken::new(),
             eid,
             tx,
+            lanes,
         })
     }
 
@@ -250,8 +258,14 @@ impl Drop for Sink {
 
 type ServiceMap = HashMap<hardy_bpv7::eid::Service, Arc<Service>>;
 
+// A service awaiting registration, held by the building-phase registry.
+pub struct PendingService {
+    service: ServiceImpl,
+    lanes: Lanes,
+}
+
 pub struct ServiceRegistryBuilder {
-    services: Vec<(hardy_bpv7::eid::Service, ServiceImpl)>,
+    services: Vec<(hardy_bpv7::eid::Service, PendingService)>,
 }
 
 impl ServiceRegistryBuilder {
@@ -265,6 +279,7 @@ impl ServiceRegistryBuilder {
         &mut self,
         service_id: hardy_bpv7::eid::Service,
         service: ServiceImpl,
+        lanes: Lanes,
     ) -> services::Result<()> {
         if node_ids::service_is_admin_endpoint(&service_id) {
             return Err(services::Error::AdministrativeEndpoint(
@@ -275,7 +290,8 @@ impl ServiceRegistryBuilder {
             return Err(services::Error::ServiceIdInUse(service_id.to_string()));
         }
         info!("Inserted service: {service_id}");
-        self.services.push((service_id, service));
+        self.services
+            .push((service_id, PendingService { service, lanes }));
         Ok(())
     }
 
@@ -304,7 +320,7 @@ pub struct ServiceRegistry {
     services: hardy_async::sync::spin::Mutex<ServiceMap>,
     // Builder-configured registrations, parked until `start` activates them
     // after storage recovery.
-    pending: hardy_async::sync::spin::Mutex<Vec<(hardy_bpv7::eid::Service, ServiceImpl)>>,
+    pending: hardy_async::sync::spin::Mutex<Vec<(hardy_bpv7::eid::Service, PendingService)>>,
     next_dynamic: AtomicU32,
     tasks: hardy_async::TaskPool,
 }
@@ -320,10 +336,17 @@ impl ServiceRegistry {
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) {
         let pending = core::mem::take(&mut *self.pending.lock());
-        for (service_id, service) in pending {
+        for (service_id, pending) in pending {
             // Validated at build; a failure here is a bug, not a config error.
             if let Err(e) = self
-                .register(&service_id, service, node_ids, rib, dispatcher)
+                .register(
+                    &service_id,
+                    pending.service,
+                    pending.lanes,
+                    node_ids,
+                    rib,
+                    dispatcher,
+                )
                 .await
             {
                 error!("Failed to activate configured service {service_id}: {e}");
@@ -355,6 +378,7 @@ impl ServiceRegistry {
         self: &Arc<Self>,
         service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn services::Service>,
+        lanes: Lanes,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
@@ -362,6 +386,7 @@ impl ServiceRegistry {
         self.register(
             &service_id,
             ServiceImpl::LowLevel(service),
+            lanes,
             node_ids,
             rib,
             dispatcher,
@@ -373,6 +398,7 @@ impl ServiceRegistry {
         self: &Arc<Self>,
         service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn services::Application>,
+        lanes: Lanes,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
@@ -380,6 +406,7 @@ impl ServiceRegistry {
         self.register(
             &service_id,
             ServiceImpl::Application(application),
+            lanes,
             node_ids,
             rib,
             dispatcher,
@@ -391,12 +418,13 @@ impl ServiceRegistry {
     pub async fn register_dynamic_service(
         self: &Arc<Self>,
         service: Arc<dyn services::Service>,
+        lanes: Lanes,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         let service_id = self.allocate_dynamic_id();
-        self.register_service(service_id, service, node_ids, rib, dispatcher)
+        self.register_service(service_id, service, lanes, node_ids, rib, dispatcher)
             .await
     }
 
@@ -404,12 +432,13 @@ impl ServiceRegistry {
     pub async fn register_dynamic_application(
         self: &Arc<Self>,
         application: Arc<dyn services::Application>,
+        lanes: Lanes,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         let service_id = self.allocate_dynamic_id();
-        self.register_application(service_id, application, node_ids, rib, dispatcher)
+        self.register_application(service_id, application, lanes, node_ids, rib, dispatcher)
             .await
     }
 
@@ -422,6 +451,7 @@ impl ServiceRegistry {
         self: &Arc<Self>,
         service_id: &hardy_bpv7::eid::Service,
         service: ServiceImpl,
+        lanes: Lanes,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
@@ -440,7 +470,7 @@ impl ServiceRegistry {
         // channel's creation-time poll recovers any DeliverPending bundles
         // left over from a previous registration under the same EID.
         let (tx, rx) = dispatcher.new_delivery_channel(&eid);
-        let service = Service::new(service, service_id.clone(), eid.clone(), tx);
+        let service = Service::new(service, service_id.clone(), eid.clone(), tx, lanes);
         {
             let mut services = self.services.lock();
             if services.contains_key(service_id) {
@@ -507,8 +537,8 @@ impl ServiceRegistry {
         service.cancel.cancel();
 
         // Close the delivery queue: the consumer finishes its in-flight
-        // delivery and exits; queued bundles are swept to WaitingForService
-        // by the RIB removal below.
+        // deliveries and exits; queued bundles are swept to
+        // WaitingForService by the RIB removal below.
         service.close_queue();
 
         let eid = service.eid().clone();
@@ -583,12 +613,14 @@ mod tests {
 
         // First registration should succeed
         let app1 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id.clone(), app1).await;
+        let result = bpa
+            .register_application(svc_id.clone(), app1, Lanes::Serial)
+            .await;
         assert!(result.is_ok(), "First registration should succeed");
 
         // Second registration with the same service number should fail
         let app2 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id, app2).await;
+        let result = bpa.register_application(svc_id, app2, Lanes::Serial).await;
         assert!(
             matches!(result, Err(services::Error::ServiceIdInUse(ref id)) if id == "42"),
             "Duplicate registration should return ServiceIdInUse, got: {result:?}"
@@ -608,7 +640,9 @@ mod tests {
 
         // Register
         let app1 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id.clone(), app1.clone()).await;
+        let result = bpa
+            .register_application(svc_id.clone(), app1.clone(), Lanes::Serial)
+            .await;
         assert!(result.is_ok());
 
         // Unregister via the sink
@@ -623,7 +657,7 @@ mod tests {
 
         // Re-registration with the same service number should now succeed
         let app2 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id, app2).await;
+        let result = bpa.register_application(svc_id, app2, Lanes::Serial).await;
         assert!(
             result.is_ok(),
             "Re-registration after cleanup should succeed, got: {result:?}"
@@ -679,6 +713,7 @@ mod tests {
             builder.insert(
                 hardy_bpv7::eid::Service::Ipn(0),
                 ServiceImpl::LowLevel(Arc::new(TestService)),
+                Lanes::Serial,
             ),
             Err(services::Error::AdministrativeEndpoint(_))
         ));
@@ -686,6 +721,7 @@ mod tests {
             builder.insert(
                 hardy_bpv7::eid::Service::Dtn("".into()),
                 ServiceImpl::LowLevel(Arc::new(TestService)),
+                Lanes::Serial,
             ),
             Err(services::Error::AdministrativeEndpoint(_))
         ));
@@ -696,6 +732,7 @@ mod tests {
                 .insert(
                     hardy_bpv7::eid::Service::Ipn(1),
                     ServiceImpl::LowLevel(Arc::new(TestService)),
+                    Lanes::Serial,
                 )
                 .is_ok()
         );

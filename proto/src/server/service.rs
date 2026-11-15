@@ -238,11 +238,12 @@ async fn run_service_session(
                         register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
                     })
                     .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
+                let lanes = proto::lanes::declared(request.lanes)?;
                 let endpoint_id = bpa
-                    .register_service(service_id, svc.clone())
+                    .register_service(service_id, svc.clone(), lanes)
                     .await
                     .map(|endpoint_id| endpoint_id.to_string())
-                    .map_err(|e| tonic::Status::from_error(e.into()))?;
+                    .map_err(registration_error_to_status)?;
 
                 Ok(bpa_to_service::Msg::Register(RegisterResponse {
                     endpoint_id,
@@ -265,8 +266,15 @@ async fn run_service_session(
 
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { svc: svc.clone() });
-    svc.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
+    svc.proxy.call_once(|| {
+        RpcProxy::run(
+            channel_sender,
+            channel_receiver,
+            handler,
+            Side::Server,
+            default_handlers(),
+        )
+    });
 }
 
 /// Create a new low-level Service gRPC service.

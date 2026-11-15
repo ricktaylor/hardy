@@ -2,6 +2,7 @@ syntax = "proto3";
 
 import "google/protobuf/timestamp.proto";
 import "google/rpc/status.proto";
+import "lanes.proto";
 
 package service;
 
@@ -198,6 +199,12 @@ message RegisterRequest {
     // If 0, the BPA assigns a random service number.
     uint32 ipn = 2;
   }
+
+  // The endpoint's delivery lanes: how many deliveries it takes in flight
+  // at once (concurrent ServiceReceiveRequest/AppReceiveRequest messages
+  // awaiting their ReceiveResponse), which may then complete in any order.
+  // Absent means serial.
+  lanes.Lanes lanes = 3;
 }
 
 // RegisterResponse confirms successful registration and provides the

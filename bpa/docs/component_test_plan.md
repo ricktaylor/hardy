@@ -87,11 +87,12 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 
 ### Suite E: Service Delivery Failure
 
-*Objective: a delivery the service fails leaves the bundle in custody (`bpa/tests/pipeline.rs`).*
+*Objective: a delivery the service fails, or one whose service unregisters before it is handed over, leaves the bundle in custody (`bpa/tests/pipeline.rs`, `bpa/tests/delivery_queue.rs`).*
 
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **INT-BPA-05** | **`on_deliver` returns `Err`** | 1. Register an application whose `on_deliver` fails.<br>2. Originate a bundle to it from a second application.<br>3. Unregister the failing application and register a working one on the same service id. | The failed delivery parks the bundle `WaitingForService` rather than reporting it delivered and deleting it; the working receiver gets it re-delivered, payload intact. |
+| **INT-BPA-18** | **Unregistration during a delivery's load** | 1. Register a service; hold its claimed delivery's data load in storage.<br>2. Unregister the service, then release the load.<br>3. Register a service on the same id. | The departing service is never handed the bundle; it parks as `WaitingForService` and the next registration is delivered it, once (`bpa/tests/delivery_queue.rs`). |
 
 ### Suite F: Deferred CLA Transfer Outcomes
 
@@ -112,6 +113,15 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **INT-BPA-12** | **Streamed origination and ingress** | 1. Originate through `ServiceSink::send` in several segments; drop the producer before `Final`; unregister the service while a send is parked; send a bundle whose source is not the service's endpoint; send a bundle carrying a Hop Count block, and one whose Hop Count this node cannot decrypt.<br>2. Dispatch through `cla::Sink::dispatch` in several segments; unregister the CLA while a stream is parked; drop the producer before `Final`, including after a whole bundle in `Next` and after every byte of an oversized one. | Multi-segment origination and ingress match their whole-buffer forms (origination returns the built bundle's id and forwards it; ingress delivers locally). A producer dropped before `Final` cancels an origination (`StreamCancelled`, nothing enters custody) and is refused at ingress (`Acceptance::Refused`, nothing delivered), even once every byte of the bundle has arrived. Unregistration wakes a parked consumer with `StreamCancelled` at once. The spoofed source is rejected. An originated bundle leaves with the Hop Count it was built with (origination is not a hop), and an undecryptable Hop Count is accepted and forwarded unchanged. |
+
+### Suite H: Lanes
+
+*Objective: a seat keeps up to its effective lanes of hand-offs in flight — the resource's declared lane count bounded by the BPA's seat cap — and a cap of one is serial (`bpa/tests/egress_lanes.rs`, `bpa/tests/delivery_lanes.rs`).*
+
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-16** | **Egress lanes** | 1. Register a CLA whose `forward` holds until released, declaring no lanes, unlimited lanes, 2 lanes, 5 lanes, or 16 lanes, under the default cap, caps 3, 8 and 3, and the default.<br>2. Queue more bundles than lanes to its peer; release one forward, then all.<br>3. With a cap of 1, release forwards one at a time.<br>4. Bind a two-queue policy alternating its assignments, with 2 lanes declared.<br>5. With every lane busy, remove the peer, then release.<br>6. Declare `MAX_PINNED_LANES` + 1 lanes under a policy that records its queue set's pinned lanes. | Exactly the effective lanes are in flight: one for a CLA declaring no lanes, min(lanes, cap) for a declared count (8 under the default cap for 16 lanes), and the cap for an unlimited CLA; the next bundle starts as soon as one lane frees, every bundle is offered once, and the in-flight count never exceeds the bound. A cap of 1 forwards one at a time, in queue order. The two queues share the peer's 2 lanes. Removing the peer lets the in-flight forwards run to completion, and the bundles still queued are swept, never offered. The policy can pin to lanes 0..`MAX_PINNED_LANES` only, and a bundle on the next free lane is still forwarded. |
+| **INT-BPA-17** | **Delivery lanes** | 1. Register a service whose `on_deliver` holds until released, declaring 3 lanes, 5 lanes under a delivery cap of 2, unlimited lanes under the default cap, 4 lanes under a cap of 1, and serial (`Lanes::Serial`).<br>2. Queue more bundles than lanes to it; release one delivery, then all.<br>3. With every lane busy, unregister the service, then release (`bpa/tests/delivery_lanes.rs`). | Exactly min(declared, cap) deliveries are in flight (8 for an unlimited service under the default cap), the next bundle starts as soon as one lane frees, every bundle is delivered once, and the in-flight count never exceeds the bound. A service declaring nothing, or any service under a cap of 1, is delivered to one bundle at a time, in queue order. Unregistering sweeps the queued bundle to `WaitingForService` (it never reaches the service) while the in-flight deliveries keep their `DeliveryAckPending` claims and complete. |
 
 ## 5. Performance Benchmarks (REQ-13)
 

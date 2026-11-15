@@ -10,9 +10,11 @@ use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
 use hardy_async::TaskPool;
+#[cfg(feature = "echo")]
 use hardy_bpa::{
     bpa::Bpa,
     cla::{Cla, ClaInit},
+    lanes::Lanes,
     policy::FlowControllerFactory,
     routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
@@ -163,6 +165,12 @@ impl BpaServer {
         if let Some(pool_size) = config.processing_pool_size {
             builder = builder.processing_pool_size(pool_size);
         }
+        if let Some(cap) = config.egress_lane_cap {
+            builder = builder.egress_lane_cap(cap);
+        }
+        if let Some(cap) = config.delivery_lane_cap {
+            builder = builder.delivery_lane_cap(cap);
+        }
         if let Some(service_priority) = config.service_priority {
             builder = builder.service_priority(service_priority);
         }
@@ -227,8 +235,11 @@ impl BpaServer {
                         warn!("built-in-services.echo: no endpoints configured, skipping");
                     } else {
                         for service_id in services {
-                            builder = builder
-                                .service(Arc::new(EchoService::new()), service_id);
+                            builder = builder.service(
+                                Arc::new(EchoService::new()),
+                                service_id,
+                                Lanes::Serial,
+                            );
                         }
                     }
                 }

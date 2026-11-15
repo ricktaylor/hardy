@@ -151,7 +151,13 @@ pub async fn register_routing_agent(
     });
 
     // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
+    let proxy = RpcProxy::run(
+        channel_sender,
+        channel_receiver,
+        handler,
+        Side::Client,
+        default_handlers(),
+    );
 
     // Call on_register()
     agent

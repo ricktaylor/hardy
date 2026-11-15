@@ -18,6 +18,7 @@ use hardy_bpa::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, pack::FilterPack,
         slots::MetadataDelta,
     },
+    lanes::Lanes,
     node_ids::NodeIds,
     routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
     services,
@@ -407,7 +408,7 @@ async fn app_to_cla_routing() {
     // Register an application to send from
     let (app, _app_rx) = TestApp::new();
     let source_eid = bpa
-        .register_application(Service::Ipn(42), app.clone())
+        .register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -2627,7 +2628,10 @@ async fn scheduled_removal_is_absent_at_delivery() {
     bpa.start(false).await;
 
     let (svc, delivered_rx) = CapturingService::new();
-    let endpoint = bpa.register_service(Service::Ipn(7), svc).await.unwrap();
+    let endpoint = bpa
+        .register_service(Service::Ipn(7), svc, Lanes::Serial)
+        .await
+        .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
     bpa.register_cla(
@@ -2872,7 +2876,10 @@ async fn scheduled_removal_precedes_the_deliver_chain() {
     bpa.start(false).await;
 
     let (svc, delivered_rx) = CapturingService::new();
-    let endpoint = bpa.register_service(Service::Ipn(7), svc).await.unwrap();
+    let endpoint = bpa
+        .register_service(Service::Ipn(7), svc, Lanes::Serial)
+        .await
+        .unwrap();
     let (cla, _forwarded_rx) = PipelineCla::new();
     bpa.register_cla(
         "test".to_string(),
@@ -2935,7 +2942,9 @@ async fn echo_round_trip() {
 
     // Register echo service on service number 7
     let echo = EchoService::new();
-    bpa.register_service(Service::Ipn(7), echo).await.unwrap();
+    bpa.register_service(Service::Ipn(7), echo, Lanes::Serial)
+        .await
+        .unwrap();
 
     // Register CLA with a peer for the "remote" node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -3036,7 +3045,7 @@ async fn streamed_originate_setup_with(
 
     // The service only captures its sink here; the test drives the sink itself.
     let svc = EchoService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -3253,7 +3262,7 @@ async fn service_streamed_send_rejects_spoofed_source() {
     let result = svc.sink.get().unwrap().send(&mut rx).await;
     assert!(matches!(
         result,
-        Err(hardy_bpa::services::Error::InvalidDestination(_))
+        Err(hardy_bpa::services::Error::InvalidSource(source)) if source == spoofed
     ));
 
     bpa.shutdown().await;
@@ -3419,7 +3428,7 @@ async fn local_delivery() {
 
     // Register an application on service number 42
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -3849,7 +3858,7 @@ async fn cla_streamed_ingress_delivers() {
     bpa.start(false).await;
 
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -3984,7 +3993,7 @@ async fn cla_streamed_ingress_truncation_is_refused() {
     bpa.start(false).await;
 
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -4041,7 +4050,7 @@ async fn abandoned_transfer_setup() -> (
     bpa.start(false).await;
 
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -4220,7 +4229,7 @@ async fn segmented_payload_local_delivery() {
     bpa.start(false).await;
 
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -4283,7 +4292,7 @@ async fn duplicate_arrival_never_awaits_the_payload() {
     bpa.start(false).await;
 
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -4387,7 +4396,7 @@ async fn segmented_gate_drops_before_draining_payload() {
     bpa.start(false).await;
 
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -5398,7 +5407,7 @@ async fn short_final_setup() -> (
         .unwrap();
     bpa.start(false).await;
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -5970,7 +5979,7 @@ async fn egress_filter_sees_consistent_extents() {
     // rewrite inserts one after the Rewriter's insert
     let (app, _app_rx) = TestApp::new();
     let source = bpa
-        .register_application(Service::Ipn(42), app.clone())
+        .register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     app.sink
@@ -6088,7 +6097,7 @@ async fn classifier_route_key_drives_the_lookup() {
         .unwrap();
 
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     app.sink
@@ -6281,13 +6290,13 @@ async fn dispatcher_handles_on_deliver_err() {
     bpa.start(false).await;
 
     let (sender, _sender_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(43), sender.clone())
+    bpa.register_application(Service::Ipn(43), sender.clone(), Lanes::Serial)
         .await
         .unwrap();
 
     let (failing, completed_rx) = FailingApp::new();
     let receiver_eid = bpa
-        .register_application(Service::Ipn(42), failing.clone())
+        .register_application(Service::Ipn(42), failing.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -6320,7 +6329,7 @@ async fn dispatcher_handles_on_deliver_err() {
     // after it, the bundle re-enters dispatch and reaches the new receiver.
     failing.sink.get().unwrap().unregister().await;
     let (receiver, received_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), receiver.clone())
+    bpa.register_application(Service::Ipn(42), receiver.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -6790,7 +6799,7 @@ async fn forward_failure_park_recheck_redispatches() {
         .unwrap();
 
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(90), app.clone())
+    bpa.register_application(Service::Ipn(90), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     let id = app
@@ -6899,7 +6908,7 @@ async fn transfer_in_flight(failure: fn() -> cla::Error) -> InFlight {
         .unwrap();
 
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(91), app.clone())
+    bpa.register_application(Service::Ipn(91), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     let id = app
@@ -7045,7 +7054,7 @@ async fn gate_fixture(
     bpa.start(false).await;
 
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -7207,7 +7216,7 @@ async fn an_out_of_range_queue_is_clamped_to_queue_0() {
         .unwrap();
 
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(91), app.clone())
+    bpa.register_application(Service::Ipn(91), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     let id = app
@@ -7741,6 +7750,7 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
             entered_tx,
             release_rx,
         }),
+        Lanes::Serial,
     )
     .await
     .unwrap();
@@ -7888,7 +7898,7 @@ async fn originate_route_drop_never_awaits_the_payload() {
 async fn adu_originate_refuses_a_zero_lifetime() {
     let (bpa, _svc, forwarded_rx, _) = streamed_originate_setup().await;
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -8145,7 +8155,7 @@ async fn restart_setup(
         .unwrap();
     bpa.start(false).await;
     let svc = EchoService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -8276,11 +8286,11 @@ async fn oversized_originate_refuses_before_the_payload() {
     bpa.start(false).await;
 
     let svc = EchoService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone(), Lanes::Serial)
         .await
         .unwrap();
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -8358,7 +8368,7 @@ async fn adu_originate_refuses_headers_over_the_cap() {
 
     let (app, _app_rx) = TestApp::new();
     let source = bpa
-        .register_application(Service::Ipn(42), app.clone())
+        .register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     let destination: Eid = "ipn:0.2.1".parse().unwrap();
@@ -8489,7 +8499,7 @@ async fn app_send_streamed_matches_whole_buffer_send() {
     bpa.start(false).await;
 
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
 
@@ -8611,7 +8621,7 @@ async fn app_send_streamed_producer_drop_cancels() {
     bpa.start(false).await;
 
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -8681,7 +8691,7 @@ async fn app_send_streamed_enforces_the_declared_length() {
     bpa.start(false).await;
 
     let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    bpa.register_application(Service::Ipn(42), app.clone(), Lanes::Serial)
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::new();

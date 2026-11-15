@@ -48,7 +48,7 @@ The tests defined here are intended to be run against **all** implementations of
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **SVC-05** | **Send Bundle** | 1. Service calls `sink.send(dest, payload, ttl, opts)`. | 1. Returns `Ok(bundle_id)`.<br>2. BPA accepts bundle for routing. |
-| **SVC-06** | **Send Invalid** | 1. Service calls `sink.send` with invalid EID. | 1. Returns `Err(InvalidDestination)`. |
+| **SVC-06** | **Send Invalid** | 1. Service calls `sink.send` with a bundle whose source is not its registered endpoint. | 1. Returns `Err(InvalidSource(source))`, carrying the bundle's source (`service_streamed_send_rejects_spoofed_source`). |
 
 ### Suite D: Error Handling
 

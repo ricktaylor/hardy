@@ -1,3 +1,7 @@
+use core::num::NonZeroUsize;
+
+use hardy_bpa::lanes::Lanes;
+
 use super::*;
 use proxy::*;
 
@@ -5,6 +9,17 @@ mod application;
 mod cla;
 mod routing;
 mod service;
+
+// The proxy handlers a service or application needs for its declared
+// delivery lanes: room for every lane of a limited declaration at once, so
+// the host's core count never caps them; a serial or unlimited one keeps
+// the default bound.
+fn delivery_handlers(lanes: Lanes) -> NonZeroUsize {
+    match lanes {
+        Lanes::Limited(n) => handlers_for_lanes(n),
+        Lanes::Serial | Lanes::Unlimited => default_handlers(),
+    }
+}
 
 fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, tonic::Status> {
     Ok(time::OffsetDateTime::from_unix_timestamp(t.seconds)
@@ -60,19 +75,23 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
         &self,
         service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn hardy_bpa::services::Service>,
+        lanes: Lanes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), Some(service_id), service).await
+        service::register_endpoint_service(self.grpc_addr.clone(), Some(service_id), service, lanes)
+            .await
     }
 
     async fn register_application(
         &self,
         service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn hardy_bpa::services::Application>,
+        lanes: Lanes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
         application::register_application_service(
             self.grpc_addr.clone(),
             Some(service_id),
             application,
+            lanes,
         )
         .await
     }
@@ -80,15 +99,18 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
     async fn register_dynamic_service(
         &self,
         service: Arc<dyn hardy_bpa::services::Service>,
+        lanes: Lanes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), None, service).await
+        service::register_endpoint_service(self.grpc_addr.clone(), None, service, lanes).await
     }
 
     async fn register_dynamic_application(
         &self,
         application: Arc<dyn hardy_bpa::services::Application>,
+        lanes: Lanes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(self.grpc_addr.clone(), None, application).await
+        application::register_application_service(self.grpc_addr.clone(), None, application, lanes)
+            .await
     }
 
     async fn register_routing_agent(

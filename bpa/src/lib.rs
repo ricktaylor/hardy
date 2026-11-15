@@ -51,6 +51,7 @@ pub mod bundle;
 pub mod cla;
 pub mod filter;
 pub mod keys;
+pub mod lanes;
 pub mod node_ids;
 pub mod policy;
 pub mod routing;
