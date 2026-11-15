@@ -1,4 +1,4 @@
-// Lanes: the bounded concurrent drain behind the egress (peer) and delivery
+// The bounded concurrent drain behind the egress (peer) and delivery
 // (service) seats. Queues hold waiting work; lanes carry in-flight work
 // (docs/policy_subsystem_redesign.md): a seat drains its queues into at most
 // its effective lane count of concurrent hand-offs — the resource's declared
@@ -16,7 +16,7 @@ use core::{
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use hardy_async::{OwnedSemaphorePermit, Semaphore, closeable::Receiver};
 
-use crate::cla::Lanes;
+use super::Lanes;
 
 // A seat's effective lane count: one for a serial resource, a limited one's
 // count bounded by the seat cap, and the cap for an unlimited one.

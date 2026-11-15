@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa::{bpa::BpaRegistration, cla::Lanes};
+use hardy_bpa::{bpa::BpaRegistration, lanes::Lanes};
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

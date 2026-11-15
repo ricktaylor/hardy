@@ -238,7 +238,7 @@ async fn run_service_session(
                         register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
                     })
                     .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
-                let lanes = proto::service::declared_lanes(request.lanes)?;
+                let lanes = proto::lanes::declared(request.lanes)?;
                 let endpoint_id = bpa
                     .register_service(service_id, svc.clone(), lanes)
                     .await

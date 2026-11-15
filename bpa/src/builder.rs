@@ -6,10 +6,11 @@ use hardy_eid_patterns::EidPattern;
 use crate::{
     Arc,
     bpa::Bpa,
-    cla::{Cla, ClaInit, Lanes, registry::ClaRegistryBuilder},
+    cla::{Cla, ClaInit, peers::EgressConfig, registry::ClaRegistryBuilder},
     dispatcher::{Config as DispatcherConfig, Dispatcher},
     filter::pack::{FilterPack, chains::FilterChains},
     keys::KeyProvider,
+    lanes::Lanes,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
     routing::{RibBuilder, RoutingAgent},
@@ -128,7 +129,7 @@ impl BpaBuilder {
     ///
     /// A peer's queues drain into its effective lanes, from the lanes its
     /// CLA declared ([`ClaInit::lanes`](crate::cla::ClaInit)): one for
-    /// [`Lanes::Serial`](crate::cla::Lanes), the default; the declared
+    /// [`Lanes::Serial`](crate::lanes::Lanes), the default; the declared
     /// count bounded by this cap for `Limited`; and the whole cap for
     /// `Unlimited`. Each in-flight forward holds its loaded bundle until the
     /// CLA answers, so the cap bounds that memory per peer: up to the cap
@@ -345,8 +346,10 @@ impl BpaBuilder {
         let service_registry = self.service_registry_builder.build(&node_ids)?;
         let cla_registry = self.cla_registry_builder.build(
             &node_ids,
-            self.poll_channel_depth.into(),
-            self.egress_lane_cap,
+            EgressConfig {
+                poll_channel_depth: self.poll_channel_depth.into(),
+                lane_cap: self.egress_lane_cap,
+            },
             &rib,
             &store,
         );

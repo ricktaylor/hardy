@@ -17,10 +17,7 @@ extern crate alloc;
 
 use alloc::{sync::Arc, vec::Vec};
 
-use hardy_bpa::{
-    bpa::BpaRegistration,
-    cla::{ClaInit, Lanes},
-};
+use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit, lanes::Lanes};
 use hardy_bpv7::eid::{Eid, NodeId, Service};
 use thiserror::Error as ThisError;
 use tracing::debug;

@@ -7,9 +7,9 @@ use std::sync::Mutex;
 use hardy_bpa::{
     async_trait,
     cla::{
-        self, Cla, ClaAddress, ClaAddressType, ClaInit, ForwardBundleResult, Lanes, Sink,
-        TransferOutcome,
+        self, Cla, ClaAddress, ClaAddressType, ClaInit, ForwardBundleResult, Sink, TransferOutcome,
     },
+    lanes::Lanes,
 };
 use hardy_bpv7::bundle::Id;
 

@@ -1,9 +1,10 @@
-use core::num::{NonZeroU32, NonZeroU64};
+use core::num::NonZeroU64;
 
 use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
 
+use crate::lanes::Lanes;
 pub use crate::stream::Segment;
 
 pub(crate) mod peers;
@@ -218,40 +219,6 @@ pub enum TransferOutcome {
     /// (acknowledgement loss), and receiving-side deduplication absorbs the
     /// re-forward.
     Failed,
-}
-
-/// A CLA's declared lanes: its honest parallelism, how many transfers to
-/// one peer it can usefully carry in flight at once.
-///
-/// Lanes are parallel transport channels — QUIC streams, DSCP classes,
-/// separate TCP connections — carrying in-flight transfers with no
-/// explicit priority among them. Scheduling and prioritisation live in the
-/// BPA's egress policy, which decides what is forwarded onto each lane; the
-/// CLA simply transmits what arrives on a lane, and one lane's in-flight
-/// transfer must not head-of-line block another's.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Lanes {
-    /// One transfer at a time: the CLA declares no parallelism. A CLA that
-    /// declares nothing gets this.
-    #[default]
-    Serial,
-    /// Up to this many transfers at once, on explicit lanes indexed
-    /// `0..n`. A zero count is unrepresentable by construction.
-    Limited(NonZeroU32),
-    /// No limit of the CLA's own (a datagram CL): every forward travels on
-    /// a fresh lane. The BPA's own bounds still apply.
-    Unlimited,
-}
-
-impl Lanes {
-    // How many explicit lanes the declaration names: `n` for `Limited(n)`,
-    // none otherwise, since serial and unlimited CLAs index no lanes.
-    pub(crate) fn explicit(self) -> u32 {
-        match self {
-            Self::Limited(n) => n.get(),
-            Self::Serial | Self::Unlimited => 0,
-        }
-    }
 }
 
 /// A CLA's set-once registration declarations.

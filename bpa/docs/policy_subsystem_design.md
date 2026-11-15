@@ -69,7 +69,7 @@ Two counts meet in the controller: the policy's **queue count** (M, `queue_count
 
 A routed bundle needs somewhere to wait until the link can take it. That place is per peer, so a slow or dark link holds back only its own traffic, and it is where ordering and rate decisions are made without involving routing or the CLA.
 
-Lanes are the CLA's side. As the `Lanes` rustdoc (`bpa/src/cla/mod.rs`) defines them, lanes are parallel transport channels — QUIC streams, DSCP classes, separate TCP connections — carrying in-flight transfers with no priority among them: the policy decides what goes onto each lane, the CLA transmits what arrives, and one lane's in-flight transfer must not head-of-line block another's.
+Lanes are the CLA's side. As the `Lanes` rustdoc (`bpa/src/lanes/mod.rs`) defines them for a CLA, lanes are parallel transport channels — QUIC streams, DSCP classes, separate TCP connections — carrying in-flight transfers with no priority among them: the policy decides what goes onto each lane, the CLA transmits what arrives, and one lane's in-flight transfer must not head-of-line block another's.
 
 `Lanes` is an enum: `Serial` (one transfer at a time, the default for a CLA that declares nothing), `Limited(n)` declaring explicit lanes `0..n` (zero is unrepresentable), or `Unlimited` (an effectively unconstrained CLA, such as a datagram CL). It is part of the set-once `ClaInit` snapshotted at registration, so a CLA whose parallelism changes re-registers. The controller reaches the lanes through its `EgressQueueSet`: a required `next_free` queue that transmits with lane `None`, letting the CLA pick its next free lane, and one `pinned` queue per explicit lane of a `Limited` CLA.
 
@@ -142,7 +142,7 @@ Peer removal and CLA unregistration close the peer's channels first, so no new s
 - **Routing** hands the policy a peer through `ClaRegistry::forward`, which returns the bundle if the peer has vanished, and the dispatcher parks it in `Waiting`. Peer selection, ECMP included, is complete before the policy sees the bundle.
 - **Filters** run the Egress chain inside `forward_bundle` on every transmission attempt, in memory only, so a re-routed bundle is re-filtered with fresh context.
 - **Storage** provides the queue channels, the peer sweeps, and restart recovery; status semantics are in the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`), recovery in [Storage Subsystem Design](storage_subsystem_design.md#crash-recovery).
-- **gRPC** carries the `lanes` declaration at registration (a `oneof`: absent is serial, and a `limited` 0 is rejected) and a lane on each forward, but no policy.
+- **gRPC** carries the `lanes` declaration at registration (the shared `lanes.Lanes` message: absent is serial, and a `limited` 0 is rejected) and a lane on each forward, but no policy.
 
 ## Standards Compliance
 

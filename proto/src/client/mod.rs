@@ -1,6 +1,6 @@
 use core::num::NonZeroUsize;
 
-use hardy_bpa::cla::Lanes;
+use hardy_bpa::lanes::Lanes;
 
 use super::*;
 use proxy::*;

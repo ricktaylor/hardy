@@ -4,7 +4,8 @@ use portable_atomic::{AtomicU32, Ordering};
 use tracing::{error, info};
 
 use crate::{
-    Arc, Bytes, HashMap, Weak, bundle, cla::Lanes, dispatcher, node_ids, routing, services, storage,
+    Arc, Bytes, HashMap, Weak, bundle, dispatcher, lanes::Lanes, node_ids, routing, services,
+    storage,
 };
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:

@@ -13,11 +13,12 @@ use hardy_bpa::bundle::{Bundle, BundleMetadata, BundleStatus};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    cla::{self, Lanes},
+    cla,
     filter::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, pack::FilterPack,
         slots::MetadataDelta,
     },
+    lanes::Lanes,
     node_ids::NodeIds,
     routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
     services,

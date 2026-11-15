@@ -147,7 +147,7 @@ This pattern works because:
 
 - The status-conditioned writes are the coordination point — no locks needed, the claim and the reaper's tombstone cannot both succeed
 - Whoever wins reports: the reaper for a bundle still queued or parked, the processing block for a bundle it has claimed
-- Processing blocks handle `load() → None` in one place (`load_or_drop`, used by `forward.rs`, `deliver.rs` and `admin.rs`)
+- Processing blocks handle `load() → None` in one place (`load_or_drop`, used by `forward.rs` and `deliver.rs` after their claims, and by `admin.rs` on a bundle still in `Dispatching`, where the reaper may also drop it and the conditional tombstone keeps that to one report)
 
 In a distributed architecture, the reaper becomes a storage-level maintenance job per storage shard, independent of processing nodes. The same status-conditioned coordination applies.
 

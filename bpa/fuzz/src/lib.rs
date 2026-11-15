@@ -7,10 +7,7 @@ mod test;
 
 use arbitrary::Arbitrary;
 use core::num::NonZeroUsize;
-use hardy_bpa::{
-    bpa::BpaRegistration,
-    cla::{ClaInit, Lanes},
-};
+use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit, lanes::Lanes};
 use std::sync::Arc;
 
 #[derive(Arbitrary)]

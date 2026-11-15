@@ -37,7 +37,8 @@ The BPA is constructed via `BpaBuilder` and exposes a `BpaRegistration` trait th
 
 ```rust
 use hardy_bpa::bpa::{Bpa, BpaRegistration};
-use hardy_bpa::cla::{ClaInit, Lanes};
+use hardy_bpa::cla::ClaInit;
+use hardy_bpa::lanes::Lanes;
 use hardy_bpa::node_ids::NodeIds;
 
 // Build a BPA with default in-memory storage

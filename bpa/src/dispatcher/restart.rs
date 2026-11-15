@@ -165,7 +165,8 @@ mod tests {
     use crate::keys::KeyProvider;
     use crate::{
         bpa::{Bpa, BpaRegistration},
-        cla::{ClaInit, Lanes},
+        cla::ClaInit,
+        lanes::Lanes,
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,

@@ -13,7 +13,8 @@ use std::{borrow::Cow, sync::Arc};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    cla::{self, Lanes},
+    cla,
+    lanes::Lanes,
     node_ids::NodeIds,
     services,
     storage::{MetadataMemStorage, MetadataStorage},

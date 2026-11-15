@@ -5,7 +5,7 @@ use futures::join;
 use hardy_bpv7::eid::Eid;
 
 use super::*;
-use crate::lanes;
+use crate::lanes::seat;
 
 impl Dispatcher {
     /// Create a per-service delivery channel: the hybrid storage channel
@@ -47,10 +47,10 @@ impl Dispatcher {
         rx: hardy_async::closeable::Receiver<bundle::Bundle>,
     ) {
         let dispatcher = self.clone();
-        let lanes = lanes::budget(lanes::effective(service.lanes, self.delivery_lane_cap));
+        let lanes = seat::budget(seat::effective(service.lanes, self.delivery_lane_cap));
         hardy_async::spawn!(self.tasks, "delivery_queue_poller", async move {
             let deliveries = dispatcher.tasks.clone();
-            lanes::drain(&rx, &lanes, |bundle, lane| {
+            seat::drain(&rx, &lanes, |bundle, lane| {
                 let dispatcher = dispatcher.clone();
                 let service = service.clone();
                 hardy_async::spawn!(deliveries, "delivery", async move {

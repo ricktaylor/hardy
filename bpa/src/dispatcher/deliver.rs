@@ -269,10 +269,10 @@ mod tests {
         stream::{Sender, buffer_stream},
     };
     use crate::{
-        cla::Lanes,
         dispatcher::tests::{
             CountingBundleStorage, bundle_data, deletion_reasons, reporting_dispatcher, seed,
         },
+        lanes::Lanes,
         storage::{BundleStorage, MetadataMemStorage, MetadataStorage},
         stream::{Receiver, Segment},
     };

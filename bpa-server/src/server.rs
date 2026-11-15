@@ -13,7 +13,8 @@ use hardy_async::TaskPool;
 #[cfg(feature = "echo")]
 use hardy_bpa::{
     bpa::Bpa,
-    cla::{Cla, ClaInit, Lanes},
+    cla::{Cla, ClaInit},
+    lanes::Lanes,
     policy::FlowControllerFactory,
     routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},

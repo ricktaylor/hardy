@@ -308,7 +308,7 @@ async fn run_cla_session(
                     }
                     declared => declared.and_then(NonZeroU64::new),
                 };
-                let lanes = declared_lanes(request.lanes)?;
+                let lanes = proto::lanes::declared(request.lanes)?;
                 let node_ids = bpa
                     .register_cla(
                         request.name,

@@ -14,7 +14,7 @@ use std::sync::{
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    cla::Lanes,
+    lanes::Lanes,
     node_ids::NodeIds,
     services::{Application, ApplicationSink, Service, ServiceSink, StatusNotify},
     stream::{Receiver, Segment, buffer_stream},

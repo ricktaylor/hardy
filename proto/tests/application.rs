@@ -9,7 +9,7 @@ use common::MockBpa;
 use core::num::NonZeroU32;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::cla::Lanes;
+use hardy_bpa::lanes::Lanes;
 use hardy_bpa::services::{Application, ApplicationSink, StatusNotify};
 use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;

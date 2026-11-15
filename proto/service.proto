@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "google/rpc/status.proto";
+import "lanes.proto";
 
 package service;
 
@@ -203,17 +203,8 @@ message RegisterRequest {
   // The endpoint's delivery lanes: how many deliveries it takes in flight
   // at once (concurrent ServiceReceiveRequest/AppReceiveRequest messages
   // awaiting their ReceiveResponse), which may then complete in any order.
-  // Absent means serial, the same as `serial`. The BPA bounds the count by
-  // its own delivery seat cap.
-  oneof lanes {
-    // One delivery at a time, in queue order.
-    google.protobuf.Empty serial    = 3;
-    // Up to this many deliveries at once. An explicit 0 is invalid and the
-    // registration is rejected.
-    uint32                limited   = 4;
-    // As many deliveries as the BPA allows.
-    google.protobuf.Empty unlimited = 5;
-  }
+  // Absent means serial.
+  lanes.Lanes lanes = 3;
 }
 
 // RegisterResponse confirms successful registration and provides the

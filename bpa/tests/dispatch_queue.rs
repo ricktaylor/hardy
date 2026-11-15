@@ -18,7 +18,7 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla::Lanes,
+    lanes::Lanes,
     node_ids::NodeIds,
     services,
     storage::{self, MetadataMemStorage, MetadataStorage},

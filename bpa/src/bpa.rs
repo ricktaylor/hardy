@@ -6,8 +6,9 @@ use tracing::instrument;
 use crate::{
     Arc,
     builder::BpaBuilder,
-    cla::{self, Cla, ClaInit, Lanes, registry::ClaRegistry},
+    cla::{self, Cla, ClaInit, registry::ClaRegistry},
     dispatcher::Dispatcher,
+    lanes::Lanes,
     otel_metrics,
     policy::FlowControllerFactory,
     routing::{self, Rib, RoutingAgent},

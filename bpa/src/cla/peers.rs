@@ -5,13 +5,22 @@ use hardy_bpv7::eid::Eid;
 use tracing::warn;
 
 use super::*;
-use crate::lanes;
+use crate::lanes::seat;
 
 // PeerTable uses hardy_async::sync::spin::RwLock because:
 // 1. All operations are O(1) HashMap lookups/inserts
 // 2. Read-heavy pattern (forward is called frequently)
 // 3. No blocking/iteration while holding lock
 // 4. Avoids OS rwlock overhead on hot forwarding path
+
+// The egress seat's settings, the same for every peer: the depth of each
+// queue's in-memory channel, and the cap on any one peer's concurrent
+// forwards, whatever its CLA declares.
+#[derive(Clone, Copy)]
+pub struct EgressConfig {
+    pub poll_channel_depth: usize,
+    pub lane_cap: NonZeroU32,
+}
 
 pub struct Peer {
     // The id every queue below is keyed under.
@@ -33,13 +42,12 @@ impl Peer {
     /// half-built state to guard against.
     ///
     /// The peer keeps up to its effective lanes of forwards in flight: one
-    /// for a serial CLA, a limited CLA's count bounded by `egress_lane_cap`,
-    /// or the cap for an unlimited one, shared by all of the peer's queue
-    /// pollers, so the declaration holds whatever the policy's queue count.
-    #[allow(clippy::too_many_arguments)]
+    /// for a serial CLA, a limited CLA's count bounded by the egress lane
+    /// cap, or the cap for an unlimited one, shared by all of the peer's
+    /// queue pollers, so the declaration holds whatever the policy's queue
+    /// count.
     pub async fn start(
-        poll_channel_depth: usize,
-        egress_lane_cap: NonZeroU32,
+        config: EgressConfig,
         cla: Arc<registry::Cla>,
         peer: u32,
         cla_addr: ClaAddress,
@@ -58,12 +66,12 @@ impl Peer {
             ))
             .await;
 
-        let lanes = lanes::budget(lanes::effective(cla.lanes, egress_lane_cap));
+        let lanes = seat::budget(seat::effective(cla.lanes, config.lane_cap));
         let queue_count = cla.policy.queue_count().get();
         let mut queues = Vec::with_capacity(queue_count as usize);
         for q in 0..queue_count {
             queues.push(Self::start_queue_poller(
-                poll_channel_depth,
+                config.poll_channel_depth,
                 lanes.clone(),
                 controller.clone(),
                 store.clone(),
@@ -133,7 +141,7 @@ impl Peer {
         peer: u32,
         queue: u32,
     ) {
-        lanes::drain(&rx, &lanes, |bundle, lane| {
+        seat::drain(&rx, &lanes, |bundle, lane| {
             let controller = controller.clone();
             hardy_async::spawn!(
                 forwards,
@@ -407,7 +415,7 @@ mod tests {
         let forwards = hardy_async::TaskPool::new();
         let poller = Peer::drain_queue(
             rig.rx,
-            lanes::budget(NonZeroU32::new(2).unwrap()),
+            seat::budget(NonZeroU32::new(2).unwrap()),
             rig.controller.clone(),
             forwards.clone(),
             1,
@@ -437,7 +445,7 @@ mod tests {
         let forwards = hardy_async::TaskPool::new();
         let poller = Peer::drain_queue(
             rig.rx,
-            lanes::budget(NonZeroU32::new(2).unwrap()),
+            seat::budget(NonZeroU32::new(2).unwrap()),
             rig.controller.clone(),
             forwards.clone(),
             1,

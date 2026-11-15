@@ -211,7 +211,7 @@ pub trait Application: Send + Sync {
     /// Called when a bundle payload is delivered to this application as a stream of segments.
     ///
     /// Deliveries arrive one at a time unless the application declared more
-    /// delivery lanes at registration ([`Lanes`](crate::cla::Lanes)); then
+    /// delivery lanes at registration ([`Lanes`](crate::lanes::Lanes)); then
     /// up to that many calls run concurrently and may complete in any
     /// order.
     ///
@@ -396,7 +396,7 @@ pub trait Service: Send + Sync {
     /// Called when a bundle is delivered to this service as a stream of segments.
     ///
     /// Deliveries arrive one at a time unless the service declared more
-    /// delivery lanes at registration ([`Lanes`](crate::cla::Lanes)); then
+    /// delivery lanes at registration ([`Lanes`](crate::lanes::Lanes)); then
     /// up to that many calls run concurrently and may complete in any
     /// order.
     ///

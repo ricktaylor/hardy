@@ -27,11 +27,12 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     builder::BpaBuilder,
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla::{self, Lanes},
+    cla,
     filter::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, Verifier, VerifyContext,
         pack::FilterPack, slots::MetadataDelta,
     },
+    lanes::Lanes,
     node_ids::NodeIds,
     services,
     storage::{

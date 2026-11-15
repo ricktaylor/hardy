@@ -21,7 +21,7 @@ The crate uses an `RpcProxy` pattern with split reader/writer tasks and a bounde
 
 ## Features
 
-- **Protobuf service definitions**: `cla.proto`, `service.proto`, `routing.proto` for all BPA registration interfaces
+- **Protobuf service definitions**: `cla.proto`, `service.proto`, `routing.proto` for all BPA registration interfaces, and `lanes.proto` for the declaration they share
 - **`RemoteBpa` client**: Implements `BpaRegistration` via gRPC, drop-in replacement for a local `Bpa`
 - **gRPC server**: Exposes selectable registration endpoints (`cla`, `service`, `application`, `routing`)
 - **RpcProxy**: Split reader/writer architecture with message-ID correlation and bounded handler pool
@@ -53,6 +53,7 @@ The gRPC APIs are defined in the following `.proto` files:
 | [`cla.proto`](cla.proto) | `cla` | CLA registration and bundle exchange |
 | [`service.proto`](service.proto) | `service` | Application service registration and ADU delivery |
 | [`routing.proto`](routing.proto) | `routing` | Routing agent registration and route management |
+| [`lanes.proto`](lanes.proto) | `lanes` | The lanes declaration that CLA, service and application registrations share |
 
 The TVR agent defines its own proto: [`tvr/tvr.proto`](../tvr/tvr.proto).
 
@@ -67,6 +68,7 @@ docker run --rm \
   pseudomuto/protoc-gen-doc \
   --doc_opt=markdown,api_reference.md \
   cla.proto \
+  lanes.proto \
   routing.proto \
   service.proto
 ```

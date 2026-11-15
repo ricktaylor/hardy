@@ -229,7 +229,7 @@ pub async fn register_endpoint_service(
                     register_request::ServiceId::Dtn(service_name.into())
                 }
             }),
-            lanes: proto::service::wire_lanes(lanes),
+            lanes: proto::lanes::on_wire(lanes),
         }),
     )
     .await

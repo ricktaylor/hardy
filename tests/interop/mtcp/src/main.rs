@@ -10,7 +10,7 @@ use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     bpa::BpaRegistration,
-    cla::{ClaAddressType, ClaInit, Lanes},
+    cla::{ClaAddressType, ClaInit}, lanes::Lanes,
 };
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;

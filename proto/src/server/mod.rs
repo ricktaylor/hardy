@@ -165,7 +165,7 @@ mod tests {
 
     use hardy_bpa::{
         bpa::{Bpa, BpaRegistration},
-        cla::Lanes,
+        lanes::Lanes,
         services::{Service, ServiceSink, StatusNotify},
         stream::{Receiver, Segment},
     };
@@ -179,6 +179,7 @@ mod tests {
     use tokio_stream::wrappers::ReceiverStream;
 
     use super::*;
+    use crate::proto::lanes::{Lanes as WireLanes, lanes::Kind};
     use crate::proto::service::{
         AppToBpa, RegisterRequest, ServiceToBpa, app_to_bpa, application_client::ApplicationClient,
         register_request, service_client::ServiceClient, service_to_bpa,
@@ -260,7 +261,9 @@ mod tests {
         }
     }
 
-    fn register_request(lanes: Option<register_request::Lanes>) -> RegisterRequest {
+    // Aliased: the generated message and the BPA's declaration, imported
+    // above, are both `Lanes`.
+    fn register_request(lanes: Option<WireLanes>) -> RegisterRequest {
         RegisterRequest {
             service_id: Some(register_request::ServiceId::Ipn(42)),
             lanes,
@@ -336,7 +339,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_zero_lane_limit_rejects_the_registration() {
         let (bpa, addr, tasks) = serve().await;
-        let zero = || register_request(Some(register_request::Lanes::Limited(0)));
+        let zero = || {
+            register_request(Some(WireLanes {
+                kind: Some(Kind::Limited(0)),
+            }))
+        };
 
         assert_eq!(
             register_raw_service(&addr, zero()).await,

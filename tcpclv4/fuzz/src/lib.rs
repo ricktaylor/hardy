@@ -5,11 +5,7 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use hardy_bpa::{
-    async_trait,
-    bpa::BpaRegistration,
-    cla::{self, Lanes},
-};
+use hardy_bpa::{async_trait, bpa::BpaRegistration, cla, lanes::Lanes};
 use hardy_bpv7::eid::NodeId;
 
 // A mock CLA Sink that accepts everything and discards it.

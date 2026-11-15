@@ -15,7 +15,8 @@ use hardy_bpa::keys::KeyProvider;
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    cla::{self, Cla, ClaInit, Lanes},
+    cla::{self, Cla, ClaInit},
+    lanes::Lanes,
     services::{self, SendOptions},
     stream::{Receiver, Segment},
 };

@@ -229,15 +229,19 @@ impl Dispatcher {
     /// its data is missing (`DepletedStorage`).
     ///
     /// This is the last checkpoint before the bundle is acted on, and it
-    /// resolves whatever it refuses rather than leave it to the reaper: the
-    /// hand-off callers have already claimed the bundle (`ForwardAckPending`,
-    /// `DeliveryAckPending`), and the reaper defers those claims, so a bundle
-    /// left to it would leave the claim dangling. The expiry check follows
-    /// the load, which takes real time, so a hand-off never commences for a
-    /// bundle that expired during it. Like every drop, the resolution is
-    /// conditional on the caller's status snapshot: where another resolver
-    /// got there first — the reaper, or a sweep that moved the claimed
-    /// bundle on — its resolution stands, and this one stays silent.
+    /// resolves whatever it refuses rather than leave it to the reaper. The
+    /// hand-off callers (`forward_bundle`, `deliver_bundle`) have already
+    /// claimed the bundle (`ForwardAckPending`, `DeliveryAckPending`), which
+    /// the reaper defers, so a bundle left to it would leave the claim
+    /// dangling. The administrative-record caller holds the bundle in
+    /// `Dispatching`, which the reaper does not defer: there both may find
+    /// it expired, and the conditional drop lets only one of them resolve
+    /// it. The expiry check follows the load, which takes real time, so a
+    /// bundle that expired during it is never acted on. Like every drop, the
+    /// resolution is conditional on the caller's status snapshot: where
+    /// another resolver got there first — the reaper, or a sweep that moved
+    /// a claimed bundle on — its resolution stands, and this one stays
+    /// silent.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn load_or_drop(
         &self,

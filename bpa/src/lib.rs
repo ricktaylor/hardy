@@ -42,7 +42,6 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 extern crate alloc;
 
 mod dispatcher;
-mod lanes;
 mod otel_metrics;
 mod rebuilt_headers;
 
@@ -52,6 +51,7 @@ pub mod bundle;
 pub mod cla;
 pub mod filter;
 pub mod keys;
+pub mod lanes;
 pub mod node_ids;
 pub mod policy;
 pub mod routing;

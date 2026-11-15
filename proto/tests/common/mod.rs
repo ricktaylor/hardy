@@ -9,10 +9,7 @@ pub mod sinks;
 use core::num::NonZeroU64;
 use hardy_async::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{
-    cla::{self, Lanes},
-    routing, services,
-};
+use hardy_bpa::{cla, lanes::Lanes, routing, services};
 use hardy_bpv7::eid::NodeId;
 use sinks::*;
 use std::sync::Arc;

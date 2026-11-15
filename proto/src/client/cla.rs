@@ -1,6 +1,6 @@
 use core::num::NonZeroU64;
 
-use hardy_bpa::cla::Lanes;
+use hardy_bpa::lanes::Lanes;
 
 use super::*;
 use proto::cla::*;
@@ -254,7 +254,7 @@ pub async fn register_cla(
                 .into()
             }),
             max_bundle_size: init.max_bundle_size.map(NonZeroU64::get),
-            lanes: Some(init.lanes.into()),
+            lanes: proto::lanes::on_wire(init.lanes),
         }),
     )
     .await
