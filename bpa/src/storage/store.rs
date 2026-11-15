@@ -302,7 +302,7 @@ impl Store {
         if reset > 0 {
             // Label derivation only: the variant selects the label, the
             // fields (including the placeholder adjacency) never reach it.
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: 0, next_hop: Eid::Null }))
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: 0, next_hop: Eid::Null, retain: false }))
                 .decrement(reset as f64);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
                 .increment(reset as f64);
@@ -320,7 +320,7 @@ impl Store {
             .trace_expect("Failed to reset peer ack-pending transfers");
 
         if reset > 0 {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardAckPending { peer }))
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardAckPending { peer, retain: false }))
                 .decrement(reset as f64);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
                 .increment(reset as f64);

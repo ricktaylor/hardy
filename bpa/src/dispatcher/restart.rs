@@ -317,7 +317,10 @@ mod tests {
         let bundle = bundle::Bundle {
             bpv7: parsed,
             metadata,
-            status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
+            status: bundle::BundleStatus::ForwardAckPending {
+                peer: 7,
+                retain: false,
+            },
         };
         let id = bundle.id().clone();
         assert!(metadata_store.insert(&bundle).await.unwrap());

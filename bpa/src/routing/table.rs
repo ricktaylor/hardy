@@ -38,8 +38,8 @@ impl Ord for Entry {
 pub(super) enum LookupResult<'a> {
     AdminEndpoint,
     Deliver(Arc<Service>),
-    Forward(u32, &'a Eid),
-    ForwardEcmp(Vec<(u32, &'a Eid)>),
+    Forward(u32, &'a Eid, bool),
+    ForwardEcmp(Vec<(u32, &'a Eid, bool)>),
     Drop(Option<ReasonCode>),
     Reflect,
 }
@@ -80,7 +80,9 @@ impl RouteTable {
         entry: Entry,
         priority: u32,
     ) -> Result<bool> {
-        if let Action::Route(RouteAction::Via(next_hop)) = &entry.action {
+        if let Action::Route(RouteAction::Via(next_hop) | RouteAction::ForwardReplicate(next_hop)) =
+            &entry.action
+        {
             if next_hop.is_null() {
                 return Err(Error::NullNextHop);
             }
@@ -145,7 +147,9 @@ impl RouteTable {
                 actions.retain(|entry| {
                     if entry.source == source {
                         match &entry.action {
-                            Action::Route(RouteAction::Via(to)) => {
+                            Action::Route(
+                                RouteAction::Via(to) | RouteAction::ForwardReplicate(to),
+                            ) => {
                                 vias.insert(to.clone());
                             }
                             Action::Internal(InternalAction::Forward(peer)) => {
@@ -176,7 +180,10 @@ impl RouteTable {
             for (p, actions) in entry {
                 if p.is_subset(pattern) {
                     for entry in actions {
-                        if let Action::Route(RouteAction::Via(to)) = &entry.action {
+                        if let Action::Route(
+                            RouteAction::Via(to) | RouteAction::ForwardReplicate(to),
+                        ) = &entry.action
+                        {
                             vias.insert(to.clone());
                         }
                     }
@@ -211,7 +218,12 @@ impl RouteTable {
                                     return Some(LookupResult::Reflect);
                                 }
                             }
-                            Action::Route(RouteAction::Via(via)) => {
+                            Action::Route(RouteAction::Via(via))
+                            | Action::Route(RouteAction::ForwardReplicate(via)) => {
+                                let replicate = matches!(
+                                    &entry.action,
+                                    Action::Route(RouteAction::ForwardReplicate(_))
+                                );
                                 if trail.contains(&to) {
                                     trace!("Skipping recursive route for {to}");
                                     continue;
@@ -225,12 +237,22 @@ impl RouteTable {
                                 // adjacent neighbour EID recorded at the Forward base case, which
                                 // is what egress filters need, not this intermediate via.
                                 match sub_result {
-                                    Some(LookupResult::Forward(sub_peer, sub_next)) => {
-                                        sorted_insert(&mut peers, sub_peer, sub_next);
+                                    Some(LookupResult::Forward(sub_peer, sub_next, sub_retain)) => {
+                                        sorted_insert(
+                                            &mut peers,
+                                            sub_peer,
+                                            sub_next,
+                                            replicate || sub_retain,
+                                        );
                                     }
                                     Some(LookupResult::ForwardEcmp(sub_peers)) => {
-                                        for (sub_peer, sub_next) in sub_peers {
-                                            sorted_insert(&mut peers, sub_peer, sub_next);
+                                        for (sub_peer, sub_next, sub_retain) in sub_peers {
+                                            sorted_insert(
+                                                &mut peers,
+                                                sub_peer,
+                                                sub_next,
+                                                replicate || sub_retain,
+                                            );
                                         }
                                     }
                                     Some(other) => return Some(other),
@@ -246,7 +268,7 @@ impl RouteTable {
                                 return Some(LookupResult::Deliver(service.clone()));
                             }
                             Action::Internal(InternalAction::Forward(peer)) => {
-                                sorted_insert(&mut peers, *peer, to);
+                                sorted_insert(&mut peers, *peer, to, false);
                             }
                         }
                     }
@@ -254,8 +276,8 @@ impl RouteTable {
                     match peers.len() {
                         0 => {}
                         1 => {
-                            let (peer, next_hop) = peers.remove(0);
-                            return Some(LookupResult::Forward(peer, next_hop));
+                            let (peer, next_hop, retain) = peers.remove(0);
+                            return Some(LookupResult::Forward(peer, next_hop, retain));
                         }
                         _ => return Some(LookupResult::ForwardEcmp(peers.into_vec())),
                     }
@@ -267,9 +289,9 @@ impl RouteTable {
 
     pub(super) fn find_peers(&self, to: &Eid) -> Option<HashSet<u32>> {
         match self.find_recurse(to, false, &mut Trail::new()) {
-            Some(LookupResult::Forward(peer, _)) => Some([peer].into()),
+            Some(LookupResult::Forward(peer, _, _)) => Some([peer].into()),
             Some(LookupResult::ForwardEcmp(peers)) => {
-                Some(peers.into_iter().map(|(peer, _)| peer).collect())
+                Some(peers.into_iter().map(|(peer, _, _)| peer).collect())
             }
             _ => None,
         }
@@ -299,11 +321,11 @@ pub(super) type Trail<'a> = SmallVec<[&'a Eid; 4]>;
 /// Candidate next-hop peers accumulated during a lookup. The non-ECMP case
 /// resolves to zero or one peer, which the inline capacity holds without
 /// allocating.
-type PeerVec<'a> = SmallVec<[(u32, &'a Eid); 2]>;
+type PeerVec<'a> = SmallVec<[(u32, &'a Eid, bool); 2]>;
 
-fn sorted_insert<'a>(peers: &mut PeerVec<'a>, peer: u32, next_hop: &'a Eid) {
-    if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
-        peers.insert(idx, (peer, next_hop));
+fn sorted_insert<'a>(peers: &mut PeerVec<'a>, peer: u32, next_hop: &'a Eid, retain: bool) {
+    if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _, _)| *p) {
+        peers.insert(idx, (peer, next_hop, retain));
     }
 }
 
@@ -514,14 +536,14 @@ mod tests {
         // most specific pattern in the table and must win.
         let to: Eid = "ipn:0.2.5".parse().unwrap();
         match table.find_recurse(&to, false, &mut Trail::new()) {
-            Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),
+            Some(LookupResult::Forward(peer, _, _)) => assert_eq!(peer, 1),
             other => panic!("unexpected lookup result: {other:?}"),
         }
 
         // The union's broad member routes independently.
         let elsewhere: Eid = "ipn:7.7.7".parse().unwrap();
         match table.find_recurse(&elsewhere, false, &mut Trail::new()) {
-            Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),
+            Some(LookupResult::Forward(peer, _, _)) => assert_eq!(peer, 1),
             other => panic!("unexpected lookup result: {other:?}"),
         }
 
@@ -533,7 +555,7 @@ mod tests {
                 .is_none()
         );
         match table.find_recurse(&to, false, &mut Trail::new()) {
-            Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 2),
+            Some(LookupResult::Forward(peer, _, _)) => assert_eq!(peer, 2),
             other => panic!("unexpected lookup result: {other:?}"),
         }
     }
@@ -584,5 +606,162 @@ mod tests {
             matches!(result, Ok(true)),
             "Default route should be accepted, got {result:?}"
         );
+    }
+
+    #[test]
+    fn test_forward_replicate_validation() {
+        let mut table = make_table();
+        let null_res = table.insert(
+            "ipn:0.2.*".parse().unwrap(),
+            entry(
+                Action::Route(RouteAction::ForwardReplicate(Eid::Null)),
+                "test",
+            ),
+            10,
+        );
+        assert!(
+            matches!(null_res, Err(Error::NullNextHop)),
+            "ForwardReplicate(Null) must be rejected, got {null_res:?}"
+        );
+
+        let own_res = table.insert(
+            "ipn:0.99.*".parse().unwrap(),
+            entry(
+                Action::Route(RouteAction::ForwardReplicate("ipn:0.1.0".parse().unwrap())),
+                "test",
+            ),
+            10,
+        );
+        assert!(
+            matches!(own_res, Err(Error::ViaOwnNode(_))),
+            "ForwardReplicate own node must be rejected, got {own_res:?}"
+        );
+    }
+
+    #[test]
+    fn test_via_precedence_over_forward_replicate() {
+        let mut table = make_table();
+        let via_hop: Eid = "ipn:0.2.0".parse().unwrap();
+        table
+            .insert(
+                via_hop.clone().into(),
+                entry(Action::Internal(InternalAction::Forward(7)), "cla"),
+                0,
+            )
+            .unwrap();
+        table
+            .insert(
+                "ipn:0.99.*".parse().unwrap(),
+                entry(
+                    Action::Route(RouteAction::ForwardReplicate(via_hop.clone())),
+                    "snw",
+                ),
+                10,
+            )
+            .unwrap();
+        table
+            .insert(
+                "ipn:0.99.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::Via(via_hop)), "custody"),
+                10,
+            )
+            .unwrap();
+
+        let to: Eid = "ipn:0.99.1".parse().unwrap();
+        match table.find_recurse(&to, false, &mut Trail::new()) {
+            Some(LookupResult::Forward(peer, _, retain)) => {
+                assert_eq!(peer, 7);
+                assert!(!retain, "Via must take precedence over ForwardReplicate");
+            }
+            other => panic!("unexpected lookup result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_forward_replicate_retain_propagation() {
+        let mut table = make_table();
+        let peer_eid: Eid = "ipn:0.2.0".parse().unwrap();
+        let mid_eid: Eid = "ipn:0.3.0".parse().unwrap();
+        table
+            .insert(
+                peer_eid.clone().into(),
+                entry(Action::Internal(InternalAction::Forward(5)), "cla"),
+                0,
+            )
+            .unwrap();
+        table
+            .insert(
+                mid_eid.clone().into(),
+                entry(Action::Route(RouteAction::Via(peer_eid.clone())), "static"),
+                10,
+            )
+            .unwrap();
+        // ForwardReplicate -> Via -> Forward(5)
+        table
+            .insert(
+                "ipn:0.50.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::ForwardReplicate(mid_eid)), "snw"),
+                20,
+            )
+            .unwrap();
+        // Via -> ForwardReplicate -> Forward(5)
+        let rep_mid: Eid = "ipn:0.4.0".parse().unwrap();
+        table
+            .insert(
+                rep_mid.clone().into(),
+                entry(
+                    Action::Route(RouteAction::ForwardReplicate(peer_eid)),
+                    "snw",
+                ),
+                10,
+            )
+            .unwrap();
+        table
+            .insert(
+                "ipn:0.60.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::Via(rep_mid)), "static"),
+                20,
+            )
+            .unwrap();
+
+        match table.find_recurse(&"ipn:0.50.1".parse().unwrap(), false, &mut Trail::new()) {
+            Some(LookupResult::Forward(peer, _, retain)) => {
+                assert_eq!(peer, 5);
+                assert!(retain, "ForwardReplicate -> Via must propagate retain=true");
+            }
+            other => panic!("unexpected lookup result: {other:?}"),
+        }
+
+        match table.find_recurse(&"ipn:0.60.1".parse().unwrap(), false, &mut Trail::new()) {
+            Some(LookupResult::Forward(peer, _, retain)) => {
+                assert_eq!(peer, 5);
+                assert!(retain, "Via -> ForwardReplicate must propagate retain=true");
+            }
+            other => panic!("unexpected lookup result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_forward_replicate_impacted_vias_and_remove_by_source() {
+        let mut table = make_table();
+        let via_hop: Eid = "ipn:0.2.0".parse().unwrap();
+        let pattern: EidPattern = "ipn:0.99.*".parse().unwrap();
+        table
+            .insert(
+                pattern.clone(),
+                entry(
+                    Action::Route(RouteAction::ForwardReplicate(via_hop.clone())),
+                    "snw",
+                ),
+                10,
+            )
+            .unwrap();
+
+        let impacted = table.impacted_vias(&pattern, 10);
+        assert!(impacted.contains(&via_hop));
+
+        let (vias, _, _, removed) = table.remove_by_source("snw");
+        assert_eq!(removed, 1);
+        assert!(vias.contains(&via_hop));
     }
 }

@@ -67,6 +67,9 @@ enum OfferOutcome {
     /// Park for a future opportunity, closing the park-vs-poll window
     /// against the routing snapshot captured when the flight began.
     Parked(bundle::Bundle, bundle::BundleStatus, routing::RibSnapshot),
+    /// A replicated forward completed: report forwarding and park the
+    /// retained copy back into `Waiting`.
+    Retained(bundle::Bundle, routing::RibSnapshot),
     /// Deliberate detach: the CLA owns the transfer (`Accepted`) and
     /// resolves the claim later via `transfer_outcome`.
     Detached(bundle::Bundle),
@@ -282,6 +285,10 @@ impl Dispatcher {
             return;
         }
 
+        self.finish_park(bundle, seen).await
+    }
+
+    async fn finish_park(&self, mut bundle: bundle::Bundle, seen: &routing::RibSnapshot) {
         if self.rib.table_changed_since(seen)
             && self
                 .store
@@ -349,6 +356,22 @@ impl Dispatcher {
             OfferOutcome::Dropped(bundle, None) => self.delete_bundle(bundle).await,
             OfferOutcome::Parked(bundle, parked, seen) => {
                 self.park_bundle(bundle, parked, &seen).await
+            }
+            OfferOutcome::Retained(mut bundle, seen) => {
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await
+                {
+                    debug!(
+                        "Hand-off completion for {} lost the resolution race, ignored",
+                        bundle.id()
+                    );
+                    return;
+                }
+                metrics::counter!("bpa.bundle.forwarded").increment(1);
+                self.report_bundle_forwarded(&bundle).await;
+                self.finish_park(bundle, &seen).await
             }
             OfferOutcome::Detached(bundle) => {
                 // The counterparty owns the hand-off and resolves the claim

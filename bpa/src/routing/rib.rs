@@ -117,6 +117,9 @@ pub enum DispatchAction {
         /// The adjacency EID whose forward entry the lookup matched —
         /// carried into the peer queue's assignment record.
         next_hop: Eid,
+        /// Whether to retain the bundle in storage after forwarding
+        /// (opportunistic replication).
+        retain: bool,
     },
     Drop(Option<ReasonCode>),
 }
@@ -320,9 +323,10 @@ impl Rib {
             LookupResult::AdminEndpoint => Some(DispatchAction::AdminEndpoint),
             LookupResult::Deliver(service) => Some(DispatchAction::Deliver(service)),
             LookupResult::Drop(reason) => Some(DispatchAction::Drop(reason)),
-            LookupResult::Forward(peer, next_hop) => Some(DispatchAction::Forward {
+            LookupResult::Forward(peer, next_hop, retain) => Some(DispatchAction::Forward {
                 peer,
                 next_hop: next_hop.clone(),
+                retain,
             }),
             LookupResult::ForwardEcmp(peers) => self.select_peer(peers, &bundle.bpv7),
             LookupResult::Reflect => None,
@@ -354,7 +358,7 @@ impl Rib {
 
     fn select_peer(
         &self,
-        mut peers: Vec<(u32, &Eid)>,
+        mut peers: Vec<(u32, &Eid, bool)>,
         bundle: &Bpv7Bundle,
     ) -> Option<DispatchAction> {
         if peers.is_empty() {
@@ -379,10 +383,11 @@ impl Rib {
         } else {
             0
         };
-        let (peer, next_hop) = peers.swap_remove(idx);
+        let (peer, next_hop, retain) = peers.swap_remove(idx);
         Some(DispatchAction::Forward {
             peer,
             next_hop: next_hop.clone(),
+            retain,
         })
     }
 
@@ -464,7 +469,7 @@ impl Rib {
         metrics::gauge!("bpa.rib.entries", "source" => source.to_string()).decrement(1.0);
 
         match action {
-            Action::Route(RouteAction::Via(ref to)) => {
+            Action::Route(RouteAction::Via(ref to) | RouteAction::ForwardReplicate(ref to)) => {
                 if let Some(peers) = self.find_peers(to)
                     && self.reset_peer_queues(peers).await
                 {
@@ -655,6 +660,9 @@ impl Rib {
             Action::Route(RouteAction::Via(eid)) => Action::Route(RouteAction::Via(
                 self.node_ids.expand_local_node(&eid).unwrap_or(eid),
             )),
+            Action::Route(RouteAction::ForwardReplicate(eid)) => Action::Route(
+                RouteAction::ForwardReplicate(self.node_ids.expand_local_node(&eid).unwrap_or(eid)),
+            ),
             other => other,
         }
     }
@@ -824,7 +832,9 @@ mod tests {
         add_local_forward(&rib, ipn_node(3), 77);
 
         let bundle = make_bundle("ipn:0.50.1");
-        let Some(DispatchAction::Forward { peer: 77, next_hop }) = rib.decide(&bundle).action
+        let Some(DispatchAction::Forward {
+            peer: 77, next_hop, ..
+        }) = rib.decide(&bundle).action
         else {
             panic!("Via chain must resolve to the adjacent neighbour's peer");
         };

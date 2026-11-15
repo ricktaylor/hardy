@@ -214,7 +214,10 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     // fresh status at expiry time, so a backend that pre-filters these
     // hides them from the caller's policy.
     let bundle_d = fixtures::bundle_with_expiry(
-        BundleStatus::ForwardAckPending { peer: 7 },
+        BundleStatus::ForwardAckPending {
+            peer: 7,
+            retain: false,
+        },
         now,
         core::time::Duration::from_secs(200),
     );
@@ -280,16 +283,19 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
         peer: 42,
         queue: 0,
         next_hop: "ipn:100.0".parse().unwrap(),
+        retain: false,
     };
     let status_b = BundleStatus::ForwardPending {
         peer: 42,
         queue: 0,
         next_hop: "ipn:200.0".parse().unwrap(),
+        retain: true,
     };
     let status = BundleStatus::ForwardPending {
         peer: 42,
         queue: 0,
         next_hop: hardy_bpv7::eid::Eid::Null,
+        retain: false,
     };
 
     let bundle_a = fixtures::bundle_with_status(status_a.clone(), earlier);
@@ -337,16 +343,19 @@ pub async fn meta_09_poll_pending_exact_match(store: Arc<dyn MetadataStorage>) {
         peer: 1,
         queue: 0,
         next_hop: next_hop.clone(),
+        retain: false,
     };
     let status_b = BundleStatus::ForwardPending {
         peer: 2,
         queue: 0,
         next_hop: next_hop.clone(),
+        retain: false,
     };
     let status_c = BundleStatus::ForwardPending {
         peer: 1,
         queue: 1,
         next_hop,
+        retain: false,
     };
 
     let bundle_a = fixtures::bundle_with_status(status_a.clone(), now);
@@ -474,11 +483,13 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
         peer: 100,
         queue: 0,
         next_hop: "ipn:100.0".parse().unwrap(),
+        retain: false,
     };
     let status_200 = BundleStatus::ForwardPending {
         peer: 200,
         queue: 0,
         next_hop: "ipn:200.0".parse().unwrap(),
+        retain: false,
     };
 
     let bundle_a = fixtures::bundle_with_status(status_100, now);

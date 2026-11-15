@@ -144,3 +144,42 @@ async fn rte_cli_03_remove_route() {
     sink.unregister().await;
     server_tasks.shutdown().await;
 }
+
+// RTE-CLI-04: Add and remove ForwardReplicate route via sink.
+#[tokio::test]
+async fn rte_cli_04_add_remove_forward_replicate() {
+    let bpa = Arc::new(MockBpa::new());
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
+
+    let agent = Arc::new(MockRoutingAgent::new());
+    let remote_bpa = RemoteBpa::new(grpc_addr);
+
+    let _node_ids: Vec<NodeId> = remote_bpa
+        .register_routing_agent("test-agent".to_string(), agent.clone())
+        .await
+        .expect("registration should succeed");
+
+    let sink = agent.take_sink().expect("agent should have a sink");
+
+    let action = RouteAction::ForwardReplicate("ipn:2.1.0".parse().expect("valid EID"));
+
+    let added = sink
+        .add_route(
+            "ipn:2.*.*".parse().expect("valid pattern"),
+            action.clone(),
+            100,
+        )
+        .await
+        .expect("add_route should succeed");
+    assert!(added, "route should be newly added");
+
+    let removed = sink
+        .remove_route(&"ipn:2.*.*".parse().expect("valid pattern"), &action, 100)
+        .await
+        .expect("remove_route should succeed");
+    assert!(removed, "route should be removed");
+
+    // Clean up
+    sink.unregister().await;
+    server_tasks.shutdown().await;
+}

@@ -69,6 +69,8 @@ message RouteAction {
     ReflectAction reflect = 2;
     // Recursive lookup via the specified EID.
     string      via     = 3;
+    // Recursive lookup via the specified EID, retaining the bundle in storage after forwarding.
+    string      forward_replicate = 4;
   }
 }
 

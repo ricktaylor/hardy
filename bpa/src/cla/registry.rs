@@ -264,9 +264,10 @@ impl ClaRegistry {
         &self,
         peer_id: u32,
         next_hop: Eid,
+        retain: bool,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        self.peers.forward(peer_id, next_hop, bundle).await
+        self.peers.forward(peer_id, next_hop, retain, bundle).await
     }
 
     pub async fn shutdown(&self) {

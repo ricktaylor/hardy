@@ -328,7 +328,7 @@ impl MetadataStorage for MetadataMemStorage {
         let mut updated = 0;
         for (_, v) in self.inner.lock().entries.iter_mut() {
             if let Entry::Live(v) = v
-                && let BundleStatus::ForwardAckPending { peer: p } = v.status
+                && let BundleStatus::ForwardAckPending { peer: p, .. } = v.status
                 && p == peer
             {
                 v.status = BundleStatus::Waiting;
@@ -671,7 +671,10 @@ mod tests {
     async fn swap_status_is_conditional() {
         let storage = MetadataMemStorage::new(None);
         let mut bundle = make_bundle(1);
-        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending {
+            peer: 7,
+            retain: false,
+        };
         assert!(storage.insert(&bundle).await.unwrap());
 
         // Wrong expectation: no swap
@@ -691,7 +694,10 @@ mod tests {
             storage
                 .swap_status(
                     bundle.id(),
-                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::ForwardAckPending {
+                        peer: 7,
+                        retain: false,
+                    },
                     &BundleStatus::Dispatching,
                 )
                 .await
@@ -707,7 +713,10 @@ mod tests {
             !storage
                 .swap_status(
                     bundle.id(),
-                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::ForwardAckPending {
+                        peer: 7,
+                        retain: false,
+                    },
                     &BundleStatus::Dispatching,
                 )
                 .await
@@ -735,7 +744,10 @@ mod tests {
     async fn tombstone_if_is_conditional() {
         let storage = MetadataMemStorage::new(None);
         let mut bundle = make_bundle(1);
-        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending {
+            peer: 7,
+            retain: false,
+        };
         assert!(storage.insert(&bundle).await.unwrap());
 
         // Wrong expectation: not tombstoned
@@ -750,7 +762,13 @@ mod tests {
         // Matching expectation: tombstoned
         assert!(
             storage
-                .tombstone_if(bundle.id(), &BundleStatus::ForwardAckPending { peer: 7 },)
+                .tombstone_if(
+                    bundle.id(),
+                    &BundleStatus::ForwardAckPending {
+                        peer: 7,
+                        retain: false,
+                    },
+                )
                 .await
                 .unwrap()
         );
@@ -759,7 +777,13 @@ mod tests {
         // A duplicate resolution loses
         assert!(
             !storage
-                .tombstone_if(bundle.id(), &BundleStatus::ForwardAckPending { peer: 7 },)
+                .tombstone_if(
+                    bundle.id(),
+                    &BundleStatus::ForwardAckPending {
+                        peer: 7,
+                        retain: false,
+                    },
+                )
                 .await
                 .unwrap()
         );

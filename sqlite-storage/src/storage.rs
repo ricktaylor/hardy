@@ -159,19 +159,21 @@ impl SqliteStorage {
 // 7 = DispatchPending
 // 8 = DeliverPending(service)
 // 9 = DeliveryAckPending(service)
-fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<String>) {
+fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<String>, bool) {
     match status {
-        BundleStatus::New => (0, None, None, None),
-        BundleStatus::Waiting => (1, None, None, None),
+        BundleStatus::New => (0, None, None, None, false),
+        BundleStatus::Waiting => (1, None, None, None, false),
         BundleStatus::ForwardPending {
             peer,
             queue,
             next_hop,
+            retain,
         } => (
             2,
             Some(*peer as i64),
             Some(*queue as i64),
             Some(next_hop.to_string()),
+            *retain,
         ),
         BundleStatus::AduFragment { source, timestamp } => (
             3,
@@ -182,13 +184,22 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
             ),
             Some(timestamp.sequence_number() as i64),
             Some(source.to_string()),
+            false,
         ),
-        BundleStatus::Dispatching => (4, None, None, None),
-        BundleStatus::WaitingForService { service } => (5, None, None, Some(service.to_string())),
-        BundleStatus::ForwardAckPending { peer } => (6, Some(i64::from(*peer)), None, None),
-        BundleStatus::DispatchPending => (7, None, None, None),
-        BundleStatus::DeliverPending { service } => (8, None, None, Some(service.to_string())),
-        BundleStatus::DeliveryAckPending { service } => (9, None, None, Some(service.to_string())),
+        BundleStatus::Dispatching => (4, None, None, None, false),
+        BundleStatus::WaitingForService { service } => {
+            (5, None, None, Some(service.to_string()), false)
+        }
+        BundleStatus::ForwardAckPending { peer, retain } => {
+            (6, Some(i64::from(*peer)), None, None, *retain)
+        }
+        BundleStatus::DispatchPending => (7, None, None, None, false),
+        BundleStatus::DeliverPending { service } => {
+            (8, None, None, Some(service.to_string()), false)
+        }
+        BundleStatus::DeliveryAckPending { service } => {
+            (9, None, None, Some(service.to_string()), false)
+        }
     }
 }
 
@@ -197,6 +208,7 @@ fn to_status(
     param1: Option<i64>,
     param2: Option<i64>,
     param3: Option<String>,
+    retain: bool,
 ) -> Option<BundleStatus> {
     match code {
         0 => Some(BundleStatus::New),
@@ -205,6 +217,7 @@ fn to_status(
             peer: u32::try_from(param1?).ok()?,
             queue: u32::try_from(param2?).ok()?,
             next_hop: param3?.parse().ok()?,
+            retain,
         }),
         3 => {
             let source: hardy_bpv7::eid::Eid = param3?.parse().ok()?;
@@ -224,6 +237,7 @@ fn to_status(
         }),
         6 => Some(BundleStatus::ForwardAckPending {
             peer: u32::try_from(param1?).ok()?,
+            retain,
         }),
         7 => Some(BundleStatus::DispatchPending),
         8 => Some(BundleStatus::DeliverPending {
@@ -247,7 +261,7 @@ const POLL_PENDING_SQL: &str = "SELECT bundle FROM bundles
 // param3 carries its own resolved adjacency, selected back to the caller);
 // the status index orders received_at before status_param3 precisely so
 // this shape is still served in index order.
-const POLL_FORWARD_PENDING_SQL: &str = "SELECT bundle, status_param3 FROM bundles
+const POLL_FORWARD_PENDING_SQL: &str = "SELECT bundle, status_param3, retain FROM bundles
     WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3
     ORDER BY received_at ASC
     LIMIT ?4";
@@ -257,11 +271,11 @@ impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
         let id = serde_json::to_vec(bundle_id)?;
-        let Some((bundle, status_code, p1, p2, p3)) = self
+        let Some((bundle, status_code, p1, p2, p3, retain)) = self
             .read(move |conn| {
                 conn
                     .prepare_cached(
-                        "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
+                        "SELECT bundle, status_code, status_param1, status_param2, status_param3, retain FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                     )?
                     .query_row((&id,), |row| {
                         Ok((
@@ -270,6 +284,7 @@ impl MetadataStorage for SqliteStorage {
                             row.get::<_, Option<i64>>(2)?,
                             row.get::<_, Option<i64>>(3)?,
                             row.get::<_, Option<String>>(4)?,
+                            row.get::<_, bool>(5)?,
                         ))
                     })
                     .optional().map_err(Into::into)
@@ -280,7 +295,7 @@ impl MetadataStorage for SqliteStorage {
         };
 
         let stored: StoredBundle = serde_json::from_slice(&bundle)?;
-        if let Some(status) = to_status(status_code, p1, p2, p3) {
+        if let Some(status) = to_status(status_code, p1, p2, p3, retain) {
             Ok(Some(stored.into_bundle(status)))
         } else {
             warn!("Failed to unpack metadata status: code = {status_code}");
@@ -295,16 +310,16 @@ impl MetadataStorage for SqliteStorage {
         // and `poll_expiry`'s keyset cursor depends on a uniform one.
         let expiry = bundle.expiry().to_offset(UtcOffset::UTC);
         let received_at = bundle.metadata.received_at();
-        let (status_code, status_param1, status_param2, status_param3) =
+        let (status_code, status_param1, status_param2, status_param3, retain) =
             from_status(&bundle.status);
         let id = serde_json::to_vec(bundle.id())?;
         let bundle = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
         self.write(move |conn| {
             // Insert bundle
             conn.prepare_cached(
-                "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3,retain) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             )?
-            .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3))
+            .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3,retain))
             .map(|c| c == 1)
             .map_err(Into::into)
         })
@@ -318,14 +333,15 @@ impl MetadataStorage for SqliteStorage {
         expected: &BundleStatus,
         status: &BundleStatus,
     ) -> storage::Result<bool> {
-        let (expected_code, expected_param1, expected_param2, expected_param3) =
+        let (expected_code, expected_param1, expected_param2, expected_param3, expected_retain) =
             from_status(expected);
-        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
+        let (status_code, status_param1, status_param2, status_param3, retain) =
+            from_status(status);
         let id = serde_json::to_vec(bundle_id)?;
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = ?2, status_param1 = ?3, status_param2 = ?4, status_param3 = ?5 \
-                 WHERE bundle_id = ?1 AND status_code = ?6 AND status_param1 IS ?7 AND status_param2 IS ?8 AND status_param3 IS ?9",
+                "UPDATE bundles SET status_code = ?2, status_param1 = ?3, status_param2 = ?4, status_param3 = ?5, retain = ?6 \
+                 WHERE bundle_id = ?1 AND status_code = ?7 AND status_param1 IS ?8 AND status_param2 IS ?9 AND status_param3 IS ?10 AND retain = ?11",
             )?
             .execute((
                 id,
@@ -333,10 +349,12 @@ impl MetadataStorage for SqliteStorage {
                 status_param1,
                 status_param2,
                 status_param3,
+                retain,
                 expected_code,
                 expected_param1,
                 expected_param2,
                 expected_param3,
+                expected_retain,
             ))
             .map_err(Into::into)
         })
@@ -350,13 +368,13 @@ impl MetadataStorage for SqliteStorage {
         bundle_id: &hardy_bpv7::bundle::Id,
         expected: &BundleStatus,
     ) -> storage::Result<bool> {
-        let (expected_code, expected_param1, expected_param2, expected_param3) =
+        let (expected_code, expected_param1, expected_param2, expected_param3, expected_retain) =
             from_status(expected);
         let id = serde_json::to_vec(bundle_id)?;
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL \
-                 WHERE bundle_id = ?1 AND status_code = ?2 AND status_param1 IS ?3 AND status_param2 IS ?4 AND status_param3 IS ?5",
+                "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL, retain = 0 \
+                 WHERE bundle_id = ?1 AND status_code = ?2 AND status_param1 IS ?3 AND status_param2 IS ?4 AND status_param3 IS ?5 AND retain = ?6",
             )?
             .execute((
                 id,
@@ -364,6 +382,7 @@ impl MetadataStorage for SqliteStorage {
                 expected_param1,
                 expected_param2,
                 expected_param3,
+                expected_retain,
             ))
             .map_err(Into::into)
         })
@@ -377,7 +396,7 @@ impl MetadataStorage for SqliteStorage {
         if self
             .write(move |conn| {
                 conn.prepare_cached(
-                    "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE bundle_id = ?1",
+                    "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL, retain = 0 WHERE bundle_id = ?1",
                 )?
                 .execute((id,))
                 .map_err(Into::into)
@@ -409,7 +428,7 @@ impl MetadataStorage for SqliteStorage {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<ConfirmResponse>> {
         let id = serde_json::to_vec(bundle_id)?;
-        let Some((bundle, status_code, p1, p2, p3))  = self
+        let Some((bundle, status_code, p1, p2, p3, retain))  = self
             .write(move |conn| {
                 conn.prepare_cached(
                     "DELETE FROM unconfirmed_bundles WHERE id = (SELECT id FROM bundles WHERE bundle_id = ?1)",
@@ -417,7 +436,7 @@ impl MetadataStorage for SqliteStorage {
                 .execute((&id,))?;
 
                 conn.prepare_cached(
-                    "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
+                    "SELECT bundle, status_code, status_param1, status_param2, status_param3, retain FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                 )?
                 .query_row((id,), |row| {
                      Ok((
@@ -426,6 +445,7 @@ impl MetadataStorage for SqliteStorage {
                             row.get::<_, Option<i64>>(2)?,
                             row.get::<_, Option<i64>>(3)?,
                             row.get::<_, Option<String>>(4)?,
+                            row.get::<_, bool>(5)?,
                         ))
                 })
                 .optional()
@@ -437,7 +457,7 @@ impl MetadataStorage for SqliteStorage {
 
         match serde_json::from_slice::<StoredBundle>(&bundle) {
             Ok(stored) => {
-                if let Some(status) = to_status(status_code, p1, p2, p3) {
+                if let Some(status) = to_status(status_code, p1, p2, p3, retain) {
                     let bundle = stored.into_bundle(status);
                     Ok(Some((bundle.metadata, bundle.status)))
                 } else {
@@ -524,16 +544,17 @@ impl MetadataStorage for SqliteStorage {
         // from_status's own output, so codec/SQL drift is unrepresentable.
         // The sweep matches by peer alone — any queue, any resolved
         // adjacency (param3) — and the park clears all three params.
-        let (from_code, from_p1, _, _) = from_status(&BundleStatus::ForwardPending {
+        let (from_code, from_p1, _, _, _) = from_status(&BundleStatus::ForwardPending {
             peer,
             queue: 0,
             next_hop: hardy_bpv7::eid::Eid::Null,
+            retain: false,
         });
-        let (to_code, to_p1, to_p2, to_p3) = from_status(&BundleStatus::Waiting);
+        let (to_code, to_p1, to_p2, to_p3, _) = from_status(&BundleStatus::Waiting);
 
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = ?1, status_param1 = ?2, status_param2 = ?3, status_param3 = ?4 WHERE status_code = ?5 AND status_param1 = ?6",
+                "UPDATE bundles SET status_code = ?1, status_param1 = ?2, status_param2 = ?3, status_param3 = ?4, retain = 0 WHERE status_code = ?5 AND status_param1 = ?6",
             )?
             .execute((to_code, to_p1, to_p2, to_p3, from_code, from_p1))
             .map(|c| c as u64)
@@ -544,12 +565,15 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn reset_peer_ack_pending(&self, peer: u32) -> storage::Result<u64> {
-        let (from_code, from_p1, _, _) = from_status(&BundleStatus::ForwardAckPending { peer });
-        let (to_code, to_p1, _, _) = from_status(&BundleStatus::Waiting);
+        let (from_code, from_p1, _, _, _) = from_status(&BundleStatus::ForwardAckPending {
+            peer,
+            retain: false,
+        });
+        let (to_code, to_p1, _, _, _) = from_status(&BundleStatus::Waiting);
 
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = ?1, status_param1 = ?2 WHERE status_code = ?3 AND status_param1 = ?4",
+                "UPDATE bundles SET status_code = ?1, status_param1 = ?2, retain = 0 WHERE status_code = ?3 AND status_param1 = ?4",
             )?
             .execute((to_code, to_p1, from_code, from_p1))
             .map(|c| c as u64)
@@ -562,10 +586,10 @@ impl MetadataStorage for SqliteStorage {
     async fn reset_service_queue(&self, service: &Eid) -> storage::Result<u64> {
         // The service EID string (param3) is the same in both statuses, so
         // only the code changes; all three values bind through the codec.
-        let (from_code, _, _, from_p3) = from_status(&BundleStatus::DeliverPending {
+        let (from_code, _, _, from_p3, _) = from_status(&BundleStatus::DeliverPending {
             service: service.clone(),
         });
-        let (to_code, _, _, _) = from_status(&BundleStatus::WaitingForService {
+        let (to_code, _, _, _, _) = from_status(&BundleStatus::WaitingForService {
             service: service.clone(),
         });
 
@@ -582,7 +606,7 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
-        let (new_code, _, _, _) = from_status(&BundleStatus::New);
+        let (new_code, _, _, _, _) = from_status(&BundleStatus::New);
 
         // Keyset pages: the consumer closes the stream once it has what it
         // needs, so each page is fetched only if the previous one was
@@ -603,7 +627,7 @@ impl MetadataStorage for SqliteStorage {
                     let (expiry, rowid) = page_cursor
                         .unwrap_or_else(|| (String::new(), 0));
                     conn.prepare_cached(
-                        "SELECT rowid, expiry, bundle, status_code, status_param1, status_param2, status_param3 FROM bundles
+                        "SELECT rowid, expiry, bundle, status_code, status_param1, status_param2, status_param3, retain FROM bundles
                             WHERE bundle IS NOT NULL AND status_code != ?4 AND (expiry, rowid) > (?1, ?2)
                             ORDER BY expiry ASC, rowid ASC
                             LIMIT ?3",
@@ -617,6 +641,7 @@ impl MetadataStorage for SqliteStorage {
                             row.get::<_, Option<i64>>(4)?,
                             row.get::<_, Option<i64>>(5)?,
                             row.get::<_, Option<String>>(6)?,
+                            row.get::<_, bool>(7)?,
                         ))
                     })?
                     .collect::<Result<Vec<_>, _>>()
@@ -625,11 +650,11 @@ impl MetadataStorage for SqliteStorage {
                 .await?;
 
             let full_page = bundles.len() == PAGE_SIZE;
-            for (rowid, expiry, bundle, status_code, p1, p2, p3) in bundles {
+            for (rowid, expiry, bundle, status_code, p1, p2, p3, retain) in bundles {
                 cursor = Some((expiry, rowid));
                 match serde_json::from_slice::<StoredBundle>(&bundle) {
                     Ok(stored) => {
-                        if let Some(status) = to_status(status_code, p1, p2, p3) {
+                        if let Some(status) = to_status(status_code, p1, p2, p3, retain) {
                             if stream.send(stored.into_bundle(status)).await.is_err() {
                                 // The other end is shutting down - get out
                                 return Ok(());
@@ -649,7 +674,7 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
-        let (waiting_code, _, _, _) = from_status(&BundleStatus::Waiting);
+        let (waiting_code, _, _, _, _) = from_status(&BundleStatus::Waiting);
 
         // Refresh the waiting queue
         self.write(move |conn| {
@@ -725,7 +750,7 @@ impl MetadataStorage for SqliteStorage {
         source: hardy_bpv7::eid::Eid,
         stream: &dyn Sender<Bundle>,
     ) -> storage::Result<()> {
-        let (code, _, _, p3) = from_status(&BundleStatus::WaitingForService {
+        let (code, _, _, p3, _) = from_status(&BundleStatus::WaitingForService {
             service: source.clone(),
         });
         let bundles = self
@@ -764,7 +789,7 @@ impl MetadataStorage for SqliteStorage {
         stream: &dyn Sender<Bundle>,
         status: &BundleStatus,
     ) -> storage::Result<()> {
-        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
+        let (status_code, status_param1, status_param2, status_param3, _) = from_status(status);
 
         let bundles = self
             .read(move |conn| {
@@ -807,7 +832,7 @@ impl MetadataStorage for SqliteStorage {
         status: &BundleStatus,
         limit: usize,
     ) -> storage::Result<()> {
-        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
+        let (status_code, status_param1, status_param2, status_param3, _) = from_status(status);
 
         // Queue-identity match (`BundleStatus::same_queue`): a ForwardPending
         // record's param3 carries its own resolved adjacency, which the
@@ -820,9 +845,15 @@ impl MetadataStorage for SqliteStorage {
                     conn.prepare_cached(POLL_FORWARD_PENDING_SQL)?
                         .query_map(
                             (status_code, status_param1, status_param2, limit as isize),
-                            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?)),
+                            |row| {
+                                Ok((
+                                    row.get::<_, Vec<u8>>(0)?,
+                                    row.get::<_, Option<String>>(1)?,
+                                    row.get::<_, bool>(2)?,
+                                ))
+                            },
                         )?
-                        .collect::<Result<Vec<(Vec<u8>, Option<String>)>, _>>()
+                        .collect::<Result<Vec<(Vec<u8>, Option<String>, bool)>, _>>()
                         .map_err(Into::into)
                 } else {
                     conn.prepare_cached(POLL_PENDING_SQL)?
@@ -834,23 +865,27 @@ impl MetadataStorage for SqliteStorage {
                                 status_param3,
                                 limit as isize,
                             ),
-                            |row| Ok((row.get::<_, Vec<u8>>(0)?, None)),
+                            |row| Ok((row.get::<_, Vec<u8>>(0)?, None, false)),
                         )?
-                        .collect::<Result<Vec<(Vec<u8>, Option<String>)>, _>>()
+                        .collect::<Result<Vec<(Vec<u8>, Option<String>, bool)>, _>>()
                         .map_err(Into::into)
                 }
             })
             .await?;
 
-        for (bundle, row_param3) in bundles {
+        for (bundle, row_param3, row_retain) in bundles {
             match serde_json::from_slice::<StoredBundle>(&bundle) {
                 Ok(stored) => {
                     // The status key was encoded once above; only the
-                    // row-carried adjacency varies per row.
+                    // row-carried adjacency and retain flag vary per row.
                     let row_status = if forward_pending {
-                        let Some(row_status) =
-                            to_status(status_code, status_param1, status_param2, row_param3)
-                        else {
+                        let Some(row_status) = to_status(
+                            status_code,
+                            status_param1,
+                            status_param2,
+                            row_param3,
+                            row_retain,
+                        ) else {
                             warn!("Garbage ForwardPending adjacency dropped from poll");
                             continue;
                         };
@@ -952,15 +987,27 @@ mod tests {
             SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
-        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending {
+            peer: 7,
+            retain: false,
+        };
         assert!(storage.insert(&bundle).await.unwrap());
 
         let got = storage.get(bundle.id()).await.unwrap().unwrap();
-        assert_eq!(got.status, BundleStatus::ForwardAckPending { peer: 7 });
+        assert_eq!(
+            got.status,
+            BundleStatus::ForwardAckPending {
+                peer: 7,
+                retain: false,
+            }
+        );
 
         // A different peer's transfer is untouched by the reset
         let mut other = make_bundle(2);
-        other.status = BundleStatus::ForwardAckPending { peer: 8 };
+        other.status = BundleStatus::ForwardAckPending {
+            peer: 8,
+            retain: false,
+        };
         assert!(storage.insert(&other).await.unwrap());
 
         assert_eq!(storage.reset_peer_ack_pending(7).await.unwrap(), 1);
@@ -968,7 +1015,13 @@ mod tests {
         let got = storage.get(bundle.id()).await.unwrap().unwrap();
         assert_eq!(got.status, BundleStatus::Waiting);
         let got = storage.get(other.id()).await.unwrap().unwrap();
-        assert_eq!(got.status, BundleStatus::ForwardAckPending { peer: 8 });
+        assert_eq!(
+            got.status,
+            BundleStatus::ForwardAckPending {
+                peer: 8,
+                retain: false,
+            }
+        );
     }
 
     // swap_status applies only when every status column matches the expected
@@ -980,7 +1033,10 @@ mod tests {
             SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
-        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending {
+            peer: 7,
+            retain: false,
+        };
         assert!(storage.insert(&bundle).await.unwrap());
 
         // Wrong peer in the expectation: no swap
@@ -988,7 +1044,10 @@ mod tests {
             !storage
                 .swap_status(
                     bundle.id(),
-                    &BundleStatus::ForwardAckPending { peer: 8 },
+                    &BundleStatus::ForwardAckPending {
+                        peer: 8,
+                        retain: false,
+                    },
                     &BundleStatus::Dispatching,
                 )
                 .await
@@ -1000,7 +1059,10 @@ mod tests {
             storage
                 .swap_status(
                     bundle.id(),
-                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::ForwardAckPending {
+                        peer: 7,
+                        retain: false,
+                    },
                     &BundleStatus::Dispatching,
                 )
                 .await
@@ -1016,7 +1078,10 @@ mod tests {
             !storage
                 .swap_status(
                     bundle.id(),
-                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::ForwardAckPending {
+                        peer: 7,
+                        retain: false,
+                    },
                     &BundleStatus::Dispatching,
                 )
                 .await
@@ -1046,13 +1111,22 @@ mod tests {
             SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
-        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending {
+            peer: 7,
+            retain: false,
+        };
         assert!(storage.insert(&bundle).await.unwrap());
 
         // Wrong peer in the expectation: not tombstoned
         assert!(
             !storage
-                .tombstone_if(bundle.id(), &BundleStatus::ForwardAckPending { peer: 8 })
+                .tombstone_if(
+                    bundle.id(),
+                    &BundleStatus::ForwardAckPending {
+                        peer: 8,
+                        retain: false,
+                    },
+                )
                 .await
                 .unwrap()
         );
@@ -1061,7 +1135,13 @@ mod tests {
         // Matching expectation: tombstoned
         assert!(
             storage
-                .tombstone_if(bundle.id(), &BundleStatus::ForwardAckPending { peer: 7 })
+                .tombstone_if(
+                    bundle.id(),
+                    &BundleStatus::ForwardAckPending {
+                        peer: 7,
+                        retain: false,
+                    },
+                )
                 .await
                 .unwrap()
         );
@@ -1070,7 +1150,13 @@ mod tests {
         // A duplicate resolution loses
         assert!(
             !storage
-                .tombstone_if(bundle.id(), &BundleStatus::ForwardAckPending { peer: 7 })
+                .tombstone_if(
+                    bundle.id(),
+                    &BundleStatus::ForwardAckPending {
+                        peer: 7,
+                        retain: false,
+                    },
+                )
                 .await
                 .unwrap()
         );
@@ -1395,58 +1481,62 @@ mod tests {
         );
 
         let frozen = [
-            (BundleStatus::New, (0, None, None, None)),
-            (BundleStatus::Waiting, (1, None, None, None)),
+            (BundleStatus::New, (0, None, None, None, false)),
+            (BundleStatus::Waiting, (1, None, None, None, false)),
             (
                 BundleStatus::ForwardPending {
                     peer: 7,
                     queue: 2,
                     next_hop: service.clone(),
+                    retain: false,
                 },
-                (2, Some(7), Some(2), Some(service.to_string())),
+                (2, Some(7), Some(2), Some(service.to_string()), false),
             ),
             (
                 BundleStatus::AduFragment {
                     source: source.clone(),
                     timestamp: timestamp.clone(),
                 },
-                (3, Some(1234), Some(5), Some(source.to_string())),
+                (3, Some(1234), Some(5), Some(source.to_string()), false),
             ),
-            (BundleStatus::Dispatching, (4, None, None, None)),
+            (BundleStatus::Dispatching, (4, None, None, None, false)),
             (
                 BundleStatus::WaitingForService {
                     service: service.clone(),
                 },
-                (5, None, None, Some(service.to_string())),
+                (5, None, None, Some(service.to_string()), false),
             ),
             (
-                BundleStatus::ForwardAckPending { peer: 7 },
-                (6, Some(7), None, None),
+                BundleStatus::ForwardAckPending {
+                    peer: 7,
+                    retain: false,
+                },
+                (6, Some(7), None, None, false),
             ),
-            (BundleStatus::DispatchPending, (7, None, None, None)),
+            (BundleStatus::DispatchPending, (7, None, None, None, false)),
             (
                 BundleStatus::DeliverPending {
                     service: service.clone(),
                 },
-                (8, None, None, Some(service.to_string())),
+                (8, None, None, Some(service.to_string()), false),
             ),
             (
                 BundleStatus::DeliveryAckPending {
                     service: service.clone(),
                 },
-                (9, None, None, Some(service.to_string())),
+                (9, None, None, Some(service.to_string()), false),
             ),
         ];
 
         for (status, expected) in frozen {
-            let (code, p1, p2, p3) = from_status(&status);
+            let (code, p1, p2, p3, retain) = from_status(&status);
             assert_eq!(
-                (code, p1, p2, p3.clone()),
+                (code, p1, p2, p3.clone(), retain),
                 expected,
                 "on-disk encoding of {status:?} must never change"
             );
             assert_eq!(
-                to_status(code, p1, p2, p3),
+                to_status(code, p1, p2, p3, retain),
                 Some(status),
                 "the codec must round-trip its own encoding"
             );

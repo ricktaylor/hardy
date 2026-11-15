@@ -8,6 +8,7 @@ use crate::{Arc, services::registry::Service};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RouteAction {
     Via(Eid),
+    ForwardReplicate(Eid),
     Reflect,
     Drop(Option<ReasonCode>),
 }
@@ -19,6 +20,7 @@ impl fmt::Display for RouteAction {
             RouteAction::Drop(None) => write!(f, "Drop"),
             RouteAction::Reflect => write!(f, "Reflect"),
             RouteAction::Via(eid) => write!(f, "Via {eid}"),
+            RouteAction::ForwardReplicate(eid) => write!(f, "ForwardReplicate {eid}"),
         }
     }
 }
@@ -36,6 +38,7 @@ impl Ord for RouteAction {
                 RouteAction::Drop(_) => 0,
                 RouteAction::Reflect => 1,
                 RouteAction::Via(_) => 2,
+                RouteAction::ForwardReplicate(_) => 3,
             }
         };
         match rank(self).cmp(&rank(other)) {
@@ -44,7 +47,8 @@ impl Ord for RouteAction {
         }
         match (self, other) {
             (RouteAction::Drop(a), RouteAction::Drop(b)) => a.cmp(b),
-            (RouteAction::Via(a), RouteAction::Via(b)) => a.cmp(b),
+            (RouteAction::Via(a), RouteAction::Via(b))
+            | (RouteAction::ForwardReplicate(a), RouteAction::ForwardReplicate(b)) => a.cmp(b),
             _ => Ordering::Equal,
         }
     }
@@ -125,7 +129,7 @@ impl PartialOrd for Action {
 
 impl Ord for Action {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Drop < AdminEndpoint < Local < Forward < Reflect < Via
+        // Drop < AdminEndpoint < Local < Forward < Reflect < Via < ForwardReplicate
         let rank = |a: &Action| -> u8 {
             match a {
                 Action::Route(RouteAction::Drop(_)) => 0,
@@ -134,6 +138,7 @@ impl Ord for Action {
                 Action::Internal(InternalAction::Forward(_)) => 3,
                 Action::Route(RouteAction::Reflect) => 4,
                 Action::Route(RouteAction::Via(_)) => 5,
+                Action::Route(RouteAction::ForwardReplicate(_)) => 6,
             }
         };
         match rank(self).cmp(&rank(other)) {

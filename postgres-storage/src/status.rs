@@ -46,6 +46,8 @@ pub struct StatusFields {
     pub service_eid: Option<String>,
     /// The adjacency EID a ForwardPending assignment resolved to.
     pub next_hop: Option<String>,
+    /// Whether to retain the bundle in storage after forwarding completes.
+    pub retain: bool,
 }
 
 impl StatusFields {
@@ -59,6 +61,7 @@ impl StatusFields {
             adu_ts_seq: None,
             service_eid: None,
             next_hop: None,
+            retain: false,
         }
     }
 
@@ -71,6 +74,7 @@ impl StatusFields {
                 peer: u32::try_from(self.peer_id?).ok()?,
                 queue: u32::try_from(self.queue_id?).ok()?,
                 next_hop: self.next_hop?.parse().ok()?,
+                retain: self.retain,
             }),
             BundleStatusKind::AduFragment => {
                 let source: hardy_bpv7::eid::Eid = self.adu_source?.parse().ok()?;
@@ -91,6 +95,7 @@ impl StatusFields {
             }),
             BundleStatusKind::ForwardAckPending => Some(BundleStatus::ForwardAckPending {
                 peer: u32::try_from(self.peer_id?).ok()?,
+                retain: self.retain,
             }),
             BundleStatusKind::DispatchPending => Some(BundleStatus::DispatchPending),
             BundleStatusKind::DeliverPending => Some(BundleStatus::DeliverPending {
@@ -117,6 +122,7 @@ impl TryFrom<&BundleStatus> for StatusFields {
                 peer,
                 queue,
                 next_hop,
+                retain,
             } => Self {
                 peer_id: Some(
                     i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
@@ -125,6 +131,7 @@ impl TryFrom<&BundleStatus> for StatusFields {
                     i32::try_from(*queue).map_err(|_| StatusConversionError::QueueId(*queue))?,
                 ),
                 next_hop: Some(next_hop.to_string()),
+                retain: *retain,
                 ..Self::with_kind(BundleStatusKind::ForwardPending)
             },
             BundleStatus::AduFragment { source, timestamp } => {
@@ -145,10 +152,11 @@ impl TryFrom<&BundleStatus> for StatusFields {
                 service_eid: Some(service.to_string()),
                 ..Self::with_kind(BundleStatusKind::WaitingForService)
             },
-            BundleStatus::ForwardAckPending { peer } => Self {
+            BundleStatus::ForwardAckPending { peer, retain } => Self {
                 peer_id: Some(
                     i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
                 ),
+                retain: *retain,
                 ..Self::with_kind(BundleStatusKind::ForwardAckPending)
             },
             BundleStatus::DeliverPending { service } => Self {

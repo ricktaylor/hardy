@@ -33,6 +33,10 @@ pub enum BundleStatus {
         /// [`same_queue`](Self::same_queue)) — so the egress channel's
         /// at-least-once recovery re-delivers the decision intact.
         next_hop: Eid,
+        /// Whether to retain the bundle in storage after forwarding
+        /// completes (opportunistic replication). Part of the assignment
+        /// record, not queue identity.
+        retain: bool,
     },
     /// Offered to a CLA that has taken ownership of the transfer; retained
     /// until the CLA reports the outcome via `Sink::transfer_outcome` or the
@@ -44,6 +48,9 @@ pub enum BundleStatus {
     ForwardAckPending {
         /// Identifier of the CLA peer the transfer was accepted for.
         peer: u32,
+        /// Whether to retain the bundle in storage when the transfer completes
+        /// (opportunistic replication).
+        retain: bool,
     },
     /// Queued for delivery to a specific local service (the local analogue
     /// of [`ForwardPending`](Self::ForwardPending)). Held in the service's

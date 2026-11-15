@@ -77,6 +77,7 @@ impl Peer {
                 peer,
                 queue,
                 next_hop: Eid::Null,
+                retain: false,
             },
             poll_channel_depth,
         );
@@ -101,6 +102,7 @@ impl Peer {
     pub async fn forward(
         &self,
         next_hop: Eid,
+        retain: bool,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
         // The per-peer controller owns the queue assignment; nothing on
@@ -124,6 +126,7 @@ impl Peer {
             peer: *peer,
             queue: *q,
             next_hop,
+            retain,
         };
 
         match queue.send_to(bundle, status).await {
@@ -198,6 +201,7 @@ impl PeerTable {
         &self,
         peer_id: u32,
         next_hop: Eid,
+        retain: bool,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
         // sync::spin::RwLock::read() returns guard directly (no Result)
@@ -205,7 +209,7 @@ impl PeerTable {
             return Err(bundle);
         };
 
-        peer.forward(next_hop, bundle).await
+        peer.forward(next_hop, retain, bundle).await
     }
 }
 

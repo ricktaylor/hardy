@@ -525,6 +525,7 @@ mod tests {
         peer: 1,
         queue: 0,
         next_hop: hardy_bpv7::eid::Eid::Null,
+        retain: false,
     };
 
     // The delivery contract requires the bundle to already exist in metadata

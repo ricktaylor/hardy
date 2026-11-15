@@ -18,11 +18,15 @@ impl Dispatcher {
         // the claim below overwrites the status — take it first. The egress
         // channel only delivers this queue's assignments, so any other
         // status here is a stale copy whose owner resolves it elsewhere.
-        let bundle::BundleStatus::ForwardPending { next_hop, .. } = &bundle.status else {
+        let bundle::BundleStatus::ForwardPending {
+            next_hop, retain, ..
+        } = &bundle.status
+        else {
             debug!("Bundle reached forwarding without a queue assignment, dropping copy");
             return;
         };
         let next_hop = next_hop.clone();
+        let retain = *retain;
 
         // Get bundle data from store, now we know we need it!
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
@@ -54,7 +58,7 @@ impl Dispatcher {
             .store
             .swap_status(
                 &mut bundle,
-                &bundle::BundleStatus::ForwardAckPending { peer },
+                &bundle::BundleStatus::ForwardAckPending { peer, retain },
             )
             .await
         {
@@ -66,8 +70,10 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Forward,
-            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, data, seen)
-                .await,
+            self.offer_to_cla(
+                cla, peer, lane, cla_addr, next_hop, bundle, data, seen, retain,
+            )
+            .await,
         )
         .await
     }
@@ -86,6 +92,7 @@ impl Dispatcher {
         mut bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
+        retain: bool,
     ) -> OfferOutcome {
         // The §E removals the ingress gate deferred apply first, so the
         // Rewriters see the bundle as it will travel, and the strip can never
@@ -136,7 +143,13 @@ impl Dispatcher {
             .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
             .await
         {
-            Ok(cla::ForwardBundleResult::Sent) => OfferOutcome::Completed(bundle),
+            Ok(cla::ForwardBundleResult::Sent) => {
+                if retain {
+                    OfferOutcome::Retained(bundle, seen)
+                } else {
+                    OfferOutcome::Completed(bundle)
+                }
+            }
             Ok(cla::ForwardBundleResult::Accepted) => {
                 // The CLA owns the transfer; the bundle stays in
                 // ForwardAckPending until the outcome arrives or the peer is
@@ -192,7 +205,7 @@ impl Dispatcher {
             return;
         };
 
-        let bundle::BundleStatus::ForwardAckPending { peer } = bundle.status else {
+        let bundle::BundleStatus::ForwardAckPending { peer, retain } = bundle.status else {
             debug!(
                 "Transfer outcome for bundle {bundle_id} that is not awaiting one ({:?}), ignored",
                 bundle.status
@@ -216,8 +229,12 @@ impl Dispatcher {
         // mid-resolution, driving a duplicate transmission after delivery.
         match outcome {
             cla::TransferOutcome::Completed => {
-                self.resolve_offer(OfferKind::Forward, OfferOutcome::Completed(bundle))
-                    .await
+                let outcome = if retain {
+                    OfferOutcome::Retained(bundle, self.rib.table_snapshot())
+                } else {
+                    OfferOutcome::Completed(bundle)
+                };
+                self.resolve_offer(OfferKind::Forward, outcome).await
             }
             cla::TransferOutcome::Failed => {
                 if !self
@@ -525,6 +542,7 @@ mod tests {
                 peer: 7,
                 queue: 0,
                 next_hop: "ipn:0.3.0".parse().unwrap(),
+                retain: false,
             },
         };
         let bundle_id = bundle.id().clone();
@@ -579,7 +597,10 @@ mod tests {
             )
             .unwrap(),
             metadata: bundle::BundleMetadata::originated(),
-            status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
+            status: bundle::BundleStatus::ForwardAckPending {
+                peer: 7,
+                retain: false,
+            },
         };
 
         let _ = dispatcher.update_extension_blocks(
