@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- A watched contact plan that fails to read or parse on reload keeps the current contacts, as documented. Previously the error became an empty plan, so one bad edit withdrew every contact. A deleted file still withdraws every contact.
+
 ## [0.2.0]
 
 ### Changed

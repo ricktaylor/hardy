@@ -9,13 +9,14 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Variant Routing). LLRs map to the TVR functional areas: cron engine, contact plan parser, scheduler, proto conversion, gRPC session lifecycle, and system integration.
+All functional areas verified (7 pass). The TVR crate implements REQ-6 (Time-Variant Routing). LLRs map to the TVR functional areas: cron engine, contact plan parser, scheduler, contact plan reload, proto conversion, gRPC session lifecycle, and system integration.
 
 | LLR | Feature | Result | Test | Part 4 Ref |
 | :--- | :--- | :--- | :--- | :--- |
 | **—** | Cron parsing, matching, next/prev, display | Pass | `cron.rs::every_minute` .. `cron.rs::display_preserves_shortcut` (43 tests) | 6.1 |
 | **—** | Contact plan parser (actions, schedules, link properties, file format) | Pass | `parser.rs::simple_via` .. `parser.rs::multiline_error_shows_correct_line` (42 tests) | 6.2 |
 | **—** | Scheduler (permanent, one-shot, recurring, ordering, diffing, isolation, refcounting) | Pass | `scheduler.rs::permanent_activates_immediately` .. `scheduler.rs::remove_matches_by_content` (18 tests) | 6.3 |
+| **—** | Contact plan reload (bad file keeps contacts, deletion withdraws) | Pass | `contact_plan.rs::a_reload_that_fails_to_parse_keeps_the_contacts` .. `contact_plan.rs::a_deleted_plan_withdraws_its_contacts` (3 tests) | 6.4 |
 | **—** | Proto conversion (timestamps, durations, contacts) | Pass | `server.rs::timestamp_valid_utc` .. `server.rs::contact_with_link_properties` (24 tests) | 6.4 |
 | **—** | gRPC session lifecycle | Pass | `test_tvr.sh` TEST 5..10 (6 of 12 scenarios; 3 deferred, 1 unit-covered, 1 implicit, 1 untestable) | 6.5 |
 | **—** | System integration (file → BPA → ping) | Pass | `test_tvr.sh` TEST 1..4 | 6.6 |
@@ -140,6 +141,14 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | `refcount_dedup_same_route` | 3.21 | Route deduplication |
 | `remove_matches_by_content` | 3.21 | Content-based matching |
 
+### Contact Plan Reload (`src/contact_plan.rs` — 3 tests)
+
+| Test Function | Plan Ref | Scope |
+| :--- | :--- | :--- |
+| `a_reload_that_fails_to_parse_keeps_the_contacts` | 3.26 | Parse error keeps contacts |
+| `a_reload_that_fails_to_read_keeps_the_contacts` | 3.26 | Read error keeps contacts |
+| `a_deleted_plan_withdraws_its_contacts` | 3.26 | Deletion withdraws contacts |
+
 ### Proto Conversion (`src/server.rs` — 24 tests)
 
 | Test Function | Plan Ref | Scope |
@@ -179,8 +188,9 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | UTP 3.22-3.24 | Proto conversion | 24 | 24 | Complete |
 | COMP 3 | gRPC session lifecycle | 12 | 6 | Partial (6 via grpcurl; 3 deferred, 1 unit-covered, 1 implicit, 1 untestable) |
 | UTP 3.25 | Configuration loading | 14 | 14 | Complete |
+| UTP 3.26 | Contact plan reload | 3 | 3 | Complete |
 | COMP 4 | System integration (test_tvr.sh) | 4 | 4 | Complete |
-| | **Total** | **157** | **151** | **96%** |
+| | **Total** | **160** | **154** | **96%** |
 
 ### System & Component Integration Tests
 
@@ -252,4 +262,4 @@ Six of twelve gRPC session scenarios are tested via `grpcurl` in `test_tvr.sh`. 
 
 ## 6. Conclusion
 
-The TVR crate has comprehensive test coverage: cron engine (43 tests), contact plan parser (42 tests), scheduler (18 tests), proto conversion (24 tests), and configuration loading (14 tests) are all fully covered at the unit level. The gRPC session protocol is verified by 6 `grpcurl`-based component tests covering open, add, close cleanup, duplicate name rejection, missing open, and name reuse. System integration is verified by 4 end-to-end tests using `bp ping`. Overall coverage is 151/157 scenarios (96%), 78.1% line coverage, with only 3 low-risk deferred gRPC scenarios remaining.
+The TVR crate has comprehensive test coverage: cron engine (43 tests), contact plan parser (42 tests), scheduler (18 tests), proto conversion (24 tests), configuration loading (14 tests), and contact plan reload (3 tests) are all fully covered at the unit level. The gRPC session protocol is verified by 6 `grpcurl`-based component tests covering open, add, close cleanup, duplicate name rejection, missing open, and name reuse. System integration is verified by 4 end-to-end tests using `bp ping`. Overall coverage is 154/160 scenarios (96%), 78.1% line coverage, with only 3 low-risk deferred gRPC scenarios remaining.

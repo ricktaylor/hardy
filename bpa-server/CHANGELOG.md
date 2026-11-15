@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- A watched static-routes file that fails to read or parse on reload keeps the installed routes, as documented. Previously the error became an empty route list, so one bad edit withdrew every static route, operator `drop` routes included. A deleted file still withdraws every route.
+
 ### Changed
 - The `max-bundle-size` config key is a `u64` byte count (was bounded by the platform's pointer width), so a 32-bit node accepts the same configuration file as a 64-bit one; a value beyond the target's addressable bound is clamped by the library. A configured tcpclv4 CLA's transfer MRU is declared to the BPA at registration, so the effective size cap the CLA advertises to peers folds both limits.
 - The `rfc9171-validity` checks are enforced by the BPA itself at the ingress gate (mapped onto `BpaBuilder::primary_block_integrity`/`bundle_age_required`) instead of a registered filter; the config keys and their defaults are unchanged, and a rejected bundle is now dropped before its payload is received or stored.

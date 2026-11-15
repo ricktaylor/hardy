@@ -27,7 +27,7 @@
 
 ## 2. Test Inventory
 
-### Unit Tests (62 tests)
+### Unit Tests (65 tests)
 
 #### Configuration (`config/mod.rs` — 23 tests)
 
@@ -69,6 +69,10 @@ The `PatternKeySource` resolution logic: EID pattern matching (wildcard, specifi
 
 Parser tests for the static routes file format: via/drop/reflect actions, priority, comments, blank lines, CRLF, multi-line, error messages.
 
+#### Static Routes Reload (`static_routes/agent.rs` — 3 tests)
+
+`reload_routes` through a recording `RoutingSink`: a routes file that fails to parse, or to read, keeps the installed routes (no `remove_route`), and a deleted file withdraws them.
+
 #### Static Routes Integration (`tests/test_static_routes.sh` — 5 tests)
 
 | Test | Scope |
@@ -93,6 +97,7 @@ Lifecycle scenarios (startup, registration, shutdown) are exercised by:
 | Configuration (CFG-01..06) | Defaults, parsing, env, validation, storage, CLA | 6 | 6 | Complete (23 tests) |
 | BPSec key configuration & resolution | Config validation + `PatternKeySource` | — | 24 | Complete |
 | Static routes parser | Parser unit tests | — | 15 | Complete |
+| Static routes reload | Reload error keeps routes; deletion withdraws | — | 3 | Complete |
 | Lifecycle (SYS-01..03) | Startup, registration, shutdown | 3 | 3 | Exercised by interop + CI (implicit) |
 | Lifecycle (SYS-04) | Crash recovery | — | — | Delegated to bpa + storage harness |
 | Lifecycle (SYS-05) | Config reload (static routes) | 1 | 1 | Complete (`test_static_routes.sh`, 5 tests) |
@@ -114,7 +119,7 @@ lcov --summary lcov.info
   functions..: 72.0% (134 of 186 functions)
 ```
 
-Unit tests (62) exercise configuration loading and validation, BPSec key configuration and resolution, and static routes parsing.
+Unit tests (65) exercise configuration loading and validation, BPSec key configuration and resolution, and static routes parsing and reload.
 
 ## 5. Key Gaps
 
@@ -124,4 +129,4 @@ Unit tests (62) exercise configuration loading and validation, BPSec key configu
 
 ## 6. Conclusion
 
-62 unit tests cover configuration loading (23 tests across YAML, TOML, JSON, env overrides, validation, and error handling), BPSec key configuration and pattern-based key resolution (24 tests), and static routes parsing (15 tests). All 6 configuration test scenarios (CFG-01..06) from the test plan are covered. Lifecycle scenarios (startup, registration, shutdown) are verified implicitly by interop and CI tests. 27 of 37 planned scenarios implemented (73%). Crash recovery (SYS-04) is delegated to the bpa and storage harness. OTEL export (OTEL-01..03) is delegated to the hardy-otel crate — all binaries use the same `hardy_otel::init()`. Remaining gap is performance — Full Activity scope.
+65 unit tests cover configuration loading (23 tests across YAML, TOML, JSON, env overrides, validation, and error handling), BPSec key configuration and pattern-based key resolution (24 tests), static routes parsing (15 tests), and static routes reload (3 tests). All 6 configuration test scenarios (CFG-01..06) from the test plan are covered. Lifecycle scenarios (startup, registration, shutdown) are verified implicitly by interop and CI tests. 27 of 37 planned scenarios implemented (73%). Crash recovery (SYS-04) is delegated to the bpa and storage harness. OTEL export (OTEL-01..03) is delegated to the hardy-otel crate — all binaries use the same `hardy_otel::init()`. Remaining gap is performance — Full Activity scope.
