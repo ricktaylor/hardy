@@ -81,10 +81,13 @@ impl hardy_bpa::services::Application for PipeService {
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
-        _total_len: u64,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        // Do nothing
+        // Pull the payload to `Final`, as an Application must, so the fuzzed
+        // delivery path streams the whole stored payload; the bytes are
+        // discarded.
+        hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         Ok(())
     }
 
