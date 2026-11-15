@@ -39,20 +39,23 @@ The BPA is constructed via `BpaBuilder` and exposes a `BpaRegistration` trait th
 use hardy_bpa::bpa::Bpa;
 use hardy_bpa::node_ids::NodeIds;
 
-// Build a BPA with default in-memory storage
+// Build a BPA with default in-memory storage, configuring the components
+// it registers at start. A CLA crate's config converts into the CLA it
+// describes; build() reports a bad config, or a clash, as an error.
 let bpa = Bpa::builder()
     .node_ids(node_ids)
     .status_reports(true)
+    .cla("tcp", tcpclv4_config, None)
+    .application(service_id, app)
     .build()
     .await?;
 
-// Start processing
+// Start processing: the configured components go live
 bpa.start(false).await;
 
-// Register components via the BpaRegistration trait
-bpa.register_cla(name, cla, policy).await?;
+// Components that arrive later register via the BpaRegistration trait
+bpa.register_cla(name, cla, policy, init).await?;
 bpa.register_routing_agent(name, agent).await?;
-bpa.register_application(service_id, app).await?;
 
 // Clean shutdown
 bpa.shutdown().await;

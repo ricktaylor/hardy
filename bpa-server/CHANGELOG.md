@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- Configured CLAs and the echo service register through `BpaBuilder`, which builds each CLA from its configuration. A duplicate CLA name, or an echo endpoint on a taken service id, is a startup error naming the entry instead of a panic.
 - Logging is set up by `hardy-otel` in every build: `log-level` is parsed by its `LogLevel` (names in any case, or `1`-`5`), and the console-only subscriber used without the `otel` feature is its `init`. Configuration files are unchanged.
 - The `max-bundle-size` config key is a `u64` byte count (was bounded by the platform's pointer width), so a 32-bit node accepts the same configuration file as a 64-bit one; a value beyond the target's addressable bound is clamped by the library. A configured tcpclv4 CLA's transfer MRU is declared to the BPA at registration, so the effective size cap the CLA advertises to peers folds both limits.
 - The `rfc9171-validity` checks are enforced by the BPA itself at the ingress gate (mapped onto `BpaBuilder::primary_block_integrity`/`bundle_age_required`) instead of a registered filter; the config keys and their defaults are unchanged, and a rejected bundle is now dropped before its payload is received or stored.

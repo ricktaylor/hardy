@@ -298,6 +298,14 @@ This separation keeps the BPA library independent of specific observability back
 
 Storage backends (`metadata_storage`, `bundle_storage`) are injected programmatically rather than configured, allowing the embedding application to select appropriate backends for its deployment context.
 
+### Configured registrations
+
+`BpaBuilder::cla`, `service` and `application` configure the components the BPA registers when it starts, beside the setters. Each takes anything that converts into the registration it needs: `cla::Registration` (the CLA and its `ClaInit` declarations) for a CLA, `Arc<dyn Service>` or `Arc<dyn Application>` for a service. A CLA crate implements `TryFrom<Config> for Registration` for its configuration type, so an embedder registers a configured CLA without knowing how it is built, and the configuration types live with the crates that define them. An already-built component converts too: an `Arc<dyn Service>` as it is, and a CLA through `Registration::new` with its declarations — deliberately not from a bare `Arc<C>`, which would register it with no declarations.
+
+Conversion is deferred to `build()`, which runs them in configuration order and validates the results against each other and the node ids: a conversion error, a duplicate CLA name, or a service id that is taken, is the administrative endpoint, or names a scheme with no node id is a typed `builder::Error` naming the component, never a panic. Activation stays where it was, in `Bpa::start` after storage recovery.
+
+The builder is for components known when the BPA is constructed. `BpaRegistration::register_*` remains the path for a component registering afterwards — a remote CLA over gRPC, a service created at runtime — and the two never share a name: the builder's methods configure, `register_*` registers.
+
 ## Future Work
 
 ### Key Provider Infrastructure

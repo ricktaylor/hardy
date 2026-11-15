@@ -105,6 +105,22 @@ All LLRs assigned to this module pass (7 pass, 3 pass via bpv7, 1 N/A).
 | `throughput` | PERF-01 | 1000 bundles, concurrent dispatch+receive, asserts >1000 bundles/sec |
 | `forwarding_latency` | PERF-LAT-01 | 100 bundles, per-bundle latency via `TimedCla`, reports P50/P95/P99 |
 
+### Builder Registration Tests
+
+9 tests in `tests/builder_registration.rs` — `BpaBuilder`'s configured CLAs, services and applications.
+
+| Test Function | Scope |
+| :--- | :--- |
+| `cla_converts_at_build_and_registers_at_start` | A CLA config converts at `build()`, not when configured; its declarations reach `on_register` at `start()` |
+| `cla_conversion_failure_names_the_cla` | A failed conversion is `Error::ClaConversion` carrying the name and the crate's own error |
+| `duplicate_cla_name_is_an_error_not_a_panic` | A repeated name is `Error::Cla` with `cla::Error::AlreadyExists` |
+| `service_and_application_register_at_start` | Both go live at `start()` on their resolved EIDs |
+| `service_id_taken_by_an_application_is_refused` | Services and applications share one id space: `ServiceIdInUse` |
+| `administrative_service_id_is_refused` | `ipn` service 0: `AdministrativeEndpoint` |
+| `service_id_without_a_node_id_for_its_scheme_is_refused` | A `dtn` service on an `ipn`-only node: `services::Error::NodeId` |
+| `dtn_service_id_resolves_against_a_dtn_node_id` | The `dtn` scheme resolves once a `dtn` node id is configured |
+| `service_conversion_failure_names_the_service` | A failed service conversion is `Error::ServiceConversion` with the service id |
+
 ### Criterion Benchmark
 
 `benches/bundle_bench.rs` — single-bundle forwarding throughput via criterion.

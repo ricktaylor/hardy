@@ -261,10 +261,17 @@ impl ServiceRegistryBuilder {
         }
     }
 
+    // Parks a configured registration, refusing every service id that
+    // activation would: the administrative endpoint, one already taken, and
+    // one whose scheme has no node id. Activation happens in
+    // [`ServiceRegistry::start`], after storage recovery — registrations
+    // must not race the consistency check — so configuration errors are
+    // surfaced here, where the build can fail.
     pub fn insert(
         &mut self,
         service_id: hardy_bpv7::eid::Service,
         service: ServiceImpl,
+        node_ids: &node_ids::NodeIds,
     ) -> services::Result<()> {
         if node_ids::service_is_admin_endpoint(&service_id) {
             return Err(services::Error::AdministrativeEndpoint(
@@ -274,25 +281,20 @@ impl ServiceRegistryBuilder {
         if self.services.iter().any(|(id, _)| *id == service_id) {
             return Err(services::Error::ServiceIdInUse(service_id.to_string()));
         }
+        node_ids.resolve_eid(&service_id)?;
         info!("Inserted service: {service_id}");
         self.services.push((service_id, service));
         Ok(())
     }
 
-    /// Construct the registry with the configured registrations parked.
-    /// Activation happens in [`ServiceRegistry::start`], after storage
-    /// recovery — registrations must not race the consistency check — so
-    /// configuration errors are surfaced here, where the build can fail.
-    pub fn build(self, node_ids: &node_ids::NodeIds) -> services::Result<Arc<ServiceRegistry>> {
-        for (service_id, _) in &self.services {
-            node_ids.resolve_eid(service_id)?;
-        }
-        Ok(Arc::new(ServiceRegistry {
+    // Constructs the registry with the configured registrations parked.
+    pub fn build(self) -> Arc<ServiceRegistry> {
+        Arc::new(ServiceRegistry {
             services: hardy_async::sync::spin::Mutex::new(Default::default()),
             pending: hardy_async::sync::spin::Mutex::new(self.services),
             next_dynamic: AtomicU32::new(DYNAMIC_SERVICE_BASE),
             tasks: hardy_async::TaskPool::new(),
-        }))
+        })
     }
 }
 
@@ -674,30 +676,23 @@ mod tests {
     // (RFC 9758 Section 5.7).
     #[test]
     fn admin_endpoint_service_ids_are_rejected() {
+        let node_ids = node_ids::NodeIds::default();
         let mut builder = ServiceRegistryBuilder::new();
-        assert!(matches!(
-            builder.insert(
-                hardy_bpv7::eid::Service::Ipn(0),
-                ServiceImpl::LowLevel(Arc::new(TestService)),
-            ),
-            Err(services::Error::AdministrativeEndpoint(_))
-        ));
-        assert!(matches!(
-            builder.insert(
-                hardy_bpv7::eid::Service::Dtn("".into()),
-                ServiceImpl::LowLevel(Arc::new(TestService)),
-            ),
-            Err(services::Error::AdministrativeEndpoint(_))
-        ));
+        for admin in [
+            hardy_bpv7::eid::Service::Ipn(0),
+            hardy_bpv7::eid::Service::Dtn("".into()),
+        ] {
+            let service = ServiceImpl::LowLevel(Arc::new(TestService));
+            assert!(matches!(
+                builder.insert(admin, service, &node_ids),
+                Err(services::Error::AdministrativeEndpoint(_))
+            ));
+        }
 
-        // The neighbouring non-zero / non-empty ids remain registrable.
-        assert!(
-            builder
-                .insert(
-                    hardy_bpv7::eid::Service::Ipn(1),
-                    ServiceImpl::LowLevel(Arc::new(TestService)),
-                )
-                .is_ok()
-        );
+        // The neighbouring non-zero id remains registrable.
+        let service = ServiceImpl::LowLevel(Arc::new(TestService));
+        builder
+            .insert(hardy_bpv7::eid::Service::Ipn(1), service, &node_ids)
+            .expect("ipn service 1 is not the admin endpoint");
     }
 }

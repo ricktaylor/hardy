@@ -1,23 +1,97 @@
+use alloc::{boxed::Box, string::String, vec::Vec};
 use core::num::{NonZeroU64, NonZeroUsize};
 
+use hardy_bpv7::eid::Service as ServiceId;
 use hardy_eid_patterns::EidPattern;
+use thiserror::Error;
 
+// Aliased: this module's own `Error` is the build error; the crate-root
+// generic error is what a deferred conversion raises.
 use crate::{
-    Arc,
+    Arc, Error as ConversionError,
     bpa::Bpa,
-    cla::{Cla, ClaInit, registry::ClaRegistryBuilder},
+    cla::{self, Registration, registry::ClaRegistryBuilder},
     dispatcher::{Config as DispatcherConfig, Dispatcher},
     filter::pack::{FilterPack, chains::FilterChains},
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
-    routing::{RibBuilder, RoutingAgent},
-    services::{self, Service, registry::ServiceRegistryBuilder},
+    routing::{self, RibBuilder, RoutingAgent},
+    services::{
+        self, Application, Service,
+        registry::{ServiceImpl, ServiceRegistryBuilder},
+    },
     storage::{
         BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
         store::Store,
     },
 };
+
+/// A specialized `Result` type for [`BpaBuilder::build`].
+pub type Result<T> = core::result::Result<T, Error>;
+
+/// Why [`BpaBuilder::build`] failed.
+#[derive(Debug, Error)]
+pub enum Error {
+    /// A configured CLA failed to convert into a [`Registration`].
+    #[error("Failed to create CLA '{name}': {source}")]
+    ClaConversion {
+        /// The name the CLA was configured under.
+        name: String,
+        /// The conversion's own error.
+        #[source]
+        source: ConversionError,
+    },
+
+    /// A configured CLA could not be registered: its name is taken.
+    #[error("Failed to register CLA '{name}': {source}")]
+    Cla {
+        /// The name the CLA was configured under.
+        name: String,
+        /// The registry's refusal.
+        #[source]
+        source: cla::Error,
+    },
+
+    /// A configured service or application failed to convert.
+    #[error("Failed to create service {service_id}: {source}")]
+    ServiceConversion {
+        /// The service id it was configured under.
+        service_id: ServiceId,
+        /// The conversion's own error.
+        #[source]
+        source: ConversionError,
+    },
+
+    /// A configured service or application could not be registered: its
+    /// service id is taken, is the administrative endpoint, or names a
+    /// scheme with no node id configured.
+    #[error("Failed to register service {service_id}: {source}")]
+    Service {
+        /// The service id it was configured under.
+        service_id: ServiceId,
+        /// The registry's refusal; boxed, as `services::Error` is large.
+        #[source]
+        source: Box<services::Error>,
+    },
+
+    /// A configured routing agent failed to register.
+    #[error("Failed to register routing agent: {0}")]
+    Routing(#[from] routing::Error),
+}
+
+// A configured CLA, converted at build().
+struct PendingCla {
+    name: String,
+    policy: Option<Arc<dyn FlowControllerFactory>>,
+    convert: Box<dyn FnOnce() -> core::result::Result<Registration, ConversionError> + Send>,
+}
+
+// A configured service or application, converted at build().
+struct PendingService {
+    service_id: ServiceId,
+    convert: Box<dyn FnOnce() -> core::result::Result<ServiceImpl, ConversionError> + Send>,
+}
 
 /// Builder for constructing a [`Bpa`] with custom configuration, obtained
 /// from [`Bpa::builder()`](crate::bpa::Bpa::builder).
@@ -42,8 +116,8 @@ pub struct BpaBuilder {
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
     bundle_storage: Option<Arc<dyn BundleStorage>>,
     key_provider: Arc<dyn KeyProvider>,
-    service_registry_builder: ServiceRegistryBuilder,
-    cla_registry_builder: ClaRegistryBuilder,
+    services: Vec<PendingService>,
+    clas: Vec<PendingCla>,
     rib_builder: RibBuilder,
     filter_packs: Vec<FilterPack>,
     primary_block_integrity: bool,
@@ -70,8 +144,8 @@ impl BpaBuilder {
             node_ids: NodeIds::default(),
             metadata_storage: None,
             bundle_storage: None,
-            service_registry_builder: ServiceRegistryBuilder::new(),
-            cla_registry_builder: ClaRegistryBuilder::new(),
+            services: Vec::new(),
+            clas: Vec::new(),
             rib_builder: RibBuilder::new(),
             filter_packs: Vec::new(),
             primary_block_integrity: true,
@@ -154,38 +228,80 @@ impl BpaBuilder {
         self
     }
 
-    /// Register a CLA to be initialized when the BPA is built.
+    /// Configures a CLA, registered under `name` when the BPA starts.
     ///
-    /// `init` carries the CLA's set-once declarations
-    /// ([`ClaInit`](crate::cla::ClaInit)), snapshotted at registration;
-    /// its `max_bundle_size` is the CLA's declared receive limit, folded
-    /// with the BPA's configured cap into the effective value delivered to
-    /// [`Cla::on_register`](crate::cla::Cla).
-    pub fn cla(
+    /// `cla` is anything that converts into a [`Registration`]: a CLA
+    /// crate's configuration type, or an already-built CLA paired with its
+    /// declarations by [`Registration::new`]. The conversion's error may be
+    /// any type that boxes into the crate's generic
+    /// [`Error`](type@crate::Error). The conversion runs in
+    /// [`build()`](Self::build), which returns its error, or a duplicate
+    /// name, as [`Error`](enum@Error). The declarations' `max_bundle_size`
+    /// is the CLA's receive limit, folded with the BPA's configured cap into
+    /// the effective value delivered to
+    /// [`Cla::on_register`](crate::cla::Cla::on_register).
+    pub fn cla<C>(
         mut self,
         name: impl Into<String>,
-        cla: Arc<dyn Cla>,
+        cla: C,
         policy: Option<Arc<dyn FlowControllerFactory>>,
-        init: ClaInit,
-    ) -> Self {
-        self.cla_registry_builder
-            .insert(name.into(), cla, policy, init)
-            .expect("Failed to insert CLA");
+    ) -> Self
+    where
+        C: TryInto<Registration> + Send + 'static,
+        C::Error: Into<ConversionError>,
+    {
+        self.clas.push(PendingCla {
+            name: name.into(),
+            policy,
+            convert: Box::new(move || cla.try_into().map_err(Into::into)),
+        });
         self
     }
 
-    /// Register a service to be initialized when the BPA is built.
-    pub fn service(
-        mut self,
-        service: Arc<dyn Service>,
-        service_id: hardy_bpv7::eid::Service,
-    ) -> Self {
-        self.service_registry_builder
-            .insert(
-                service_id,
-                services::registry::ServiceImpl::LowLevel(service),
-            )
-            .expect("Failed to register service");
+    /// Configures a low-level service, registered as `service_id` when the
+    /// BPA starts.
+    ///
+    /// `service` is anything that converts into an `Arc<dyn Service>`:
+    /// an already-built `Arc<S>`, or a service crate's configuration type.
+    /// The conversion runs in [`build()`](Self::build), which returns its
+    /// error, or a refused service id, as [`Error`](enum@Error).
+    pub fn service<S>(mut self, service_id: ServiceId, service: S) -> Self
+    where
+        S: TryInto<Arc<dyn Service>> + Send + 'static,
+        S::Error: Into<ConversionError>,
+    {
+        self.services.push(PendingService {
+            service_id,
+            convert: Box::new(move || {
+                service
+                    .try_into()
+                    .map(ServiceImpl::LowLevel)
+                    .map_err(Into::into)
+            }),
+        });
+        self
+    }
+
+    /// Configures a high-level application, registered as `service_id`
+    /// when the BPA starts.
+    ///
+    /// `application` is anything that converts into an
+    /// `Arc<dyn Application>`, converted in [`build()`](Self::build) as for
+    /// [`service()`](Self::service).
+    pub fn application<A>(mut self, service_id: ServiceId, application: A) -> Self
+    where
+        A: TryInto<Arc<dyn Application>> + Send + 'static,
+        A::Error: Into<ConversionError>,
+    {
+        self.services.push(PendingService {
+            service_id,
+            convert: Box::new(move || {
+                application
+                    .try_into()
+                    .map(ServiceImpl::Application)
+                    .map_err(Into::into)
+            }),
+        });
         self
     }
 
@@ -242,8 +358,18 @@ impl BpaBuilder {
         self
     }
 
-    /// Consume the builder and construct the BPA with all registered components.
-    pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
+    /// Consumes the builder and constructs the BPA with every configured
+    /// component.
+    ///
+    /// The configured CLAs, services and applications are converted here,
+    /// in configuration order, and validated against each other and the
+    /// node ids; they go live at [`Bpa::start`].
+    ///
+    /// # Errors
+    ///
+    /// The first configured component that fails to convert or register,
+    /// as the matching [`Error`](enum@Error) variant.
+    pub async fn build(self) -> Result<Bpa> {
         // Freeze the filter packs first: the per-hook chains splice in call
         // order, and each input hook's P = the max peek its registrations
         // declare.
@@ -294,13 +420,9 @@ impl BpaBuilder {
 
         // Both registries park their configured registrations: activation
         // happens in Bpa::start, after storage recovery.
-        let service_registry = self.service_registry_builder.build(&node_ids)?;
-        let cla_registry = self.cla_registry_builder.build(
-            &node_ids,
-            self.poll_channel_depth.into(),
-            &rib,
-            &store,
-        );
+        let service_registry = build_services(self.services, &node_ids)?.build();
+        let cla_registry =
+            build_clas(self.clas)?.build(&node_ids, self.poll_channel_depth.into(), &rib, &store);
 
         // TODO: Dispatcher and ClaRegistry still reference each other: the
         // registry holds the dispatcher, and the dispatcher late-binds the
@@ -319,4 +441,52 @@ impl BpaBuilder {
             dispatcher,
         ))
     }
+}
+
+// Converts the configured CLAs, in configuration order, into the registry
+// builder, which refuses a duplicate name.
+fn build_clas(clas: Vec<PendingCla>) -> Result<ClaRegistryBuilder> {
+    let mut builder = ClaRegistryBuilder::new();
+    for PendingCla {
+        name,
+        policy,
+        convert,
+    } in clas
+    {
+        let Registration { cla, init } = convert().map_err(|source| Error::ClaConversion {
+            name: name.clone(),
+            source,
+        })?;
+        builder
+            .insert(name.clone(), cla, policy, init)
+            .map_err(|source| Error::Cla { name, source })?;
+    }
+    Ok(builder)
+}
+
+// Converts the configured services and applications, in configuration
+// order, into the registry builder, which refuses a taken, administrative,
+// or unresolvable service id.
+fn build_services(
+    services: Vec<PendingService>,
+    node_ids: &NodeIds,
+) -> Result<ServiceRegistryBuilder> {
+    let mut builder = ServiceRegistryBuilder::new();
+    for PendingService {
+        service_id,
+        convert,
+    } in services
+    {
+        let service = convert().map_err(|source| Error::ServiceConversion {
+            service_id: service_id.clone(),
+            source,
+        })?;
+        builder
+            .insert(service_id.clone(), service, node_ids)
+            .map_err(|source| Error::Service {
+                service_id,
+                source: Box::new(source),
+            })?;
+    }
+    Ok(builder)
 }
