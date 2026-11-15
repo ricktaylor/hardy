@@ -20,7 +20,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     builder::BpaBuilder,
     cla::{self, ClaAddress, ClaInit},
-    lanes::Lanes,
+    lanes::{Lanes, MAX_PINNED_LANES},
     node_ids::NodeIds,
     policy::{EgressQueue, EgressQueueSet, FlowController, FlowControllerFactory},
     stream::{Receiver, Segment},
@@ -479,4 +479,63 @@ async fn removing_a_peer_completes_its_in_flight_forwards_and_offers_no_more() {
         handles.entered_rx.is_empty(),
         "a bundle swept from the closed queue is never offered"
     );
+}
+
+// A policy that reports which lanes its queue set can pin to, then
+// transmits on the next free lane.
+struct PinnedLanesProbe {
+    pinned_tx: flume::Sender<Vec<u32>>,
+}
+
+struct NextFreeController {
+    queue: Arc<dyn EgressQueue>,
+}
+
+#[async_trait]
+impl FlowController for NextFreeController {
+    fn queue_for(&self) -> u32 {
+        0
+    }
+
+    async fn forward(&self, _queue: u32, bundle: hardy_bpa::bundle::Bundle) {
+        self.queue.forward(bundle).await
+    }
+}
+
+#[async_trait]
+impl FlowControllerFactory for PinnedLanesProbe {
+    fn queue_count(&self) -> NonZeroU32 {
+        NonZeroU32::MIN
+    }
+
+    async fn new_controller(&self, queues: EgressQueueSet) -> Arc<dyn FlowController> {
+        let mut pinned: Vec<u32> = queues.pinned.keys().copied().collect();
+        pinned.sort_unstable();
+        self.pinned_tx.send(pinned).unwrap();
+        Arc::new(NextFreeController {
+            queue: queues.next_free,
+        })
+    }
+}
+
+// A CLA declaring more lanes than a policy can pin gets pinned queues for
+// lanes 0..MAX_PINNED_LANES only, and still forwards on the next free lane.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_policy_pins_to_at_most_max_pinned_lanes() {
+    let (pinned_tx, pinned_rx) = flume::unbounded();
+    let (bpa, _cla, handles, ingress) = rig_with_policy(
+        Bpa::builder(),
+        Lanes::Limited(NonZeroU32::new(MAX_PINNED_LANES + 1).unwrap()),
+        Some(Arc::new(PinnedLanesProbe { pinned_tx })),
+    )
+    .await;
+
+    let pinned = recv(&pinned_rx, "the peer's queue set").await;
+    assert_eq!(pinned, (0..MAX_PINNED_LANES).collect::<Vec<_>>());
+
+    queue_bundles(&ingress, 1).await;
+    recv(&handles.entered_rx, "the forward on the next free lane").await;
+    drop(handles.release_tx);
+    recv(&handles.finished_rx, "the forward to finish").await;
+    bpa.shutdown().await;
 }

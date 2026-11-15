@@ -1,6 +1,7 @@
 use hardy_bpv7::eid::{Eid, NodeId};
 
 use super::*;
+use crate::lanes::MAX_PINNED_LANES;
 
 // CLA registry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -339,6 +340,12 @@ impl ClaRegistry {
 
         metrics::gauge!("bpa.cla.registered").increment(1.0);
         info!("Registered CLA: {name}");
+        if entry.lanes.explicit() > MAX_PINNED_LANES {
+            info!(
+                "CLA {name} declares {} lanes; an egress policy can pin bundles to only the first {MAX_PINNED_LANES}",
+                entry.lanes.explicit()
+            );
+        }
 
         Ok(node_ids)
     }

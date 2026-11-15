@@ -32,13 +32,25 @@ pub enum Lanes {
     #[default]
     Serial,
     /// Up to this many hand-offs at once; a zero count is unrepresentable
-    /// by construction. A CLA's lanes are indexed `0..n` on each forward.
+    /// by construction. A CLA's lanes are indexed `0..n` on each forward,
+    /// and an egress policy can pin bundles to the first
+    /// [`MAX_PINNED_LANES`] of them.
     Limited(NonZeroU32),
     /// No limit of the registrant's own (for a CLA, a datagram CL, where
     /// every forward travels on a fresh lane). The BPA's own bounds still
     /// apply.
     Unlimited,
 }
+
+/// How many of a CLA's declared lanes an egress policy can pin bundles to:
+/// the BPA builds one pinned queue per explicit lane of a
+/// [`Lanes::Limited`] CLA, for each of its peers, up to this many.
+///
+/// A CLA may declare more lanes; the BPA logs that at registration. The
+/// bound applies only to pinning: the BPA's egress seat cap bounds the
+/// forwards in flight, and a forward on the next free lane may use any of
+/// the CLA's lanes.
+pub const MAX_PINNED_LANES: u32 = 256;
 
 impl Lanes {
     // How many explicit lanes the declaration names: `n` for `Limited(n)`,
@@ -48,5 +60,11 @@ impl Lanes {
             Self::Limited(n) => n.get(),
             Self::Serial | Self::Unlimited => 0,
         }
+    }
+
+    // How many pinned queues the declaration gets per peer: its explicit
+    // lanes, up to `MAX_PINNED_LANES`.
+    pub(crate) fn pinned(self) -> u32 {
+        self.explicit().min(MAX_PINNED_LANES)
     }
 }

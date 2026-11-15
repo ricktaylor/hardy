@@ -16,7 +16,8 @@ message Lanes {
     // One hand-off at a time, in queue order.
     google.protobuf.Empty serial    = 1;
     // Up to this many hand-offs at once. An explicit 0 is invalid and the
-    // registration is rejected.
+    // registration is rejected. For a CLA, an egress policy can pin bundles
+    // to the first 256 lanes (hardy_bpa::lanes::MAX_PINNED_LANES).
     uint32                limited   = 2;
     // No limit of the registrant's own: as many as the BPA allows.
     google.protobuf.Empty unlimited = 3;

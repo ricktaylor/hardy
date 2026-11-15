@@ -242,7 +242,9 @@ pub struct ClaInit {
     /// egress seat cap
     /// ([`BpaBuilder::egress_lane_cap`](crate::builder::BpaBuilder::egress_lane_cap)):
     /// one for `Serial`, the smaller of `n` and the cap for `Limited(n)`,
-    /// and the cap for `Unlimited`.
+    /// and the cap for `Unlimited`. An egress policy can pin bundles to the
+    /// first [`MAX_PINNED_LANES`](crate::lanes::MAX_PINNED_LANES) lanes of
+    /// a `Limited(n)` CLA.
     pub lanes: Lanes,
 
     /// The CLA's declared receive limit (`None` = no CLA-side limit).
