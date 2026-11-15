@@ -21,11 +21,9 @@ mod service;
 fn registration_error_to_status(e: services::Error) -> tonic::Status {
     match e {
         services::Error::ServiceIdInUse(_) => tonic::Status::already_exists(e.to_string()),
-        services::Error::AdministrativeEndpoint(_)
-        | services::Error::DtnInvalidServiceName(_)
-        | services::Error::NoIpnNodeId
-        | services::Error::NoDtnNodeId
-        | services::Error::NodeId(_) => tonic::Status::invalid_argument(e.to_string()),
+        services::Error::AdministrativeEndpoint(_) | services::Error::NodeId(_) => {
+            tonic::Status::invalid_argument(e.to_string())
+        }
         services::Error::Disconnected => tonic::Status::unavailable(e.to_string()),
         other => tonic::Status::internal(other.to_string()),
     }
