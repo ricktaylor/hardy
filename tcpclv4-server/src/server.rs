@@ -5,6 +5,7 @@
 use core::time::Duration;
 use std::sync::Arc;
 
+use anyhow::Context;
 use hardy_async::{CancellationToken, TaskPool};
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_proto::client::RemoteBpa;
@@ -38,8 +39,9 @@ impl Tcpclv4Server {
     // composition root, which owns process policy (wiring SIGINT/SIGTERM
     // to the pool's cancellation token via `signal::listen_for_cancel`).
     pub fn new(config: Config, tasks: TaskPool) -> anyhow::Result<Self> {
+        let cla = Tcpclv4::try_from(config.cla).context("Failed to create the TCPCLv4 CLA")?;
         Ok(Self {
-            cla: Arc::new(config.cla.try_into()?),
+            cla: Arc::new(cla),
             bpa_address: config.bpa_address,
             cla_name: config.cla_name,
             peers: config.peers,

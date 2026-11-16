@@ -1,16 +1,19 @@
 //! `config::Config` converts into a built `Tcpclv4`. Each conversion test
 //! proves one field reaches the builder, through an outcome the public API
 //! exposes (the declared receive limit, or the typed error the builder
-//! raises for that input).
+//! raises for that input). The schema module tests the serde rules the
+//! library owns.
 
 use core::num::NonZeroU64;
 use std::net::TcpListener;
 
 use hardy_tcpclv4::{
     Error, Tcpclv4,
+    builder::Tcpclv4Builder,
     config::{Config, Identity, TlsConfig},
     tls::{self, ClientAuth},
 };
+use tempfile::tempdir;
 
 // Binds nothing, so the conversion touches no socket.
 fn dial_only() -> Config {
@@ -79,7 +82,7 @@ fn insecure_skip_verify_is_a_trust_anchor() {
 
 #[test]
 fn ca_certs_are_loaded() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir().unwrap();
     let ca_certs = dir.path().join("missing-ca");
     let err = Tcpclv4::try_from(Config {
         tls: Some(TlsConfig {
@@ -97,7 +100,7 @@ fn ca_certs_are_loaded() {
 
 #[test]
 fn identity_is_loaded() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir().unwrap();
     let cert_file = dir.path().join("missing-cert.pem");
     let err = Tcpclv4::try_from(Config {
         tls: Some(TlsConfig {
@@ -132,6 +135,28 @@ fn client_auth_reaches_the_tls_builder() {
     );
 }
 
+// The builder mapping is pure: a TLS section whose files do not exist maps
+// onto the builder without touching them, and the further builder call
+// still applies; the missing file surfaces only at build().
+#[test]
+fn the_builder_mapping_touches_no_file() {
+    let dir = tempdir().unwrap();
+    let ca_certs = dir.path().join("missing-ca");
+    let builder = Tcpclv4Builder::from(Config {
+        tls: Some(TlsConfig {
+            ca_certs: Some(ca_certs.clone()),
+            ..Default::default()
+        }),
+        ..dial_only()
+    })
+    .transfer_mru(NonZeroU64::new(4096).unwrap());
+    let err = builder.build().unwrap_err();
+    assert!(
+        matches!(&err, Error::Tls(tls::Error::CaCertsMissing { path }) if *path == ca_certs),
+        "{err:?}"
+    );
+}
+
 #[test]
 fn required_tls_needs_an_identity_to_listen() {
     // Judged before any listener is bound.
@@ -153,9 +178,13 @@ mod schema {
     use std::path::PathBuf;
 
     use hardy_tcpclv4::{ContactTimeout, KeepaliveInterval};
-    use serde_json::json;
+    use serde_json::{Error as JsonError, Value, from_value, json, to_value};
 
     use super::*;
+
+    fn parse(value: Value) -> Result<Config, JsonError> {
+        from_value(value)
+    }
 
     fn every_key() -> Config {
         Config {
@@ -185,7 +214,7 @@ mod schema {
     // parse into the exact value.
     #[test]
     fn kebab_case_keys_parse() {
-        let config: Config = serde_json::from_value(json!({
+        let config = parse(json!({
             "listeners": ["127.0.0.1:4556"],
             "segment-mru": 8192,
             "transfer-mru": 65536,
@@ -211,8 +240,64 @@ mod schema {
     #[test]
     fn serialized_config_parses_back() {
         for config in [Config::default(), every_key()] {
-            let value = serde_json::to_value(&config).unwrap();
-            assert_eq!(serde_json::from_value::<Config>(value).unwrap(), config);
+            let value = to_value(&config).unwrap();
+            assert_eq!(parse(value).unwrap(), config);
+        }
+    }
+
+    // `keepalive-interval: null` is refused, naming both real spellings;
+    // an absent key is the builder default.
+    #[test]
+    fn null_keepalive_is_refused() {
+        let err = parse(json!({ "keepalive-interval": null })).unwrap_err();
+        assert!(err.is_data(), "{err:?}");
+        assert!(
+            err.to_string().contains("use 0 to disable keepalives"),
+            "{err}"
+        );
+        assert_eq!(parse(json!({})).unwrap().keepalive_interval, None);
+    }
+
+    // An identity is a pair: a lone certificate or key is refused.
+    #[test]
+    fn a_lone_identity_half_is_refused() {
+        for identity in [
+            json!({ "cert-file": "c.pem" }),
+            json!({ "key-file": "k.pem" }),
+        ] {
+            let err = parse(json!({ "tls": { "identity": identity } })).unwrap_err();
+            assert!(err.is_data(), "{err:?}");
+        }
+    }
+
+    // Out-of-range scalars fail at parse: zero for the NonZero fields, and a
+    // contact timeout outside RFC 9174's 1 to 60 seconds.
+    #[test]
+    fn out_of_range_scalars_are_refused() {
+        for (key, value) in [
+            ("segment-mru", json!(0)),
+            ("transfer-mru", json!(0)),
+            ("max-outstanding-transfers", json!(0)),
+            ("connection-rate-limit", json!(0)),
+            ("contact-timeout", json!(0)),
+            ("contact-timeout", json!(61)),
+        ] {
+            let err = parse(json!({ key: value })).unwrap_err();
+            assert!(err.is_data(), "{key} = {value}: {err:?}");
+        }
+    }
+
+    // Unknown keys are refused at every level, so a typo cannot leave a
+    // default in force.
+    #[test]
+    fn unknown_keys_are_refused() {
+        for entry in [
+            json!({ "address": "127.0.0.1:4556" }),
+            json!({ "tls": { "insecure": true } }),
+            json!({ "tls": { "identity": { "cert-file": "c", "key-file": "k", "extra": 1 } } }),
+        ] {
+            let err = parse(entry.clone()).unwrap_err();
+            assert!(err.is_data(), "{entry}: {err:?}");
         }
     }
 }

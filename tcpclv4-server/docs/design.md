@@ -59,10 +59,10 @@ This separation allows network I/O to scale independently from bundle processing
 Configuration uses the same patterns as hardy-bpa-server:
 
 - **Formats** - TOML, JSON, or YAML
-- **Environment overrides** - `HARDY_TCPCLV4_SERVER_*` prefix
+- **Environment overrides** - `HARDY_TCPCLV4_*` prefix
 - **Defaults** - Derived from RFC 9174 recommendations
 
-The TCPCLv4 keys are `hardy-tcpclv4`'s `config::Config`, flattened to the top level; this crate adds its own keys (the BPA gRPC endpoint address, the CLA name, the static peers, the log level) and the example configuration files (`example_config.toml`/`.yaml`).
+The TCPCLv4 keys are `hardy-tcpclv4`'s `config::Config`, at the top level beside this crate's own keys. The loader reads the merged file and environment as two typed layers — the server's keys, then everything else as the TCPCLv4 schema — so the `config` crate coerces each key to its type (`1`/`yes` for a bool, a quoted number for an integer), and an unknown key is refused with the TCPCLv4 keys listed. This crate adds its own keys (the BPA gRPC endpoint address, the CLA name, the static peers, the log level) and the example configuration files (`example_config.toml`/`.yaml`).
 
 ## Integration
 

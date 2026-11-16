@@ -45,6 +45,11 @@ pub struct Tcpclv4 {
     connection_rate_limit: NonZeroU32,
     segment_mru: NonZeroU64,
     transfer_mru: NonZeroU64,
+    max_idle_connections: usize,
+    max_outstanding_transfers: NonZeroUsize,
+    // The listeners' bound addresses, kept for `Debug`: the sockets
+    // themselves move to their tasks when the entity starts.
+    listen_addresses: Vec<SocketAddr>,
 
     // Computed at construction
     tls: Option<Arc<tls::Tls>>,
@@ -79,6 +84,12 @@ impl Tcpclv4 {
         max_outstanding_transfers: NonZeroUsize,
         tls: Option<Arc<tls::Tls>>,
     ) -> Self {
+        // A bound socket always has a local address; one it cannot report
+        // is left out of the Debug list rather than failing construction.
+        let listen_addresses = listeners
+            .iter()
+            .filter_map(|listener| listener.local_addr().ok())
+            .collect();
         Self {
             contact_timeout,
             keepalive_interval,
@@ -86,6 +97,9 @@ impl Tcpclv4 {
             connection_rate_limit,
             segment_mru,
             transfer_mru,
+            max_idle_connections,
+            max_outstanding_transfers,
+            listen_addresses,
             tls,
             registry: Arc::new(connection::ConnectionRegistry::new(
                 max_idle_connections,
@@ -188,17 +202,20 @@ impl Tcpclv4 {
     }
 }
 
-// The configuration and whether the entity is registered; the runtime
-// state (sockets, sessions, the BPA sink) has no useful text form. TLS
-// shows only whether it is required: the material holds key bytes.
+// Every builder input and whether the entity is registered; the runtime
+// state (sessions, the BPA sink) has no useful text form. TLS shows only
+// whether it is required: the material holds key bytes.
 impl Debug for Tcpclv4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tcpclv4")
-            .field("contact_timeout", &self.contact_timeout)
-            .field("keepalive_interval", &self.keepalive_interval)
-            .field("connection_rate_limit", &self.connection_rate_limit)
+            .field("listen_addresses", &self.listen_addresses)
             .field("segment_mru", &self.segment_mru)
             .field("transfer_mru", &self.transfer_mru)
+            .field("max_idle_connections", &self.max_idle_connections)
+            .field("max_outstanding_transfers", &self.max_outstanding_transfers)
+            .field("connection_rate_limit", &self.connection_rate_limit)
+            .field("contact_timeout", &self.contact_timeout)
+            .field("keepalive_interval", &self.keepalive_interval)
             .field(
                 "tls_required",
                 &self.tls.as_ref().map(|tls| tls.is_required()),

@@ -66,11 +66,14 @@ fn default_cla_name() -> String {
 // prefixed with `HARDY_TCPCLV4_`. Uses kebab-case field names in config files
 // and `__` as the nested-field separator for environment variables.
 //
-// The server's own keys sit beside the flattened TCPCLv4 settings. Unknown
-// keys are refused: the flattened schema claims its own keys, and any key
-// left unclaimed by both is an error.
+// The server's own keys sit at the top level beside the TCPCLv4 settings.
+// `load` reads the two as separate typed layers of one merged table, so the
+// `config` crate sees each key's type and coerces as it does for any field
+// (`1`/`yes` for a bool, a quoted number for an integer). The TCPCLv4 layer
+// refuses any key that is neither a TCPCLv4 key nor in `SERVER_KEYS`, naming
+// the TCPCLv4 keys it knows.
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case")]
 pub struct Config {
     // Logging level for the tracing subscriber.
     //
@@ -95,12 +98,17 @@ pub struct Config {
     #[serde(default)]
     pub peers: Vec<String>,
 
-    // The TCPCLv4 settings, flattened to the top level: the shared schema
-    // of `hardy_tcpclv4::config`, also read by `hardy-bpa-server`'s
-    // `clas:` entries.
-    #[serde(flatten)]
+    // The TCPCLv4 settings, at the top level: the shared schema of
+    // `hardy_tcpclv4::config`, also read by `hardy-bpa-server`'s `clas:`
+    // entries. Read as its own layer by `load`.
+    #[serde(skip)]
     pub cla: ClaConfig,
 }
+
+// The server's own keys: everything else at the top level is a TCPCLv4
+// key. A server key missing here is refused as unknown by the TCPCLv4
+// layer, so a test that sets every one of them guards the list.
+const SERVER_KEYS: [&str; 4] = ["log-level", "bpa-address", "cla-name", "peers"];
 
 impl Config {
     // Load configuration from a file and environment variable overrides.
@@ -135,11 +143,19 @@ impl Config {
             .try_parsing(true)
             .source(Some(overrides));
 
-        let config = config::Config::builder()
+        let merged = config::Config::builder()
             .add_source(source_file)
             .add_source(source_env)
-            .build()?
-            .try_deserialize()?;
+            .build()?;
+
+        // Two typed reads of the one merged table: the server's own keys,
+        // then everything else as the TCPCLv4 schema.
+        let mut config: Config = merged.clone().try_deserialize()?;
+        let mut cla: config::Map<String, config::Value> = merged.try_deserialize()?;
+        for key in SERVER_KEYS {
+            cla.remove(key);
+        }
+        config.cla = config::Value::from(cla).try_deserialize()?;
 
         eprintln!("Loaded configuration from '{}'", config_file.display());
         Ok(config)
@@ -152,7 +168,10 @@ mod tests {
     use std::io::Write;
 
     use hardy_async::TaskPool;
-    use hardy_tcpclv4::{KeepaliveInterval, tls::ClientAuth};
+    use hardy_tcpclv4::{
+        Error as Tcpclv4Error, KeepaliveInterval,
+        tls::{ClientAuth, Error as TlsError},
+    };
     use serial_test::serial;
 
     use super::*;
@@ -517,6 +536,20 @@ tls:
         let err = err.to_string();
         assert!(err.contains("this-does-not-exist"), "{err}");
 
+        // The removed single-listener key is refused with its replacement
+        // among the known keys listed, the hint an operator migrating an
+        // old file needs.
+        let path = dir.path().join("address.toml");
+        std::fs::write(&path, "address = \"127.0.0.1:4556\"\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(
+            err.contains("address") && err.contains("listeners"),
+            "{err}"
+        );
+
         // The quiet spellings of earlier schemas buy nothing: `tls.insecure`
         // is refused with the deliberately loud key named in the known list,
         // not silently ignored.
@@ -527,6 +560,43 @@ tls:
         };
         let err = err.to_string();
         assert!(err.contains("insecure-skip-verify"), "{err}");
+    }
+
+    // Every server key reaches the server layer and none is refused by the
+    // TCPCLv4 layer: a key missing from `SERVER_KEYS` would be.
+    #[test]
+    #[serial]
+    fn every_server_key_is_a_server_key() {
+        let config = write_and_load(
+            "server-keys.toml",
+            "log-level = \"debug\"\nbpa-address = \"http://bpa:50051\"\ncla-name = \"cla\"\npeers = [\"bpa2:4556\"]\n",
+        );
+        assert_eq!(config.log_level, Level::DEBUG);
+        assert_eq!(config.bpa_address, "http://bpa:50051");
+        assert_eq!(config.cla_name, "cla");
+        assert_eq!(config.peers, ["bpa2:4556"]);
+    }
+
+    // The `config` crate coerces a TCPCLv4 key's spelling to its type, in a
+    // file and in the environment: `yes` and `1` for a bool, a quoted
+    // number for an integer.
+    #[test]
+    #[serial]
+    fn tcpclv4_scalars_are_coerced() {
+        let config = write_and_load(
+            "coerce.yaml",
+            "segment-mru: \"8192\"\ntls:\n  insecure-skip-verify: true\n  required: yes\n",
+        );
+        assert_eq!(config.cla.segment_mru, NonZeroU64::new(8192));
+        assert!(config.cla.tls.unwrap().required);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("coerce-env.toml");
+        std::fs::write(&path, "[tls]\ninsecure-skip-verify = true\n").unwrap();
+        unsafe { std::env::set_var("HARDY_TCPCLV4_TLS__REQUIRED", "1") };
+        let result = Config::load(Some(path));
+        unsafe { std::env::remove_var("HARDY_TCPCLV4_TLS__REQUIRED") };
+        assert!(result.unwrap().cla.tls.unwrap().required);
     }
 
     // Large segment-mru value is accepted.
@@ -580,61 +650,25 @@ tls:
         Tcpclv4Server::new(config, TaskPool::new()).expect("0 disables keepalives");
     }
 
-    // The mapping onto the builder rejects each config contradiction with
-    // a message naming the offending keys, before any file is touched.
+    // Building the server delegates to the library's conversion, whose
+    // rules `hardy-tcpclv4`'s own tests cover: a contradiction surfaces as
+    // the library's typed error.
     #[test]
     #[serial]
-    fn mapping_rejects_contradictions() {
-        for (name, content, message) in [
-            ("no-anchor.toml", "[tls]\nrequired = true\n", "trust anchor"),
-            (
-                "insecure-off-is-no-anchor.toml",
-                "[tls]\ninsecure-skip-verify = false\n",
-                "trust anchor",
-            ),
-            (
-                "auth-without-identity.toml",
-                "[tls]\nca-certs = \"/etc/hardy/ca\"\nclient-auth = \"required\"\n",
-                "identity",
-            ),
-            (
-                "auth-insecure.toml",
-                "[tls]\ninsecure-skip-verify = true\nclient-auth = \"optional\"\n\n[tls.identity]\ncert-file = \"c.pem\"\nkey-file = \"k.pem\"\n",
-                "insecure-skip-verify",
-            ),
-        ] {
-            let Err(err) = Tcpclv4Server::new(write_and_load(name, content), TaskPool::new())
-            else {
-                panic!("{name}: expected a mapping error");
-            };
-            let err = err.to_string();
-            assert!(err.contains(message), "{name}: {err}");
-        }
-    }
-
-    // An insecure-only TLS config builds without touching any file.
-    #[test]
-    #[serial]
-    fn insecure_only_builds() {
+    fn building_delegates_to_the_library() {
         let config = write_and_load(
-            "insecure.toml",
-            "listeners = [\"127.0.0.1:0\"]\n\n[tls]\ninsecure-skip-verify = true\n",
+            "no-anchor.toml",
+            "listeners = []\n\n[tls]\nrequired = true\n",
         );
-        Tcpclv4Server::new(config, TaskPool::new()).expect("no file IO on this path");
-    }
-
-    // insecure-skip-verify overrides ca-certs rather than conflicting with
-    // it, so a debug session is one line to flip. The ca-certs path is
-    // bogus on purpose: the build succeeding proves the ignored bundle is
-    // never loaded.
-    #[test]
-    #[serial]
-    fn insecure_overrides_ca_certs() {
-        let config = write_and_load(
-            "override.toml",
-            "listeners = [\"127.0.0.1:0\"]\n\n[tls]\nca-certs = \"/nonexistent/ca\"\ninsecure-skip-verify = true\n",
+        let Err(err) = Tcpclv4Server::new(config, TaskPool::new()) else {
+            panic!("TLS without a trust anchor must fail to build");
+        };
+        assert!(
+            matches!(
+                err.downcast_ref::<Tcpclv4Error>(),
+                Some(Tcpclv4Error::Tls(TlsError::NoTrustAnchor))
+            ),
+            "{err:?}"
         );
-        Tcpclv4Server::new(config, TaskPool::new())
-            .expect("insecure-skip-verify wins; ca-certs is not loaded");
     }
 }

@@ -26,7 +26,7 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 
 ## 2. Test Inventory
 
-### Unit Tests (16 tests in `config.rs`)
+### Unit Tests (25 tests in `config.rs`)
 
 | Test Function | Scope |
 | :--- | :--- |
@@ -36,6 +36,7 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 | `json_config` | JSON file works identically |
 | `env_overrides_file` | Env var overrides file value |
 | `env_overrides_nested_fields` | `__` separator for nested TCPCLv4 fields |
+| `config_file_env_var_is_not_a_schema_key` | `HARDY_TCPCLV4_CONFIG_FILE` locates the file and is not refused as a key |
 | `missing_config_file_errors` | Non-existent file → error |
 | `invalid_log_level_errors` | Bad log level → error |
 | `negative_segment_mru_errors` | Negative MRU → error |
@@ -47,12 +48,12 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 | `tls_full_config` | A full TLS section parses into its structured form |
 | `private_key_file_alias` | `private-key-file` accepted as `key-file` alias |
 | `lone_identity_half_rejected_at_parse` | A cert or key alone → parse error |
-| `mapping_rejects_contradictions` | TLS contradictions named at build (trust anchor, identity, insecure) |
-| `insecure_only_builds` | `insecure-skip-verify` alone builds without file I/O |
-| `insecure_overrides_ca_certs` | `insecure-skip-verify` wins over `ca-certs`; the bundle is never loaded |
+| `building_delegates_to_the_library` | A contradiction surfaces as `hardy-tcpclv4`'s typed error; the library's own tests cover the rules |
+| `every_server_key_is_a_server_key` | Every server key reaches the server layer; none is refused by the TCPCLv4 layer |
+| `tcpclv4_scalars_are_coerced` | `yes`/`1` for a bool and a quoted number for an integer, in a file and the environment |
 | `malformed_toml_errors` | Invalid TOML → error |
 | `malformed_yaml_errors` | Invalid YAML → error |
-| `unknown_fields_ignored` | Extra fields accepted |
+| `unknown_fields_are_refused` | Unknown keys refused; an old `address` key names `listeners` among the known keys |
 | `large_segment_mru` | Large MRU value accepted |
 
 ### Cross-Coverage from Other Test Suites

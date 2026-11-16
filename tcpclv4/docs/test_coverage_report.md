@@ -85,7 +85,7 @@ All 10 scenarios are covered by interop testing (9) or fuzz testing (1). No dedi
 | UT-TCP-04 | Fragment Logic | `src/session.rs` | **Complete** (5 tests) |
 | UT-TCP-05 | Reason Codes | `src/codec.rs` | **Complete** (3 tests) |
 
-The `config::Config` conversion and schema are covered by `tests/config.rs` (10 tests): each field that can fail reaches the builder (listener bind, trust anchor, CA directory, identity, client auth, required TLS without an identity, the transfer MRU as the declared receive limit), and, under the `serde` feature, the kebab-case keys parse into the exact value and a serialized config parses back to itself.
+The `config::Config` conversion and schema are covered by `tests/config.rs` (15 tests): each field that can fail reaches the builder (listener bind, trust anchor, CA directory, identity, client auth, required TLS without an identity, the transfer MRU as the declared receive limit); the builder mapping touches no file until `build()`; and, under the `serde` feature, the schema rules the library owns — kebab-case keys parsing into the exact value, a serialized config parsing back to itself, `keepalive-interval: null` refused, a lone identity half refused, out-of-range scalars refused, and unknown keys refused at every level.
 
 ### 3.4 Section 6 — Scaling Tests (TCPCL-SCALE-01 to TCPCL-SCALE-04)
 

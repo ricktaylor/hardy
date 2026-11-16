@@ -1,11 +1,15 @@
 //! [`Config`]: a [`Tcpclv4`] build described as plain data, for
 //! configuration files.
 //!
-//! Every field mirrors a [`Tcpclv4Builder`](crate::builder::Tcpclv4Builder)
-//! input. An absent (`None`) field leaves the builder default in force, so
-//! no default value is restated here; the defaults are documented on the
-//! builder methods. Convert with [`Tcpclv4::try_from`], which binds the
-//! listeners and loads the TLS material.
+//! Every field mirrors a [`Tcpclv4Builder`] input. An absent (`None`)
+//! field leaves the builder default in force, so no default value is
+//! restated here; the defaults are documented on the builder methods.
+//!
+//! [`Tcpclv4Builder::from`] maps a `Config` onto a builder without touching
+//! a socket or a file, so the result can be adjusted before
+//! [`build()`](Tcpclv4Builder::build), the one effectful step.
+//! [`Tcpclv4::try_from`] is the shorthand for both: it binds the listeners
+//! and loads the TLS material.
 //!
 //! With the `serde` feature the types deserialize from the kebab-case
 //! schema the Hardy servers read (a `clas:` entry in `hardy-bpa-server`,
@@ -21,16 +25,17 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::{
     ContactTimeout, KeepaliveInterval, Tcpclv4,
+    builder::Tcpclv4Builder,
     error::Error,
-    tls::{self, ClientAuth, Tls},
+    tls::{self, ClientAuth, Tls, TlsBuilder},
 };
 
 /// A [`Tcpclv4`] build as plain data; `None` fields leave the builder
 /// defaults in force.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
     feature = "serde",
+    derive(Serialize, Deserialize),
     serde(default, deny_unknown_fields, rename_all = "kebab-case")
 )]
 pub struct Config {
@@ -60,8 +65,8 @@ pub struct Config {
     pub contact_timeout: Option<ContactTimeout>,
 
     /// Keepalive interval in seconds (RFC 9174 Section 4.7); 0 disables
-    /// keepalives. An explicit `null` is refused at parse: an earlier
-    /// schema used it to disable keepalives.
+    /// keepalives. `null` is not a spelling of either: it is refused at
+    /// parse, so it cannot be mistaken for "disabled".
     // Skipped when `None` on output, so a serialized config re-parses.
     #[cfg_attr(
         feature = "serde",
@@ -77,22 +82,24 @@ pub struct Config {
 }
 
 /// The `tls` section of a [`Config`]: the inputs of a
-/// [`TlsBuilder`](crate::tls::TlsBuilder), converted with
+/// [`TlsBuilder`], converted with
 /// [`Tls::try_from`].
 ///
 /// The shape keeps invalid combinations out of the file: `identity` is
 /// one object with two required fields, so a lone certificate or key
 /// cannot be written, and `required` lives inside the section, so
 /// "require TLS without configuring TLS" cannot be written. The
-/// trust-anchor rules are judged by [`TlsBuilder::build`](crate::tls::TlsBuilder::build).
+/// trust-anchor rules are judged by [`TlsBuilder::build`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
     feature = "serde",
+    derive(Serialize, Deserialize),
     serde(default, deny_unknown_fields, rename_all = "kebab-case")
 )]
 pub struct TlsConfig {
     /// Refuse sessions that do not negotiate TLS.
+    ///
+    /// Default: `false`.
     pub required: bool,
 
     /// Directory of PEM CA certificates used to verify peers'
@@ -104,6 +111,8 @@ pub struct TlsConfig {
     /// shorter alias: the danger must be visible in the file. Overrides
     /// `ca-certs` when both are set, with a startup warning, and the
     /// ignored certificates are never loaded.
+    ///
+    /// Default: `false`.
     pub insecure_skip_verify: bool,
 
     /// The node's own certificate and private key. Required to accept TLS
@@ -113,6 +122,8 @@ pub struct TlsConfig {
 
     /// Client-certificate verification for inbound connections (mutual
     /// TLS). Requires `identity` and a `ca-certs` trust anchor.
+    ///
+    /// Default: [`ClientAuth::Off`].
     pub client_auth: ClientAuth,
 
     /// SNI override presented when dialing (for certificates issued to
@@ -123,9 +134,9 @@ pub struct TlsConfig {
 /// A certificate and the private key that proves it: only representable
 /// as a pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
     feature = "serde",
+    derive(Serialize, Deserialize),
     serde(deny_unknown_fields, rename_all = "kebab-case")
 )]
 pub struct Identity {
@@ -138,17 +149,9 @@ pub struct Identity {
     pub key_file: PathBuf,
 }
 
-impl TryFrom<Config> for Tcpclv4 {
-    type Error = Error;
-
-    /// Builds the entity: binds the listeners and loads the TLS material.
-    ///
-    /// # Errors
-    ///
-    /// The errors of [`TlsBuilder::build`](crate::tls::TlsBuilder::build)
-    /// (as [`Error::Tls`]) and of
-    /// [`Tcpclv4Builder::build`](crate::builder::Tcpclv4Builder::build).
-    fn try_from(config: Config) -> Result<Self, Self::Error> {
+impl From<Config> for Tcpclv4Builder {
+    /// Maps every set field onto the builder; touches no socket or file.
+    fn from(config: Config) -> Self {
         let mut builder = match config.listeners {
             Some(listeners) => listeners
                 .into_iter()
@@ -179,21 +182,30 @@ impl TryFrom<Config> for Tcpclv4 {
             builder = builder.keepalive_interval(interval);
         }
         if let Some(tls) = config.tls {
-            builder = builder.tls(tls.try_into()?);
+            builder = builder.tls_builder(tls.into());
         }
-        builder.build()
+        builder
     }
 }
 
-impl TryFrom<TlsConfig> for Tls {
-    type Error = tls::Error;
+impl TryFrom<Config> for Tcpclv4 {
+    type Error = Error;
 
-    /// Loads and validates the TLS material.
+    /// Builds the entity, `Tcpclv4Builder::from(config).build()`: binds
+    /// the listeners and loads the TLS material.
     ///
     /// # Errors
     ///
-    /// The errors of [`TlsBuilder::build`](crate::tls::TlsBuilder::build).
-    fn try_from(config: TlsConfig) -> Result<Self, Self::Error> {
+    /// The errors of [`TlsBuilder::build`] (as [`Error::Tls`]) and of
+    /// [`Tcpclv4Builder::build`].
+    fn try_from(config: Config) -> Result<Self, Self::Error> {
+        Tcpclv4Builder::from(config).build()
+    }
+}
+
+impl From<TlsConfig> for TlsBuilder {
+    /// Maps every set field onto the builder; touches no file.
+    fn from(config: TlsConfig) -> Self {
         let mut builder = Tls::builder()
             .required(config.required)
             .client_auth(config.client_auth);
@@ -209,14 +221,27 @@ impl TryFrom<TlsConfig> for Tls {
         if let Some(name) = config.server_name {
             builder = builder.server_name(name);
         }
-        builder.build()
+        builder
     }
 }
 
-// `null` was an earlier schema's disabled spelling for the keepalive
-// interval; refuse it rather than silently re-enable keepalives. Delete
-// after the migration window: the field's own serde impl then applies
-// (absent means the builder default, `0` disables).
+impl TryFrom<TlsConfig> for Tls {
+    type Error = tls::Error;
+
+    /// Loads and validates the TLS material,
+    /// `TlsBuilder::from(config).build()`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`TlsBuilder::build`].
+    fn try_from(config: TlsConfig) -> Result<Self, Self::Error> {
+        TlsBuilder::from(config).build()
+    }
+}
+
+// An absent key is the builder default and `0` disables keepalives; an
+// explicit `null` would read as neither, so it is refused with both
+// spellings named.
 #[cfg(feature = "serde")]
 fn keepalive_refusing_null<'de, D>(deserializer: D) -> Result<Option<KeepaliveInterval>, D::Error>
 where
