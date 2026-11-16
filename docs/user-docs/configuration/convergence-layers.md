@@ -132,14 +132,21 @@ nested beneath them in a `cla` table.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `bpa-address` | URL string | *Required* | BPA gRPC endpoint to connect to. |
-| `cla-name` | String | *Required* | Name to register with the BPA. |
+| `bpa-address` | URL string | `http://[::1]:50051` | BPA gRPC endpoint to connect to. |
+| `cla-name` | String | `hardy-tcpclv4-server` | Name to register with the BPA. |
+| `peers` | List of `host:port` strings | *(none)* | Peers to dial at startup; each is resolved by DNS and a TCPCLv4 session is established. |
 | `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. |
+| `cla` | Table | *(all defaults)* | The TCPCLv4 options above. |
 
-The default configuration file is `hardy-tcpclv4.yaml` in the current
-directory. Environment variable prefix is `HARDY_TCPCLV4_`, with `__`
+The configuration file is given by `--config <file>`, or the
+`HARDY_TCPCLV4_CONFIG_FILE` environment variable; without either, the
+server reads `tcpclv4` (with a `.yaml`, `.toml` or `.json` extension)
+from `/etc/hardy/` on Linux and macOS, or `%LOCALAPPDATA%\hardy\` on
+Windows. Environment variable prefix is `HARDY_TCPCLV4_`, with `__`
 separating nested keys: `HARDY_TCPCLV4_CLA__KEEPALIVE_INTERVAL` sets
-`cla.keepalive-interval`.
+`cla.keepalive-interval`. The schema is strict at both levels: an
+unknown key is a startup error naming the keys known at that level, so
+a TCPCLv4 option written at the top level is refused with `cla` named.
 
 Example:
 

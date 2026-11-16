@@ -110,14 +110,26 @@ graph LR
 
 ### Standalone TCPCLv4
 
-To run TCPCLv4 as a separate container, use the `tcpcl` profile:
+To run TCPCLv4 as a separate container, use hardy-infra's `tcpcl`
+profile:
 
 ```bash
 docker compose --profile tcpcl up
 ```
 
 This adds a standalone TCPCLv4 server that connects to the BPA via
-gRPC, allowing the CLA to be scaled or restarted independently:
+gRPC, allowing the CLA to be scaled or restarted independently. Its
+configuration nests the TCPCLv4 options in a `cla` table beneath the
+server's own keys (see
+[Standalone CLA Servers](../configuration/convergence-layers.md#standalone-cla-servers)):
+
+```toml
+bpa-address = "http://hardy:50051"
+cla-name = "tcp-cla-2"
+
+[cla]
+listeners = ["[::]:4556"]
+```
 
 ```mermaid
 graph LR

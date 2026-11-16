@@ -28,7 +28,7 @@ mod log_level_serde {
 // Returns the default config directory, platform-specific:
 // - Linux: /etc/hardy/
 // - macOS: /etc/hardy/
-// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
+// - Windows: %LOCALAPPDATA%\hardy\ (via `directories` crate), or exe directory as fallback
 fn default_config_dir() -> PathBuf {
     #[cfg(unix)]
     return PathBuf::from("/etc/hardy");
