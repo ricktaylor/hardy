@@ -60,8 +60,9 @@ impl DangerousTlsBuilder {
 }
 
 /// Builder for [`Tls`]. Obtain one from [`Tls::builder`]; chain the inputs
-/// that apply, then load them with [`build()`](Self::build) and hand the
-/// material to [`Tcpclv4Builder::tls`](crate::builder::Tcpclv4Builder::tls).
+/// that apply, then hand the builder to
+/// [`Tcpclv4Builder::tls`](crate::builder::Tcpclv4Builder::tls), whose
+/// `build()` loads it, or load it alone with [`build()`](Self::build).
 /// A trust anchor is the one mandatory input: chain [`ca_certs`](Self::ca_certs),
 /// or [`dangerous`](Self::dangerous) for the loudly marked insecure path.
 #[must_use = "a TlsBuilder does nothing unless `build()` is called"]

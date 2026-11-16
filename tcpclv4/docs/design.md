@@ -186,7 +186,7 @@ Peers may refuse transfers (XFER_REFUSE) for reasons including: already received
 
 ## Configuration
 
-`Tcpclv4::builder()` is the construction surface. `config::Config` carries the same inputs as plain data, one `Option` per builder input, and `Tcpclv4::try_from(Config)` maps it onto the builder: an absent field leaves the builder default in force, so no default is restated outside the builder. The library owns this schema and reads no files itself; `hardy-bpa-server` (a `clas:` entry) and `hardy-tcpclv4-server` (its top level) both deserialize it, so the two surfaces cannot drift. The optional `serde` cargo feature adds the `Serialize`/`Deserialize` impls: kebab-case keys, unknown keys refused, and invariants carried by the field types (`NonZero` integers, `ContactTimeout`) so invalid values fail at parse. The builder's defaults are documented on each method, and `From<Config> for Tcpclv4Builder` maps a configuration onto the builder without touching a socket or a file, so `build()` stays the one effectful step. `build()` is where construction happens: listener sockets are bound (bind failures are construction errors; accepting starts at BPA registration), TLS material is loaded, and the runtime skeleton is assembled.
+`Tcpclv4::builder()` is the construction surface. `config::Config` carries the same inputs as plain data, one `Option` per builder input, and `Tcpclv4::try_from(Config)` maps it onto the builder: an absent field leaves the builder default in force, so no default is restated outside the builder. The library owns this schema and reads no files itself; `hardy-bpa-server` (a `clas:` entry) and `hardy-tcpclv4-server` (its `cla` table) both deserialize it, so the two surfaces cannot drift. The optional `serde` cargo feature adds the `Serialize`/`Deserialize` impls: kebab-case keys, unknown keys refused, and invariants carried by the field types (`NonZero` integers, `ContactTimeout`) so invalid values fail at parse. The builder's defaults are documented on each method, and `From<Config> for Tcpclv4Builder` maps a configuration onto the builder without touching a socket or a file, so `build()` stays the one effectful step. `build()` is where construction happens: listener sockets are bound (bind failures are construction errors; accepting starts at BPA registration), TLS material is loaded, and the runtime skeleton is assembled.
 
 | Builder input | Default | Description |
 |--------|---------|-------------|
@@ -197,7 +197,7 @@ Peers may refuse transfers (XFER_REFUSE) for reasons including: already received
 | `connection_rate_limit(NonZeroU32)` | 64 | Maximum incoming connections per second |
 | `contact_timeout(ContactTimeout)` | 15 s | Wait for the contact header; the type bounds it to 1..=60 seconds (Section 4.2) |
 | `keepalive_interval(KeepaliveInterval)` / `no_keepalive()` | 60 s | Keepalive proposal; disabled is the wire zero (Section 4.7) |
-| `tls(Tls)` | plaintext | TLS material built from `tls::Tls::builder()`; `required(true)` on the TLS builder refuses sessions that do not negotiate TLS |
+| `tls(TlsBuilder)` | plaintext | TLS inputs from `tls::Tls::builder()`, loaded by `build()`; `required(true)` on the TLS builder refuses sessions that do not negotiate TLS |
 
 The keepalive SHOULD range of 30 to 600 seconds (Section 5.1.1) is advisory, so out-of-range intervals are accepted with a warning at the setter.
 

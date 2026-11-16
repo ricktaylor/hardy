@@ -36,8 +36,8 @@ The `Tcpclv4` type registers with any `BpaRegistration` implementation (local or
 ```rust
 use hardy_tcpclv4::Tcpclv4;
 
-// Every builder setting has a documented default; TLS material is
-// built from tls::Tls::builder() and attached with .tls(..)
+// Every builder setting has a documented default; TLS is described with
+// tls::Tls::builder(), attached with .tls(..) and loaded by build()
 let cla = Arc::new(Tcpclv4::builder().build()?);
 
 // Register with a BPA (local or remote), then dial a peer

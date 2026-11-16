@@ -1,3 +1,10 @@
+# The server's own keys (bpa-address, cla-name, peers, log-level) sit at
+# the top level; see the user documentation for them.
+
+# The TCPCLv4 settings live in the [cla] table. In the environment they are
+# HARDY_TCPCLV4_CLA__<KEY>, e.g. HARDY_TCPCLV4_CLA__SEGMENT_MRU=32768.
+[cla]
+
 # The local addresses to listen on for incoming connections, one entry per
 # listener. Default: ["[::]:4556"], the IANA-registered TCPCL address.
 # An empty list disables listening (dial-only).
@@ -30,10 +37,10 @@
 # A value of 0 disables keepalives.
 #keepalive-interval = 60
 
-# --- TLS (optional, plaintext if the [tls] section is absent) ---
+# --- TLS (optional, plaintext if the [cla.tls] section is absent) ---
 
 # A trust anchor must be configured in this section.
-#[tls]
+#[cla.tls]
 
 # Refuse sessions that do not negotiate TLS.
 #required = false
@@ -57,6 +64,6 @@
 # The node's own certificate and key, only ever configured together:
 # required to accept TLS connections, presented to dialed peers under
 # mutual TLS.
-#[tls.identity]
+#[cla.tls.identity]
 #cert-file = "/etc/hardy/certs/server.crt"
 #key-file = "/etc/hardy/private/server.key"

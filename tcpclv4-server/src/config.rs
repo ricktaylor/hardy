@@ -66,14 +66,11 @@ fn default_cla_name() -> String {
 // prefixed with `HARDY_TCPCLV4_`. Uses kebab-case field names in config files
 // and `__` as the nested-field separator for environment variables.
 //
-// The server's own keys sit at the top level beside the TCPCLv4 settings.
-// `load` reads the two as separate typed layers of one merged table, so the
-// `config` crate sees each key's type and coerces as it does for any field
-// (`1`/`yes` for a bool, a quoted number for an integer). The TCPCLv4 layer
-// refuses any key that is neither a TCPCLv4 key nor in `SERVER_KEYS`, naming
-// the TCPCLv4 keys it knows.
+// The server's own keys sit at the top level, and the TCPCLv4 settings in a
+// `cla` table beneath it (`HARDY_TCPCLV4_CLA__…` in the environment). Both
+// levels refuse unknown keys, each naming the keys it knows.
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     // Logging level for the tracing subscriber.
     //
@@ -98,17 +95,13 @@ pub struct Config {
     #[serde(default)]
     pub peers: Vec<String>,
 
-    // The TCPCLv4 settings, at the top level: the shared schema of
-    // `hardy_tcpclv4::config`, also read by `hardy-bpa-server`'s `clas:`
-    // entries. Read as its own layer by `load`.
-    #[serde(skip)]
+    // The TCPCLv4 settings: the shared schema of `hardy_tcpclv4::config`,
+    // also read by `hardy-bpa-server`'s `clas:` entries.
+    //
+    // Default: every key absent, so every builder default applies.
+    #[serde(default)]
     pub cla: ClaConfig,
 }
-
-// The server's own keys: everything else at the top level is a TCPCLv4
-// key. A server key missing here is refused as unknown by the TCPCLv4
-// layer, so a test that sets every one of them guards the list.
-const SERVER_KEYS: [&str; 4] = ["log-level", "bpa-address", "cla-name", "peers"];
 
 impl Config {
     // Load configuration from a file and environment variable overrides.
@@ -143,19 +136,11 @@ impl Config {
             .try_parsing(true)
             .source(Some(overrides));
 
-        let merged = config::Config::builder()
+        let config = config::Config::builder()
             .add_source(source_file)
             .add_source(source_env)
-            .build()?;
-
-        // Two typed reads of the one merged table: the server's own keys,
-        // then everything else as the TCPCLv4 schema.
-        let mut config: Config = merged.clone().try_deserialize()?;
-        let mut cla: config::Map<String, config::Value> = merged.try_deserialize()?;
-        for key in SERVER_KEYS {
-            cla.remove(key);
-        }
-        config.cla = config::Value::from(cla).try_deserialize()?;
+            .build()?
+            .try_deserialize()?;
 
         eprintln!("Loaded configuration from '{}'", config_file.display());
         Ok(config)
@@ -217,6 +202,8 @@ mod tests {
 bpa-address = "http://10.0.0.1:50051"
 cla-name = "test-cla"
 log-level = "debug"
+
+[cla]
 listeners = ["0.0.0.0:9999"]
 segment-mru = 8192
 keepalive-interval = 30
@@ -246,7 +233,8 @@ keepalive-interval = 30
 bpa-address: "http://10.0.0.2:50051"
 cla-name: "yaml-cla"
 log-level: "warn"
-segment-mru: 4096
+cla:
+  segment-mru: 4096
 "#,
         );
         assert_eq!(config.bpa_address, "http://10.0.0.2:50051");
@@ -310,7 +298,8 @@ log-level = "warn"
         );
     }
 
-    // Env vars override the top-level transport fields.
+    // Env vars override the TCPCLv4 fields through the `cla` table:
+    // `HARDY_TCPCLV4_CLA__<KEY>`.
     #[test]
     #[serial]
     fn env_overrides_nested_fields() {
@@ -318,9 +307,9 @@ log-level = "warn"
         let path = dir.path().join("test.toml");
         std::fs::write(&path, "").unwrap();
 
-        unsafe { std::env::set_var("HARDY_TCPCLV4_SEGMENT_MRU", "32768") };
+        unsafe { std::env::set_var("HARDY_TCPCLV4_CLA__SEGMENT_MRU", "32768") };
         let config = Config::load(Some(path)).unwrap();
-        unsafe { std::env::remove_var("HARDY_TCPCLV4_SEGMENT_MRU") };
+        unsafe { std::env::remove_var("HARDY_TCPCLV4_CLA__SEGMENT_MRU") };
 
         assert_eq!(
             config.cla.segment_mru,
@@ -371,7 +360,7 @@ log-level = "warn"
     fn negative_segment_mru_errors() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.toml");
-        std::fs::write(&path, "segment-mru = -1").unwrap();
+        std::fs::write(&path, "[cla]\nsegment-mru = -1").unwrap();
         let result = Config::load(Some(path));
         assert!(result.is_err());
     }
@@ -408,7 +397,7 @@ log-level = "warn"
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(name);
-            std::fs::write(&path, content).unwrap();
+            std::fs::write(&path, format!("[cla]\n{content}")).unwrap();
             let Err(err) = Config::load(Some(path)) else {
                 panic!("{name}: expected a parse error");
             };
@@ -423,7 +412,7 @@ log-level = "warn"
     fn invalid_listener_errors() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.toml");
-        std::fs::write(&path, "listeners = [\"not-an-address\"]").unwrap();
+        std::fs::write(&path, "[cla]\nlisteners = [\"not-an-address\"]").unwrap();
         let result = Config::load(Some(path));
         assert!(result.is_err());
     }
@@ -435,13 +424,14 @@ log-level = "warn"
         let config = write_and_load(
             "tls.yaml",
             r#"
-tls:
-  required: true
-  ca-certs: "/etc/hardy/ca"
-  identity:
-    cert-file: "/etc/hardy/certs/server.crt"
-    key-file: "/etc/hardy/private/server.key"
-  client-auth: "required"
+cla:
+  tls:
+    required: true
+    ca-certs: "/etc/hardy/ca"
+    identity:
+      cert-file: "/etc/hardy/certs/server.crt"
+      key-file: "/etc/hardy/private/server.key"
+    client-auth: "required"
 "#,
         );
         let tls = config.cla.tls.unwrap();
@@ -468,11 +458,12 @@ tls:
         let config = write_and_load(
             "alias.yaml",
             r#"
-tls:
-  insecure-skip-verify: true
-  identity:
-    cert-file: "/etc/hardy/certs/server.crt"
-    private-key-file: "/etc/hardy/private/server.key"
+cla:
+  tls:
+    insecure-skip-verify: true
+    identity:
+      cert-file: "/etc/hardy/certs/server.crt"
+      private-key-file: "/etc/hardy/private/server.key"
 "#,
         );
         assert_eq!(
@@ -491,7 +482,7 @@ tls:
         let path = dir.path().join("lone-cert-half.toml");
         std::fs::write(
             &path,
-            "[tls]\ninsecure-skip-verify = true\n\n[tls.identity]\ncert-file = \"c.pem\"\n",
+            "[cla.tls]\ninsecure-skip-verify = true\n\n[cla.tls.identity]\ncert-file = \"c.pem\"\n",
         )
         .unwrap();
         assert!(
@@ -522,8 +513,9 @@ tls:
         assert!(result.is_err());
     }
 
-    // Unknown keys are refused with the known keys listed, so a removed
-    // key or a typo cannot silently leave a default in force.
+    // Unknown keys are refused at each level with that level's known keys
+    // listed, so a removed key or a typo cannot silently leave a default in
+    // force.
     #[test]
     #[serial]
     fn unknown_fields_are_refused() {
@@ -534,13 +526,16 @@ tls:
             panic!("expected a parse error");
         };
         let err = err.to_string();
-        assert!(err.contains("this-does-not-exist"), "{err}");
+        assert!(
+            err.contains("this-does-not-exist") && err.contains("bpa-address"),
+            "{err}"
+        );
 
         // The removed single-listener key is refused with its replacement
         // among the known keys listed, the hint an operator migrating an
         // old file needs.
         let path = dir.path().join("address.toml");
-        std::fs::write(&path, "address = \"127.0.0.1:4556\"\n").unwrap();
+        std::fs::write(&path, "[cla]\naddress = \"127.0.0.1:4556\"\n").unwrap();
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
@@ -554,7 +549,7 @@ tls:
         // is refused with the deliberately loud key named in the known list,
         // not silently ignored.
         let path = dir.path().join("bare-insecure.toml");
-        std::fs::write(&path, "[tls]\ninsecure = true\n").unwrap();
+        std::fs::write(&path, "[cla.tls]\ninsecure = true\n").unwrap();
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
@@ -562,19 +557,31 @@ tls:
         assert!(err.contains("insecure-skip-verify"), "{err}");
     }
 
-    // Every server key reaches the server layer and none is refused by the
-    // TCPCLv4 layer: a key missing from `SERVER_KEYS` would be.
+    // A TCPCLv4 key at the top level, the flat layout of earlier releases,
+    // is refused with `cla` among the known keys, pointing at its new home;
+    // the same holds for the flat environment spelling.
     #[test]
     #[serial]
-    fn every_server_key_is_a_server_key() {
-        let config = write_and_load(
-            "server-keys.toml",
-            "log-level = \"debug\"\nbpa-address = \"http://bpa:50051\"\ncla-name = \"cla\"\npeers = [\"bpa2:4556\"]\n",
-        );
-        assert_eq!(config.log_level, Level::DEBUG);
-        assert_eq!(config.bpa_address, "http://bpa:50051");
-        assert_eq!(config.cla_name, "cla");
-        assert_eq!(config.peers, ["bpa2:4556"]);
+    fn a_flat_tcpclv4_key_points_at_cla() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flat.toml");
+        std::fs::write(&path, "segment-mru = 8192\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("a top-level TCPCLv4 key must be refused");
+        };
+        let err = err.to_string();
+        assert!(err.contains("segment-mru") && err.contains("cla"), "{err}");
+
+        let path = dir.path().join("flat-env.toml");
+        std::fs::write(&path, "").unwrap();
+        unsafe { std::env::set_var("HARDY_TCPCLV4_SEGMENT_MRU", "8192") };
+        let result = Config::load(Some(path));
+        unsafe { std::env::remove_var("HARDY_TCPCLV4_SEGMENT_MRU") };
+        let Err(err) = result else {
+            panic!("a flat TCPCLv4 env var must be refused");
+        };
+        let err = err.to_string();
+        assert!(err.contains("segment-mru") && err.contains("cla"), "{err}");
     }
 
     // The `config` crate coerces a TCPCLv4 key's spelling to its type, in a
@@ -585,25 +592,37 @@ tls:
     fn tcpclv4_scalars_are_coerced() {
         let config = write_and_load(
             "coerce.yaml",
-            "segment-mru: \"8192\"\ntls:\n  insecure-skip-verify: true\n  required: yes\n",
+            "cla:\n  segment-mru: \"8192\"\n  tls:\n    insecure-skip-verify: true\n    required: yes\n",
         );
         assert_eq!(config.cla.segment_mru, NonZeroU64::new(8192));
         assert!(config.cla.tls.unwrap().required);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("coerce-env.toml");
-        std::fs::write(&path, "[tls]\ninsecure-skip-verify = true\n").unwrap();
-        unsafe { std::env::set_var("HARDY_TCPCLV4_TLS__REQUIRED", "1") };
+        std::fs::write(&path, "[cla.tls]\ninsecure-skip-verify = true\n").unwrap();
+        unsafe { std::env::set_var("HARDY_TCPCLV4_CLA__TLS__REQUIRED", "1") };
         let result = Config::load(Some(path));
-        unsafe { std::env::remove_var("HARDY_TCPCLV4_TLS__REQUIRED") };
+        unsafe { std::env::remove_var("HARDY_TCPCLV4_CLA__TLS__REQUIRED") };
         assert!(result.unwrap().cla.tls.unwrap().required);
+    }
+
+    // The shipped example files parse against the schema, so they cannot
+    // drift from it unnoticed.
+    #[test]
+    #[serial]
+    fn example_configs_parse() {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for name in ["example_config.toml", "example_config.yaml"] {
+            Config::load(Some(crate_dir.join(name)))
+                .unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+        }
     }
 
     // Large segment-mru value is accepted.
     #[test]
     #[serial]
     fn large_segment_mru() {
-        let config = write_and_load("large.toml", "segment-mru = 1073741824\n");
+        let config = write_and_load("large.toml", "[cla]\nsegment-mru = 1073741824\n");
         assert_eq!(
             config.cla.segment_mru,
             Some(NonZeroU64::new(1073741824).unwrap())
@@ -614,7 +633,7 @@ tls:
     #[test]
     #[serial]
     fn empty_listeners_is_dial_only() {
-        let config = write_and_load("dial_only.yaml", "listeners: []\n");
+        let config = write_and_load("dial_only.yaml", "cla:\n  listeners: []\n");
         assert_eq!(config.cla.listeners, Some(vec![]));
         Tcpclv4Server::new(config, TaskPool::new()).expect("a dial-only build binds nothing");
     }
@@ -627,7 +646,7 @@ tls:
     fn keepalive_null_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("null-keepalive.yaml");
-        std::fs::write(&path, "keepalive-interval: null\n").unwrap();
+        std::fs::write(&path, "cla:\n  keepalive-interval: null\n").unwrap();
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
@@ -641,7 +660,7 @@ tls:
     fn keepalive_zero() {
         let config = write_and_load(
             "keepalive.toml",
-            "listeners = [\"127.0.0.1:0\"]\nkeepalive-interval = 0\n",
+            "[cla]\nlisteners = [\"127.0.0.1:0\"]\nkeepalive-interval = 0\n",
         );
         assert_eq!(
             config.cla.keepalive_interval,
@@ -658,7 +677,7 @@ tls:
     fn building_delegates_to_the_library() {
         let config = write_and_load(
             "no-anchor.toml",
-            "listeners = []\n\n[tls]\nrequired = true\n",
+            "[cla]\nlisteners = []\n\n[cla.tls]\nrequired = true\n",
         );
         let Err(err) = Tcpclv4Server::new(config, TaskPool::new()) else {
             panic!("TLS without a trust anchor must fail to build");

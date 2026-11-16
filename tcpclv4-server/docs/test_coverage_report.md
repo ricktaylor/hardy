@@ -26,7 +26,7 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 
 ## 2. Test Inventory
 
-### Unit Tests (25 tests in `config.rs`)
+### Unit Tests (26 tests in `config.rs`)
 
 | Test Function | Scope |
 | :--- | :--- |
@@ -35,7 +35,7 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 | `yaml_config` | YAML file works identically |
 | `json_config` | JSON file works identically |
 | `env_overrides_file` | Env var overrides file value |
-| `env_overrides_nested_fields` | `__` separator for nested TCPCLv4 fields |
+| `env_overrides_nested_fields` | `__` separator for the `cla` table and its `tls` section (`HARDY_TCPCLV4_CLA__…`) |
 | `config_file_env_var_is_not_a_schema_key` | `HARDY_TCPCLV4_CONFIG_FILE` locates the file and is not refused as a key |
 | `missing_config_file_errors` | Non-existent file → error |
 | `invalid_log_level_errors` | Bad log level → error |
@@ -49,11 +49,12 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 | `private_key_file_alias` | `private-key-file` accepted as `key-file` alias |
 | `lone_identity_half_rejected_at_parse` | A cert or key alone → parse error |
 | `building_delegates_to_the_library` | A contradiction surfaces as `hardy-tcpclv4`'s typed error; the library's own tests cover the rules |
-| `every_server_key_is_a_server_key` | Every server key reaches the server layer; none is refused by the TCPCLv4 layer |
 | `tcpclv4_scalars_are_coerced` | `yes`/`1` for a bool and a quoted number for an integer, in a file and the environment |
 | `malformed_toml_errors` | Invalid TOML → error |
 | `malformed_yaml_errors` | Invalid YAML → error |
-| `unknown_fields_are_refused` | Unknown keys refused; an old `address` key names `listeners` among the known keys |
+| `unknown_fields_are_refused` | Unknown keys refused at either level with that level's keys listed; an old `address` key names `listeners` |
+| `a_flat_tcpclv4_key_points_at_cla` | A TCPCLv4 key at the top level, in a file or the environment, is refused with `cla` named |
+| `example_configs_parse` | The shipped `example_config.toml` and `example_config.yaml` load |
 | `large_segment_mru` | Large MRU value accepted |
 
 ### Cross-Coverage from Other Test Suites
@@ -67,7 +68,7 @@ Lifecycle scenarios (startup, registration, shutdown) are exercised by:
 
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| Configuration (CFG-01..03) | Defaults, multi-format parsing, env overrides, validation | 3 | 3 | Complete (24 tests) |
+| Configuration (CFG-01..03) | Defaults, multi-format parsing, env overrides, validation | 3 | 3 | Complete (26 tests) |
 | Server lifecycle (SYS-01..03) | Startup, registration, shutdown | 3 | 3 | Exercised by interop + CI (implicit) |
 | Performance (PERF-SRV-01) | Throughput | 1 | 0 | Full Activity scope |
 | Packaging (PKG-OCI-01, PKG-HELM-01) | OCI image, Helm chart | 2 | 0 | Full Activity scope |
@@ -97,4 +98,4 @@ Unit tests (16) exercise config loading, multi-format parsing, env override, val
 
 ## 6. Conclusion
 
-16 configuration unit tests cover all 3 planned config scenarios (CFG-01..03) including multi-format parsing (TOML, YAML, JSON), env overrides with nested field support, and comprehensive validation/error handling. Lifecycle scenarios are verified implicitly by interop and CI. Performance and packaging tests remain for Full Activity.
+26 configuration unit tests cover all 3 planned config scenarios (CFG-01..03) including multi-format parsing (TOML, YAML, JSON), env overrides with nested field support, and comprehensive validation/error handling. Lifecycle scenarios are verified implicitly by interop and CI. Performance and packaging tests remain for Full Activity.

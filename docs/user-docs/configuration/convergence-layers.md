@@ -127,8 +127,8 @@ connecting to the BPA via gRPC. See the
 guide.
 
 The standalone TCPCLv4 server (`hardy-tcpclv4-server`) uses the
-following top-level options in addition to the TCPCLv4-specific options
-above. The TCPCLv4 options are flattened to the top level (not nested).
+following top-level options, with the TCPCLv4-specific options above
+nested beneath them in a `cla` table.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
@@ -137,7 +137,9 @@ above. The TCPCLv4 options are flattened to the top level (not nested).
 | `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. |
 
 The default configuration file is `hardy-tcpclv4.yaml` in the current
-directory. Environment variable prefix is `HARDY_TCPCLV4_`.
+directory. Environment variable prefix is `HARDY_TCPCLV4_`, with `__`
+separating nested keys: `HARDY_TCPCLV4_CLA__KEEPALIVE_INTERVAL` sets
+`cla.keepalive-interval`.
 
 Example:
 
@@ -145,14 +147,15 @@ Example:
 bpa-address: "http://[::1]:50051"
 cla-name: remote-tcpclv4
 log-level: info
-listeners: ["[::]:4556"]
-keepalive-interval: 120
-tls:
-  required: true
-  ca-certs: /etc/hardy/ca
-  identity:
-    cert-file: /etc/hardy/certs/server.crt
-    key-file: /etc/hardy/private/server.key
+cla:
+  listeners: ["[::]:4556"]
+  keepalive-interval: 120
+  tls:
+    required: true
+    ca-certs: /etc/hardy/ca
+    identity:
+      cert-file: /etc/hardy/certs/server.crt
+      key-file: /etc/hardy/private/server.key
 ```
 
 See also:

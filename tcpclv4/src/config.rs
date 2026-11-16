@@ -13,7 +13,7 @@
 //!
 //! With the `serde` feature the types deserialize from the kebab-case
 //! schema the Hardy servers read (a `clas:` entry in `hardy-bpa-server`,
-//! the top level of `hardy-tcpclv4-server`). Unknown keys are refused, and
+//! the `cla` table of `hardy-tcpclv4-server`). Unknown keys are refused, and
 //! scalar invariants are carried by the field types (`NonZero` integers,
 //! [`ContactTimeout`]), so invalid values fail at parse.
 
@@ -182,7 +182,7 @@ impl From<Config> for Tcpclv4Builder {
             builder = builder.keepalive_interval(interval);
         }
         if let Some(tls) = config.tls {
-            builder = builder.tls_builder(tls.into());
+            builder = builder.tls(tls.into());
         }
         builder
     }

@@ -557,9 +557,7 @@ mod tests {
                 tls::Tls::builder()
                     .dangerous()
                     .insecure_skip_verify()
-                    .required(true)
-                    .build()
-                    .unwrap(),
+                    .required(true),
             )
             .build()
         else {
@@ -594,9 +592,7 @@ mod tests {
                 tls::Tls::builder()
                     .dangerous()
                     .insecure_skip_verify()
-                    .required(true)
-                    .build()
-                    .unwrap(),
+                    .required(true),
             )
             .build()
             .unwrap();

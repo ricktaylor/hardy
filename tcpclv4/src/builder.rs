@@ -10,7 +10,7 @@ use crate::{
     ContactTimeout, KeepaliveInterval, Tcpclv4,
     error::{Error, Result},
     otel_metrics,
-    tls::{Tls, TlsBuilder},
+    tls::TlsBuilder,
 };
 
 /// Builder for a [`Tcpclv4`]. Obtain one from [`Tcpclv4::builder`].
@@ -26,14 +26,7 @@ pub struct Tcpclv4Builder {
     connection_rate_limit: NonZeroU32,
     contact_timeout: ContactTimeout,
     keepalive_interval: KeepaliveInterval,
-    tls: Option<TlsSource>,
-}
-
-// The TLS a builder will use: material already loaded, or inputs loaded by
-// `build()`, so mapping a configuration onto the builder touches no file.
-enum TlsSource {
-    Loaded(Tls),
-    Pending(TlsBuilder),
+    tls: Option<TlsBuilder>,
 }
 
 impl Tcpclv4Builder {
@@ -148,36 +141,24 @@ impl Tcpclv4Builder {
         self.keepalive_interval(KeepaliveInterval::DISABLED)
     }
 
-    /// Enables TLS with this material (RFC 9174 Section 4.4): sessions negotiate TLS when the peer also advertises it, and plaintext peers are still accepted unless the material was built with [`TlsBuilder::required`](crate::tls::TlsBuilder::required).
+    /// Enables TLS with the material [`build()`](Self::build) loads from `tls` (RFC 9174 Section 4.4): sessions negotiate TLS when the peer also advertises it, and plaintext peers are still accepted unless `tls` sets [`TlsBuilder::required`].
     ///
-    /// Build the material with [`Tls::builder`]. Replaces any earlier TLS choice. Listeners offer TLS only when an identity is configured; combining listeners with an identity-less required-TLS policy is rejected by [`build()`](Self::build).
-    pub fn tls(mut self, tls: Tls) -> Self {
-        self.tls = Some(TlsSource::Loaded(tls));
+    /// Start one with [`Tls::builder`](crate::tls::Tls::builder); a loading error is returned by `build()`. Replaces any earlier TLS choice. Listeners offer TLS only when an identity is configured; combining listeners with an identity-less required-TLS policy is rejected by `build()`.
+    pub fn tls(mut self, tls: TlsBuilder) -> Self {
+        self.tls = Some(tls);
         self
     }
 
-    /// Enables TLS with material [`build()`](Self::build) loads from `tls`, as [`tls()`](Self::tls) does with loaded material; a TLS loading error is returned by `build()`.
-    ///
-    /// Replaces any earlier TLS choice.
-    pub fn tls_builder(mut self, tls: TlsBuilder) -> Self {
-        self.tls = Some(TlsSource::Pending(tls));
-        self
-    }
-
-    /// Binds the listeners and assembles the [`Tcpclv4`], ready to register with a BPA.
+    /// Loads the TLS material, binds the listeners, and assembles the [`Tcpclv4`], ready to register with a BPA.
     ///
     /// # Errors
     ///
-    /// Returns an [`enum@Error`] when TLS material set by [`tls_builder()`](Self::tls_builder) fails to load, when a listener socket cannot be bound, or when listeners are combined with an identity-less required-TLS policy; a dial-only plaintext build cannot fail.
+    /// Returns an [`enum@Error`] when the TLS material fails to load, when a listener socket cannot be bound, or when listeners are combined with an identity-less required-TLS policy; a dial-only plaintext build cannot fail.
     pub fn build(self) -> Result<Tcpclv4> {
         // Register metric descriptions with the global recorder
         otel_metrics::init();
 
-        let tls = match self.tls {
-            Some(TlsSource::Loaded(tls)) => Some(Arc::new(tls)),
-            Some(TlsSource::Pending(tls)) => Some(Arc::new(tls.build()?)),
-            None => None,
-        };
+        let tls = self.tls.map(TlsBuilder::build).transpose()?.map(Arc::new);
         if tls.is_none() {
             warn!(
                 "No TLS configuration provided - connections will be unencrypted and TLS-requiring peers will refuse connection"

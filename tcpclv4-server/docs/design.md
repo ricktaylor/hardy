@@ -62,7 +62,7 @@ Configuration uses the same patterns as hardy-bpa-server:
 - **Environment overrides** - `HARDY_TCPCLV4_*` prefix
 - **Defaults** - Derived from RFC 9174 recommendations
 
-The TCPCLv4 keys are `hardy-tcpclv4`'s `config::Config`, at the top level beside this crate's own keys. The loader reads the merged file and environment as two typed layers — the server's keys, then everything else as the TCPCLv4 schema — so the `config` crate coerces each key to its type (`1`/`yes` for a bool, a quoted number for an integer), and an unknown key is refused with the TCPCLv4 keys listed. This crate adds its own keys (the BPA gRPC endpoint address, the CLA name, the static peers, the log level) and the example configuration files (`example_config.toml`/`.yaml`).
+This crate's own keys (the log level, the BPA gRPC endpoint address, the CLA name, the static peers) sit at the top level, and the TCPCLv4 keys in a `cla` table beneath them: `hardy-tcpclv4`'s `config::Config`, the schema `hardy-bpa-server`'s `clas:` entries read. Each level is a plain struct field, so the merged file and environment deserialize in one pass, the `config` crate coerces each key to its type (`1`/`yes` for a bool, a quoted number for an integer), and an unknown key at either level is refused with that level's keys listed. The environment spells the nesting with `__`, as `HARDY_TCPCLV4_CLA__SEGMENT_MRU`. The crate also holds the example configuration files (`example_config.toml`/`.yaml`).
 
 ## Integration
 
