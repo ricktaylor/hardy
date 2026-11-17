@@ -65,12 +65,9 @@ The `hardy-otel` crate has no formal LLRs — it is internal infrastructure. The
 | `names_parse_in_any_case` | 10 | Level names, lower and upper case |
 | `numeric_forms_parse` | 5 | `1`..`5` → `ERROR`..`TRACE` |
 | `unknown_names_are_refused` | 5 | `ParseLogLevelError` naming the input |
-| `display_writes_the_lowercase_name` | 5 | `Display` writes the config spelling |
-| `deserializes_from_a_name` | 1 | `serde`: deserialize from a name |
-| `serializes_the_lowercase_name_and_parses_back` | 10 | `serde`: serialize, then parse back |
-| `an_unknown_name_is_refused` | 1 | `serde`: refusal carries the parse error |
+| `serializes_the_lowercase_name_and_parses_back` | 10 | `serde`: each level writes its lowercase name and parses back |
 
-**Total: 8 tests (3 under the `serde` feature).**
+**Total: 5 tests (1 under the `serde` feature).**
 
 ### Integration Tests (`tests/test_otel_export.sh`)
 
@@ -87,9 +84,9 @@ Uses a minimal OpenTelemetry Collector (contrib image) with file exporters. Test
 | Section | Scenario | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | UTP-OTEL-01 | Metrics bridge unit tests | 25 | 25 | Complete |
-| UTP-OTEL-01 §3.0 | `LogLevel` tests | 8 | 8 | Complete |
+| UTP-OTEL-01 §3.0 | `LogLevel` tests | 5 | 5 | Complete |
 | OTEL-01..03 | OTLP export integration (traces, metrics, logs) | 3 | 3 | Complete (`test_otel_export.sh`) |
-| | **Total** | **36** | **36** | **100%** |
+| | **Total** | **33** | **33** | **100%** |
 
 ## 4. Line Coverage
 
