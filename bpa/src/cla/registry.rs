@@ -11,12 +11,13 @@ use tracing::{debug, error, info};
 // `Sink` are built around, so both names are taken here; the two traits
 // stay module-qualified at their few use sites.
 use super::{
-    Acceptance, Address, ClaInit, Error, Result, Segment, TransferOutcome, cla,
+    Acceptance, Address, ClaInit, Error, Result, Segment, TransferOutcome,
     peers::{Peer, PeerTable},
 };
 use crate::{
     Arc, HashMap, Weak, async_trait,
     bundle::Bundle,
+    cla,
     dispatcher::Dispatcher,
     hash_map::Entry,
     node_ids::NodeIds,

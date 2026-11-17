@@ -52,7 +52,7 @@ The tests utilize a **Mock Server** approach:
 
 | Test ID | Scenario | Client Action (Rust) | Mock Server Assertion | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **CLA-CLI-01** | **Registration** | Call `register("tcp-1", ClaAddressType::Tcp)` | Receives `RegisterClaRequest { name: "tcp-1", address_type: TCP }`.<br>Replies `RegisterClaResponse`. | Implemented |
+| **CLA-CLI-01** | **Registration** | Call `register("tcp-1", cla::AddressType::Tcp)` | Receives `RegisterClaRequest { name: "tcp-1", address_type: TCP }`.<br>Replies `RegisterClaResponse`. | Implemented |
 | **CLA-CLI-02** | **Dispatch Bundle** | Call `dispatch(bundle_bytes)` | Receives `DispatchBundleRequest { bundle: ... }`.<br>Replies `DispatchBundleResponse`. | Implemented |
 | **CLA-CLI-03** | **Forward Bundle** | Await `next_message()` | Server injects `ForwardBundleRequest`.<br>Client yields `ClaMsg::ForwardBundle(...)`. | Implemented |
 | **CLA-CLI-04** | **Add Peer** | Call `add_peer(node_id, address)` | Receives `AddPeerRequest`.<br>Replies `AddPeerResponse`. | Implemented |
