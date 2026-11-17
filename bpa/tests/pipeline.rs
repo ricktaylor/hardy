@@ -95,14 +95,14 @@ impl cla::Cla for PipelineCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         total_len: u64,
         stream: &mut dyn Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let bundle = buffer_stream(stream, total_len).await?;
         let _ = self.forwarded_tx.send(bundle);
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -267,13 +267,13 @@ impl cla::Cla for TimedCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.arrival_tx.send(tokio::time::Instant::now());
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -374,7 +374,7 @@ async fn app_to_cla_routing() {
     .await
     .unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -453,7 +453,7 @@ async fn deferred_removal_applied_at_egress() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -762,7 +762,7 @@ async fn deferred_removal_precedes_the_egress_rewriters() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -910,7 +910,7 @@ async fn echo_round_trip() {
     .await
     .unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -1001,7 +1001,7 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
     .await
     .unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -1403,7 +1403,7 @@ async fn reception_report_carries_unknown_security_operation() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2156,7 +2156,7 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2289,7 +2289,7 @@ async fn drain_failure_reports_reception_then_deletion() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2407,7 +2407,7 @@ async fn header_failure_reports_reception_then_deletion() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2532,7 +2532,7 @@ async fn step4_block_flag_report_survives_delete_bundle() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2645,7 +2645,7 @@ async fn reception_only_reject_carries_step4_reason() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2770,7 +2770,7 @@ async fn step4_block_flag_alone_forces_reception_report() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2894,7 +2894,7 @@ async fn step4_forced_report_suppressed_for_null_report_to() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -3080,7 +3080,7 @@ async fn short_final_setup() -> (
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             from_ref(&remote_node),
         )
         .await
@@ -3357,7 +3357,7 @@ async fn throughput() {
     .await
     .unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -3464,7 +3464,7 @@ async fn forwarding_latency() {
     .await
     .unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -3615,7 +3615,7 @@ async fn egress_filter_sees_consistent_extents() {
     .await
     .unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -3743,7 +3743,7 @@ async fn classifier_route_key_drives_the_lookup() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[remote_node],
         )
         .await
@@ -3847,7 +3847,7 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -4044,20 +4044,20 @@ impl cla::Cla for DeferringCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.offers_tx.send(bundle_id.clone());
         if self
             .remaining_accepts
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
-            Ok(cla::ForwardBundleResult::Accepted)
+            Ok(cla::ForwardOutcome::Accepted)
         } else {
-            Ok(cla::ForwardBundleResult::Sent)
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 }
@@ -4089,7 +4089,7 @@ async fn deferring_setup(
     .unwrap();
     cla.sink()
         .add_peer(
-            cla::ClaAddress::Private(format!("peer-{peer_node_number}").into_bytes().into()),
+            cla::Address::Private(format!("peer-{peer_node_number}").into_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: peer_node_number,
@@ -4238,7 +4238,7 @@ async fn deferred_outcome_peer_removal_resolves_unknown() {
 
     let id = expect_offer(&offers_rx).await;
 
-    let peer_addr = cla::ClaAddress::Private("peer-2".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer-2".as_bytes().into());
     let peer_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -4283,7 +4283,7 @@ async fn deferred_outcome_ignores_wrong_cla() {
     cla_b
         .sink()
         .add_peer(
-            cla::ClaAddress::Private("peer-b".as_bytes().into()),
+            cla::Address::Private("peer-b".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 4,
@@ -4397,17 +4397,17 @@ impl cla::Cla for BlockingCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.offered_tx.send_async(bundle_id.clone()).await;
         if self.first.swap(false, Ordering::SeqCst) {
             let _ = self.release_rx.recv_async().await;
             return Err(cla::Error::StreamCancelled);
         }
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -4438,7 +4438,7 @@ async fn forward_failure_park_recheck_redispatches() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            cla::Address::Private("peer-a".as_bytes().into()),
             from_ref(&remote_node),
         )
         .await
@@ -4476,7 +4476,7 @@ async fn forward_failure_park_recheck_redispatches() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-b".as_bytes().into()),
+            cla::Address::Private("peer-b".as_bytes().into()),
             from_ref(&remote_node),
         )
         .await
@@ -4525,7 +4525,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            cla::Address::Private("peer-a".as_bytes().into()),
             from_ref(&remote_node),
         )
         .await
@@ -4803,7 +4803,7 @@ async fn peer_removed_mid_construction_is_withdrawn() {
     .await
     .unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -4892,7 +4892,7 @@ async fn early_route_drop_never_awaits_the_payload() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -5049,7 +5049,7 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("old".as_bytes().into()),
+            cla::Address::Private("old".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -5071,7 +5071,7 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("new".as_bytes().into()),
+            cla::Address::Private("new".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 4,
@@ -5651,7 +5651,7 @@ async fn restart_setup(
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -5925,12 +5925,12 @@ async fn configured_endpoints_activate_at_start() {
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             _bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn Receiver<Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
-            Ok(cla::ForwardBundleResult::Sent)
+        ) -> cla::Result<cla::ForwardOutcome> {
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 
@@ -5992,7 +5992,7 @@ async fn app_send_streamed_matches_whole_buffer_send() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -6113,7 +6113,7 @@ async fn app_send_streamed_producer_drop_cancels() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -6183,7 +6183,7 @@ async fn app_send_streamed_enforces_the_declared_length() {
     )
     .await
     .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,

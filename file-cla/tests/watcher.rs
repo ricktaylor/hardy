@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::Path, time::Duration};
 
-use hardy_bpa::cla::{Cla as _, ClaAddress};
+use hardy_bpa::cla::{Address, Cla as _};
 use hardy_bpv7::eid::NodeId;
 use hardy_file_cla::{Cla, Config};
 
@@ -21,7 +21,7 @@ impl hardy_bpa::cla::Sink for StubSink {
     async fn dispatch(
         &self,
         _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&ClaAddress>,
+        _peer_addr: Option<&Address>,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         let mut buffer = Vec::new();
@@ -47,13 +47,13 @@ impl hardy_bpa::cla::Sink for StubSink {
 
     async fn add_peer(
         &self,
-        _cla_addr: ClaAddress,
+        _cla_addr: Address,
         _node_ids: &[NodeId],
     ) -> hardy_bpa::cla::Result<bool> {
         Ok(true)
     }
 
-    async fn remove_peer(&self, _cla_addr: &ClaAddress) -> hardy_bpa::cla::Result<bool> {
+    async fn remove_peer(&self, _cla_addr: &Address) -> hardy_bpa::cla::Result<bool> {
         Ok(true)
     }
 

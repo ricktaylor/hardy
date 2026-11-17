@@ -176,13 +176,13 @@ mod tests {
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
+        ) -> cla::Result<cla::ForwardOutcome> {
             let _ = self.offers_tx.send(bundle_id.clone());
-            Ok(cla::ForwardBundleResult::Sent)
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 
@@ -370,7 +370,7 @@ mod tests {
             .get()
             .unwrap()
             .add_peer(
-                cla::ClaAddress::Private("peer-2".as_bytes().into()),
+                cla::Address::Private("peer-2".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 2,
@@ -460,7 +460,7 @@ mod tests {
             .get()
             .unwrap()
             .add_peer(
-                cla::ClaAddress::Private("peer-3".as_bytes().into()),
+                cla::Address::Private("peer-3".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 2,

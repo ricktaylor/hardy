@@ -581,9 +581,9 @@ trait Cla {
     // Existing — full bundle in memory
     async fn forward(
         &self, queue: Option<u32>,
-        cla_addr: &ClaAddress,
+        cla_addr: &cla::Address,
         data: Bytes,
-    ) -> Result<ForwardBundleResult>;
+    ) -> Result<cla::ForwardOutcome>;
 
     // New — streaming forward. BPA passes a Receiver<Segment>;
     // CLA pulls Segment::Next(bytes) until Segment::Final (transfer
@@ -592,10 +592,10 @@ trait Cla {
     // a partial bundle).
     async fn write(
         &self, queue: Option<u32>,
-        cla_addr: &ClaAddress,
+        cla_addr: &cla::Address,
         stream: &dyn Receiver<Segment>,
         total_len: u64,
-    ) -> Result<ForwardBundleResult>;
+    ) -> Result<cla::ForwardOutcome>;
 }
 ```
 

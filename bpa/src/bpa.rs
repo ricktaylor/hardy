@@ -418,11 +418,11 @@ mod tests {
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn Receiver<Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
+        ) -> cla::Result<cla::ForwardOutcome> {
             let _ = self.attempts_tx.send(bundle_id.clone());
             Err(cla::Error::StreamCancelled)
         }
@@ -484,7 +484,7 @@ mod tests {
             .get()
             .unwrap()
             .add_peer(
-                cla::ClaAddress::Private("peer-a".as_bytes().into()),
+                cla::Address::Private("peer-a".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 2,

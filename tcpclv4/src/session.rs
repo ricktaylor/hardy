@@ -177,7 +177,7 @@ async fn run_ingest(
     mut queue: tokio::sync::mpsc::Receiver<Ingest>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     peer_node: Option<hardy_bpv7::eid::NodeId>,
-    peer_addr: Option<hardy_bpa::cla::ClaAddress>,
+    peer_addr: Option<hardy_bpa::cla::Address>,
     writer: writer::WriterHandle<codec::Error>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -294,7 +294,7 @@ where
     writer: writer::WriterHandle<codec::Error>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     peer_node: Option<hardy_bpv7::eid::NodeId>,
-    peer_addr: Option<hardy_bpa::cla::ClaAddress>,
+    peer_addr: Option<hardy_bpa::cla::Address>,
     keepalive_interval: Option<tokio::time::Duration>,
     segment_mtu: usize,
     transfer_mru: usize,
@@ -327,7 +327,7 @@ where
         writer: writer::WriterHandle<codec::Error>,
         sink: Arc<dyn hardy_bpa::cla::Sink>,
         peer_node: Option<hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<hardy_bpa::cla::ClaAddress>,
+        peer_addr: Option<hardy_bpa::cla::Address>,
         keepalive_interval: Option<tokio::time::Duration>,
         segment_mtu: usize,
         transfer_mru: usize,
@@ -1065,7 +1065,7 @@ mod tests {
         async fn dispatch(
             &self,
             _peer_node: Option<&hardy_bpv7::eid::NodeId>,
-            _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+            _peer_addr: Option<&hardy_bpa::cla::Address>,
             stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
         ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
             let Ok(bundle) = hardy_bpa::stream::concat_stream(stream, usize::MAX).await else {
@@ -1086,7 +1086,7 @@ mod tests {
 
         async fn add_peer(
             &self,
-            _cla_addr: hardy_bpa::cla::ClaAddress,
+            _cla_addr: hardy_bpa::cla::Address,
             _node_ids: &[hardy_bpv7::eid::NodeId],
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
@@ -1094,7 +1094,7 @@ mod tests {
 
         async fn remove_peer(
             &self,
-            _cla_addr: &hardy_bpa::cla::ClaAddress,
+            _cla_addr: &hardy_bpa::cla::Address,
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }

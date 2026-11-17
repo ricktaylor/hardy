@@ -309,7 +309,7 @@ The `keys` module provides the `KeyProvider` trait for BPSec key management; the
 
 ### Dial on Demand
 
-Name resolution and dialling move into a subsystem of their own, with which a CLA registers its ability to dial, separate from CLA registration and from the forward path; `forward` then sends only over adjacencies that exist, and `ClaAddress` becomes an opaque handle scoped to its CLA, with no address family. See [`dial_on_demand_plan.md`](dial_on_demand_plan.md).
+Name resolution and dialling move into a subsystem of their own, with which a CLA registers its ability to dial, separate from CLA registration and from the forward path; `forward` then sends only over adjacencies that exist, and `cla::Address` becomes an opaque handle scoped to its CLA, with no address family. See [`dial_on_demand_plan.md`](dial_on_demand_plan.md).
 
 ### Storage Priority and Eviction
 

@@ -190,15 +190,15 @@ impl cla::Sink for ClaSinkWrapper {
     async fn dispatch(
         &self,
         pn: Option<&NodeId>,
-        pa: Option<&cla::ClaAddress>,
+        pa: Option<&cla::Address>,
         s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<cla::Acceptance> {
         self.0.dispatch(pn, pa, s).await
     }
-    async fn add_peer(&self, a: cla::ClaAddress, n: &[NodeId]) -> cla::Result<bool> {
+    async fn add_peer(&self, a: cla::Address, n: &[NodeId]) -> cla::Result<bool> {
         self.0.add_peer(a, n).await
     }
-    async fn remove_peer(&self, a: &cla::ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, a: &cla::Address) -> cla::Result<bool> {
         self.0.remove_peer(a).await
     }
     async fn transfer_outcome(

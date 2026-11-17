@@ -4,7 +4,7 @@ struct Shared {
     cla: Arc<dyn Cla>,
     dispatcher: Arc<dispatcher::Dispatcher>,
     peer: u32,
-    cla_addr: ClaAddress,
+    cla_addr: Address,
 }
 
 struct EgressQueue {
@@ -38,7 +38,7 @@ pub fn new_queue_set(
     cla: Arc<dyn Cla>,
     dispatcher: Arc<dispatcher::Dispatcher>,
     peer: u32,
-    cla_addr: ClaAddress,
+    cla_addr: Address,
     lane_count: Option<core::num::NonZeroU32>,
 ) -> policy::EgressQueueSet {
     // A queue is instantiated eagerly per declared lane, so the count a CLA

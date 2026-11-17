@@ -10,7 +10,7 @@ use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     bpa::BpaRegistration,
-    cla::{ClaAddressType, ClaInit},
+    cla::{AddressType, ClaInit},
 };
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     // The configured inbound framing bound doubles as the declared
     // receive limit (0 = unbounded, declared as no limit).
     let init = ClaInit {
-        address_type: Some(ClaAddressType::Tcp),
+        address_type: Some(AddressType::Tcp),
         lane_count: None,
         max_bundle_size: NonZeroU64::new(config.cla.max_bundle_size),
     };

@@ -352,14 +352,14 @@ impl cla::Cla for CapturingCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         total_len: u64,
         stream: &mut dyn Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let bundle = buffer_stream(stream, total_len).await?;
         let _ = self.forwarded_tx.send(bundle);
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -433,7 +433,7 @@ async fn setup(builder: BpaBuilder) -> (Bpa, Arc<CapturingCla>, flume::Receiver<
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[node(2), node(3)],
         )
         .await
@@ -940,10 +940,7 @@ async fn ingress_slot_reaches_egress_across_the_store() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(
-            cla::ClaAddress::Private("peer4".as_bytes().into()),
-            &[node(4)],
-        )
+        .add_peer(cla::Address::Private("peer4".as_bytes().into()), &[node(4)])
         .await
         .unwrap();
     assert_eq!(next(&seen_rx).await, Some(7), "Egress sees the stored slot");

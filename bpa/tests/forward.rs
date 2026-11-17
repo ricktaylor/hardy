@@ -99,11 +99,11 @@ impl cla::Cla for StreamingCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         if self.flaky.swap(false, Ordering::SeqCst) {
             let _ = self.events_tx.send(Event::Failed);
             return Err(cla::Error::StreamCancelled);
@@ -126,7 +126,7 @@ impl cla::Cla for StreamingCla {
             segments,
             total_len,
         });
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -166,14 +166,14 @@ impl cla::Cla for BufferedCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let _ = self.events_tx.send(Event::Forward(bundle));
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -301,7 +301,7 @@ async fn streaming_cla_receives_single_final_segment() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
@@ -355,7 +355,7 @@ async fn buffered_cla_receives_whole_bundle() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
@@ -393,7 +393,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            cla::Address::Private("peer-a".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
@@ -416,7 +416,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
             .get()
             .unwrap()
             .add_peer(
-                cla::ClaAddress::Private(format!("peer-{i}").into_bytes().into()),
+                cla::Address::Private(format!("peer-{i}").into_bytes().into()),
                 &[remote_node(2)],
             )
             .await
@@ -449,7 +449,7 @@ fn direct_call_fixture() -> (
     flume::Receiver<Event>,
     hardy_bpv7::bundle::Bundle,
     Bytes,
-    cla::ClaAddress,
+    cla::Address,
 ) {
     let (cla, events_rx) = BufferedCla::new();
     let (bundle, data) = build_bundle(
@@ -457,7 +457,7 @@ fn direct_call_fixture() -> (
         &"ipn:0.2.99".parse().unwrap(),
         b"payload",
     );
-    let addr = cla::ClaAddress::Private("x".as_bytes().into());
+    let addr = cla::Address::Private("x".as_bytes().into());
     (cla, events_rx, bundle, data, addr)
 }
 
@@ -472,7 +472,7 @@ async fn buffering_cla_concats_multi_segment_stream() {
         .forward(None, &addr, &bundle.primary.id, data.len() as u64, &mut rx)
         .await
         .unwrap();
-    assert!(matches!(result, cla::ForwardBundleResult::Sent));
+    assert!(matches!(result, cla::ForwardOutcome::Sent));
 
     let Ok(Event::Forward(received)) = events_rx.try_recv() else {
         panic!("Expected forward to receive the reassembled bundle");
@@ -591,7 +591,7 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Rec
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 1,
                 node_number: 2,
@@ -699,7 +699,7 @@ async fn legacy_relay() -> (Bpa, Arc<BufferedCla>, flume::Receiver<Event>) {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(relay_node(2))],
         )
         .await
@@ -1192,7 +1192,7 @@ async fn relay(received: &Bytes, keys: Vec<Key>) -> Parsed {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(relay_node(2))],
         )
         .await

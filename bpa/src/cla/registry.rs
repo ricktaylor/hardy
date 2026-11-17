@@ -11,7 +11,7 @@ use tracing::{debug, error, info};
 // `Sink` are built around, so both names are taken here; the two traits
 // stay module-qualified at their few use sites.
 use super::{
-    Acceptance, ClaAddress, ClaInit, Error, Result, Segment, TransferOutcome, cla,
+    Acceptance, Address, ClaInit, Error, Result, Segment, TransferOutcome, cla,
     peers::{Peer, PeerTable},
 };
 use crate::{
@@ -43,7 +43,7 @@ pub struct Record {
     // The value pairs the node ids known for that peer with its id in the
     // `PeerTable`; an empty list is a neighbour whose EID has not been
     // learned yet, and so has no RIB entry.
-    peers: Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
+    peers: Mutex<HashMap<Address, (Vec<NodeId>, u32)>>,
 }
 
 impl PartialEq for Record {
@@ -113,7 +113,7 @@ impl cla::Sink for Sink {
     async fn dispatch(
         &self,
         peer_node: Option<&NodeId>,
-        peer_addr: Option<&ClaAddress>,
+        peer_addr: Option<&Address>,
         stream: &mut dyn crate::stream::Receiver<Segment>,
     ) -> Result<Acceptance> {
         let cla = self.cla.upgrade().ok_or(Error::Disconnected)?;
@@ -141,14 +141,14 @@ impl cla::Sink for Sink {
         Ok(verdict)
     }
 
-    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> Result<bool> {
+    async fn add_peer(&self, cla_addr: Address, node_ids: &[NodeId]) -> Result<bool> {
         let cla = self.cla.upgrade().ok_or(Error::Disconnected)?;
         let registry = self.registry.upgrade().ok_or(Error::Disconnected)?;
         let dispatcher = self.dispatcher.upgrade().ok_or(Error::Disconnected)?;
         Ok(registry.add_peer(cla, dispatcher, cla_addr, node_ids).await)
     }
 
-    async fn remove_peer(&self, cla_addr: &ClaAddress) -> Result<bool> {
+    async fn remove_peer(&self, cla_addr: &Address) -> Result<bool> {
         let cla = self.cla.upgrade().ok_or(Error::Disconnected)?;
         let registry = self.registry.upgrade().ok_or(Error::Disconnected)?;
         Ok(registry.remove_peer(cla, cla_addr).await)
@@ -388,7 +388,7 @@ impl ClaRegistry {
         &self,
         cla: Arc<Record>,
         dispatcher: Arc<Dispatcher>,
-        cla_addr: ClaAddress,
+        cla_addr: Address,
         node_ids: &[NodeId],
     ) -> bool {
         // Mint the id without publishing anything (reserved against reuse),
@@ -448,7 +448,7 @@ impl ClaRegistry {
         true
     }
 
-    async fn remove_peer(&self, cla: Arc<Record>, cla_addr: &ClaAddress) -> bool {
+    async fn remove_peer(&self, cla: Arc<Record>, cla_addr: &Address) -> bool {
         let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };
@@ -475,7 +475,7 @@ mod tests {
     use super::*;
     use crate::{
         bpa::{Bpa, BpaRegistration},
-        cla::ForwardBundleResult,
+        cla::ForwardOutcome,
     };
 
     struct TestCla {
@@ -502,12 +502,12 @@ mod tests {
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &ClaAddress,
+            _cla_addr: &Address,
             _bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<Segment>,
-        ) -> Result<ForwardBundleResult> {
-            Ok(ForwardBundleResult::Sent)
+        ) -> Result<ForwardOutcome> {
+            Ok(ForwardOutcome::Sent)
         }
     }
 
@@ -552,7 +552,7 @@ mod tests {
         .unwrap();
 
         let sink = cla.sink.get().expect("Sink should be set after register");
-        let peer_addr = ClaAddress::Private("peer1".as_bytes().into());
+        let peer_addr = Address::Private("peer1".as_bytes().into());
         let peer_node = NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: 10,
@@ -591,8 +591,8 @@ mod tests {
 
         let sink = cla.sink.get().expect("Sink should be set");
 
-        let addr1 = ClaAddress::Private("p1".as_bytes().into());
-        let addr2 = ClaAddress::Private("p2".as_bytes().into());
+        let addr1 = Address::Private("p1".as_bytes().into());
+        let addr2 = Address::Private("p2".as_bytes().into());
         let node1 = NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: 20,

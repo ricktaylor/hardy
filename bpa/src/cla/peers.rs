@@ -29,7 +29,7 @@ impl Peer {
         poll_channel_depth: usize,
         cla: Arc<registry::Record>,
         peer: u32,
-        cla_addr: ClaAddress,
+        cla_addr: Address,
         store: Arc<storage::store::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         tasks: &hardy_async::TaskPool,

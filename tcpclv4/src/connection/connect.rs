@@ -271,7 +271,7 @@ impl Connector {
 
         let (tx, rx) = channel(1);
         let peer_node = peer_init.node_id.clone();
-        let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(*remote_addr));
+        let peer_addr = Some(hardy_bpa::cla::Address::Tcp(*remote_addr));
         let cancel_token = self.ctx.session_cancel_token.clone();
         let keepalive_duration =
             context::ConnectionContext::keepalive_as_duration(keepalive_interval);

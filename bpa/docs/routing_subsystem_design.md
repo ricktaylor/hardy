@@ -16,7 +16,7 @@ The BPA routing system consists of two interconnected components, driven by plug
 | Component | Purpose | Key Structure |
 |-----------|---------|---------------|
 | **RIB** | Unified pattern-based route storage and lookup | Priority-ordered BTreeMap of EidPatterns to Actions |
-| **Peer Table** | Reachable neighbors via CLAs | Per CLA, a HashMap of ClaAddress to (NodeIds, peer_id) |
+| **Peer Table** | Reachable neighbors via CLAs | Per CLA, a HashMap of cla::Address to (NodeIds, peer_id) |
 
 All routes — admin endpoints, service registrations, CLA peers, static routes, TVR contacts, and drop rules — live in a single priority-ordered table. There is no separate local table or FIB. Forwarding decisions are recorded in bundle metadata as `BundleStatus::ForwardPending { peer, queue, next_hop }`.
 
@@ -62,7 +62,7 @@ All routes — admin endpoints, service registrations, CLA peers, static routes,
                           │    peer_id → Peer { controller, queues }    │
                           │                                             │
                           │    CLA Registry:                            │
-                          │    Cla → ClaAddress → (NodeIds, peer_id)    │
+                          │    Cla → cla::Address → (NodeIds, peer_id)    │
                           └─────────────────────────────────────────────┘
 ```
 
@@ -119,7 +119,7 @@ The peer table maps auto-incrementing peer IDs to `Peer` structs. Each peer hold
 
 ### CLA Registry Mapping
 
-Each registered CLA keeps its own address map, `ClaAddress → (NodeIds, peer_id)`: the CL address keys the adjacency, one address may carry several node IDs (a node known under more than one, such as an `ipn` and a `dtn` node ID), and each node ID gets a `Forward` route to the peer. A multi-homed node, one node at several addresses, is several adjacencies, and the routes for its node ID form one ECMP group across them.
+Each registered CLA keeps its own address map, `cla::Address → (NodeIds, peer_id)`: the CL address keys the adjacency, one address may carry several node IDs (a node known under more than one, such as an `ipn` and a `dtn` node ID), and each node ID gets a `Forward` route to the peer. A multi-homed node, one node at several addresses, is several adjacencies, and the routes for its node ID form one ECMP group across them.
 
 ### Peer Registration Flow
 
@@ -311,7 +311,7 @@ See also: the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`) for detailed s
    Update: Previous Node, Hop Count, Bundle Age
 
 7. CLA FORWARD
-   Lookup ClaAddress for peer 5
+   Lookup cla::Address for peer 5
    Cla::forward(lane, cla_addr, bundle_id, total_len, stream)
 
 8. COMPLETION

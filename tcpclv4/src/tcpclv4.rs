@@ -8,9 +8,7 @@ use std::{net::TcpListener, sync::Mutex};
 
 use hardy_bpa::{
     async_trait,
-    cla::{
-        self, Cla, ClaAddress, ClaAddressType, ClaInit, ForwardBundleResult, Sink, TransferOutcome,
-    },
+    cla::{self, Address, AddressType, Cla, ClaInit, ForwardOutcome, Sink, TransferOutcome},
 };
 use hardy_bpv7::bundle::Id;
 
@@ -120,7 +118,7 @@ impl Tcpclv4 {
     /// smaller) clamped MRU.
     pub fn cla_init(&self) -> ClaInit {
         ClaInit {
-            address_type: Some(ClaAddressType::Tcp),
+            address_type: Some(AddressType::Tcp),
             lane_count: None,
             max_bundle_size: Some(self.transfer_mru),
         }
@@ -294,18 +292,18 @@ impl Cla for Tcpclv4 {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        cla_addr: &ClaAddress,
+        cla_addr: &Address,
         bundle_id: &Id,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
-    ) -> cla::Result<ForwardBundleResult> {
+    ) -> cla::Result<ForwardOutcome> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("forward called before on_register!");
             cla::Error::Disconnected
         })?;
 
-        let ClaAddress::Tcp(remote_addr) = cla_addr else {
-            return Ok(ForwardBundleResult::NoNeighbour);
+        let Address::Tcp(remote_addr) = cla_addr else {
+            return Ok(ForwardOutcome::NoNeighbour);
         };
 
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
@@ -337,7 +335,7 @@ impl Cla for Tcpclv4 {
             }
         });
 
-        Ok(ForwardBundleResult::Accepted)
+        Ok(ForwardOutcome::Accepted)
     }
 }
 
@@ -435,17 +433,17 @@ mod tests {
         async fn dispatch(
             &self,
             _peer_node: Option<&NodeId>,
-            _peer_addr: Option<&ClaAddress>,
+            _peer_addr: Option<&Address>,
             _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
         ) -> cla::Result<cla::Acceptance> {
             Ok(cla::Acceptance::Accepted)
         }
 
-        async fn add_peer(&self, _cla_addr: ClaAddress, _node_ids: &[NodeId]) -> cla::Result<bool> {
+        async fn add_peer(&self, _cla_addr: Address, _node_ids: &[NodeId]) -> cla::Result<bool> {
             Ok(true)
         }
 
-        async fn remove_peer(&self, _cla_addr: &ClaAddress) -> cla::Result<bool> {
+        async fn remove_peer(&self, _cla_addr: &Address) -> cla::Result<bool> {
             Ok(true)
         }
 

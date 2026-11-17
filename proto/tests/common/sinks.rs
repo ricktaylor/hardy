@@ -81,21 +81,17 @@ impl cla::Sink for MockClaSink {
     async fn dispatch(
         &self,
         _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&cla::ClaAddress>,
+        _peer_addr: Option<&cla::Address>,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<cla::Acceptance> {
         Ok(cla::Acceptance::Accepted)
     }
 
-    async fn add_peer(
-        &self,
-        _cla_addr: cla::ClaAddress,
-        _node_ids: &[NodeId],
-    ) -> cla::Result<bool> {
+    async fn add_peer(&self, _cla_addr: cla::Address, _node_ids: &[NodeId]) -> cla::Result<bool> {
         Ok(true)
     }
 
-    async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, _cla_addr: &cla::Address) -> cla::Result<bool> {
         Ok(true)
     }
 

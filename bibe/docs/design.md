@@ -61,10 +61,10 @@ Each tunnel destination is registered as a "virtual peer" with the CLA. This mir
 |------------|-------------------|
 | mGRE interface | BIBE CLA |
 | NHRP cache | Local table + EgressQueue |
-| Protocol address → NBMA address | NodeId → ClaAddress::Private |
+| Protocol address → NBMA address | NodeId → cla::Address::Private |
 | `ip nhrp map 10.0.1.0/24 203.0.113.10` | `add_tunnel(dtn://tunnel1, ipn:100.12)` |
 
-The BPA's local table serves the same role as NHRP - resolving "where I want to go" (Via Eid) to "where to encapsulate to" (ClaAddress).
+The BPA's local table serves the same role as NHRP - resolving "where I want to go" (Via Eid) to "where to encapsulate to" (cla::Address).
 
 Routes use standard `via` syntax:
 
@@ -74,11 +74,11 @@ ipn:200.* via dtn://tunnel1
 ipn:300.* via dtn://tunnel2
 ```
 
-The tunnel destination is encoded in the peer's ClaAddress at registration time, not in the route.
+The tunnel destination is encoded in the peer's cla::Address at registration time, not in the route.
 
-### ClaAddress::Private for Tunnel Endpoints
+### cla::Address::Private for Tunnel Endpoints
 
-Tunnel destinations are encoded as CBOR-serialized EIDs within `ClaAddress::Private`. This reuses the existing ClaAddress infrastructure without requiring new address types. The `forward()` implementation decodes the CBOR to determine the outer bundle's destination.
+Tunnel destinations are encoded as CBOR-serialized EIDs within `cla::Address::Private`. This reuses the existing cla::Address infrastructure without requiring new address types. The `forward()` implementation decodes the CBOR to determine the outer bundle's destination.
 
 ## Standards Compliance
 
@@ -180,7 +180,7 @@ flowchart LR
 
 **Characteristics:**
 
-- Tunnel destination encoded in ClaAddress at peer registration
+- Tunnel destination encoded in cla::Address at peer registration
 - Inner bundle on encap path triggers **Egress** filters
 - One service registration + one CLA registration
 - Route config uses standard `via` syntax (virtual peer resolves to CLA)
@@ -208,7 +208,7 @@ The fundamental asymmetry:
 |--------|-------------|--------|
 | **Encap trigger** | Deliver to service | CLA.forward() |
 | **Decap trigger** | Deliver to service | Deliver to service |
-| **Tunnel dest config** | Service config | ClaAddress at peer registration |
+| **Tunnel dest config** | Service config | cla::Address at peer registration |
 | **Route config style** | `via ipn:1.10` | `via dtn://tunnel1` (virtual peer) |
 | **Filters on encap** | **Deliver** filters | **Egress** filters |
 | **Filters on decap** | Deliver filters | Deliver filters |
@@ -307,7 +307,7 @@ bibe.add_tunnel(NodeId::new("dtn://tunnel-c"), Eid::new("ipn:202.12")).await?;
 
 ```
 # static_routes file
-# Routes point to virtual peers - tunnel destination is in ClaAddress
+# Routes point to virtual peers - tunnel destination is in cla::Address
 
 ipn:300.* via dtn://tunnel-a    # Tunnel to ipn:200.12
 ipn:400.* via dtn://tunnel-b    # Tunnel to ipn:201.12
@@ -319,7 +319,7 @@ ipn:500.* via dtn://tunnel-c    # Tunnel to ipn:202.12
 - Standard `via` routing pattern
 - Tunnel lifecycle = peer lifecycle
 - Single CLA handles all tunnels
-- NHRP-like resolution model (local table resolves NodeId → ClaAddress)
+- NHRP-like resolution model (local table resolves NodeId → cla::Address)
 
 ---
 
@@ -384,7 +384,7 @@ flowchart TB
 | mGRE interface | BIBE CLA |
 | NHRP cache | Local table + EgressQueue |
 | Protocol address | NodeId (Via target) |
-| NBMA address | ClaAddress::Private |
+| NBMA address | cla::Address::Private |
 | `ip nhrp map 10.0.1.0/24 203.0.113.10` | `add_tunnel(dtn://tunnel-a, ipn:100.12)` |
 
 ### Significance
@@ -393,7 +393,7 @@ This parallel validates the virtual peers approach:
 
 1. **Established pattern**: Multipoint tunneling with address resolution is a proven model (DMVPN is widely deployed)
 
-2. **Existing infrastructure**: The BPA's local table already serves the NHRP role - resolving "where I want to go" (Via Eid) to "where to encapsulate" (ClaAddress)
+2. **Existing infrastructure**: The BPA's local table already serves the NHRP role - resolving "where I want to go" (Via Eid) to "where to encapsulate" (cla::Address)
 
 3. **Not a workaround**: Virtual peers isn't a hack to work around RIB limitations - it's the architecturally correct pattern for multipoint tunneling
 
@@ -417,12 +417,12 @@ This parallel validates the virtual peers approach:
    - Local table: dtn://tunnel1 → Forward(bibe_peer_id)
 
 3. Bundle queued to BIBE peer's EgressQueue
-   - EgressQueue has ClaAddress::Private(<CBOR-encoded ipn:100.12>)
+   - EgressQueue has cla::Address::Private(<CBOR-encoded ipn:100.12>)
 
 4. Egress filters run on inner bundle
 
 5. BibeCla.forward(queue, cla_addr, inner_bundle):
-   - Decode CBOR from ClaAddress → outer destination = ipn:100.12
+   - Decode CBOR from cla::Address → outer destination = ipn:100.12
    - Build outer bundle:
      - Source: ipn:1.0 (tunnel source)
      - Destination: ipn:100.12
