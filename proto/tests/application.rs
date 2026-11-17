@@ -46,10 +46,11 @@ impl Application for MockApplication {
         self.registered.store(true, Ordering::Relaxed);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
@@ -162,7 +163,7 @@ async fn app_cli_04_receive_payload() {
     let app = Arc::new(MockApplication::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
-    let _endpoint: Eid = remote_bpa
+    let endpoint: Eid = remote_bpa
         .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
         .await
         .expect("registration should succeed");
@@ -184,7 +185,14 @@ async fn app_cli_04_receive_payload() {
     let mut payload = hardy_bpa::Bytes::from_static(b"hello");
     let total_len = payload.len() as u64;
     server_app
-        .on_deliver(&bundle_id, expiry, false, total_len, &mut payload)
+        .on_deliver(
+            &endpoint,
+            &bundle_id,
+            expiry,
+            false,
+            total_len,
+            &mut payload,
+        )
         .await
         .expect("Delivery should succeed");
 

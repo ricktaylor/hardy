@@ -90,7 +90,8 @@ impl hardy_bpa::services::Application for Application {
         *self.sink.lock() = Some(Arc::from(sink));
     }
 
-    async fn on_unregister(&self) {
+    // One stream registers one endpoint, so the endpoint is implicit.
+    async fn on_unregister(&self, _endpoint: &hardy_bpv7::eid::Eid) {
         if self.sink.lock().take().is_none() {
             return;
         }
@@ -108,6 +109,7 @@ impl hardy_bpa::services::Application for Application {
     // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
+        _endpoint: &hardy_bpv7::eid::Eid,
         bundle_id: &hardy_bpv7::bundle::Id,
         expiry: time::OffsetDateTime,
         ack_requested: bool,

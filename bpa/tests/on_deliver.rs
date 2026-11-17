@@ -74,10 +74,11 @@ impl services::Service for StreamingService {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
@@ -146,10 +147,11 @@ impl services::Service for BufferedService {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
@@ -206,10 +208,11 @@ impl services::Service for HoldingService {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
@@ -747,6 +750,11 @@ async fn deferred_delivery_expires_honestly() {
 // Direct-call tests: a buffering service over `stream::buffer_stream`
 // ---------------------------------------------------------------------------
 
+// The endpoint a directly driven delivery names.
+fn endpoint() -> Eid {
+    "ipn:0.2.99".parse().unwrap()
+}
+
 fn expiry() -> time::OffsetDateTime {
     time::OffsetDateTime::now_utc() + time::Duration::hours(1)
 }
@@ -765,6 +773,7 @@ async fn buffering_service_concats_multi_segment_stream() {
 
     services::Service::on_deliver(
         &*svc,
+        &endpoint(),
         &bundle_id_of(&data),
         expiry(),
         data.len() as u64,
@@ -793,6 +802,7 @@ async fn buffering_service_is_zero_copy_for_single_final() {
 
     services::Service::on_deliver(
         &*svc,
+        &endpoint(),
         &bundle_id_of(&data),
         expiry(),
         data.len() as u64,
@@ -822,6 +832,7 @@ async fn buffering_service_truncated_stream_is_cancelled() {
 
     let Err(err) = services::Service::on_deliver(
         &*svc,
+        &endpoint(),
         &bundle_id_of(&data),
         expiry(),
         data.len() as u64,
@@ -850,6 +861,7 @@ async fn buffering_service_rejects_under_delivering_stream() {
 
     let Err(err) = services::Service::on_deliver(
         &*svc,
+        &endpoint(),
         &bundle_id_of(&data),
         expiry(),
         data.len() as u64,
@@ -878,8 +890,15 @@ async fn buffering_service_rejects_stream_exceeding_total_len() {
     );
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    let Err(err) =
-        services::Service::on_deliver(&*svc, &bundle_id_of(&data), expiry(), 4, &mut rx).await
+    let Err(err) = services::Service::on_deliver(
+        &*svc,
+        &endpoint(),
+        &bundle_id_of(&data),
+        expiry(),
+        4,
+        &mut rx,
+    )
+    .await
     else {
         panic!("Expected an oversize stream to fail");
     };

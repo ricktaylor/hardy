@@ -48,7 +48,7 @@ impl Service for DecapService {
         debug!("BIBE DecapService registered at {endpoint}");
     }
 
-    async fn on_unregister(&self) {
+    async fn on_unregister(&self, _endpoint: &Eid) {
         debug!("BIBE DecapService unregistered");
     }
 
@@ -59,6 +59,7 @@ impl Service for DecapService {
     // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
         total_len: u64,

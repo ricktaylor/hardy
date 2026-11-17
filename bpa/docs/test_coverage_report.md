@@ -121,6 +121,22 @@ All LLRs assigned to this module pass (7 pass, 3 pass via bpv7, 1 N/A).
 | `dtn_service_id_resolves_against_a_dtn_node_id` | The `dtn` scheme resolves once a `dtn` node id is configured |
 | `service_conversion_failure_names_the_service` | A failed service conversion is `Error::ServiceConversion` with the service id |
 
+### Multi-Endpoint Service Tests
+
+9 tests in `tests/multi_endpoint.rs` — one Service or Application on several endpoints.
+
+| Test Function | Scope |
+| :--- | :--- |
+| `each_endpoint_registers_and_receives_on_its_own` | `on_register` per endpoint, EIDs in order; each delivery names its endpoint |
+| `each_sink_sends_only_from_its_endpoint` | A sink refuses a bundle sourced from another endpoint and forwards its own |
+| `unregistering_one_endpoint_leaves_the_others` | One endpoint's unregister names it and frees its id; the others stay |
+| `a_taken_id_registers_none_of_the_set` | All or none: a taken id registers no endpoint and reaches the service with nothing |
+| `a_repeated_id_is_refused` | A repeated id refuses the set |
+| `an_empty_set_is_refused` | `NoServiceIds` |
+| `an_application_learns_the_endpoint_of_each_delivery` | An application, which sees only the payload, is told the endpoint |
+| `the_builder_registers_one_service_on_several_endpoints` | `service_endpoints` registers each id at `start()` |
+| `the_builder_refuses_an_id_shared_between_registrations` | Two configured registrations may not share an id; the error names the whole set |
+
 ### Criterion Benchmark
 
 `benches/bundle_bench.rs` — single-bundle forwarding throughput via criterion.

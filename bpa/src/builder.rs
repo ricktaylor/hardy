@@ -1,5 +1,8 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
-use core::num::{NonZeroU64, NonZeroUsize};
+use core::{
+    fmt::{self, Display, Formatter},
+    num::{NonZeroU64, NonZeroUsize},
+};
 
 use hardy_bpv7::eid::Service as ServiceId;
 use hardy_eid_patterns::EidPattern;
@@ -54,22 +57,23 @@ pub enum Error {
     },
 
     /// A configured service or application failed to convert.
-    #[error("Failed to create service {service_id}: {source}")]
+    #[error("Failed to create service {}: {source}", ServiceIds(service_ids))]
     ServiceConversion {
-        /// The service id it was configured under.
-        service_id: ServiceId,
+        /// The service ids it was configured under.
+        service_ids: Vec<ServiceId>,
         /// The conversion's own error.
         #[source]
         source: ConversionError,
     },
 
-    /// A configured service or application could not be registered: its
-    /// service id is taken, is the administrative endpoint, or names a
-    /// scheme with no node id configured.
-    #[error("Failed to register service {service_id}: {source}")]
+    /// A configured service or application could not be registered on its
+    /// service ids: one is taken or repeated, is the administrative
+    /// endpoint, or names a scheme with no node id configured. None of the
+    /// ids is registered.
+    #[error("Failed to register service {}: {source}", ServiceIds(service_ids))]
     Service {
-        /// The service id it was configured under.
-        service_id: ServiceId,
+        /// The service ids it was configured under.
+        service_ids: Vec<ServiceId>,
         /// The registry's refusal; boxed, as `services::Error` is large.
         #[source]
         source: Box<services::Error>,
@@ -89,8 +93,23 @@ struct PendingCla {
 
 // A configured service or application, converted at build().
 struct PendingService {
-    service_id: ServiceId,
+    service_ids: Vec<ServiceId>,
     convert: Box<dyn FnOnce() -> core::result::Result<ServiceImpl, ConversionError> + Send>,
+}
+
+// Writes a configured id set as the ids, comma separated.
+struct ServiceIds<'a>(&'a [ServiceId]);
+
+impl Display for ServiceIds<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for (i, service_id) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{service_id}")?;
+        }
+        Ok(())
+    }
 }
 
 /// Builder for constructing a [`Bpa`] with custom configuration, obtained
@@ -265,13 +284,33 @@ impl BpaBuilder {
     /// an already-built `Arc<S>`, or a service crate's configuration type.
     /// The conversion runs in [`build()`](Self::build), which returns its
     /// error, or a refused service id, as [`Error`](enum@Error).
-    pub fn service<S>(mut self, service_id: ServiceId, service: S) -> Self
+    pub fn service<S>(self, service_id: ServiceId, service: S) -> Self
+    where
+        S: TryInto<Arc<dyn Service>> + Send + 'static,
+        S::Error: Into<ConversionError>,
+    {
+        self.service_endpoints([service_id], service)
+    }
+
+    /// Configures one low-level service on several endpoints, registered
+    /// when the BPA starts, all or none.
+    ///
+    /// Each id becomes its own registration with its own sink, as
+    /// [`BpaRegistration::register_service_endpoints`](crate::bpa::BpaRegistration::register_service_endpoints)
+    /// describes. [`build()`](Self::build) refuses the whole set if any id
+    /// is taken (by this or another configured registration), repeated,
+    /// the administrative endpoint, or has no node id for its scheme.
+    pub fn service_endpoints<S>(
+        mut self,
+        service_ids: impl IntoIterator<Item = ServiceId>,
+        service: S,
+    ) -> Self
     where
         S: TryInto<Arc<dyn Service>> + Send + 'static,
         S::Error: Into<ConversionError>,
     {
         self.services.push(PendingService {
-            service_id,
+            service_ids: service_ids.into_iter().collect(),
             convert: Box::new(move || {
                 service
                     .try_into()
@@ -288,13 +327,28 @@ impl BpaBuilder {
     /// `application` is anything that converts into an
     /// `Arc<dyn Application>`, converted in [`build()`](Self::build) as for
     /// [`service()`](Self::service).
-    pub fn application<A>(mut self, service_id: ServiceId, application: A) -> Self
+    pub fn application<A>(self, service_id: ServiceId, application: A) -> Self
+    where
+        A: TryInto<Arc<dyn Application>> + Send + 'static,
+        A::Error: Into<ConversionError>,
+    {
+        self.application_endpoints([service_id], application)
+    }
+
+    /// Configures one high-level application on several endpoints, all or
+    /// none, as [`service_endpoints()`](Self::service_endpoints) does for a
+    /// service.
+    pub fn application_endpoints<A>(
+        mut self,
+        service_ids: impl IntoIterator<Item = ServiceId>,
+        application: A,
+    ) -> Self
     where
         A: TryInto<Arc<dyn Application>> + Send + 'static,
         A::Error: Into<ConversionError>,
     {
         self.services.push(PendingService {
-            service_id,
+            service_ids: service_ids.into_iter().collect(),
             convert: Box::new(move || {
                 application
                     .try_into()
@@ -473,18 +527,18 @@ fn build_services(
 ) -> Result<ServiceRegistryBuilder> {
     let mut builder = ServiceRegistryBuilder::new();
     for PendingService {
-        service_id,
+        service_ids,
         convert,
     } in services
     {
         let service = convert().map_err(|source| Error::ServiceConversion {
-            service_id: service_id.clone(),
+            service_ids: service_ids.clone(),
             source,
         })?;
         builder
-            .insert(service_id.clone(), service, node_ids)
+            .insert(service_ids.clone(), service, node_ids)
             .map_err(|source| Error::Service {
-                service_id,
+                service_ids,
                 source: Box::new(source),
             })?;
     }
