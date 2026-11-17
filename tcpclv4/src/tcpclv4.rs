@@ -142,7 +142,7 @@ impl Tcpclv4 {
 
     /// Initiates a TCP connection to a remote peer (RFC 9174 Section 3).
     ///
-    /// Retries up to 5 times on timeout before returning an error. Returns [`cla::Error::Disconnected`] before registration and once the entity has unregistered.
+    /// Retries up to 5 times on timeout before returning an error. A dial started before registration, or after the entity has unregistered, is refused with [`cla::Error::Disconnected`]. The check is made once, as the dial starts, so a dial already under way when the entity unregisters is not refused this way.
     ///
     /// Dropping the returned future abandons the dial. A session it had already negotiated stays up, registered like any other, and [`disconnected`](Self::disconnected) waits for it.
     pub async fn connect(&self, remote_addr: &SocketAddr) -> cla::Result<()> {
