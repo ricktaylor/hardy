@@ -254,6 +254,32 @@ pub struct ClaInit {
     pub max_bundle_size: Option<NonZeroU64>,
 }
 
+/// A CLA ready to register: the implementation and its set-once
+/// declarations.
+///
+/// [`BpaBuilder::cla`](crate::builder::BpaBuilder::cla) takes anything
+/// that converts into one. A CLA crate implements
+/// `TryFrom<Config> for Registration` for its configuration type, so a
+/// server registers a configured CLA without knowing how it is built. An
+/// already-built CLA is paired with its declarations by
+/// [`Registration::new`]: there is deliberately no conversion from a bare
+/// CLA, which would register it with `ClaInit::default()` and silently
+/// drop whatever it declares.
+pub struct Registration {
+    /// The CLA implementation.
+    pub cla: Arc<dyn Cla>,
+
+    /// The CLA's declarations, snapshotted at registration.
+    pub init: ClaInit,
+}
+
+impl Registration {
+    /// A registration with explicit declarations.
+    pub fn new(cla: Arc<dyn Cla>, init: ClaInit) -> Self {
+        Self { cla, init }
+    }
+}
+
 /// The BPA's acceptance verdict for a dispatched bundle — the return value
 /// of [`Sink::dispatch`], and its only carrier.
 ///

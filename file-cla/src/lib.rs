@@ -10,6 +10,7 @@ or consume raw bundle files.
 */
 
 use hardy_async::sync::spin::Once;
+use hardy_bpa::cla::{ClaInit, Registration};
 use hardy_bpv7::eid::NodeId;
 use std::{
     collections::HashMap,
@@ -151,6 +152,17 @@ impl Cla {
         if let Some(sink) = self.sink.get() {
             sink.unregister().await;
         }
+    }
+}
+
+impl TryFrom<Config> for Registration {
+    type Error = Error;
+
+    /// Builds the CLA, as [`Cla::new`] does, ready for
+    /// [`BpaBuilder::cla`](hardy_bpa::builder::BpaBuilder::cla). It
+    /// declares nothing: no address type, lanes, or receive limit.
+    fn try_from(config: Config) -> Result<Self, Self::Error> {
+        Ok(Self::new(Arc::new(Cla::new(&config)?), ClaInit::default()))
     }
 }
 

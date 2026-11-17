@@ -5938,7 +5938,11 @@ async fn configured_endpoints_activate_at_start() {
         registered: hardy_async::sync::spin::Once::new(),
     });
     let bpa = Bpa::builder()
-        .cla("probe", probe.clone(), None, cla::ClaInit::default())
+        .cla(
+            "probe",
+            cla::Registration::new(probe.clone(), cla::ClaInit::default()),
+            None,
+        )
         .build()
         .await
         .unwrap();

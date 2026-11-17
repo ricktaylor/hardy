@@ -10,17 +10,16 @@ use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
 use hardy_async::TaskPool;
+#[cfg(feature = "echo")]
+use hardy_bpa::services::Service;
 use hardy_bpa::{
     bpa::Bpa,
-    cla::{Cla, ClaInit},
     policy::FlowControllerFactory,
     routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
 #[cfg(feature = "echo")]
 use hardy_echo_service::EchoService;
-#[cfg(feature = "file-cla")]
-use hardy_file_cla::Cla as FileCla;
 #[cfg(feature = "localdisk-storage")]
 use hardy_localdisk_storage::LocalDiskStorage;
 #[cfg(feature = "postgres-storage")]
@@ -31,12 +30,10 @@ use hardy_proto::server::GrpcServer;
 use hardy_s3_storage::S3Storage;
 #[cfg(feature = "sqlite-storage")]
 use hardy_sqlite_storage::SqliteStorage;
-#[cfg(feature = "tcpclv4")]
-use hardy_tcpclv4::Tcpclv4;
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
-use crate::config::{Config, FlowControllerFactoryConfig, cla::ClaType, storage};
+use crate::config::{Config, FlowControllerFactoryConfig, storage};
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -230,8 +227,8 @@ impl BpaServer {
                         warn!("built-in-services.echo: no endpoints configured, skipping");
                     } else {
                         for service_id in services {
-                            builder = builder
-                                .service(Arc::new(EchoService::new()), service_id);
+                            let echo: Arc<dyn Service> = Arc::new(EchoService::new());
+                            builder = builder.service(service_id, echo);
                         }
                     }
                 }
@@ -265,33 +262,16 @@ impl BpaServer {
             )
             .collect();
 
+        // Each CLA is built from its config by `build()`, which names the
+        // CLA in any error.
         for cla_config in config.clas {
-            let cla: Option<(Arc<dyn Cla>, ClaInit)> = match cla_config.cla_type {
-                #[cfg(feature = "tcpclv4")]
-                ClaType::TcpClv4(tcpcl) => {
-                    let cla = Tcpclv4::try_from(tcpcl)
-                        .with_context(|| format!("Failed to create CLA '{}'", cla_config.name))?;
-                    let init = cla.cla_init();
-                    Some((Arc::new(cla) as Arc<dyn Cla>, init))
-                }
-                #[cfg(feature = "file-cla")]
-                ClaType::File(file) => Some((
-                    Arc::new(FileCla::new(&file).map_err(|e| {
-                        anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
-                    })?) as Arc<dyn Cla>,
-                    ClaInit::default(),
-                )),
-                ClaType::Other { cla_type, .. } => {
-                    warn!(
-                        "Ignoring CLA '{}' with unknown type '{cla_type}'",
-                        cla_config.name
-                    );
-                    None
-                }
-            };
-            let Some((cla, init)) = cla else {
+            if let Some(cla_type) = cla_config.cla_type.unknown_type() {
+                warn!(
+                    "Ignoring CLA '{}' with unknown type '{cla_type}'",
+                    cla_config.name
+                );
                 continue;
-            };
+            }
 
             let egress_policy = cla_config
                 .policy
@@ -306,10 +286,10 @@ impl BpaServer {
                 })
                 .transpose()?;
 
-            builder = builder.cla(cla_config.name, cla, egress_policy, init);
+            builder = builder.cla(cla_config.name, cla_config.cla_type, egress_policy);
         }
 
-        let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
+        let bpa = Arc::new(builder.build().await?);
 
         Ok(Self {
             bpa,
