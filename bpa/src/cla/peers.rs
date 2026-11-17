@@ -27,7 +27,7 @@ impl Peer {
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
         poll_channel_depth: usize,
-        cla: Arc<registry::Cla>,
+        cla: Arc<registry::Record>,
         peer: u32,
         cla_addr: ClaAddress,
         store: Arc<storage::store::Store>,

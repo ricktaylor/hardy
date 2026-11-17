@@ -29,7 +29,7 @@ use super::{
 };
 use crate::{
     Arc, HashMap, HashSet, bundle::Bundle, dispatcher::Dispatcher, hash_map::Entry as HashMapEntry,
-    node_ids::NodeIds, services::registry::Service, storage::store::Store,
+    node_ids::NodeIds, services::registry::Record, storage::store::Store,
 };
 
 /// The resolved inputs of a RIB lookup — the `{table, key}` pair
@@ -104,7 +104,7 @@ impl RoutingKey {
 #[derive(Debug)]
 pub enum DispatchAction {
     AdminEndpoint,
-    Deliver(Arc<Service>),
+    Deliver(Arc<Record>),
     Forward {
         /// The selected CLA peer.
         peer: u32,
@@ -336,7 +336,7 @@ impl Rib {
         !Arc::ptr_eq(&seen.0, &self.snapshot.load_full())
     }
 
-    pub fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
+    pub fn find_service(&self, to: &Eid) -> Option<Arc<Record>> {
         self.snapshot.load().find_service(to)
     }
 
@@ -546,7 +546,7 @@ impl Rib {
         .await
     }
 
-    pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> Result<bool> {
+    pub async fn add_service(&self, eid: Eid, service: Arc<Record>) -> Result<bool> {
         self.add(
             eid.into(),
             Self::SERVICES_NAME.into(),
@@ -556,7 +556,7 @@ impl Rib {
         .await
     }
 
-    pub async fn remove_service(&self, eid: &Eid, service: Arc<Service>) -> bool {
+    pub async fn remove_service(&self, eid: &Eid, service: Arc<Record>) -> bool {
         let pattern: EidPattern = eid.clone().into();
         self.remove(
             &pattern,
@@ -586,7 +586,7 @@ impl Rib {
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
         agent
-            .on_register(Box::new(Sink::new(name, self.clone())), &node_ids)
+            .on_register(Box::new(Sink::new(name, Arc::downgrade(self))), &node_ids)
             .await;
 
         Ok(node_ids)
@@ -693,7 +693,7 @@ mod tests {
 
     /// A complete `Service` for route entries: `Service::new` demands the
     /// delivery queue and canonical EID, so the test wires a real channel.
-    fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Service> {
+    fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Record> {
         let eid: Eid = eid.parse().unwrap();
         let (tx, _rx) = store.channel(
             crate::bundle::BundleStatus::DeliverPending {
@@ -701,7 +701,7 @@ mod tests {
             },
             1,
         );
-        Service::new(
+        Record::new(
             ServiceImpl::LowLevel(Arc::new(NullService)),
             EidService::Ipn(42),
             eid,

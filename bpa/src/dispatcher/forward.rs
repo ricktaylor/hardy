@@ -183,7 +183,7 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     pub async fn transfer_outcome(
         &self,
-        cla: &cla::registry::Cla,
+        cla: &cla::registry::Record,
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: cla::TransferOutcome,
     ) {

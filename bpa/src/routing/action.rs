@@ -2,7 +2,7 @@ use core::{cmp::Ordering, fmt};
 
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 
-use crate::{Arc, services::registry::Service};
+use crate::{Arc, services::registry::Record};
 
 /// What routing agents configure. Validated on insert into the route table.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,7 +54,7 @@ impl Ord for RouteAction {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InternalAction {
     Forward(u32),
-    Local(Arc<Service>),
+    Local(Arc<Record>),
     AdminEndpoint,
 }
 
