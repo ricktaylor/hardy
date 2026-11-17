@@ -28,14 +28,8 @@ use super::{
     table::{Entry, LookupResult, RouteTable, Trail},
 };
 use crate::{
-    Arc, HashMap, HashSet,
-    bundle::Bundle,
-    cla::{ClaAddressType, registry::Cla},
-    dispatcher::Dispatcher,
-    hash_map::Entry as HashMapEntry,
-    node_ids::NodeIds,
-    services::registry::Service,
-    storage::store::Store,
+    Arc, HashMap, HashSet, bundle::Bundle, dispatcher::Dispatcher, hash_map::Entry as HashMapEntry,
+    node_ids::NodeIds, services::registry::Service, storage::store::Store,
 };
 
 /// The resolved inputs of a RIB lookup — the `{table, key}` pair
@@ -139,7 +133,6 @@ pub struct Decision {
 pub struct Rib {
     snapshot: ArcSwap<RouteTable>,
     table: Mutex<RouteTable>,
-    address_types: spin::Mutex<HashMap<ClaAddressType, Arc<Cla>>>,
     agents: spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
     node_ids: Arc<NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
@@ -200,7 +193,6 @@ impl Rib {
         Self {
             snapshot: ArcSwap::from_pointee(table.clone()),
             table: Mutex::new(table),
-            address_types: Default::default(),
             agents: Default::default(),
             node_ids,
             ecmp_hash_state: RandomState::default(),
@@ -628,14 +620,6 @@ impl Rib {
             self.remove_by_source(&name).await;
             info!("Unregistered routing agent: {name}");
         }
-    }
-
-    pub fn add_address_type(&self, address_type: ClaAddressType, cla: Arc<Cla>) {
-        self.address_types.lock().insert(address_type, cla);
-    }
-
-    pub fn remove_address_type(&self, address_type: &ClaAddressType) {
-        self.address_types.lock().remove(address_type);
     }
 
     pub(super) fn has_agent(&self, name: &str) -> bool {

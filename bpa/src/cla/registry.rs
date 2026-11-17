@@ -14,7 +14,6 @@ pub struct Cla {
     pub cla: Arc<dyn cla::Cla>,
     pub policy: Arc<dyn policy::FlowControllerFactory>,
     // Snapshotted from the `ClaInit` declarations at registration.
-    pub address_type: Option<ClaAddressType>,
     pub lane_count: Option<NonZeroU32>,
 
     name: Arc<str>,
@@ -308,7 +307,6 @@ impl ClaRegistry {
             e.insert(Arc::new(Cla {
                 cancel: hardy_async::CancellationToken::new(),
                 cla,
-                address_type: init.address_type,
                 lane_count: init.lane_count,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
@@ -317,11 +315,6 @@ impl ClaRegistry {
             }))
             .clone()
         };
-
-        // Register that the CLA is a handler for the address type
-        if let Some(address_type) = entry.address_type {
-            self.rib.add_address_type(address_type, entry.clone());
-        }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
@@ -358,10 +351,6 @@ impl ClaRegistry {
         cla.cancel.cancel();
 
         cla.cla.on_unregister().await;
-
-        if let Some(address_type) = cla.address_type {
-            self.rib.remove_address_type(&address_type);
-        }
 
         let peers = core::mem::take(&mut *cla.peers.lock());
         for (_, (node_ids, peer_id)) in peers {
