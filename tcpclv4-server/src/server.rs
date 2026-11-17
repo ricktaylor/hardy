@@ -163,7 +163,7 @@ impl Tcpclv4Server {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{SocketAddr, TcpListener as StdTcpListener};
+    use std::net::SocketAddr;
 
     use hardy_bpa::{
         async_trait,
@@ -226,12 +226,11 @@ mod tests {
     // A registered entity listening on an ephemeral loopback port, its
     // listen address, and the adjacencies it registers
     async fn listening_entity() -> (Tcpclv4, SocketAddr, mpsc::UnboundedReceiver<ClaAddress>) {
-        // The entity binds its own listener and does not expose the bound
-        // address, so an ephemeral port is probed and handed to it
-        let probe = StdTcpListener::bind("127.0.0.1:0").unwrap();
-        let address = probe.local_addr().unwrap();
-        drop(probe);
-        let cla = Tcpclv4::builder().listen(address).build().unwrap();
+        let cla = Tcpclv4::builder()
+            .listen("127.0.0.1:0".parse().unwrap())
+            .build()
+            .unwrap();
+        let address = cla.listen_addresses()[0];
         let (tx, rx) = mpsc::unbounded_channel();
         cla.on_register(Box::new(AddPeerSink(tx)), &[ipn(2)], None)
             .await;

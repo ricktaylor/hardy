@@ -47,8 +47,8 @@ pub struct Tcpclv4 {
     transfer_mru: NonZeroU64,
     max_idle_connections: usize,
     max_outstanding_transfers: NonZeroUsize,
-    // The listeners' bound addresses, kept for `Debug`: the sockets
-    // themselves move to their tasks when the entity starts.
+    // The listeners' bound addresses, read when the entity is built: the
+    // sockets themselves move to their accept tasks at registration
     listen_addresses: Vec<SocketAddr>,
 
     // Computed at construction
@@ -84,8 +84,8 @@ impl Tcpclv4 {
         max_outstanding_transfers: NonZeroUsize,
         tls: Option<Arc<tls::Tls>>,
     ) -> Self {
-        // A bound socket always has a local address; one it cannot report
-        // is left out of the Debug list rather than failing construction.
+        // A bound socket has a local address; one that cannot report it
+        // is left out rather than failing construction
         let listen_addresses = listeners
             .iter()
             .filter_map(|listener| listener.local_addr().ok())
@@ -124,6 +124,13 @@ impl Tcpclv4 {
             lane_count: None,
             max_bundle_size: Some(self.transfer_mru),
         }
+    }
+
+    /// The addresses this entity's listeners are bound to, in the order they were added to the builder.
+    ///
+    /// A listener added on port 0 reports the port the system assigned it. The addresses are fixed when the entity is built, so they read the same before and after registration.
+    pub fn listen_addresses(&self) -> &[SocketAddr] {
+        &self.listen_addresses
     }
 
     /// Unregisters this CLA from the BPA.
@@ -605,7 +612,7 @@ mod tests {
             .listen("127.0.0.1:0".parse().unwrap())
             .build()
             .unwrap();
-        let listen = cla.listeners.lock().unwrap()[0].local_addr().unwrap();
+        let listen = cla.listen_addresses()[0];
         let (sink, events) = RecordingSink::new();
         let sink = Arc::new(sink);
         cla.on_register(Box::new(ArcSink(sink.clone())), &[ipn(node)], None)
@@ -900,6 +907,7 @@ mod tests {
             .build()
             .expect("a dial-only plaintext build cannot fail");
         assert!(cla.listeners.lock().unwrap().is_empty());
+        assert!(cla.listen_addresses().is_empty());
         assert!(cla.tls.is_none());
 
         let cla = Tcpclv4::builder()
@@ -912,6 +920,13 @@ mod tests {
         for listener in listeners.iter() {
             assert_ne!(listener.local_addr().unwrap().port(), 0);
         }
+        // The entity reports the addresses the sockets were bound to, in
+        // the order the listeners were added
+        let bound: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
+        assert_eq!(cla.listen_addresses(), bound);
     }
 
     // A socket that cannot be bound fails the build instead of a
