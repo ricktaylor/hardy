@@ -127,17 +127,26 @@ connecting to the BPA via gRPC. See the
 guide.
 
 The standalone TCPCLv4 server (`hardy-tcpclv4-server`) uses the
-following top-level options in addition to the TCPCLv4-specific options
-above. The TCPCLv4 options are flattened to the top level (not nested).
+following top-level options, with the TCPCLv4-specific options above
+nested beneath them in a `cla` table.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `bpa-address` | URL string | *Required* | BPA gRPC endpoint to connect to. |
-| `cla-name` | String | *Required* | Name to register with the BPA. |
+| `bpa-address` | URL string | `http://[::1]:50051` | BPA gRPC endpoint to connect to. |
+| `cla-name` | String | `hardy-tcpclv4-server` | Name to register with the BPA. |
+| `peers` | List of `host:port` strings | *(none)* | Peers to dial at startup; each is resolved by DNS and a TCPCLv4 session is established. |
 | `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. |
+| `cla` | Table | *(all defaults)* | The TCPCLv4 options above. |
 
-The default configuration file is `hardy-tcpclv4.yaml` in the current
-directory. Environment variable prefix is `HARDY_TCPCLV4_`.
+The configuration file is given by `--config <file>`, or the
+`HARDY_TCPCLV4_CONFIG_FILE` environment variable; without either, the
+server reads `tcpclv4` (with a `.yaml`, `.toml` or `.json` extension)
+from `/etc/hardy/` on Linux and macOS, or `%LOCALAPPDATA%\hardy\` on
+Windows. Environment variable prefix is `HARDY_TCPCLV4_`, with `__`
+separating nested keys: `HARDY_TCPCLV4_CLA__KEEPALIVE_INTERVAL` sets
+`cla.keepalive-interval`. The schema is strict at both levels: an
+unknown key is a startup error naming the keys known at that level, so
+a TCPCLv4 option written at the top level is refused with `cla` named.
 
 Example:
 
@@ -145,14 +154,15 @@ Example:
 bpa-address: "http://[::1]:50051"
 cla-name: remote-tcpclv4
 log-level: info
-listeners: ["[::]:4556"]
-keepalive-interval: 120
-tls:
-  required: true
-  ca-certs: /etc/hardy/ca
-  identity:
-    cert-file: /etc/hardy/certs/server.crt
-    key-file: /etc/hardy/private/server.key
+cla:
+  listeners: ["[::]:4556"]
+  keepalive-interval: 120
+  tls:
+    required: true
+    ca-certs: /etc/hardy/ca
+    identity:
+      cert-file: /etc/hardy/certs/server.crt
+      key-file: /etc/hardy/private/server.key
 ```
 
 See also:

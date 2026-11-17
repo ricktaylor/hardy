@@ -1,15 +1,15 @@
 // The TCPCLv4 CLA server: builds the `hardy_tcpclv4` entity from the
 // loaded `Config`, registers it with the BPA, dials the static peers, and
-// runs until cancelled. The config-to-builder mapping lives here too (kept
-// in sync with the `clas:` entry mirror in bpa-server/src/config/tcpclv4.rs).
+// runs until cancelled.
 
 use core::time::Duration;
 use std::sync::Arc;
 
+use anyhow::Context;
 use hardy_async::{CancellationToken, TaskPool};
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_proto::client::RemoteBpa;
-use hardy_tcpclv4::{Tcpclv4, tls};
+use hardy_tcpclv4::Tcpclv4;
 use tokio::net::lookup_host;
 use tracing::{info, warn};
 
@@ -31,70 +31,17 @@ pub struct Tcpclv4Server {
 }
 
 impl Tcpclv4Server {
-    // Builds the TCPCLv4 entity from the loaded configuration, reconciling
-    // the config-file surface into builder calls: absent keys leave the
-    // builder defaults in force, and contradictions are reported with
-    // config-key names before any file is touched. The TLS material is
-    // loaded by `TlsBuilder::build`, and the listeners are bound inside
-    // `Tcpclv4Builder::build`.
+    // Builds the TCPCLv4 entity from the loaded configuration: the TLS
+    // material is loaded and the listeners are bound here, so their errors
+    // surface before the server runs.
     //
     // `tasks` hosts the server's background tasks; it comes from the
     // composition root, which owns process policy (wiring SIGINT/SIGTERM
     // to the pool's cancellation token via `signal::listen_for_cancel`).
     pub fn new(config: Config, tasks: TaskPool) -> anyhow::Result<Self> {
-        let mut builder = Tcpclv4::builder();
-
-        builder = match config.listeners {
-            Some(listeners) => listeners
-                .into_iter()
-                .fold(builder, |builder, address| builder.listen(address)),
-            None => builder.listen_default(),
-        };
-        if let Some(mru) = config.segment_mru {
-            builder = builder.segment_mru(mru);
-        }
-        if let Some(mru) = config.transfer_mru {
-            builder = builder.transfer_mru(mru);
-        }
-        if let Some(limit) = config.max_idle_connections {
-            builder = builder.max_idle_connections(limit);
-        }
-        if let Some(limit) = config.max_outstanding_transfers {
-            builder = builder.max_outstanding_transfers(limit);
-        }
-        if let Some(rate) = config.connection_rate_limit {
-            builder = builder.connection_rate_limit(rate);
-        }
-        if let Some(timeout) = config.contact_timeout {
-            builder = builder.contact_timeout(timeout);
-        }
-        if let Some(interval) = config.keepalive_interval {
-            builder = builder.keepalive_interval(interval);
-        }
-
-        if let Some(tls_config) = &config.tls {
-            let mut tls_builder = tls::Tls::builder().required(tls_config.required);
-
-            if let Some(dir) = &tls_config.ca_certs {
-                tls_builder = tls_builder.ca_certs(dir.clone());
-            }
-            if tls_config.insecure_skip_verify {
-                tls_builder = tls_builder.dangerous().insecure_skip_verify();
-            }
-            if let Some(identity) = &tls_config.identity {
-                tls_builder =
-                    tls_builder.identity(identity.cert_file.clone(), identity.key_file.clone());
-            }
-            tls_builder = tls_builder.client_auth(tls_config.client_auth.into());
-            if let Some(name) = &tls_config.server_name {
-                tls_builder = tls_builder.server_name(name.clone());
-            }
-
-            builder = builder.tls(tls_builder.build()?);
-        }
-
+        let cla = Tcpclv4::try_from(config.cla).context("Failed to create the TCPCLv4 CLA")?;
         Ok(Self {
-            cla: Arc::new(builder.build()?),
+            cla: Arc::new(cla),
             bpa_address: config.bpa_address,
             cla_name: config.cla_name,
             peers: config.peers,

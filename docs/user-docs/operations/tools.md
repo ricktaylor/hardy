@@ -81,11 +81,15 @@ When using an external CLA, `bp ping` starts a gRPC server on
 registers with the embedded BPA via gRPC, just as it would with a full
 `hardy-bpa-server` deployment.
 
-Example (using an external CLA binary):
+Example (using an external CLA binary, configured by its own file; see
+[Standalone CLA Servers](../configuration/convergence-layers.md#standalone-cla-servers)
+for the `hardy-tcpclv4-server` keys: `bpa-address` matching
+`--grpc-listen`, and `peers` naming the TCPCLv4 address of the node to
+ping):
 
 ```bash
 bp ping --cla /usr/local/bin/hardy-tcpclv4-server \
-        --cla-args "--address [::]:4556" \
+        --cla-args "--config /etc/hardy/tcpclv4.yaml" \
         --grpc-listen "[::1]:50051" \
         ipn:2.7
 ```

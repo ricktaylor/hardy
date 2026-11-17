@@ -59,16 +59,16 @@ This separation allows network I/O to scale independently from bundle processing
 Configuration uses the same patterns as hardy-bpa-server:
 
 - **Formats** - TOML, JSON, or YAML
-- **Environment overrides** - `HARDY_TCPCLV4_SERVER_*` prefix
+- **Environment overrides** - `HARDY_TCPCLV4_*` prefix
 - **Defaults** - Derived from RFC 9174 recommendations
 
-Configuration owns the TCPCLv4 config-file schema (mapped onto `hardy-tcpclv4`'s `Tcpclv4::builder()`) plus the BPA gRPC endpoint address; the example configuration files (`example_config.toml`/`.yaml`) live in this crate.
+This crate's own keys (the log level, the BPA gRPC endpoint address, the CLA name, the static peers) sit at the top level, and the TCPCLv4 keys in a `cla` table beneath them: `hardy-tcpclv4`'s `config::Config`, the schema `hardy-bpa-server`'s `clas:` entries read. Each level is a plain struct field, so the merged file and environment deserialize in one pass, the `config` crate coerces each key to its type (`1`/`yes` for a bool, a quoted number for an integer), and an unknown key at either level is refused with that level's keys listed. The environment spells the nesting with `__`, as `HARDY_TCPCLV4_CLA__SEGMENT_MRU`. The crate also holds the example configuration files (`example_config.toml`/`.yaml`).
 
 ## Integration
 
 ### With hardy-tcpclv4
 
-The server builds a `hardy_tcpclv4::Tcpclv4` from the config-file mapping and passes it the gRPC-backed Sink. All TCPCLv4 protocol handling is delegated to the library.
+The server converts the loaded `hardy_tcpclv4::config::Config` into a `Tcpclv4` and passes it the gRPC-backed Sink. All TCPCLv4 protocol handling is delegated to the library.
 
 ### With hardy-proto
 

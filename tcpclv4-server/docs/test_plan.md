@@ -39,7 +39,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | ----- | ----- | ----- | ----- | ----- |
 | **Default Config (CFG-01)** | Verify valid defaults when no config provided. | `src/config.rs` | Empty config file. | Valid config: `bpa_address = "http://[::1]:50051"`, `cla_name = PKG_NAME`, port 4556. |
 | **Multi-Format Parsing (CFG-02)** | Verify that TOML, YAML, and JSON config files all override defaults correctly. | `src/config.rs` | Valid config in each format. | Config struct matches file values. |
-| **Env Override (CFG-03)** | Verify environment variables take precedence over config file values, including nested TCPCLv4 fields via `__` separator. | `src/config.rs` | File + env `HARDY_TCPCLV4_BPA_ADDRESS`. | Env var wins. |
+| **Env Override (CFG-03)** | Verify environment variables take precedence over config file values, including the TCPCLv4 fields in the `cla` table via the `__` separator. | `src/config.rs` | File + env `HARDY_TCPCLV4_BPA_ADDRESS`, `HARDY_TCPCLV4_CLA__SEGMENT_MRU`. | Env var wins. |
 
 Additional validation tests cover: missing config file → error, invalid log level, negative or zero MRU, invalid listener address, an empty listener list (dial-only), keepalive zero (disabled) and `null` refused, the TLS section (full parse, key-file alias, lone identity half, contradictions named at build, insecure-skip-verify precedence), malformed TOML/YAML, unknown fields ignored, and large MRU values.
 

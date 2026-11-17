@@ -292,8 +292,11 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #[cfg(feature = "tcpclv4")]
+    use hardy_tcpclv4::tls::ClientAuth;
     use serial_test::serial;
+
+    use super::*;
 
     // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
@@ -566,7 +569,7 @@ clas:
             tls.identity.as_ref().unwrap().key_file,
             std::path::PathBuf::from("/etc/hardy/private/server.key")
         );
-        assert_eq!(tls.client_auth, cla::ClientAuth::Required);
+        assert_eq!(tls.client_auth, ClientAuth::Required);
         assert_eq!(
             tls.ca_certs.as_deref(),
             Some(std::path::Path::new("/etc/hardy/ca"))

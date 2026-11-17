@@ -88,15 +88,13 @@ async fn exec_builtin_cla(
             hardy_tcpclv4::tls::Tls::builder()
                 .dangerous()
                 .insecure_skip_verify()
-                .required(true)
-                .build()?,
+                .required(true),
         );
     } else if let Some(ca_dir) = &args.tls_ca {
         builder = builder.tls(
             hardy_tcpclv4::tls::Tls::builder()
                 .ca_certs(ca_dir.clone())
-                .required(true)
-                .build()?,
+                .required(true),
         );
     }
 

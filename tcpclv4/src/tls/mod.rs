@@ -1,8 +1,9 @@
 //! TLS material for the CLA: the loaded rustls configurations for both
 //! roles. This module owns certificate material and nothing else; it knows
 //! nothing about sockets, sessions, or the handshake. Construction chains
-//! from [`Tls::builder`], and the built [`Tls`] is handed to
-//! [`Tcpclv4Builder::tls`](crate::builder::Tcpclv4Builder::tls).
+//! from [`Tls::builder`], and the builder is handed to
+//! [`Tcpclv4Builder::tls`](crate::builder::Tcpclv4Builder::tls), which
+//! loads it at build.
 //! The deliberately insecure debug trust policy lives in `verifier`.
 
 use std::sync::Arc;
