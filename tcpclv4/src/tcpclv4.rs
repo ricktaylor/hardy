@@ -136,6 +136,8 @@ impl Tcpclv4 {
     /// Initiates a TCP connection to a remote peer (RFC 9174 Section 3).
     ///
     /// Retries up to 5 times on timeout before returning an error. Returns [`cla::Error::Disconnected`] before registration and once the entity has unregistered.
+    ///
+    /// Dropping the returned future abandons the dial. A session it had already negotiated stays up, registered like any other, and [`disconnected`](Self::disconnected) waits for it.
     pub async fn connect(&self, remote_addr: &SocketAddr) -> cla::Result<()> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("connect called before on_register!");
@@ -448,6 +450,10 @@ mod tests {
     use std::collections::HashMap;
 
     use hardy_bpv7::eid::IpnNodeId;
+    use tokio::{
+        sync::oneshot,
+        time::{Duration, timeout},
+    };
 
     use super::*;
 
@@ -493,10 +499,13 @@ mod tests {
 
     // A sink that keeps the BPA's adjacency claims (one per address; a
     // second add_peer at a claimed address is refused) and reports every
-    // claim change and delivered bundle on a channel, in order.
+    // claim change and delivered bundle on a channel, in order. Arming
+    // `hold_next_add` parks the next add_peer before it claims: a BPA
+    // that has not yet answered, as over gRPC.
     struct RecordingSink {
         claims: Mutex<HashMap<ClaAddress, Vec<NodeId>>>,
         events: tokio::sync::mpsc::UnboundedSender<Event>,
+        held_add: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     }
 
     impl RecordingSink {
@@ -506,9 +515,21 @@ mod tests {
                 Self {
                     claims: Mutex::new(HashMap::new()),
                     events,
+                    held_add: Mutex::new(None),
                 },
                 rx,
             )
+        }
+
+        // Parks the next add_peer: the receiver resolves once that call
+        // has started, and the call goes on when the sender fires
+        fn hold_next_add(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+            // `oneshot` stays qualified: this module also names the mpsc
+            // and BPA stream receivers
+            let (started_tx, started_rx) = oneshot::channel();
+            let (release_tx, release_rx) = oneshot::channel();
+            *self.held_add.lock().unwrap() = Some((started_tx, release_rx));
+            (started_rx, release_tx)
         }
     }
 
@@ -532,6 +553,11 @@ mod tests {
         }
 
         async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
+            let held = self.held_add.lock().unwrap().take();
+            if let Some((started, release)) = held {
+                _ = started.send(());
+                _ = release.await;
+            }
             let mut claims = self.claims.lock().unwrap();
             if claims.contains_key(&cla_addr) {
                 return Ok(false);
@@ -740,6 +766,41 @@ mod tests {
 
         a.on_unregister().await;
         b.on_unregister().await;
+    }
+
+    // A dial abandoned while its session registers leaves that session
+    // whole: it stays registered, and unregisters when it ends, so the
+    // entity is not left holding a pool that no session will ever empty.
+    // The sink parks the registration's add_peer, by which point the
+    // session is already in its pool.
+    #[tokio::test]
+    async fn dial_abandoned_while_registering_leaves_no_orphaned_pool() {
+        let (a, a_sink, _a_events, _a_listen) = entity(1).await;
+        let (b, _b_sink, _b_events, b_listen) = entity(2).await;
+
+        let (registering, release) = a_sink.hold_next_add();
+        let mut dial = Box::pin(a.connect(&b_listen));
+        tokio::select! {
+            r = &mut dial => panic!("connect returned {r:?} before its session registered"),
+            // the timeout only bounds a regression; the dial follows at once
+            r = timeout(Duration::from_secs(10), registering) => {
+                r.expect("the dial never reached registration").unwrap()
+            }
+        }
+        drop(dial);
+        _ = release.send(());
+
+        // The peer goes away, and the session with it
+        b.on_unregister().await;
+        // the timeout only bounds a regression; the session ends at once
+        timeout(Duration::from_secs(10), a.disconnected(&b_listen))
+            .await
+            .expect("the abandoned dial's session was never unregistered");
+
+        // Unregistration waits for the session's task, which withdraws the
+        // adjacency its registration claimed
+        a.on_unregister().await;
+        assert!(a_sink.claims.lock().unwrap().is_empty());
     }
 
     // The transfer MRU sessions advertise is the configured value folded

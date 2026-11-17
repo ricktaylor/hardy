@@ -184,6 +184,8 @@ Following RFC 9174 Section 3.2, session establishment proceeds through:
 4. **Session Initialization**: Exchange SESS_INIT messages with keepalive interval, segment/transfer MRU, and node ID
 5. **Established**: Bidirectional bundle transfer via XFER_SEGMENT/XFER_ACK
 
+One task owns an established session from there: it registers the session with the connection registry, runs it, and unregisters it when it ends. On the dialling side `connect` returns once the session is registered, so a forward that dialled finds its own session. A caller that drops `connect` part-way leaves either no session, or one that is registered and unregisters itself when it ends.
+
 Session termination follows RFC 9174 Section 6: send SESS_TERM, continue receiving, await SESS_TERM reply, close. The implementation handles "terminations passing in the night" where both peers initiate termination simultaneously.
 
 ## Transfer Protocol
