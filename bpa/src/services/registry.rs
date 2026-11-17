@@ -56,9 +56,10 @@ impl Service {
     ///
     /// `Err(bundle)` hands ownership back for parking (the mirror of
     /// `Peer::forward`): the queue has closed (unregistration).
-    // Err(bundle) deliberately hands ownership back to the caller; boxing
-    // the bundle to shrink the Err variant would tax every call site.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "Err(bundle) hands ownership back to the caller; boxing it to shrink the Err variant would allocate on every call"
+    )]
     pub async fn deliver(
         &self,
         bundle: bundle::Bundle,
