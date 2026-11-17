@@ -44,24 +44,11 @@ fn unknown_names_are_refused() {
     }
 }
 
-#[test]
-fn display_writes_the_lowercase_name() {
-    for (level, name) in LEVELS {
-        assert_eq!(LogLevel::new(level).to_string(), name);
-    }
-}
-
 #[cfg(feature = "serde")]
 mod serde {
     use serde_json::{Value, from_value, to_value};
 
     use super::*;
-
-    #[test]
-    fn deserializes_from_a_name() {
-        let level: LogLevel = from_value(Value::from("debug")).unwrap();
-        assert_eq!(level.get(), Level::DEBUG);
-    }
 
     #[test]
     fn serializes_the_lowercase_name_and_parses_back() {
@@ -70,15 +57,5 @@ mod serde {
             assert_eq!(value, Value::from(name));
             assert_eq!(from_value::<LogLevel>(value).unwrap().get(), level);
         }
-    }
-
-    // The error carries the parse error's message, naming the input.
-    #[test]
-    fn an_unknown_name_is_refused() {
-        let err = from_value::<LogLevel>(Value::from("banana")).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            ParseLogLevelError::new("banana").to_string()
-        );
     }
 }

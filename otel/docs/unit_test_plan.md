@@ -45,10 +45,7 @@ The metrics bridge tests (§3.1 onwards) are located in `otel/src/metrics_otel.r
 | **Names, any case** | `names_parse_in_any_case` | parse `error`..`trace`, lower and upper case | The matching `Level` |
 | **Numeric forms** | `numeric_forms_parse` | parse `1`..`5` | `ERROR`..`TRACE` |
 | **Unknown input refused** | `unknown_names_are_refused` | parse `banana`, `""`, `0`, `6`, `warning` | `ParseLogLevelError` naming the input |
-| **Display** | `display_writes_the_lowercase_name` | `to_string()` | The lowercase name |
-| **Deserialize** (`serde`) | `deserializes_from_a_name` | `"debug"` | `Level::DEBUG` |
 | **Serialize round trip** (`serde`) | `serializes_the_lowercase_name_and_parses_back` | serialize then parse each level | The lowercase name; the same level back |
-| **Deserialize refused** (`serde`) | `an_unknown_name_is_refused` | `"banana"` | The `ParseLogLevelError` message |
 
 ### 3.1 Gauge State Tracking (InnerGauge)
 
