@@ -33,7 +33,7 @@ pub struct MockBpa {
     /// The declarations the last `register_cla` carried.
     pub declared_init: hardy_async::sync::spin::Mutex<Option<cla::ClaInit>>,
     pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
-    pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::RoutingAgent>>>,
+    pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::Agent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
     pub last_cla_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockClaSink>>>,
     pub last_raw_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn raw::Service>>>,
@@ -139,7 +139,7 @@ impl BpaRegistration for MockBpa {
     async fn register_routing_agent(
         &self,
         _name: String,
-        agent: Arc<dyn routing::RoutingAgent>,
+        agent: Arc<dyn routing::Agent>,
     ) -> routing::Result<Vec<NodeId>> {
         let sink = Arc::new(MockRoutingSink::new());
         *self.last_routing_sink.lock() = Some(sink.clone());
@@ -161,7 +161,7 @@ struct RawServiceSinkWrapper(Arc<MockRawServiceSink>);
 struct ServiceSinkWrapper(Arc<MockServiceSink>);
 
 #[async_trait]
-impl routing::RoutingSink for RoutingSinkWrapper {
+impl routing::Sink for RoutingSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }

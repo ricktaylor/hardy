@@ -15,7 +15,7 @@ use crate::{
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
-    routing::{RibBuilder, RoutingAgent},
+    routing::{Agent, RibBuilder},
     service::{
         Service, raw,
         registry::{Kind, ServiceRegistryBuilder},
@@ -200,7 +200,7 @@ impl BpaBuilder {
     }
 
     /// Registers a routing agent, to be initialized when the BPA is built.
-    pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn RoutingAgent>) -> Self {
+    pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn Agent>) -> Self {
         self.rib_builder.insert(name.into(), agent);
         self
     }

@@ -89,7 +89,7 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
     async fn register_routing_agent(
         &self,
         name: String,
-        agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
+        agent: Arc<dyn hardy_bpa::routing::Agent>,
     ) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
         routing::register_routing_agent(self.grpc_addr.clone(), name, agent).await
     }

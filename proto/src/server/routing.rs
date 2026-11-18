@@ -1,7 +1,7 @@
 use super::*;
 use proto::routing::*;
 
-type RoutingSink = Arc<dyn hardy_bpa::routing::RoutingSink>;
+type Sink = Arc<dyn hardy_bpa::routing::Sink>;
 
 fn routing_error_to_status(e: hardy_bpa::routing::Error) -> tonic::Status {
     match e {
@@ -13,13 +13,13 @@ fn routing_error_to_status(e: hardy_bpa::routing::Error) -> tonic::Status {
     }
 }
 
-struct RemoteRoutingAgent {
-    sink: Mutex<Option<RoutingSink>>,
+struct RemoteAgent {
+    sink: Mutex<Option<Sink>>,
     proxy: Once<RpcProxy<Result<BpaToAgent, tonic::Status>, AgentToBpa>>,
 }
 
-impl RemoteRoutingAgent {
-    fn sink(&self) -> Result<RoutingSink, tonic::Status> {
+impl RemoteAgent {
+    fn sink(&self) -> Result<Sink, tonic::Status> {
         self.sink
             .lock()
             .clone()
@@ -84,10 +84,10 @@ impl RemoteRoutingAgent {
 }
 
 #[async_trait]
-impl hardy_bpa::routing::RoutingAgent for RemoteRoutingAgent {
+impl hardy_bpa::routing::Agent for RemoteAgent {
     async fn on_register(
         &self,
-        sink: Box<dyn hardy_bpa::routing::RoutingSink>,
+        sink: Box<dyn hardy_bpa::routing::Sink>,
         _node_ids: &[hardy_bpv7::eid::NodeId],
     ) {
         *self.sink.lock() = Some(Arc::from(sink));
@@ -105,7 +105,7 @@ impl hardy_bpa::routing::RoutingAgent for RemoteRoutingAgent {
 }
 
 struct Handler {
-    agent: Arc<RemoteRoutingAgent>,
+    agent: Arc<RemoteAgent>,
 }
 
 #[async_trait]
@@ -172,7 +172,7 @@ async fn run_routing_session(
     mut channel_receiver: tonic::Streaming<AgentToBpa>,
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
 ) {
-    let agent = Arc::new(RemoteRoutingAgent {
+    let agent = Arc::new(RemoteAgent {
         sink: Mutex::new(None),
         proxy: Once::new(),
     });
@@ -217,7 +217,7 @@ async fn run_routing_session(
         .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
 }
 
-/// Create a new RoutingAgent gRPC service.
+/// Create a new routing agent gRPC service.
 pub fn new_routing_agent_service(
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
     tasks: &hardy_async::TaskPool,
@@ -234,7 +234,7 @@ pub fn new_routing_agent_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::routing::RoutingAgent;
+    use hardy_bpa::routing::Agent;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // ── Mock BPA routing sink ────────────────────────────────────────
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl hardy_bpa::routing::RoutingSink for MockSink {
+    impl hardy_bpa::routing::Sink for MockSink {
         async fn unregister(&self) {
             self.unregistered.store(true, Ordering::Relaxed);
         }
@@ -279,11 +279,11 @@ mod tests {
     // A mock sink whose `unregister()` re-enters `agent.on_unregister()`,
     // simulating the BPA calling back into the agent during cleanup.
     struct ReentrantSink {
-        agent: Arc<RemoteRoutingAgent>,
+        agent: Arc<RemoteAgent>,
     }
 
     #[async_trait]
-    impl hardy_bpa::routing::RoutingSink for ReentrantSink {
+    impl hardy_bpa::routing::Sink for ReentrantSink {
         async fn unregister(&self) {
             self.agent.on_unregister().await;
         }
@@ -312,7 +312,7 @@ mod tests {
     // SRV-02: After registration stores a sink, `sink()` returns it.
     #[test]
     fn srv_02_sink_available_after_register() {
-        let agent = RemoteRoutingAgent {
+        let agent = RemoteAgent {
             sink: Mutex::new(None),
             proxy: Once::new(),
         };
@@ -331,8 +331,8 @@ mod tests {
     // `Err(Unavailable)`.
     #[test]
     fn srv_03_sink_unavailable_after_unregister() {
-        let agent = RemoteRoutingAgent {
-            sink: Mutex::new(Some(Arc::new(MockSink::new()) as RoutingSink)),
+        let agent = RemoteAgent {
+            sink: Mutex::new(Some(Arc::new(MockSink::new()) as Sink)),
             proxy: Once::new(),
         };
 
@@ -353,7 +353,7 @@ mod tests {
     // held across `.await` in `if let Some(sink) = self.sink.lock().take()`.
     #[tokio::test]
     async fn srv_04_spin_lock_not_held_across_await() {
-        let agent = Arc::new(RemoteRoutingAgent {
+        let agent = Arc::new(RemoteAgent {
             sink: Mutex::new(None),
             proxy: Once::new(),
         });

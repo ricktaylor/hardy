@@ -11,7 +11,7 @@ This document describes the routing infrastructure in the Bundle Protocol Agent 
 
 ## Overview
 
-The BPA routing system consists of two interconnected components, driven by pluggable **Routing Agents** that push routes into the RIB via the `RoutingAgent` / `RoutingSink` trait pair (see `bpa/src/routing/agent/mod.rs`):
+The BPA routing system consists of two interconnected components, driven by pluggable **Routing Agents** that push routes into the RIB via the `routing::Agent` / `routing::Sink` trait pair (see `bpa/src/routing/agent/mod.rs`):
 
 | Component | Purpose | Key Structure |
 |-----------|---------|---------------|
@@ -89,7 +89,7 @@ The internal `Action` enum covers all route types:
 
 When multiple entries exist under the same pattern, precedence follows enum ordering: Drop > AdminEndpoint > Local > Forward > Reflect > Via. Terminal actions (Drop, AdminEndpoint, Local, Reflect) return immediately. Multiple Forward and Via entries under the same pattern accumulate next-hop peers for ECMP selection. Patterns are evaluated in specificity order (most specific first); once a pattern matches and yields any result, no further patterns are consulted.
 
-Routing agents (via the `RoutingSink` trait) can only create `Drop`, `Reflect`, and `Via` actions. `AdminEndpoint`, `Local`, and `Forward` are internal actions managed by the BPA itself.
+Routing agents (via the `routing::Sink` trait) can only create `Drop`, `Reflect`, and `Via` actions. `AdminEndpoint`, `Local`, and `Forward` are internal actions managed by the BPA itself.
 
 ### Route Priority Assignments
 
@@ -322,14 +322,14 @@ See also: the `BundleStatus` rustdoc (`bpa/src/bundle/status.rs`) for detailed s
 
 ## Routing Agent API
 
-External routing protocols interact with the RIB through the `RoutingAgent` / `RoutingSink` trait pair defined in `bpa/src/routing/agent/mod.rs`. This follows the same bidirectional Sink pattern used by CLAs and Services.
+External routing protocols interact with the RIB through the `routing::Agent` / `routing::Sink` trait pair defined in `bpa/src/routing/agent/mod.rs`. This follows the same bidirectional Sink pattern used by CLAs and Services.
 
 ### Trait Overview
 
 | Trait | Direction | Methods |
 |-------|-----------|---------|
-| `RoutingAgent` | BPA → Agent | `on_register(sink, node_ids)`, `on_unregister()` |
-| `RoutingSink` | Agent → BPA | `add_route(pattern, action, priority)`, `remove_route(...)`, `unregister()` |
+| `routing::Agent` | BPA → Agent | `on_register(sink, node_ids)`, `on_unregister()` |
+| `routing::Sink` | Agent → BPA | `add_route(pattern, action, priority)`, `remove_route(...)`, `unregister()` |
 
 The Sink automatically injects the agent's registered name as the route `source`, so each agent can only manage its own routes. When the Sink is dropped, the BPA removes all routes from that agent.
 
@@ -348,7 +348,7 @@ sequenceDiagram
 
 ### Built-in Agents
 
-- **`StaticRoutingAgent`** — installs a fixed set of routes on registration. Used by the `ping` tool; `bpa-server/static_routes` implements its own file-driven `StaticRoutesAgent` over the same trait pair.
+- **`routing::StaticAgent`** — installs a fixed set of routes on registration. Used by the `ping` tool; `bpa-server/static_routes` implements its own file-driven `StaticRoutesAgent` over the same trait pair.
 
 ### gRPC Support
 

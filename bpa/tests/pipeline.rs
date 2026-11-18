@@ -8,7 +8,8 @@ use core::{
     time::Duration,
 };
 use hardy_bpa::{
-    Bytes, async_trait,
+    Bytes,
+    async_trait,
     bpa::{Bpa, BpaRegistration},
     cla,
     filter::{
@@ -16,7 +17,9 @@ use hardy_bpa::{
         slots::MetadataDelta,
     },
     node_ids::NodeIds,
-    routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
+    // `routing::Sink` stays qualified: the bare `Sink` here is the service
+    // sink imported below.
+    routing::{self, Agent, RouteAction, StaticAgent},
     service::{self, SendOptions, Service, Sink, StatusNotify, raw},
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
@@ -4929,7 +4932,7 @@ async fn early_route_drop_never_awaits_the_payload() {
         .unwrap();
     bpa.register_routing_agent(
         "drop-routes".to_string(),
-        Arc::new(StaticRoutingAgent::new(&[
+        Arc::new(StaticAgent::new(&[
             (
                 "ipn:0.9.99".parse().unwrap(),
                 RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
@@ -5027,12 +5030,12 @@ async fn early_route_drop_never_awaits_the_payload() {
 /// A routing agent that hands its sink to the test, which installs and
 /// withdraws routes at chosen moments.
 struct SinkAgent {
-    sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn routing::Sink>>,
 }
 
 #[async_trait]
-impl RoutingAgent for SinkAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+impl Agent for SinkAgent {
+    async fn on_register(&self, sink: Box<dyn routing::Sink>, _node_ids: &[NodeId]) {
         self.sink.call_once(|| sink);
     }
 
@@ -5333,7 +5336,7 @@ async fn originate_route_drop_never_awaits_the_payload() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
     bpa.register_routing_agent(
         "drop-routes".to_string(),
-        Arc::new(StaticRoutingAgent::new(&[
+        Arc::new(StaticAgent::new(&[
             (
                 "ipn:0.9.99".parse().unwrap(),
                 RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),

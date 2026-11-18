@@ -143,7 +143,7 @@ Each component type has a dedicated Registry that manages registration, lifecycl
 | `cla::registry::ClaRegistry` | `Cla` | `cla::Sink` | Convergence layer adapters |
 | `services::registry::ServiceRegistry` | `Service` | `ServiceSink` | Low-level bundle services |
 | `services::registry::ServiceRegistry` | `Application` | `ApplicationSink` | High-level payload services |
-| `routing::Rib` (via `routing::agent`) | `RoutingAgent` | `RoutingSink` | Dynamic routing protocols |
+| `routing::Rib` (via `routing::agent`) | `routing::Agent` | `routing::Sink` | Dynamic routing protocols |
 
 BPSec key management is not a registry: the embedding application injects a single `KeyProvider` through `BpaBuilder::key_provider`.
 

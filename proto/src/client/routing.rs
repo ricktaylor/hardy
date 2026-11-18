@@ -16,7 +16,7 @@ impl Sink {
 }
 
 #[async_trait]
-impl hardy_bpa::routing::RoutingSink for Sink {
+impl hardy_bpa::routing::Sink for Sink {
     async fn add_route(
         &self,
         pattern: hardy_eid_patterns::EidPattern,
@@ -65,7 +65,7 @@ impl hardy_bpa::routing::RoutingSink for Sink {
 }
 
 struct Handler {
-    agent: Weak<dyn hardy_bpa::routing::RoutingAgent>,
+    agent: Weak<dyn hardy_bpa::routing::Agent>,
 }
 
 #[async_trait]
@@ -90,7 +90,7 @@ impl ProxyHandler for Handler {
 pub async fn register_routing_agent(
     grpc_addr: String,
     name: String,
-    agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
+    agent: Arc<dyn hardy_bpa::routing::Agent>,
 ) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
     let mut client = routing_agent_client::RoutingAgentClient::connect(grpc_addr.clone())
         .await
@@ -165,7 +165,6 @@ pub async fn register_routing_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::routing::{RoutingAgent, RoutingSink};
     use hardy_bpv7::eid::NodeId;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::mpsc;
@@ -176,7 +175,7 @@ mod tests {
     struct MockRoutingAgent {
         registered: AtomicBool,
         unregister_count: AtomicUsize,
-        sink: Mutex<Option<Box<dyn RoutingSink>>>,
+        sink: Mutex<Option<Box<dyn hardy_bpa::routing::Sink>>>,
     }
 
     impl MockRoutingAgent {
@@ -198,8 +197,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl RoutingAgent for MockRoutingAgent {
-        async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+    impl hardy_bpa::routing::Agent for MockRoutingAgent {
+        async fn on_register(&self, sink: Box<dyn hardy_bpa::routing::Sink>, _node_ids: &[NodeId]) {
             *self.sink.lock() = Some(sink);
             self.registered.store(true, Ordering::Relaxed);
         }

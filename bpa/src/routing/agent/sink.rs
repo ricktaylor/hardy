@@ -1,6 +1,6 @@
 use hardy_eid_patterns::EidPattern;
 
-use super::{Error, Result, RoutingSink};
+use super::{Error, Result};
 use crate::{
     Arc, Weak, async_trait,
     routing::{action::RouteAction, rib::Rib},
@@ -32,8 +32,10 @@ impl Sink {
     }
 }
 
+// This module's `Sink` is the implementation the BPA hands out, so the
+// trait it serves stays qualified.
 #[async_trait]
-impl RoutingSink for Sink {
+impl super::Sink for Sink {
     async fn unregister(&self) {
         if let Some(rib) = self.rib.upgrade() {
             rib.unregister_agent(&self.name).await;

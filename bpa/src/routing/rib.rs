@@ -22,7 +22,7 @@ use tracing::{debug, info, trace};
 use tracing::instrument;
 
 use super::{
-    Error, Result, RoutingAgent, TableId,
+    Agent, Error, Result, TableId,
     action::{Action, InternalAction, RouteAction},
     agent::sink::Sink,
     table::{Entry, LookupResult, RouteTable, Trail},
@@ -133,7 +133,7 @@ pub struct Decision {
 pub struct Rib {
     snapshot: ArcSwap<RouteTable>,
     table: Mutex<RouteTable>,
-    agents: spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
+    agents: spin::Mutex<HashMap<String, Arc<dyn Agent>>>,
     node_ids: Arc<NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
     // Random across BPA instances (unpredictable), but consistent within
@@ -155,7 +155,7 @@ pub struct Rib {
 }
 
 pub struct RibBuilder {
-    agents: Vec<(String, Arc<dyn RoutingAgent>)>,
+    agents: Vec<(String, Arc<dyn Agent>)>,
     service_priority: u32,
 }
 
@@ -167,7 +167,7 @@ impl RibBuilder {
         }
     }
 
-    pub fn insert(&mut self, name: String, agent: Arc<dyn RoutingAgent>) {
+    pub fn insert(&mut self, name: String, agent: Arc<dyn Agent>) {
         self.agents.push((name, agent));
     }
 
@@ -570,7 +570,7 @@ impl Rib {
     pub(crate) async fn register_agent(
         self: &Arc<Self>,
         name: String,
-        agent: Arc<dyn RoutingAgent>,
+        agent: Arc<dyn Agent>,
     ) -> Result<Vec<NodeId>> {
         {
             let mut agents = self.agents.lock();

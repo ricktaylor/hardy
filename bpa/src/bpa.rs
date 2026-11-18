@@ -14,7 +14,7 @@ use crate::{
     node_ids::NodeIds,
     otel_metrics,
     policy::FlowControllerFactory,
-    routing::{self, Rib, RoutingAgent},
+    routing::{self, Agent, Rib},
     service::{self, Service, raw, registry::ServiceRegistry},
     storage::store::Store,
 };
@@ -113,13 +113,13 @@ use crate::{
 ///
 /// # For Routing Agent Implementors
 ///
-/// Routing agents receive [`routing::RoutingSink`] in
-/// [`routing::RoutingAgent::on_register`]. Key Sink methods:
+/// Routing agents receive [`routing::Sink`] in
+/// [`routing::Agent::on_register`]. Key Sink methods:
 ///
 /// - `add_route()` / `remove_route()` - Manage routes in the RIB (source auto-injected)
 /// - `unregister()` - Disconnect from the BPA
 ///
-/// For simple static route sets, use [`routing::StaticRoutingAgent`] instead
+/// For simple static route sets, use [`routing::StaticAgent`] instead
 /// of implementing the trait manually.
 ///
 /// # For Service Implementors
@@ -189,8 +189,8 @@ pub trait BpaRegistration: Send + Sync {
 
     /// Registers a routing agent with the BPA.
     ///
-    /// The agent receives a [`routing::RoutingSink`] via
-    /// [`routing::RoutingAgent::on_register`] to manage routes in the RIB.
+    /// The agent receives a [`routing::Sink`] via
+    /// [`routing::Agent::on_register`] to manage routes in the RIB.
     ///
     /// `name` identifies this agent instance, and is the source recorded
     /// against every route it adds.
@@ -199,7 +199,7 @@ pub trait BpaRegistration: Send + Sync {
     async fn register_routing_agent(
         &self,
         name: String,
-        agent: Arc<dyn RoutingAgent>,
+        agent: Arc<dyn Agent>,
     ) -> routing::Result<Vec<NodeId>>;
 }
 
@@ -365,7 +365,7 @@ impl BpaRegistration for Bpa {
     async fn register_routing_agent(
         &self,
         name: String,
-        agent: Arc<dyn RoutingAgent>,
+        agent: Arc<dyn Agent>,
     ) -> routing::Result<Vec<NodeId>> {
         self.rib.register_agent(name, agent).await
     }
