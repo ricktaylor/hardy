@@ -4,7 +4,6 @@
 //! services, and applications to connect to a BPA instance.
 
 use super::*;
-use hardy_async::sync::spin::Once;
 use proxy::*;
 
 mod application;

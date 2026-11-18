@@ -4,32 +4,32 @@ use hardy_bpv7::eid::Eid;
 use super::*;
 use proto::service::*;
 
-// The BPA's end of a remote application: it holds the sink the session
-// sends through, and forwards deliveries through the proxy standing in
-// for the far application.
+// The BPA's end of a remote application: it forwards deliveries through
+// the proxy standing in for the far application, and the application
+// reaches the BPA back through the sink.
 struct Application {
     sink: Arc<dyn Sink>,
     endpoint: Eid,
-    // The application is built before the proxy, which needs a handler
-    // holding the application, so the proxy arrives once the session is
-    // running.
-    proxy: Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
+    proxy: Arc<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
     async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::service::Result<app_to_bpa::Msg> {
-        let proxy = self.proxy.get().ok_or_else(|| {
-            error!("call made before the session started!");
-            hardy_bpa::service::Error::Disconnected
-        })?;
-
-        match proxy.call(msg).await {
+        match self.proxy.call(msg).await {
             Ok(None) => Err(hardy_bpa::service::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
             Err(e) => Err(hardy_bpa::service::Error::Internal(e.into())),
         }
     }
+}
 
+// The far application's end of the session: every request it makes lands
+// on the sink its registration handed back.
+struct Handler {
+    sink: Arc<dyn Sink>,
+}
+
+impl Handler {
     async fn send(&self, request: AppSendRequest) -> Result<bpa_to_app::Msg, tonic::Status> {
         let mut options = None;
         if let Some(mut f) = request.options {
@@ -77,9 +77,7 @@ impl Application {
 #[async_trait]
 impl hardy_bpa::service::Service for Application {
     async fn shutdown(&self) -> hardy_bpa::service::Result<()> {
-        if let Some(proxy) = self.proxy.get() {
-            proxy.shutdown().await;
-        }
+        self.proxy.shutdown().await;
         Ok(())
     }
 
@@ -160,10 +158,6 @@ impl hardy_bpa::service::Service for Application {
     }
 }
 
-struct Handler {
-    app: Arc<Application>,
-}
-
 #[async_trait]
 impl ProxyHandler for Handler {
     type SMsg = bpa_to_app::Msg;
@@ -171,7 +165,7 @@ impl ProxyHandler for Handler {
 
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         let msg = match msg {
-            app_to_bpa::Msg::Send(msg) => self.app.send(msg).await,
+            app_to_bpa::Msg::Send(msg) => self.send(msg).await,
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;
@@ -185,14 +179,9 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        // The far application is gone: unregister, which takes this
-        // application down with the session. `cancel` rather than
-        // `shutdown`, because the proxy task awaiting this handler is one
-        // of the tasks being stopped.
-        self.app.sink.unregister().await;
-        if let Some(proxy) = self.app.proxy.get() {
-            proxy.cancel();
-        }
+        // The far application is gone: unregister, which takes the
+        // application down with the session.
+        self.sink.unregister().await;
     }
 }
 
@@ -227,70 +216,74 @@ impl application_server::Application for Service {
 }
 
 async fn run_application_session(
-    mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToApp, tonic::Status>>,
-    mut channel_receiver: tonic::Streaming<AppToBpa>,
+    channel_sender: tokio::sync::mpsc::Sender<Result<BpaToApp, tonic::Status>>,
+    channel_receiver: tonic::Streaming<AppToBpa>,
     bpa: Arc<dyn hardy_bpa::service::Registrar>,
 ) {
-    // Filled by the registration handshake below, which the BPA drives
-    // through the factory.
-    let mut registered = None;
-
-    let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
-        match msg {
-            app_to_bpa::Msg::Register(request) => {
-                let service_id = request
-                    .service_id
-                    .as_ref()
-                    .map(|service_id| match service_id {
-                        register_request::ServiceId::Dtn(s) => {
-                            hardy_bpv7::eid::Service::Dtn(s.clone().into())
-                        }
-                        register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
-                    })
-                    .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
-                let app = bpa
-                    .register_service(
-                        Some(service_id),
-                        factory_fn(|cx: Context| {
-                            Ok(Arc::new(Application {
-                                sink: cx.sink,
-                                endpoint: cx.endpoint,
-                                proxy: Once::new(),
-                            }))
-                        }),
-                    )
-                    .await
-                    .map_err(|e| tonic::Status::from_error(e.into()))?;
-
-                let endpoint_id = app.endpoint.to_string();
-                registered = Some(app);
-
-                Ok(bpa_to_app::Msg::Register(RegisterResponse { endpoint_id }))
-            }
-            _ => {
-                warn!("Application sent incorrect message: {msg:?}");
-                Err(tonic::Status::internal(format!(
-                    "Unexpected response: {msg:?}"
-                )))
-            }
+    let (proxy, msg_id, opening) = match RpcProxy::accept(channel_sender, channel_receiver).await {
+        Ok(session) => session,
+        Err(e) => {
+            warn!("Application session failed to open: {e}");
+            return;
         }
-    })
-    .await;
-
-    if let Err(e) = result {
-        warn!("Application registration failed: {e}");
-        return;
-    }
-
-    let Some(app) = registered else {
-        warn!("Application registration completed without registering an application");
-        return;
     };
 
-    // Start the proxy for ongoing communication
-    let handler = Box::new(Handler { app: app.clone() });
-    app.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
+    match register(&*bpa, opening, &proxy).await {
+        Ok(app) => {
+            let response = RegisterResponse {
+                endpoint_id: app.endpoint.to_string(),
+            };
+            let handler = Handler {
+                sink: app.sink.clone(),
+            };
+            proxy.open(
+                msg_id,
+                bpa_to_app::Msg::Register(response),
+                Box::new(handler),
+            );
+        }
+        Err(status) => {
+            warn!("Application registration failed: {status}");
+            proxy.fail(status).await;
+        }
+    }
+}
+
+// Registers the application the opening message asks for, built around
+// the proxy the BPA delivers through.
+async fn register(
+    bpa: &dyn hardy_bpa::service::Registrar,
+    opening: app_to_bpa::Msg,
+    proxy: &Arc<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
+) -> Result<Arc<Application>, tonic::Status> {
+    let app_to_bpa::Msg::Register(request) = opening else {
+        warn!("Application sent incorrect message: {opening:?}");
+        return Err(tonic::Status::internal(format!(
+            "Unexpected response: {opening:?}"
+        )));
+    };
+
+    let service_id = request
+        .service_id
+        .as_ref()
+        .map(|service_id| match service_id {
+            register_request::ServiceId::Dtn(s) => hardy_bpv7::eid::Service::Dtn(s.clone().into()),
+            register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
+        })
+        .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
+
+    bpa.register_service(
+        Some(service_id),
+        factory_fn(|cx: Context| {
+            Ok(Arc::new(Application {
+                sink: cx.sink,
+                endpoint: cx.endpoint,
+                proxy: proxy.clone(),
+            }))
+        }),
+    )
+    .await
+    .map_err(|e| tonic::Status::from_error(e.into()))
 }
 
 /// Create a new Application gRPC service.

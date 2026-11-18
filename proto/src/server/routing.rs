@@ -20,21 +20,32 @@ fn routing_error_to_status(e: hardy_bpa::routing::Error) -> tonic::Status {
     }
 }
 
-// The BPA's end of a remote routing agent: it holds the sink the far
-// agent's routes travel through, and reaches that agent through the
-// proxy.
-//
-// `RouteAction` is also a wire message of this module's proto, so the
-// BPA's type of that name stays fully qualified.
+// The BPA's end of a remote routing agent: the BPA reaches that agent
+// through the proxy, and the agent reaches the BPA back through the sink.
 struct Agent {
     sink: Arc<dyn Sink>,
     node_ids: Arc<NodeIds>,
-    // The agent is built before the proxy, which needs a handler holding
-    // the agent, so the proxy arrives once the session is running.
-    proxy: Once<RpcProxy<Result<BpaToAgent, tonic::Status>, AgentToBpa>>,
+    proxy: Arc<RpcProxy<Result<BpaToAgent, tonic::Status>, AgentToBpa>>,
 }
 
-impl Agent {
+#[async_trait]
+impl hardy_bpa::routing::Agent for Agent {
+    async fn shutdown(&self) -> hardy_bpa::routing::Result<()> {
+        self.proxy.shutdown().await;
+        Ok(())
+    }
+}
+
+// The far agent's end of the session: every request it makes lands on
+// the sink its registration handed back.
+//
+// `RouteAction` is also a wire message of this module's proto, so the
+// BPA's type of that name stays fully qualified.
+struct Handler {
+    sink: Arc<dyn Sink>,
+}
+
+impl Handler {
     async fn add_route(
         &self,
         request: AddRouteRequest,
@@ -85,28 +96,14 @@ impl Agent {
 }
 
 #[async_trait]
-impl hardy_bpa::routing::Agent for Agent {
-    async fn shutdown(&self) -> hardy_bpa::routing::Result<()> {
-        if let Some(proxy) = self.proxy.get() {
-            proxy.shutdown().await;
-        }
-        Ok(())
-    }
-}
-
-struct Handler {
-    agent: Arc<Agent>,
-}
-
-#[async_trait]
 impl ProxyHandler for Handler {
     type SMsg = bpa_to_agent::Msg;
     type RMsg = agent_to_bpa::Msg;
 
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         let msg = match msg {
-            agent_to_bpa::Msg::AddRoute(msg) => self.agent.add_route(msg).await,
-            agent_to_bpa::Msg::RemoveRoute(msg) => self.agent.remove_route(msg).await,
+            agent_to_bpa::Msg::AddRoute(msg) => self.add_route(msg).await,
+            agent_to_bpa::Msg::RemoveRoute(msg) => self.remove_route(msg).await,
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;
@@ -121,13 +118,8 @@ impl ProxyHandler for Handler {
 
     async fn on_close(&self) {
         // The far agent is gone: detach, which withdraws its routes and
-        // takes this agent down with the session. `cancel` rather than
-        // `shutdown`, because the proxy task awaiting this handler is one
-        // of the tasks being stopped.
-        self.agent.sink.unregister().await;
-        if let Some(proxy) = self.agent.proxy.get() {
-            proxy.cancel();
-        }
+        // takes the agent down with the session.
+        self.sink.unregister().await;
     }
 }
 
@@ -162,69 +154,68 @@ impl routing_agent_server::RoutingAgent for Service {
 }
 
 async fn run_routing_session(
-    mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToAgent, tonic::Status>>,
-    mut channel_receiver: tonic::Streaming<AgentToBpa>,
+    channel_sender: tokio::sync::mpsc::Sender<Result<BpaToAgent, tonic::Status>>,
+    channel_receiver: tonic::Streaming<AgentToBpa>,
     bpa: Arc<dyn hardy_bpa::routing::Registrar>,
 ) {
-    // Filled by the registration handshake below, which the BPA drives
-    // through the factory.
-    let mut registered = None;
-
-    // Wait for the client's registration message and process it
-    let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
-        match msg {
-            agent_to_bpa::Msg::Register(request) => {
-                let agent = bpa
-                    .register_routing_agent(
-                        &request.name,
-                        factory_fn(|cx: Context| {
-                            Ok(Arc::new(Agent {
-                                sink: cx.sink,
-                                node_ids: cx.node_ids,
-                                proxy: Once::new(),
-                            }))
-                        }),
-                    )
-                    .await
-                    .map_err(routing_error_to_status)?;
-
-                let response = RegisterRoutingAgentResponse {
-                    node_ids: Vec::<NodeId>::from(agent.node_ids.as_ref())
-                        .into_iter()
-                        .map(|node_id| node_id.to_string())
-                        .collect(),
-                };
-                registered = Some(agent);
-
-                Ok(bpa_to_agent::Msg::Register(response))
-            }
-            _ => {
-                warn!("Routing agent sent incorrect message: {msg:?}");
-                Err(tonic::Status::internal(format!(
-                    "Unexpected response: {msg:?}"
-                )))
-            }
+    let (proxy, msg_id, opening) = match RpcProxy::accept(channel_sender, channel_receiver).await {
+        Ok(session) => session,
+        Err(e) => {
+            warn!("Routing agent session failed to open: {e}");
+            return;
         }
-    })
-    .await;
-
-    if let Err(e) = result {
-        warn!("Routing agent registration failed: {e}");
-        return;
-    }
-
-    let Some(agent) = registered else {
-        warn!("Routing agent registration completed without registering an agent");
-        return;
     };
 
-    // Start the proxy for ongoing communication
-    let handler = Box::new(Handler {
-        agent: agent.clone(),
-    });
-    agent
-        .proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
+    match register(&*bpa, opening, &proxy).await {
+        Ok(agent) => {
+            let response = RegisterRoutingAgentResponse {
+                node_ids: Vec::<NodeId>::from(agent.node_ids.as_ref())
+                    .into_iter()
+                    .map(|node_id| node_id.to_string())
+                    .collect(),
+            };
+            let handler = Handler {
+                sink: agent.sink.clone(),
+            };
+            proxy.open(
+                msg_id,
+                bpa_to_agent::Msg::Register(response),
+                Box::new(handler),
+            );
+        }
+        Err(status) => {
+            warn!("Routing agent registration failed: {status}");
+            proxy.fail(status).await;
+        }
+    }
+}
+
+// Registers the agent the opening message asks for, built around the
+// proxy the BPA reaches it through.
+async fn register(
+    bpa: &dyn hardy_bpa::routing::Registrar,
+    opening: agent_to_bpa::Msg,
+    proxy: &Arc<RpcProxy<Result<BpaToAgent, tonic::Status>, AgentToBpa>>,
+) -> Result<Arc<Agent>, tonic::Status> {
+    let agent_to_bpa::Msg::Register(request) = opening else {
+        warn!("Routing agent sent incorrect message: {opening:?}");
+        return Err(tonic::Status::internal(format!(
+            "Unexpected response: {opening:?}"
+        )));
+    };
+
+    bpa.register_routing_agent(
+        &request.name,
+        factory_fn(|cx: Context| {
+            Ok(Arc::new(Agent {
+                sink: cx.sink,
+                node_ids: cx.node_ids,
+                proxy: proxy.clone(),
+            }))
+        }),
+    )
+    .await
+    .map_err(routing_error_to_status)
 }
 
 /// Create a new routing agent gRPC service.
@@ -290,15 +281,6 @@ mod tests {
         }
     }
 
-    // The agent as the BPA builds it, against a sink the test owns.
-    fn agent(sink: Arc<dyn Sink>) -> Agent {
-        Agent {
-            sink,
-            node_ids: Arc::new(NodeIds::default()),
-            proxy: Once::new(),
-        }
-    }
-
     fn via(eid: &str) -> RouteAction {
         RouteAction {
             action: Some(route_action::Action::Via(eid.to_string())),
@@ -310,9 +292,9 @@ mod tests {
     #[tokio::test]
     async fn srv_02_added_route_reaches_the_sink() {
         let sink = MockSink::new(true);
-        let agent = agent(sink.clone());
+        let handler = Handler { sink: sink.clone() };
 
-        let msg = agent
+        let msg = handler
             .add_route(AddRouteRequest {
                 pattern: "ipn:*.*".to_string(),
                 action: Some(via("ipn:2.0")),
@@ -340,9 +322,9 @@ mod tests {
     #[tokio::test]
     async fn srv_03_removed_route_reaches_the_sink() {
         let sink = MockSink::new(false);
-        let agent = agent(sink.clone());
+        let handler = Handler { sink: sink.clone() };
 
-        let msg = agent
+        let msg = handler
             .remove_route(RemoveRouteRequest {
                 pattern: "ipn:*.*".to_string(),
                 action: Some(via("ipn:2.0")),
@@ -370,9 +352,9 @@ mod tests {
     #[tokio::test]
     async fn srv_04_malformed_route_request_is_refused() {
         let sink = MockSink::new(true);
-        let agent = agent(sink.clone());
+        let handler = Handler { sink: sink.clone() };
 
-        let unparseable_pattern = agent
+        let unparseable_pattern = handler
             .add_route(AddRouteRequest {
                 pattern: "not an EID pattern".to_string(),
                 action: Some(via("ipn:2.0")),
@@ -382,7 +364,7 @@ mod tests {
             .expect_err("the pattern does not parse");
         assert_eq!(unparseable_pattern.code(), tonic::Code::InvalidArgument);
 
-        let missing_action = agent
+        let missing_action = handler
             .add_route(AddRouteRequest {
                 pattern: "ipn:*.*".to_string(),
                 action: None,

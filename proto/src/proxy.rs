@@ -44,26 +44,93 @@ pub trait ProxyHandler: Send + Sync {
 type PendingMap<R> =
     Arc<Mutex<Option<HashMap<u32, tokio::sync::oneshot::Sender<Result<R, tonic::Status>>>>>>;
 
+/// The answer to the message that opened a session, and whether the
+/// session carries on behind it.
+enum Opening<S> {
+    /// The session is open: everything held back follows the answer.
+    Accepted(S),
+    /// The answer is the session's last word.
+    Refused(S),
+}
+
+/// What a serving end holds back until its session opens: the answer it
+/// owes the peer, and the inbound stream it has yet to serve.
+struct Unopened<S, R> {
+    answer: tokio::sync::oneshot::Sender<Opening<S>>,
+    stream: tonic::Streaming<R>,
+}
+
 /// Writer half: reads from a channel and sends on the gRPC outbound stream.
 ///
 /// This is a dedicated task that owns the outbound direction. Anyone can send
 /// messages by cloning `write_tx`. Analogous to `tcpclv4::writer::SessionWriter`.
 async fn writer_task<S>(
-    mut write_rx: tokio::sync::mpsc::Receiver<S>,
+    opening: Option<tokio::sync::oneshot::Receiver<Opening<S>>>,
+    write_rx: tokio::sync::mpsc::Receiver<S>,
     tx: tokio::sync::mpsc::Sender<S>,
     cancel: hardy_async::CancellationToken,
+) {
+    if send_opening(opening, &tx, &cancel).await {
+        relay(write_rx, &tx, &cancel).await;
+    }
+
+    // The writer owns the outbound direction, so its exit ends the session.
+    // Cancelling here is also what lets `fail` return as soon as a refusal
+    // is on its way, rather than wait on the peer.
+    cancel.cancel();
+}
+
+/// Sends the answer a serving end owes the message that opened its
+/// session, and reports whether anything follows it.
+///
+/// Holding the rest of the session behind this answer is what keeps a
+/// component the BPA puts to work the moment it is registered from
+/// reaching the peer before its registration response does. A connecting
+/// end owes no answer, so `None` opens the session outright.
+async fn send_opening<S>(
+    opening: Option<tokio::sync::oneshot::Receiver<Opening<S>>>,
+    tx: &tokio::sync::mpsc::Sender<S>,
+    cancel: &hardy_async::CancellationToken,
+) -> bool {
+    let Some(opening) = opening else {
+        return true;
+    };
+
+    let opening = tokio::select! {
+        opening = opening => opening,
+        _ = cancel.cancelled() => return false,
+    };
+
+    match opening {
+        // The session let the proxy go without answering.
+        Err(_) => false,
+        // A refusal is the session's last word.
+        Ok(Opening::Refused(msg)) => {
+            let _ = tx.send(msg).await;
+            false
+        }
+        Ok(Opening::Accepted(msg)) => tx
+            .send(msg)
+            .await
+            .inspect_err(|_| debug!("Outbound channel closed"))
+            .is_ok(),
+    }
+}
+
+/// Forwards what the session produces until it is cancelled or either end
+/// of the channel closes.
+async fn relay<S>(
+    mut write_rx: tokio::sync::mpsc::Receiver<S>,
+    tx: &tokio::sync::mpsc::Sender<S>,
+    cancel: &hardy_async::CancellationToken,
 ) {
     loop {
         tokio::select! {
             msg = write_rx.recv() => {
-                match msg {
-                    Some(msg) => {
-                        if tx.send(msg).await.is_err() {
-                            debug!("Outbound channel closed");
-                            break;
-                        }
-                    }
-                    None => break,
+                let Some(msg) = msg else { break };
+                if tx.send(msg).await.is_err() {
+                    debug!("Outbound channel closed");
+                    break;
                 }
             }
             _ = cancel.cancelled() => break,
@@ -209,8 +276,8 @@ pub enum Side {
 
 impl Side {
     // The first id this side hands out; both step by 2 from here, so the
-    // client's odd ids and the server's even ids never collide. The pre-run
-    // handshake uses 0, which is over before any of these are minted.
+    // client's odd ids and the server's even ids never collide. The message
+    // that opens a session carries 0, which neither side mints.
     fn first_id(self) -> u32 {
         match self {
             Side::Client => 1,
@@ -219,7 +286,7 @@ impl Side {
     }
 }
 
-/// The serving end of a handshake, whose outbound items carry the RPC's
+/// The serving end of a session, whose outbound items carry the RPC's
 /// terminal status.
 impl<T, R> RpcProxy<Result<T, tonic::Status>, R>
 where
@@ -228,44 +295,66 @@ where
     T: SendMsg + Send + 'static,
     T::Msg: Send,
 {
-    /// Synchronous receive-then-send for the pre-proxy handshake phase.
-    /// Used before `run()` is called, when the caller owns both halves directly.
+    /// Reads the message that opens a session and stands a proxy up
+    /// around it, handing back that message and the id its answer carries.
     ///
-    /// A refusal from `f` travels to the peer as the stream's own status
-    /// before it is returned here, so the caller learns why the handshake
-    /// failed rather than watching the stream disappear.
-    pub async fn recv<F, Fut>(
-        channel_sender: &mut Sender<Result<T, tonic::Status>>,
-        channel_receiver: &mut tonic::Streaming<R>,
-        f: F,
-    ) -> Result<(), tonic::Status>
-    where
-        F: FnOnce(R::Msg) -> Fut,
-        Fut: Future<Output = Result<T::Msg, tonic::Status>>,
-    {
+    /// The session is not live yet: nothing goes out and nothing is read
+    /// until [`open`](Self::open) or [`fail`](Self::fail) settles the
+    /// answer the peer is waiting for.
+    pub async fn accept(
+        channel_sender: Sender<Result<T, tonic::Status>>,
+        mut channel_receiver: tonic::Streaming<R>,
+    ) -> Result<(Arc<Self>, u32, R::Msg), tonic::Status> {
         let msg = channel_receiver
             .message()
             .await?
-            .ok_or(tonic::Status::unavailable("Server shut down"))?;
+            .ok_or_else(|| tonic::Status::unavailable("Session closed before it opened"))?;
 
         let msg_id = msg.msg_id();
-        let outcome = match msg.msg() {
-            Ok(msg) => f(msg).await,
-            Err(status) => Err(status),
-        };
-
-        let msg = match outcome {
-            Ok(msg) => msg,
+        let opening = match msg.msg() {
+            Ok(opening) => opening,
             Err(status) => {
-                channel_sender.send(Err(status.clone())).await.ok();
+                // There is no proxy to refuse through yet, so the status
+                // goes out on the raw stream.
+                let _ = channel_sender.send(Err(status.clone())).await;
                 return Err(status);
             }
         };
 
-        channel_sender
-            .send(SendMsg::compose(msg_id, msg))
-            .await
-            .map_err(|e| tonic::Status::unavailable(format!("Server shut down: {e}")))
+        let proxy = Self::new(channel_sender, Side::Server, Some(channel_receiver));
+        Ok((Arc::new(proxy), msg_id, opening))
+    }
+
+    /// Answers the opening message and brings the session up: `handler`
+    /// takes everything the peer sends from here on, and whatever the
+    /// session has produced in the meantime follows the answer out.
+    pub fn open(
+        &self,
+        msg_id: u32,
+        msg: T::Msg,
+        handler: Box<dyn ProxyHandler<SMsg = T::Msg, RMsg = R::Msg>>,
+    ) {
+        // Bind before matching, so the lock is released whichever way it goes.
+        let unopened = self.unopened.lock().take();
+        if let Some(Unopened { answer, stream }) = unopened {
+            let _ = answer.send(Opening::Accepted(SendMsg::compose(msg_id, msg)));
+            self.read(stream, handler);
+        }
+    }
+
+    /// Refuses the opening message: `status` becomes the RPC's terminal
+    /// status, and the session never comes up.
+    ///
+    /// Returns once the refusal is on its way, so a caller that lets the
+    /// proxy go on this path does not take the refusal down with it.
+    pub async fn fail(&self, status: tonic::Status) {
+        let unopened = self.unopened.lock().take();
+        let Some(Unopened { answer, .. }) = unopened else {
+            return;
+        };
+
+        let _ = answer.send(Opening::Refused(Err(status)));
+        self.tasks.cancel_token().cancelled().await;
     }
 }
 
@@ -280,6 +369,9 @@ where
     write_tx: tokio::sync::mpsc::Sender<S>,
     pending: PendingMap<R::Msg>,
     next_msg_id: AtomicU32,
+    /// What a serving end owes its peer, until it opens or refuses the
+    /// session. `None` throughout for a connecting end.
+    unopened: Mutex<Option<Unopened<S, R>>>,
     /// Reader, writer, and per-request handlers.
     tasks: hardy_async::TaskPool,
 }
@@ -322,36 +414,70 @@ where
     /// cancel and drain them, or drop the proxy to cancel them.
     ///
     /// After this call, use `call()` to send messages and await responses.
+    /// A serving end, which owes its peer an answer before anything else,
+    /// starts with [`accept`](Self::accept) instead.
     pub fn run(
         channel_sender: Sender<S>,
         channel_receiver: tonic::Streaming<R>,
         handler: Box<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
         side: Side,
     ) -> Self {
+        let proxy = Self::new(channel_sender, side, None);
+        proxy.read(channel_receiver, handler);
+        proxy
+    }
+
+    /// Spawns the writer, which is all a session has before it opens.
+    fn new(channel_sender: Sender<S>, side: Side, unopened: Option<tonic::Streaming<R>>) -> Self {
         let tasks = hardy_async::TaskPool::new();
         let (write_tx, write_rx) = tokio::sync::mpsc::channel(16);
         let pending: PendingMap<R::Msg> = Arc::new(Mutex::new(Some(HashMap::new())));
 
+        // A serving end owes the peer an answer to the message that opened
+        // the session. Until it settles, the writer holds every other
+        // message back and the inbound stream stays unread, so the peer
+        // reads the answer first and no work arrives before there is a
+        // handler to take it.
+        let (unopened, opening) = match unopened {
+            Some(stream) => {
+                let (answer, opening) = tokio::sync::oneshot::channel();
+                (Some(Unopened { answer, stream }), Some(opening))
+            }
+            None => (None, None),
+        };
+
         let writer_cancel = tasks.cancel_token().clone();
         hardy_async::spawn!(tasks, "rpc_proxy_writer", async move {
-            writer_task(write_rx, channel_sender, writer_cancel).await;
+            writer_task(opening, write_rx, channel_sender, writer_cancel).await;
         });
-
-        let reader = Reader::new(
-            channel_receiver,
-            write_tx.clone(),
-            pending.clone(),
-            Arc::from(handler),
-            tasks.clone(),
-        );
-        hardy_async::spawn!(tasks, "rpc_proxy_reader", async move { reader.run().await });
 
         Self {
             write_tx,
             pending,
             next_msg_id: AtomicU32::new(side.first_id()),
+            unopened: Mutex::new(unopened),
             tasks,
         }
+    }
+
+    /// Spawns the reader, which serves the peer through `handler`.
+    fn read(
+        &self,
+        channel_receiver: tonic::Streaming<R>,
+        handler: Box<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
+    ) {
+        let reader = Reader::new(
+            channel_receiver,
+            self.write_tx.clone(),
+            self.pending.clone(),
+            Arc::from(handler),
+            self.tasks.clone(),
+        );
+        hardy_async::spawn!(
+            self.tasks,
+            "rpc_proxy_reader",
+            async move { reader.run().await }
+        );
     }
 
     /// Send a message and await the correlated response.
@@ -391,22 +517,13 @@ where
         r.map(Some)
     }
 
-    /// Cancel the proxy without awaiting task completion.
-    ///
-    /// Called when the BPA unregisters this component. Safe to call from
-    /// any context, including from within a handler task. Tasks exit
-    /// asynchronously.
-    pub fn cancel(&self) {
-        self.tasks.cancel_token().cancel();
-    }
-
     /// Cancel all tasks and await their completion.
     ///
-    /// Idempotent. The reader cancels the pool on exit, so once the connection
-    /// is gone the guard below short-circuits any re-entrant call from
-    /// `on_close`: it returns instead of awaiting its own task. A
-    /// `shutdown` from within a still-running handler would still
-    /// self-deadlock; use [`cancel`](Self::cancel) there.
+    /// Idempotent. The reader and the writer both cancel the pool on exit,
+    /// so once the connection is gone the guard below short-circuits any
+    /// re-entrant call from `on_close`: it returns instead of awaiting its
+    /// own task. A `shutdown` from within a still-running handler would
+    /// still self-deadlock; drop the proxy there instead.
     pub async fn shutdown(&self) {
         if self.tasks.is_cancelled() {
             return;
