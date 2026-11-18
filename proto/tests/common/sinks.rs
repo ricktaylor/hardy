@@ -98,7 +98,7 @@ impl cla::Sink for MockClaSink {
         Ok(true)
     }
 
-    async fn transfer_outcome(
+    async fn report_transfer(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: cla::TransferOutcome,

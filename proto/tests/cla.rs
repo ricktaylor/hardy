@@ -8,44 +8,53 @@ mod common;
 use common::MockBpa;
 use core::num::{NonZeroU32, NonZeroU64};
 use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::cla::{self, Address, ClaInit, ForwardOutcome};
+use hardy_bpa::cla::{
+    self, Address, Context, Factory, ForwardOutcome, RegistrarExt, Request, Sink, Terms, factory_fn,
+};
+use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// A mock CLA that records lifecycle callbacks and forward requests.
+// A mock CLA that records the context it was built from and the forward
+// requests the BPA pushes at it.
 struct MockCla {
-    registered: AtomicBool,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn cla::Sink>>>,
-    // The effective cap on_register delivered (outer None = not called).
-    max_bundle_size: hardy_async::sync::spin::Mutex<Option<Option<NonZeroU64>>>,
+    sink: Arc<dyn Sink>,
+    node_ids: Arc<NodeIds>,
+    terms: Terms,
     forwarded: AtomicBool,
     // Answer Accepted (deferring the outcome) instead of Sent.
     defer: bool,
 }
 
 impl MockCla {
-    fn new() -> Self {
-        Self {
-            registered: AtomicBool::new(false),
-            sink: hardy_async::sync::spin::Mutex::new(None),
-            max_bundle_size: hardy_async::sync::spin::Mutex::new(None),
-            forwarded: AtomicBool::new(false),
-            defer: false,
-        }
+    // A mock answering every forward terminally.
+    fn factory() -> impl Factory<Component = Self> {
+        Self::build(Request::default(), false)
     }
 
-    fn new_deferring() -> Self {
-        Self {
-            defer: true,
-            ..Self::new()
-        }
+    // A mock declaring `request`, for the registration round trip.
+    fn declaring(request: Request) -> impl Factory<Component = Self> {
+        Self::build(request, false)
     }
 
-    fn take_sink(&self) -> Option<Box<dyn cla::Sink>> {
-        self.sink.lock().take()
+    // A mock answering every forward Accepted, resolving the transfer
+    // later through the sink.
+    fn deferring() -> impl Factory<Component = Self> {
+        Self::build(Request::default(), true)
+    }
+
+    fn build(request: Request, defer: bool) -> impl Factory<Component = Self> {
+        factory_fn(request, move |cx: Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                node_ids: cx.node_ids,
+                terms: cx.terms,
+                forwarded: AtomicBool::new(false),
+                defer,
+            }))
+        })
     }
 
     fn is_forwarded(&self) -> bool {
@@ -55,19 +64,6 @@ impl MockCla {
 
 #[async_trait]
 impl cla::Cla for MockCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        max_bundle_size: Option<NonZeroU64>,
-    ) {
-        *self.sink.lock() = Some(sink);
-        *self.max_bundle_size.lock() = Some(max_bundle_size);
-        self.registered.store(true, Ordering::Relaxed);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _queue: Option<u32>,
@@ -91,31 +87,18 @@ async fn cla_cli_01_registration() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
-    let cla = Arc::new(MockCla::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
+    let cla = RemoteBpa::new(grpc_addr)
+        .register_cla("test-cla", MockCla::factory())
         .await
         .expect("registration should succeed");
 
-    assert!(!node_ids.is_empty(), "should receive at least one node ID");
     assert!(
-        cla.registered.load(Ordering::Relaxed),
-        "CLA should have received on_register"
-    );
-    assert!(
-        cla.sink.lock().is_some(),
-        "CLA should have a sink after registration"
+        !Vec::<NodeId>::from(cla.node_ids.as_ref()).is_empty(),
+        "should receive at least one node ID"
     );
 
     // Clean up
-    drop(cla.take_sink());
+    cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -125,31 +108,22 @@ async fn cla_cli_02_dispatch_bundle() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
-    let cla = Arc::new(MockCla::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
+    let cla = RemoteBpa::new(grpc_addr)
+        .register_cla("test-cla", MockCla::factory())
         .await
         .expect("registration should succeed");
 
-    let sink = cla.take_sink().expect("CLA should have a sink");
-
     let mut bundle_data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00\x82\x01\x00");
     assert_eq!(
-        sink.dispatch(None, None, &mut bundle_data)
+        cla.sink
+            .dispatch(None, None, &mut bundle_data)
             .await
             .expect("dispatch should succeed"),
         hardy_bpa::cla::Acceptance::Accepted
     );
 
     // Clean up
-    sink.unregister().await;
+    cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -162,16 +136,8 @@ async fn cla_cli_03_forward_bundle() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
-    let cla = Arc::new(MockCla::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
+    let cla = RemoteBpa::new(grpc_addr)
+        .register_cla("test-cla", MockCla::factory())
         .await
         .expect("registration should succeed");
 
@@ -207,7 +173,7 @@ async fn cla_cli_03_forward_bundle() {
     );
 
     // Clean up
-    drop(cla.take_sink());
+    cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -217,24 +183,15 @@ async fn cla_cli_04_add_peer() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
-    let cla = Arc::new(MockCla::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
+    let cla = RemoteBpa::new(grpc_addr)
+        .register_cla("test-cla", MockCla::factory())
         .await
         .expect("registration should succeed");
 
-    let sink = cla.take_sink().expect("CLA should have a sink");
-
     let addr = Address::Tcp("192.168.1.1:4556".parse().unwrap());
     let peer_node: NodeId = "ipn:2.0".parse().unwrap();
-    let added = sink
+    let added = cla
+        .sink
         .add_peer(addr, &[peer_node])
         .await
         .expect("add_peer should succeed");
@@ -242,7 +199,7 @@ async fn cla_cli_04_add_peer() {
     assert!(added, "peer should be added");
 
     // Clean up
-    sink.unregister().await;
+    cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -252,23 +209,14 @@ async fn cla_cli_05_remove_peer() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
-    let cla = Arc::new(MockCla::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
+    let cla = RemoteBpa::new(grpc_addr)
+        .register_cla("test-cla", MockCla::factory())
         .await
         .expect("registration should succeed");
 
-    let sink = cla.take_sink().expect("CLA should have a sink");
-
     let addr = Address::Tcp("192.168.1.1:4556".parse().unwrap());
-    let removed = sink
+    let removed = cla
+        .sink
         .remove_peer(&addr)
         .await
         .expect("remove_peer should succeed");
@@ -276,7 +224,7 @@ async fn cla_cli_05_remove_peer() {
     assert!(removed, "peer should be removed");
 
     // Clean up
-    sink.unregister().await;
+    cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -288,16 +236,8 @@ async fn cla_cli_06_deferred_outcome() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
-    let cla = Arc::new(MockCla::new_deferring());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
+    let cla = RemoteBpa::new(grpc_addr)
+        .register_cla("test-cla", MockCla::deferring())
         .await
         .expect("registration should succeed");
 
@@ -337,11 +277,10 @@ async fn cla_cli_06_deferred_outcome() {
     // The CLA resolves the transfer; the outcome arrives at the BPA sink
     // keyed by the same bundle id. The call is correlated, so the outcome is
     // recorded by the time it returns.
-    let client_sink = cla.take_sink().expect("CLA should have a sink");
-    client_sink
-        .transfer_outcome(&bundle_id, cla::TransferOutcome::Completed)
+    cla.sink
+        .report_transfer(&bundle_id, cla::TransferOutcome::Completed)
         .await
-        .expect("transfer_outcome should succeed");
+        .expect("report_transfer should succeed");
 
     assert_eq!(
         sink.outcomes(),
@@ -350,82 +289,81 @@ async fn cla_cli_06_deferred_outcome() {
     );
 
     // Clean up
-    drop(client_sink);
+    cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
 // CLA-CLI-07: the registration declarations round-trip the wire: the whole
-// `ClaInit` — address type, lane count, and declared limit — reaches the
-// BPA's register_cla, and the effective cap the BPA hands to on_register
-// comes back in the response and reaches the CLA's on_register. Declared
-// and effective caps are distinct values, so a relay that echoes the wrong
-// side cannot pass.
+// `Request` (address type, lane count, and declared limit) reaches the
+// BPA's registrar, and the terms the BPA settles come back in the response
+// and reach the CLA's context. Declared and settled limits are distinct
+// values, so a relay that echoes the wrong side cannot pass.
 #[tokio::test]
-async fn cla_cli_07_cla_init_round_trip() {
-    let declared = ClaInit {
-        address_type: Some(hardy_bpa::cla::AddressType::Tcp),
-        lane_count: Some(NonZeroU32::new(4).unwrap()),
-        max_bundle_size: Some(NonZeroU64::new(1024 * 1024).unwrap()),
-    };
-    let effective = NonZeroU64::new(512 * 1024).unwrap();
+async fn cla_cli_07_declarations_round_trip() {
+    let lanes = NonZeroU32::new(4).unwrap();
+    let declared = NonZeroU64::new(1024 * 1024).unwrap();
+    let settled = NonZeroU64::new(512 * 1024).unwrap();
 
-    let bpa = Arc::new(MockBpa::with_effective_max_bundle_size(effective));
+    let bpa = Arc::new(MockBpa::with_max_reception_size(settled));
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
-    let cla = Arc::new(MockCla::new());
-    RemoteBpa::new(grpc_addr)
-        .register_cla("test-cla".to_string(), cla.clone(), None, declared)
+    let cla = RemoteBpa::new(grpc_addr)
+        .register_cla(
+            "test-cla",
+            MockCla::declaring(Request {
+                address_type: Some(cla::AddressType::Tcp),
+                lane_count: Some(lanes),
+                max_reception_size: Some(declared),
+            }),
+        )
         .await
         .expect("registration should succeed");
 
+    let request = (*bpa.declared_request.lock()).expect("The BPA should have seen a request");
+    assert_eq!(request.address_type, Some(cla::AddressType::Tcp));
+    assert_eq!(request.lane_count, Some(lanes));
+    assert_eq!(request.max_reception_size, Some(declared));
+
     assert_eq!(
-        *bpa.declared_init.lock(),
-        Some(declared),
-        "The BPA should receive the CLA's declarations intact"
-    );
-    assert_eq!(
-        *cla.max_bundle_size.lock(),
-        Some(Some(effective)),
-        "The CLA should receive the BPA's effective cap"
+        cla.terms,
+        Terms {
+            lane_count: Some(lanes),
+            max_reception_size: Some(settled),
+        },
+        "The CLA should receive the terms the BPA settled"
     );
 
     // Clean up
-    drop(cla.take_sink());
+    cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
-// CLA-CLI-08: an empty `ClaInit` round-trips as absent in both directions —
-// every declaration reaches the BPA as None, and a BPA with no negotiated
-// cap reaches the CLA as None (the same decode an old, pre-field BPA's
+// CLA-CLI-08: an empty `Request` round-trips as absent in both directions:
+// every declaration reaches the BPA as None, and a BPA that settles no
+// limit reaches the CLA as None (the same decode an old, pre-field BPA's
 // response produces).
 #[tokio::test]
 async fn cla_cli_08_absent_declarations_round_trip_as_none() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
-    let cla = Arc::new(MockCla::new());
-    RemoteBpa::new(grpc_addr)
-        .register_cla(
-            "test-cla".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
+    let cla = RemoteBpa::new(grpc_addr)
+        .register_cla("test-cla", MockCla::factory())
         .await
         .expect("registration should succeed");
 
+    let request = (*bpa.declared_request.lock()).expect("The BPA should have seen a request");
+    assert_eq!(request.address_type, None);
+    assert_eq!(request.lane_count, None);
+    assert_eq!(request.max_reception_size, None);
+
     assert_eq!(
-        *bpa.declared_init.lock(),
-        Some(ClaInit::default()),
-        "The BPA should see no declarations"
-    );
-    assert_eq!(
-        *cla.max_bundle_size.lock(),
-        Some(None),
-        "The CLA should see no negotiated cap"
+        cla.terms,
+        Terms::default(),
+        "The CLA should see no settled terms"
     );
 
     // Clean up
-    drop(cla.take_sink());
+    cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }

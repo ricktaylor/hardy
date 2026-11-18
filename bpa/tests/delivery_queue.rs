@@ -4,14 +4,14 @@
 //! alone — the service consumes or defers it itself), and a later
 //! registration on the same EID delivers them.
 
-use core::{num::NonZeroU64, time::Duration};
+use core::time::Duration;
 use std::{borrow::Cow, sync::Arc};
 
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla,
+    cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     node_ids::NodeIds,
     service::{self, StatusNotify, raw},
     storage::{self, MetadataMemStorage, MetadataStorage},
@@ -97,22 +97,19 @@ impl raw::Service for HoldService {
 }
 
 struct IngressCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
+}
+
+impl IngressCla {
+    fn factory() -> impl Factory<Component = Self> {
+        factory_fn(Request::default(), |cx: Context| {
+            Ok(Arc::new(Self { sink: cx.sink }))
+        })
+    }
 }
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
@@ -165,7 +162,7 @@ async fn unregister_sweeps_queued_deliveries() {
         .build()
         .await
         .unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
     let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
     let (svc_a, delivered_a_rx, started_rx, release_tx) = HoldService::new();
@@ -173,17 +170,10 @@ async fn unregister_sweeps_queued_deliveries() {
         .await
         .unwrap();
 
-    let cla = Arc::new(IngressCla {
-        sink: hardy_async::sync::spin::Once::new(),
-    });
-    bpa.register_cla(
-        "ingress".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = bpa
+        .register_cla("ingress", IngressCla::factory())
+        .await
+        .unwrap();
 
     let dispatch = |payload: &'static [u8]| {
         let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
@@ -201,8 +191,6 @@ async fn unregister_sweeps_queued_deliveries() {
     let (_id1, data1) = dispatch(b"held");
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut data1.clone())
             .await
             .unwrap(),
@@ -217,8 +205,6 @@ async fn unregister_sweeps_queued_deliveries() {
     let (id2, data2) = dispatch(b"queued");
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut data2.clone())
             .await
             .unwrap(),
@@ -412,21 +398,14 @@ async fn registration_does_not_await_the_post_registration_poll() {
         .build()
         .await
         .unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
     // Park a bundle as WaitingForService: destined to a local service that
     // is not yet registered.
-    let cla = Arc::new(IngressCla {
-        sink: hardy_async::sync::spin::Once::new(),
-    });
-    bpa.register_cla(
-        "ingress".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = bpa
+        .register_cla("ingress", IngressCla::factory())
+        .await
+        .unwrap();
     let service_eid: Eid = "ipn:0.1.9".parse().unwrap();
     let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), service_eid.clone())
         .with_lifetime(Duration::from_secs(3600))
@@ -440,8 +419,6 @@ async fn registration_does_not_await_the_post_registration_poll() {
         .id;
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut Bytes::from(data))
             .await
             .unwrap(),

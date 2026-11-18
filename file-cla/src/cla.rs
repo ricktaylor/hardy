@@ -1,49 +1,40 @@
-use core::num::NonZeroU64;
-use std::{path::PathBuf, slice, sync::Arc};
+use std::{path::PathBuf, slice};
 
 use hardy_bpa::{
     Bytes, async_trait, cla,
     stream::{Receiver, buffer_stream},
 };
-use hardy_bpv7::{bundle::Id, eid::NodeId};
-use tracing::{error, warn};
+use hardy_bpv7::bundle::Id;
+use tracing::error;
 
 use crate::Cla;
 
 #[async_trait]
 impl cla::Cla for Cla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        max_bundle_size: Option<NonZeroU64>,
-    ) {
-        // Register all peers with the BPA
+    async fn start(&self) -> cla::Result<()> {
+        // Announce every configured peer: each inbox directory is an
+        // address this CLA can write to.
         for (eid, path) in &self.inboxes {
-            if let Err(e) = sink
+            self.sink
                 .add_peer(
                     cla::Address::Private(Bytes::copy_from_slice(path.as_bytes())),
                     slice::from_ref(eid),
                 )
-                .await
-            {
-                warn!("add_peer() failed: {e}");
-                return;
-            }
+                .await?;
         }
 
-        let sink: Arc<dyn cla::Sink> = sink.into();
-        let sink = self.sink.call_once(|| sink);
-
-        // Start the file watcher if outbox is configured
+        // Watch the outbox, where configured
         if let Some(outbox) = &self.outbox {
-            self.start_watcher(sink.clone(), outbox.clone(), max_bundle_size)
+            self.start_watcher(self.sink.clone(), outbox.clone(), self.max_reception_size)
                 .await;
         }
+
+        Ok(())
     }
 
-    async fn on_unregister(&self) {
+    async fn shutdown(&self) -> cla::Result<()> {
         self.tasks.shutdown().await;
+        Ok(())
     }
 
     // INTERIM BUFFERING: the bundle is written to the inbox file in one go,
@@ -59,11 +50,6 @@ impl cla::Cla for Cla {
         total_len: u64,
         stream: &mut dyn Receiver<cla::Segment>,
     ) -> cla::Result<cla::ForwardOutcome> {
-        let _sink = self.sink.get().ok_or_else(|| {
-            error!("forward called before on_register!");
-            cla::Error::Disconnected
-        })?;
-
         let bundle = buffer_stream(stream, total_len).await?;
 
         if let cla::Address::Private(remote_addr) = cla_addr

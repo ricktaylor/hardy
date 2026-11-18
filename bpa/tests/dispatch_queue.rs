@@ -299,7 +299,7 @@ async fn stale_poller_duplicate_never_redelivers() {
         .build()
         .await
         .unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
     // Both originate and fresh CLA arrivals now route at their doors and
     // execute directly, so the dispatch queue (and the DispatchPending
@@ -565,7 +565,7 @@ async fn slow_claim_does_not_serialize_dispatch() {
         .build()
         .await
         .unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
     // Originate and CLA arrivals route at their doors, so the dispatch
     // queue belongs to the re-dispatch paths: originate to not-yet-

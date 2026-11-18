@@ -183,7 +183,7 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     pub async fn transfer_outcome(
         &self,
-        cla: &cla::registry::Record,
+        cla: &cla::table::Record,
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: cla::TransferOutcome,
     ) {
@@ -445,9 +445,8 @@ enum PerHopRefusal {
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU64;
 
-    use hardy_bpv7::{bundle::Id, eid::NodeId};
+    use hardy_bpv7::bundle::Id;
 
     use super::*;
     use crate::{
@@ -461,16 +460,6 @@ mod tests {
 
     #[async_trait]
     impl cla::Cla for RecordingCla {
-        async fn on_register(
-            &self,
-            _sink: Box<dyn cla::Sink>,
-            _node_ids: &[NodeId],
-            _max_bundle_size: Option<NonZeroU64>,
-        ) {
-        }
-
-        async fn on_unregister(&self) {}
-
         async fn forward(
             &self,
             _lane: Option<u32>,

@@ -147,7 +147,7 @@ mod tests {
     use super::*;
     use crate::{
         bpa::{Bpa, BpaRegistration},
-        cla::ClaInit,
+        cla::{Context, Factory, RegistrarExt, Request, factory_fn},
         service::raw,
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
@@ -157,23 +157,27 @@ mod tests {
     };
 
     struct RecordingCla {
-        sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+        sink: Arc<dyn cla::Sink>,
         offers_tx: flume::Sender<Id>,
+    }
+
+    impl RecordingCla {
+        fn factory() -> (impl Factory<Component = Self>, flume::Receiver<Id>) {
+            let (offers_tx, offers_rx) = flume::bounded(16);
+            (
+                factory_fn(Request::default(), move |cx: Context| {
+                    Ok(Arc::new(Self {
+                        sink: cx.sink,
+                        offers_tx,
+                    }))
+                }),
+                offers_rx,
+            )
+        }
     }
 
     #[async_trait]
     impl cla::Cla for RecordingCla {
-        async fn on_register(
-            &self,
-            sink: Box<dyn cla::Sink>,
-            _node_ids: &[NodeId],
-            _max_bundle_size: Option<NonZeroU64>,
-        ) {
-            self.sink.call_once(|| sink);
-        }
-
-        async fn on_unregister(&self) {}
-
         async fn forward(
             &self,
             _lane: Option<u32>,
@@ -338,7 +342,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        bpa.start(true).await;
+        assert!(bpa.start(true).await.is_empty());
 
         // start(true) awaits recovery to completion, so the reset is
         // visible the moment it returns — no wait is involved.
@@ -354,22 +358,9 @@ mod tests {
         );
 
         // A route to the destination appears; the bundle is re-offered
-        let (offers_tx, offers_rx) = flume::bounded(16);
-        let cla = Arc::new(RecordingCla {
-            sink: hardy_async::sync::spin::Once::new(),
-            offers_tx,
-        });
-        bpa.register_cla(
-            "recording-2".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
-        .await
-        .unwrap();
+        let (factory, offers_rx) = RecordingCla::factory();
+        let cla = bpa.register_cla("recording-2", factory).await.unwrap();
         cla.sink
-            .get()
-            .unwrap()
             .add_peer(
                 cla::Address::Private("peer-2".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
@@ -439,27 +430,14 @@ mod tests {
             .build()
             .await
             .unwrap();
-        bpa.start(true).await;
+        assert!(bpa.start(true).await.is_empty());
 
         // A route to the destination: the recovered bundle is dispatched to
         // it, whether recovery raced ahead of the peer (parked Waiting, then
         // re-dispatched on the route event) or found it in place.
-        let (offers_tx, offers_rx) = flume::bounded(16);
-        let cla = Arc::new(RecordingCla {
-            sink: hardy_async::sync::spin::Once::new(),
-            offers_tx,
-        });
-        bpa.register_cla(
-            "recording-3".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
-        .await
-        .unwrap();
+        let (factory, offers_rx) = RecordingCla::factory();
+        let cla = bpa.register_cla("recording-3", factory).await.unwrap();
         cla.sink
-            .get()
-            .unwrap()
             .add_peer(
                 cla::Address::Private("peer-3".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
@@ -588,7 +566,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        bpa.start(true).await;
+        assert!(bpa.start(true).await.is_empty());
 
         // start(true) awaits recovery to completion, so both re-parks are
         // visible the moment it returns — no wait is involved.

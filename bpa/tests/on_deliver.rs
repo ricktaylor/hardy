@@ -2,11 +2,11 @@
 //! door — and `stream::buffer_stream`, the whole-buffer convenience used by
 //! services that need a contiguous bundle.
 
-use core::{num::NonZeroU64, time::Duration};
+use core::time::Duration;
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    cla,
+    cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     node_ids::NodeIds,
     service::{self, StatusNotify, raw},
     storage::{MetadataMemStorage, MetadataStorage},
@@ -251,30 +251,19 @@ impl raw::Service for HoldingService {
 // ---------------------------------------------------------------------------
 
 struct IngressCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
 }
 
 impl IngressCla {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
+    fn factory() -> impl Factory<Component = Self> {
+        factory_fn(Request::default(), |cx: Context| {
+            Ok(Arc::new(Self { sink: cx.sink }))
         })
     }
 }
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
@@ -341,7 +330,7 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
     )
     .unwrap();
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
     let inbound = build_bundle(
         &"ipn:0.2.1".parse().unwrap(),
@@ -349,19 +338,10 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
         payload,
     );
 
-    let cla = IngressCla::new();
-    bpa.register_cla(
-        "ingress".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = IngressCla::factory();
+    let cla = bpa.register_cla("ingress", cla).await.unwrap();
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut inbound.clone())
             .await
             .unwrap(),
@@ -388,26 +368,17 @@ async fn streaming_service_receives_single_final_segment() {
     )
     .unwrap();
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
     let (svc, events_rx) = StreamingService::new(false);
     bpa.register_raw_service(Service::Ipn(7), svc.clone())
         .await
         .unwrap();
 
-    let cla = IngressCla::new();
-    bpa.register_cla(
-        "ingress".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = IngressCla::factory();
+    let cla = bpa.register_cla("ingress", cla).await.unwrap();
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(
                 None,
                 None,
@@ -562,7 +533,7 @@ async fn expiry_mid_delivery_rig(
         .build()
         .await
         .unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = StreamingService::new(false);
@@ -589,19 +560,10 @@ async fn expiry_mid_delivery_rig(
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
 
-    let cla = IngressCla::new();
-    bpa.register_cla(
-        "ingress".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = IngressCla::factory();
+    let cla = bpa.register_cla("ingress", cla).await.unwrap();
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut Bytes::from(data))
             .await
             .unwrap(),
@@ -637,8 +599,6 @@ async fn expiry_mid_delivery_rig(
         .expect("Failed to build bundle");
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut Bytes::from(data))
             .await
             .unwrap(),

@@ -12,16 +12,17 @@ fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, ton
         + time::Duration::nanoseconds(t.nanos.into()))
 }
 
-/// A remote BPA client that implements `BpaRegistration` via gRPC.
+/// A remote BPA, reached over gRPC.
 ///
-/// This allows CLAs, services, and applications to connect to a remote BPA
-/// server using the same interface as a local `Bpa` instance.
+/// Implements the same registration doors as a local `Bpa`, so a CLA,
+/// service, application or routing agent attaches to a BPA in another
+/// process through the interface it already uses.
 ///
 /// # Example
 ///
 /// ```ignore
 /// let remote_bpa = RemoteBpa::new("http://[::1]:50051".to_string());
-/// cla.register(&remote_bpa, "tcp0".to_string(), None).await?;
+/// let cla = remote_bpa.register_cla("tcp0", Tcpclv4::builder().build()?).await?;
 /// ```
 pub struct RemoteBpa {
     grpc_addr: String,
@@ -44,18 +45,18 @@ impl RemoteBpa {
 }
 
 #[async_trait]
-impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
-    async fn register_cla(
+impl hardy_bpa::cla::Registrar for RemoteBpa {
+    async fn register_cla_boxed(
         &self,
-        name: String,
-        cla: Arc<dyn hardy_bpa::cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
-        init: hardy_bpa::cla::ClaInit,
-    ) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        // Note: policy is not supported over gRPC currently
-        cla::register_cla(self.grpc_addr.clone(), name, cla, init).await
+        name: &str,
+        factory: hardy_bpa::cla::BoxFactory<'_>,
+    ) -> hardy_bpa::cla::Result<()> {
+        cla::register_cla(self.grpc_addr.clone(), name, factory).await
     }
+}
 
+#[async_trait]
+impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
     async fn register_raw_service(
         &self,
         service_id: hardy_bpv7::eid::Service,

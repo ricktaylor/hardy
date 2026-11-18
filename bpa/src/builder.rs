@@ -7,9 +7,9 @@ use hardy_bpv7::eid::Service as ServiceId;
 use hardy_eid_patterns::EidPattern;
 
 use crate::{
-    Arc,
+    Arc, HashMap,
     bpa::Bpa,
-    cla::{Cla, ClaInit, registry::ClaRegistryBuilder},
+    cla::{BoxFactory, Factory, table::Table},
     dispatcher::{Config as DispatcherConfig, Dispatcher},
     filter::pack::{FilterPack, chains::FilterChains},
     keys::KeyProvider,
@@ -50,7 +50,8 @@ pub struct BpaBuilder {
     bundle_storage: Option<Arc<dyn BundleStorage>>,
     key_provider: Arc<dyn KeyProvider>,
     service_registry_builder: ServiceRegistryBuilder,
-    cla_registry_builder: ClaRegistryBuilder,
+    clas: Vec<(String, BoxFactory<'static>)>,
+    cla_policies: HashMap<String, Arc<dyn FlowControllerFactory>>,
     rib_builder: RibBuilder,
     filter_packs: Vec<FilterPack>,
     primary_block_integrity: bool,
@@ -78,7 +79,8 @@ impl BpaBuilder {
             metadata_storage: None,
             bundle_storage: None,
             service_registry_builder: ServiceRegistryBuilder::new(),
-            cla_registry_builder: ClaRegistryBuilder::new(),
+            clas: Vec::new(),
+            cla_policies: HashMap::new(),
             rib_builder: RibBuilder::new(),
             filter_packs: Vec::new(),
             primary_block_integrity: true,
@@ -161,23 +163,41 @@ impl BpaBuilder {
         self
     }
 
-    /// Registers a CLA, to be initialized when the BPA is built.
+    /// Declares a CLA, built when the BPA is built.
     ///
-    /// `init` carries the CLA's set-once declarations
-    /// ([`ClaInit`]), snapshotted at registration;
-    /// its `max_bundle_size` is the CLA's declared receive limit, folded
-    /// with the BPA's configured cap into the effective value delivered to
-    /// [`Cla::on_register`](crate::cla::Cla).
-    pub fn cla(
+    /// The BPA settles the factory's
+    /// [`Request`](crate::cla::Request) against its own configuration and
+    /// builds the CLA from the [`Terms`](crate::cla::Terms); the CLA is
+    /// inert until [`Bpa::start`](crate::bpa::Bpa::start) starts it, after
+    /// storage recovery. A name already declared fails
+    /// [`build`](Self::build), not this call, so declaration stays
+    /// chainable.
+    pub fn cla<F: Factory + 'static>(self, name: impl Into<String>, factory: F) -> Self {
+        self.cla_boxed(name, BoxFactory::new(factory))
+    }
+
+    /// Declares a CLA from an erased factory, for an embedder choosing
+    /// among factory types of its own.
+    ///
+    /// [`cla`](Self::cla) is the typed door, and erases for the caller.
+    pub fn cla_boxed(mut self, name: impl Into<String>, factory: BoxFactory<'static>) -> Self {
+        self.clas.push((name.into(), factory));
+        self
+    }
+
+    /// Shapes the egress queues feeding the CLA named `name`.
+    ///
+    /// The policy is the BPA's own half of the attachment, chosen by the
+    /// embedder rather than by the CLA, so it applies to a CLA registered
+    /// at runtime exactly as it does to one declared here. A name no CLA
+    /// ever attaches under shapes nothing, and a CLA not named here runs
+    /// unshaped.
+    pub fn egress_policy(
         mut self,
         name: impl Into<String>,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn FlowControllerFactory>>,
-        init: ClaInit,
+        policy: Arc<dyn FlowControllerFactory>,
     ) -> Self {
-        self.cla_registry_builder
-            .insert(name.into(), cla, policy, init)
-            .expect("Failed to insert CLA");
+        self.cla_policies.insert(name.into(), policy);
         self
     }
 
@@ -303,29 +323,36 @@ impl BpaBuilder {
             filter_chains,
         );
 
-        // Both registries park their configured registrations: activation
-        // happens in Bpa::start, after storage recovery.
+        // The service registry parks its configured registrations:
+        // activation happens in Bpa::start, after storage recovery.
         let service_registry = self.service_registry_builder.build(&node_ids)?;
-        let cla_registry = self.cla_registry_builder.build(
-            &node_ids,
-            self.poll_channel_depth.into(),
-            &rib,
-            &store,
-        );
 
-        // TODO: Dispatcher and ClaRegistry still reference each other: the
-        // registry holds the dispatcher, and the dispatcher late-binds the
-        // registry through its Once cell — readers driven from Rib::start
+        // Each declared CLA is built here, and left inert until
+        // Bpa::start: a CLA that opened its transport now would race
+        // storage recovery.
+        let clas = Table::new(
+            node_ids.clone(),
+            &dispatcher,
+            rib.clone(),
+            store.clone(),
+            self.poll_channel_depth.into(),
+            self.cla_policies,
+            self.clas,
+        )?;
+
+        // TODO: Dispatcher and the CLA table still reference each other:
+        // the table holds the dispatcher, and the dispatcher late-binds the
+        // table through its Once cell, so readers driven from Rib::start
         // (poll_waiting) rest on a runtime expect rather than the type
         // system. The start closure fixes the wiring order; the cycle
         // itself remains to be dissolved.
-        start_dispatcher(cla_registry.clone());
+        start_dispatcher(clas.clone());
 
         Ok(Bpa::from_parts(
             node_ids,
             store,
             rib,
-            cla_registry,
+            clas,
             service_registry,
             dispatcher,
         ))

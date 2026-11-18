@@ -4,7 +4,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use hardy_bpa::cla::{Address, Cla as _, ForwardOutcome};
+use hardy_bpa::{
+    cla::{Address, Cla as _, Context, Factory as _, ForwardOutcome, Terms},
+    node_ids::NodeIds,
+};
 use hardy_bpv7::{bundle::FragmentInfo, eid::NodeId};
 use hardy_file_cla::{Cla, Config};
 
@@ -38,7 +41,7 @@ impl hardy_bpa::cla::Sink for StubSink {
         Ok(true)
     }
 
-    async fn transfer_outcome(
+    async fn report_transfer(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _outcome: hardy_bpa::cla::TransferOutcome,
@@ -49,17 +52,23 @@ impl hardy_bpa::cla::Sink for StubSink {
 
 // A registered CLA with a single peer inbox, paired with the `Address` it
 // announced for that inbox.
-async fn registered_cla(inbox: &Path) -> (Cla, Address) {
+async fn registered_cla(inbox: &Path) -> (Arc<Cla>, Address) {
     let peer: NodeId = "ipn:9.0".parse::<NodeId>().unwrap();
-    let cla = Cla::new(&Config {
+    let factory = Cla::factory(&Config {
         outbox: None,
         peers: HashMap::from([(peer, inbox.to_path_buf())]),
     })
     .unwrap();
 
     let peers = Arc::new(Mutex::new(Vec::new()));
-    cla.on_register(Box::new(StubSink(peers.clone())), &[], None)
-        .await;
+    let cla = factory
+        .build(Context::new(
+            Arc::new(StubSink(peers.clone())),
+            Arc::new(NodeIds::default()),
+            Terms::default(),
+        ))
+        .expect("a file CLA builds under any terms");
+    cla.start().await.expect("the peer inbox is announced");
 
     let addr = peers
         .lock()
@@ -197,35 +206,6 @@ async fn test_forward_write_failure_is_internal_error() {
     };
     assert!(
         matches!(err, hardy_bpa::cla::Error::Internal(_)),
-        "got {err:?}"
-    );
-}
-
-// forward() before on_register is Disconnected.
-#[tokio::test]
-async fn test_forward_before_register_is_disconnected() {
-    let dir = tempfile::tempdir().unwrap();
-    let cla = Cla::new(&Config {
-        outbox: None,
-        peers: HashMap::from([("ipn:9.0".parse().unwrap(), dir.path().to_path_buf())]),
-    })
-    .unwrap();
-
-    let addr = Address::Private(hardy_bpa::Bytes::from_static(b"unused"));
-    let Err(err) = cla
-        .forward(
-            None,
-            &addr,
-            &dtn_bundle_id(),
-            4,
-            &mut hardy_bpa::Bytes::from_static(b"data"),
-        )
-        .await
-    else {
-        panic!("expected an error before registration");
-    };
-    assert!(
-        matches!(err, hardy_bpa::cla::Error::Disconnected),
         "got {err:?}"
     );
 }

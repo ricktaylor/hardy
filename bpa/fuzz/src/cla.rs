@@ -1,8 +1,13 @@
-use core::num::{NonZeroU8, NonZeroU64};
+use core::num::NonZeroU8;
 
 use super::*;
-use hardy_async::sync::spin::Once;
-use hardy_bpa::async_trait;
+use hardy_bpa::{
+    async_trait,
+    cla::{
+        self, Acceptance, Address, Context, Factory, ForwardOutcome, Request, Segment, Sink,
+        factory_fn,
+    },
+};
 use hardy_bpv7::eid::{IpnNodeId, NodeId};
 
 #[derive(Arbitrary)]
@@ -54,64 +59,48 @@ impl RandomBundle {
 }
 
 pub struct NullCla {
-    sink: Once<Box<dyn hardy_bpa::cla::Sink>>,
+    sink: Arc<dyn Sink>,
 }
 
 impl NullCla {
-    pub fn new() -> Self {
-        Self { sink: Once::new() }
+    pub fn factory() -> impl Factory<Component = Self> {
+        factory_fn(Request::default(), |cx: Context| {
+            Ok(Arc::new(Self { sink: cx.sink }))
+        })
     }
-    pub async fn dispatch(
-        &self,
-        mut bundle: hardy_bpa::Bytes,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
-        self.sink
-            .get()
-            .expect("dispatch called before registration")
-            .dispatch(None, None, &mut bundle)
-            .await
+
+    pub async fn dispatch(&self, mut bundle: hardy_bpa::Bytes) -> cla::Result<Acceptance> {
+        self.sink.dispatch(None, None, &mut bundle).await
+    }
+
+    fn peer_addr() -> Address {
+        Address::Private("fuzz".as_bytes().into())
     }
 }
 
 #[async_trait]
-impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        sink.add_peer(
-            hardy_bpa::cla::Address::Private("fuzz".as_bytes().into()),
-            &[NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: 2,
-            })],
-        )
-        .await
-        .expect("add_peer failed");
-
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {
-        let Some(sink) = self.sink.get() else {
-            panic!("Extra unregister!");
-        };
-
-        sink.remove_peer(&hardy_bpa::cla::Address::Private("fuzz".as_bytes().into()))
+impl cla::Cla for NullCla {
+    async fn start(&self) -> cla::Result<()> {
+        self.sink
+            .add_peer(
+                Self::peer_addr(),
+                &[NodeId::Ipn(IpnNodeId {
+                    allocator_id: 0,
+                    node_number: 2,
+                })],
+            )
             .await
-            .expect("remove_peer failed");
+            .map(|_| ())
     }
 
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &hardy_bpa::cla::Address,
+        _cla_addr: &Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _total_len: u64,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardOutcome> {
-        Ok(hardy_bpa::cla::ForwardOutcome::Sent)
+        _stream: &mut dyn hardy_bpa::stream::Receiver<Segment>,
+    ) -> cla::Result<ForwardOutcome> {
+        Ok(ForwardOutcome::Sent)
     }
 }

@@ -1,147 +1,188 @@
-//! [`Tcpclv4`]: the TCPCL entity — the CLA that registers with a BPA.
+//! [`Tcpclv4`]: the TCPCL entity, and the parts a BPA builds it from.
 
 use core::{
     fmt::{self, Debug, Formatter},
-    num::{NonZeroU32, NonZeroUsize},
+    num::{NonZeroU32, NonZeroU64, NonZeroUsize},
 };
-use std::{net::TcpListener, sync::Mutex};
+use std::{
+    net::{SocketAddr, TcpListener},
+    sync::{Arc, Mutex},
+};
 
+use hardy_async::TaskPool;
 use hardy_bpa::{
-    async_trait,
-    cla::{self, Address, AddressType, Cla, ClaInit, ForwardOutcome, Sink, TransferOutcome},
+    Bytes, async_trait,
+    cla::{self, Address, Cla, Context, ForwardOutcome, Sink, TransferOutcome},
+    stream::{Receiver, buffer_stream},
 };
-use hardy_bpv7::bundle::Id;
+use hardy_bpv7::{bundle::Id, eid::NodeId};
+use tokio_util::sync::CancellationToken;
+use trace_err::TraceErrResult;
+use tracing::{debug, info};
 
-use super::*;
+#[cfg(feature = "instrument")]
+use tracing::instrument;
 
-use crate::error::Error;
+use crate::{
+    ContactTimeout, KeepaliveInterval,
+    builder::Tcpclv4Builder,
+    config::Config,
+    connection::{
+        self, ConnectionRegistry, connect::Connector, context::ConnectionContext, listen::Listener,
+    },
+    error::Error,
+    session,
+    tls::Tls,
+};
 
-/// Registration-time state from BPA.
-struct Inner {
-    sink: Arc<dyn Sink>,
-    node_ids: Arc<[NodeId]>,
-    // The advertised transfer MRU: the configured value clamped to the
-    // BPA's dispatch size cap, so a peer is never invited to send a
-    // transfer the BPA would deterministically refuse.
+// The MRUs the entity's sessions advertise: the configured values folded
+// with the receive limit the BPA settled on.
+//
+// The settled limit already folds the transfer MRU the entity declared;
+// taking the smaller again guards against a registrar that ignored the
+// declaration, and no settled limit leaves the configured MRU alone. A
+// single segment can never usefully exceed the transfer it belongs to, so
+// the segment MRU folds against the result: a SESS_INIT never invites a
+// segment larger than any completable transfer.
+fn advertised_mrus(
     transfer_mru: NonZeroU64,
-    // The advertised segment MRU, clamped to the transfer MRU above: a
-    // single segment larger than any completable transfer would be an
-    // invitation the session could only answer with XFER_REFUSE.
     segment_mru: NonZeroU64,
+    max_reception_size: Option<NonZeroU64>,
+) -> (NonZeroU64, NonZeroU64) {
+    let folded = max_reception_size.map_or(transfer_mru, |cap| transfer_mru.min(cap));
+    if folded < transfer_mru {
+        info!("Transfer MRU clamped from {transfer_mru} to the BPA's receive limit {folded}");
+    }
+    (folded, segment_mru.min(folded))
+}
+
+// The validated settings `Tcpclv4Builder::build` hands the entity, as
+// against the inputs the builder consumes itself: listen addresses
+// become bound listeners, and the TLS material is loaded.
+pub(crate) struct Settings {
+    pub contact_timeout: ContactTimeout,
+    pub keepalive_interval: KeepaliveInterval,
+    pub connection_rate_limit: NonZeroU32,
+    pub segment_mru: NonZeroU64,
+    pub transfer_mru: NonZeroU64,
+    pub max_idle_connections: usize,
+    pub max_outstanding_transfers: NonZeroUsize,
 }
 
 /// TCPCLv4 Convergence Layer Adapter (RFC 9174).
 ///
 /// Manages TCP connections to peer nodes, including listener and connector
-/// roles, optional TLS, keepalive, and transfer segmentation. Implements
-/// the BPA CLA trait so it can be registered with a BPA instance.
+/// roles, optional TLS, keepalive, and transfer segmentation. A BPA builds
+/// one from the factory [`Tcpclv4::factory`] or
+/// [`Tcpclv4Builder::build`] returns, and
+/// owns it for as long as it stays attached.
 pub struct Tcpclv4 {
     // Builder inputs
     contact_timeout: ContactTimeout,
     keepalive_interval: KeepaliveInterval,
     listeners: Mutex<Vec<TcpListener>>,
     connection_rate_limit: NonZeroU32,
+    // The advertised segment MRU, clamped to the transfer MRU below: a
+    // single segment larger than any completable transfer would be an
+    // invitation the session could only answer with XFER_REFUSE.
     segment_mru: NonZeroU64,
+    // The advertised transfer MRU: the configured value clamped to the
+    // receive limit the BPA settled on, so a peer is never invited to
+    // send a transfer the BPA would deterministically refuse.
     transfer_mru: NonZeroU64,
-    max_idle_connections: usize,
-    max_outstanding_transfers: NonZeroUsize,
     // The listeners' bound addresses, kept for `Debug`: the sockets
     // themselves move to their tasks when the entity starts.
     listen_addresses: Vec<SocketAddr>,
 
     // Computed at construction
-    tls: Option<Arc<tls::Tls>>,
-    registry: Arc<connection::ConnectionRegistry>,
-    session_cancel_token: tokio_util::sync::CancellationToken,
+    tls: Option<Arc<Tls>>,
+    registry: Arc<ConnectionRegistry>,
+    session_cancel_token: CancellationToken,
 
-    // Late-init from registration (single atomic)
-    inner: Once<Inner>,
+    // The BPA side of the attachment
+    sink: Arc<dyn Sink>,
+    node_ids: Arc<[NodeId]>,
 
     // Task management
-    tasks: Arc<hardy_async::TaskPool>,
+    tasks: Arc<TaskPool>,
 }
 
 impl Tcpclv4 {
-    /// Starts building a [`Tcpclv4`] with the defaults documented on the builder's methods.
-    pub fn builder() -> builder::Tcpclv4Builder {
-        builder::Tcpclv4Builder::new()
-    }
-
-    // Assembles the entity from the builder's inputs and the loaded TLS
-    // material; the runtime skeleton (registry, cancellation token, task
-    // pool) is constructed here, next to the fields it initialises.
-    #[allow(clippy::too_many_arguments)]
+    // Assembles the entity from the builder's validated settings, the
+    // bound listening elements, and the context the BPA settled: the
+    // body of the factory `Tcpclv4Builder::build` returns.
     pub(crate) fn new(
-        contact_timeout: ContactTimeout,
-        keepalive_interval: KeepaliveInterval,
+        settings: Settings,
         listeners: Vec<TcpListener>,
-        connection_rate_limit: NonZeroU32,
-        segment_mru: NonZeroU64,
-        transfer_mru: NonZeroU64,
-        max_idle_connections: usize,
-        max_outstanding_transfers: NonZeroUsize,
-        tls: Option<Arc<tls::Tls>>,
-    ) -> Self {
+        tls: Option<Arc<Tls>>,
+        cx: Context,
+    ) -> Arc<Self> {
+        let (transfer_mru, segment_mru) = advertised_mrus(
+            settings.transfer_mru,
+            settings.segment_mru,
+            cx.terms.max_reception_size,
+        );
+
         // A bound socket always has a local address; one it cannot report
         // is left out of the Debug list rather than failing construction.
         let listen_addresses = listeners
             .iter()
             .filter_map(|listener| listener.local_addr().ok())
             .collect();
-        Self {
-            contact_timeout,
-            keepalive_interval,
+
+        Arc::new(Self {
+            contact_timeout: settings.contact_timeout,
+            keepalive_interval: settings.keepalive_interval,
             listeners: Mutex::new(listeners),
-            connection_rate_limit,
+            connection_rate_limit: settings.connection_rate_limit,
             segment_mru,
             transfer_mru,
-            max_idle_connections,
-            max_outstanding_transfers,
             listen_addresses,
             tls,
-            registry: Arc::new(connection::ConnectionRegistry::new(
-                max_idle_connections,
-                max_outstanding_transfers,
+            registry: Arc::new(ConnectionRegistry::new(
+                settings.max_idle_connections,
+                settings.max_outstanding_transfers,
             )),
-            session_cancel_token: tokio_util::sync::CancellationToken::new(),
-            inner: Once::new(),
-            tasks: Arc::new(hardy_async::TaskPool::new()),
-        }
+            session_cancel_token: CancellationToken::new(),
+            sink: cx.sink,
+            node_ids: Vec::from(cx.node_ids.as_ref()).into(),
+            tasks: Arc::new(TaskPool::new()),
+        })
     }
 
-    /// The entity's set-once registration declarations, for the embedder
-    /// to pass to `register_cla`: a TCP address type and the configured
-    /// transfer MRU as the declared receive limit, which the BPA folds
-    /// into the effective `max_bundle_size` reported back at
-    /// registration. The MRU here is the pre-registration declaration:
-    /// once registered, sessions advertise the effective (possibly
-    /// smaller) clamped MRU.
-    pub fn cla_init(&self) -> ClaInit {
-        ClaInit {
-            address_type: Some(AddressType::Tcp),
-            lane_count: None,
-            max_bundle_size: Some(self.transfer_mru),
-        }
+    /// Starts building a [`Tcpclv4`] with the defaults documented on the builder's methods.
+    pub fn builder() -> Tcpclv4Builder {
+        Tcpclv4Builder::new()
     }
 
-    /// Unregisters this CLA from the BPA.
+    /// A factory for the entity `config` describes, binding its listeners
+    /// and loading its TLS material now.
+    ///
+    /// The shorthand for `Tcpclv4Builder::from(config).build()`; take the
+    /// builder itself to adjust a setting the configuration file does not
+    /// carry.
+    ///
+    /// # Errors
+    ///
+    /// The errors of
+    /// [`Tcpclv4Builder::build`].
+    pub fn factory(config: Config) -> Result<impl cla::Factory<Component = Self>, Error> {
+        Tcpclv4Builder::from(config).build()
+    }
+
+    /// Detaches this CLA from the BPA.
     pub async fn unregister(&self) {
-        if let Some(inner) = self.inner.get() {
-            inner.sink.unregister().await;
-        }
+        self.sink.unregister().await;
     }
 
     /// Initiates a TCP connection to a remote peer (RFC 9174 Section 3).
     ///
     /// Retries up to 5 times on timeout before returning an error.
     pub async fn connect(&self, remote_addr: &SocketAddr) -> cla::Result<()> {
-        let ctx = self.connection_context().ok_or_else(|| {
-            error!("connect called before on_register!");
-            cla::Error::Disconnected
-        })?;
+        let ctx = self.connection_context();
 
         for _ in 0..5 {
-            let conn = connection::connect::Connector {
+            let conn = Connector {
                 tasks: self.tasks.clone(),
                 ctx: ctx.clone(),
             };
@@ -159,25 +200,23 @@ impl Tcpclv4 {
     }
 
     /// Creates a ConnectionContext for use in connect/forward operations.
-    fn connection_context(&self) -> Option<connection::context::ConnectionContext> {
-        let inner = self.inner.get()?;
-
-        Some(connection::context::ConnectionContext {
+    fn connection_context(&self) -> ConnectionContext {
+        ConnectionContext {
             contact_timeout: self.contact_timeout,
             keepalive_interval: self.keepalive_interval,
-            segment_mru: inner.segment_mru,
-            transfer_mru: inner.transfer_mru,
-            node_ids: inner.node_ids.clone(),
-            sink: inner.sink.clone(),
+            segment_mru: self.segment_mru,
+            transfer_mru: self.transfer_mru,
+            node_ids: self.node_ids.clone(),
+            sink: self.sink.clone(),
             registry: self.registry.clone(),
             tls: self.tls.clone(),
             session_cancel_token: self.session_cancel_token.clone(),
             task_cancel_token: self.tasks.cancel_token().clone(),
-        })
+        }
     }
 
-    // Registration consumes the entity's sink slot and its bound listener
-    // sockets, so it succeeds exactly once.
+    // Starting consumes the entity's bound listener sockets, so it takes
+    // effect exactly once.
     fn start_listeners(&self) {
         let listeners = std::mem::take(
             &mut *self
@@ -186,13 +225,9 @@ impl Tcpclv4 {
                 .trace_expect("listener mutex poisoned"),
         );
         for listener in listeners {
-            let ctx = self
-                .connection_context()
-                .trace_expect("start_listeners called before registration");
-
-            let acceptor = connection::listen::Listener {
+            let acceptor = Listener {
                 connection_rate_limit: self.connection_rate_limit,
-                ctx,
+                ctx: self.connection_context(),
             };
             self.tasks
                 .spawn(acceptor.listen(self.tasks.clone(), listener));
@@ -200,8 +235,8 @@ impl Tcpclv4 {
     }
 }
 
-// Every builder input and whether the entity is registered; the runtime
-// state (sessions, the BPA sink) has no useful text form. TLS shows only
+// Every input that shapes the entity's behaviour; the runtime state
+// (sessions, the BPA sink) has no useful text form. TLS shows only
 // whether it is required: the material holds key bytes.
 impl Debug for Tcpclv4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -209,8 +244,6 @@ impl Debug for Tcpclv4 {
             .field("listen_addresses", &self.listen_addresses)
             .field("segment_mru", &self.segment_mru)
             .field("transfer_mru", &self.transfer_mru)
-            .field("max_idle_connections", &self.max_idle_connections)
-            .field("max_outstanding_transfers", &self.max_outstanding_transfers)
             .field("connection_rate_limit", &self.connection_rate_limit)
             .field("contact_timeout", &self.contact_timeout)
             .field("keepalive_interval", &self.keepalive_interval)
@@ -218,59 +251,21 @@ impl Debug for Tcpclv4 {
                 "tls_required",
                 &self.tls.as_ref().map(|tls| tls.is_required()),
             )
-            .field("registered", &self.inner.get().is_some())
+            .field("node_ids", &self.node_ids)
             .finish_non_exhaustive()
     }
 }
 
 #[async_trait]
 impl Cla for Tcpclv4 {
-    #[cfg_attr(feature = "instrument", instrument(skip(self, sink)))]
-    async fn on_register(
-        &self,
-        sink: Box<dyn Sink>,
-        node_ids: &[NodeId],
-        max_bundle_size: Option<NonZeroU64>,
-    ) {
-        // The effective cap already folds this entity's declared transfer
-        // MRU (`Tcpclv4::cla_init`) with the BPA's own; the min is kept
-        // as a cheap guard against a registrar that ignored the declaration.
-        // No negotiated cap leaves the configured MRU alone.
-        let transfer_mru =
-            max_bundle_size.map_or(self.transfer_mru, |cap| self.transfer_mru.min(cap));
-        if transfer_mru < self.transfer_mru {
-            info!(
-                "Transfer MRU clamped from {} to the BPA's max bundle size {transfer_mru}",
-                self.transfer_mru
-            );
-        }
-
-        // A single segment can never usefully exceed the transfer it
-        // belongs to, so the advertised segment MRU folds the same way.
-        let segment_mru = self.segment_mru.min(transfer_mru);
-
-        // Registration consumes the entity's sink slot and its bound
-        // listener sockets, so it succeeds exactly once
-        let mut first_registration = false;
-        self.inner.call_once(|| {
-            first_registration = true;
-            Inner {
-                sink: sink.into(),
-                node_ids: node_ids.into(),
-                transfer_mru,
-                segment_mru,
-            }
-        });
-        if !first_registration {
-            warn!("Registration refused: {}", Error::AlreadyRegistered);
-            return;
-        }
-
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn start(&self) -> cla::Result<()> {
         self.start_listeners();
+        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn on_unregister(&self) {
+    async fn shutdown(&self) -> cla::Result<()> {
         // Cancel sessions first so they exit promptly when channels close
         self.session_cancel_token.cancel();
 
@@ -279,6 +274,8 @@ impl Cla for Tcpclv4 {
 
         // Wait for all session tasks to complete
         self.tasks.shutdown().await;
+
+        Ok(())
     }
 
     // INTERIM BUFFERING: the transfer is resolved out-of-band by a spawned
@@ -295,18 +292,14 @@ impl Cla for Tcpclv4 {
         cla_addr: &Address,
         bundle_id: &Id,
         total_len: u64,
-        stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
+        stream: &mut dyn Receiver<cla::Segment>,
     ) -> cla::Result<ForwardOutcome> {
-        let ctx = self.connection_context().ok_or_else(|| {
-            error!("forward called before on_register!");
-            cla::Error::Disconnected
-        })?;
-
         let Address::Tcp(remote_addr) = cla_addr else {
             return Ok(ForwardOutcome::NoNeighbour);
         };
 
-        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+        let ctx = self.connection_context();
+        let bundle = buffer_stream(stream, total_len).await?;
 
         debug!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
 
@@ -330,7 +323,7 @@ impl Cla for Tcpclv4 {
             let _permit = permit;
 
             let outcome = transmit(tasks, &ctx, remote_addr, bundle).await;
-            if let Err(e) = ctx.sink.transfer_outcome(&bundle_id, outcome).await {
+            if let Err(e) = ctx.sink.report_transfer(&bundle_id, outcome).await {
                 debug!("Failed to report transfer outcome: {e}");
             }
         });
@@ -348,9 +341,9 @@ const DIAL_ATTEMPTS: usize = 5;
 // transfer: `Completed` only once the peer has fully acknowledged it.
 async fn transmit(
     tasks: Arc<hardy_async::TaskPool>,
-    ctx: &connection::context::ConnectionContext,
+    ctx: &ConnectionContext,
     remote_addr: SocketAddr,
-    mut bundle: hardy_bpa::Bytes,
+    mut bundle: Bytes,
 ) -> TransferOutcome {
     for _ in 0..DIAL_ATTEMPTS {
         // Use a pooled session, dialing a new connection when the
@@ -386,7 +379,7 @@ async fn transmit(
         };
 
         // Do a new active connect
-        let conn = connection::connect::Connector {
+        let conn = Connector {
             tasks: tasks.clone(),
             ctx: ctx.clone(),
         };
@@ -422,7 +415,19 @@ async fn transmit(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use core::num::NonZeroU64;
+    use std::sync::Arc;
+
+    use hardy_bpa::{
+        async_trait,
+        cla::{self, Acceptance, Address, Context, Factory as _, Sink, Terms, TransferOutcome},
+        node_ids::NodeIds,
+        stream::Receiver,
+    };
+    use hardy_bpv7::{bundle::Id, eid::NodeId};
+
+    use super::Tcpclv4;
+    use crate::{KeepaliveInterval, error::Error, tls::Tls};
 
     struct MockSink;
 
@@ -434,9 +439,9 @@ mod tests {
             &self,
             _peer_node: Option<&NodeId>,
             _peer_addr: Option<&Address>,
-            _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
-        ) -> cla::Result<cla::Acceptance> {
-            Ok(cla::Acceptance::Accepted)
+            _stream: &mut dyn Receiver<cla::Segment>,
+        ) -> cla::Result<Acceptance> {
+            Ok(Acceptance::Accepted)
         }
 
         async fn add_peer(&self, _cla_addr: Address, _node_ids: &[NodeId]) -> cla::Result<bool> {
@@ -447,7 +452,7 @@ mod tests {
             Ok(true)
         }
 
-        async fn transfer_outcome(
+        async fn report_transfer(
             &self,
             _bundle_id: &Id,
             _outcome: TransferOutcome,
@@ -456,80 +461,107 @@ mod tests {
         }
     }
 
+    // Builds the entity under the receive limit a BPA settled on, as the
+    // CLA table does.
+    fn build(
+        factory: impl cla::Factory<Component = Tcpclv4>,
+        max_reception_size: Option<NonZeroU64>,
+    ) -> Arc<Tcpclv4> {
+        let terms = Terms {
+            max_reception_size,
+            ..Default::default()
+        };
+        factory
+            .build(Context::new(
+                Arc::new(MockSink),
+                Arc::new(NodeIds::default()),
+                terms,
+            ))
+            .expect("a TCPCLv4 entity builds under any terms")
+    }
+
     // The transfer MRU sessions advertise is the configured value folded
-    // with the cap negotiated at registration: a smaller negotiated cap
-    // clamps it, a larger or absent one leaves it alone.
-    #[tokio::test]
-    async fn registration_folds_transfer_mru_with_negotiated_cap() {
+    // with the settled receive limit: a smaller limit clamps it, a larger
+    // or absent one leaves it alone.
+    #[test]
+    fn build_folds_transfer_mru_with_the_settled_limit() {
         let configured = NonZeroU64::new(1024 * 1024).unwrap();
         let smaller = NonZeroU64::new(configured.get() / 2).unwrap();
         let larger = NonZeroU64::new(configured.get() * 2).unwrap();
 
-        let cla = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
-        cla.on_register(Box::new(MockSink), &[], Some(smaller))
-            .await;
-        assert_eq!(cla.inner.get().unwrap().transfer_mru, smaller);
+        let factory = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
+        assert_eq!(build(factory, Some(smaller)).transfer_mru, smaller);
 
-        let cla = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
-        cla.on_register(Box::new(MockSink), &[], Some(larger)).await;
-        assert_eq!(cla.inner.get().unwrap().transfer_mru, configured);
+        let factory = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
+        assert_eq!(build(factory, Some(larger)).transfer_mru, configured);
 
-        let cla = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
-        cla.on_register(Box::new(MockSink), &[], None).await;
-        assert_eq!(cla.inner.get().unwrap().transfer_mru, configured);
+        let factory = Tcpclv4::builder().transfer_mru(configured).build().unwrap();
+        assert_eq!(build(factory, None).transfer_mru, configured);
     }
 
     // The segment MRU sessions advertise is clamped to the folded transfer
     // MRU: a SESS_INIT never invites a single segment larger than any
     // completable transfer.
-    #[tokio::test]
-    async fn registration_clamps_segment_mru_to_folded_transfer_mru() {
+    #[test]
+    fn build_clamps_segment_mru_to_the_folded_transfer_mru() {
         let segment = NonZeroU64::new(16 * 1024).unwrap();
         let transfer = NonZeroU64::new(1024 * 1024).unwrap();
         let below_segment = NonZeroU64::new(segment.get() / 2).unwrap();
 
-        // A negotiated cap below the segment MRU drags the segment MRU
+        // A settled limit below the segment MRU drags the segment MRU
         // down along with the transfer MRU.
-        let cla = Tcpclv4::builder()
+        let factory = Tcpclv4::builder()
             .segment_mru(segment)
             .transfer_mru(transfer)
             .build()
             .unwrap();
-        cla.on_register(Box::new(MockSink), &[], Some(below_segment))
-            .await;
-        let inner = cla.inner.get().unwrap();
-        assert_eq!(inner.transfer_mru, below_segment);
-        assert_eq!(inner.segment_mru, below_segment);
+        let cla = build(factory, Some(below_segment));
+        assert_eq!(cla.transfer_mru, below_segment);
+        assert_eq!(cla.segment_mru, below_segment);
 
         // A transfer MRU above the segment MRU leaves it alone.
-        let cla = Tcpclv4::builder()
+        let factory = Tcpclv4::builder()
             .segment_mru(segment)
             .transfer_mru(transfer)
             .build()
             .unwrap();
-        cla.on_register(Box::new(MockSink), &[], None).await;
-        assert_eq!(cla.inner.get().unwrap().segment_mru, segment);
+        assert_eq!(build(factory, None).segment_mru, segment);
+    }
+
+    // The entity declares the TCP address type and its configured
+    // transfer MRU, which is all the BPA needs to settle terms for it.
+    #[test]
+    fn the_request_declares_tcp_and_the_configured_transfer_mru() {
+        let configured = NonZeroU64::new(1024 * 1024).unwrap();
+        let request = Tcpclv4::builder()
+            .transfer_mru(configured)
+            .build()
+            .unwrap()
+            .request();
+        assert_eq!(request.address_type, Some(cla::AddressType::Tcp));
+        assert_eq!(request.max_reception_size, Some(configured));
     }
 
     // RFC 9174 Section 2.1: an entity may support zero or more passive
     // listening elements, each bound during build().
     #[test]
     fn listen_adds_bound_passive_listening_elements() {
-        let cla = Tcpclv4::builder()
+        let factory = Tcpclv4::builder()
             .build()
             .expect("a dial-only plaintext build cannot fail");
-        assert!(cla.listeners.lock().unwrap().is_empty());
+        let cla = build(factory, None);
+        assert!(cla.listen_addresses.is_empty());
         assert!(cla.tls.is_none());
 
-        let cla = Tcpclv4::builder()
+        let factory = Tcpclv4::builder()
             .listen("[::1]:0".parse().unwrap())
             .listen("[::1]:0".parse().unwrap())
             .build()
             .unwrap();
-        let listeners = cla.listeners.lock().unwrap();
-        assert_eq!(listeners.len(), 2);
-        for listener in listeners.iter() {
-            assert_ne!(listener.local_addr().unwrap().port(), 0);
+        let cla = build(factory, None);
+        assert_eq!(cla.listen_addresses.len(), 2);
+        for address in &cla.listen_addresses {
+            assert_ne!(address.port(), 0);
         }
     }
 
@@ -542,7 +574,7 @@ mod tests {
         let Err(err) = Tcpclv4::builder().listen(address).build() else {
             panic!("binding an occupied port must fail");
         };
-        assert!(matches!(err, error::Error::BindListener { .. }));
+        assert!(matches!(err, Error::BindListener { .. }));
     }
 
     // Requiring TLS without an identity leaves listeners nothing they
@@ -552,7 +584,7 @@ mod tests {
         let Err(err) = Tcpclv4::builder()
             .listen("[::1]:0".parse().unwrap())
             .tls(
-                tls::Tls::builder()
+                Tls::builder()
                     .dangerous()
                     .insecure_skip_verify()
                     .required(true),
@@ -561,13 +593,13 @@ mod tests {
         else {
             panic!("listeners under identity-less required TLS must fail");
         };
-        assert!(matches!(err, error::Error::RequiredTlsWithoutIdentity));
+        assert!(matches!(err, Error::RequiredTlsWithoutIdentity));
     }
 
     #[test]
     fn no_keepalive_disables_keepalives() {
-        let cla = Tcpclv4::builder().no_keepalive().build().unwrap();
-        assert!(cla.keepalive_interval.is_disabled());
+        let factory = Tcpclv4::builder().no_keepalive().build().unwrap();
+        assert!(build(factory, None).keepalive_interval.is_disabled());
     }
 
     // RFC 9174 Section 4.7: the negotiated keepalive is the minimum of
@@ -585,15 +617,16 @@ mod tests {
     // observable without touching disk.
     #[test]
     fn required_material_lands_as_the_required_policy() {
-        let cla = Tcpclv4::builder()
+        let factory = Tcpclv4::builder()
             .tls(
-                tls::Tls::builder()
+                Tls::builder()
                     .dangerous()
                     .insecure_skip_verify()
                     .required(true),
             )
             .build()
             .unwrap();
+        let cla = build(factory, None);
         let tls = cla.tls.as_ref().expect("TLS material must be present");
         assert!(tls.is_required());
     }

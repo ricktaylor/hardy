@@ -1,53 +1,38 @@
-//! Integration tests for the size-cap negotiation at CLA registration: the
-//! effective cap delivered to `Cla::on_register` is the minimum of the
-//! BPA's configured policy and the CLA's declared limit, clamped to the
-//! target's addressable bound.
+//! Integration tests for the size-cap negotiation at CLA attachment: the
+//! receive limit settled in `Terms` is the minimum of the BPA's configured
+//! policy and the CLA's declared limit, clamped to the target's
+//! addressable bound.
 
 use core::num::NonZeroU64;
 use std::sync::Arc;
 
 use hardy_bpa::{
     async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     builder::BpaBuilder,
-    cla::{self, Cla, ClaInit},
+    cla::{self, Cla, Context, Factory, RegistrarExt, Request, Terms, factory_fn},
     stream::{Receiver, Segment},
 };
-use hardy_bpv7::eid::NodeId;
 
-/// Records the effective cap `on_register` delivers.
+/// Keeps the terms it was built under.
 struct CapCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-    cap_tx: flume::Sender<Option<NonZeroU64>>,
+    terms: Terms,
 }
 
 impl CapCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Option<NonZeroU64>>) {
-        let (tx, rx) = flume::bounded(1);
-        (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                cap_tx: tx,
-            }),
-            rx,
-        )
+    fn factory(declared: Option<NonZeroU64>) -> impl Factory<Component = Self> {
+        let request = Request {
+            max_reception_size: declared,
+            ..Default::default()
+        };
+        factory_fn(request, |cx: Context| {
+            Ok(Arc::new(Self { terms: cx.terms }))
+        })
     }
 }
 
 #[async_trait]
 impl Cla for CapCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-        let _ = self.cap_tx.send(max_bundle_size);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
@@ -60,25 +45,17 @@ impl Cla for CapCla {
     }
 }
 
-// `on_register` completes before `register_cla` returns, so the recorded
-// cap is already in the channel — no waiting, no timing.
+// The terms are settled before the CLA is built, so the limit it holds is
+// the negotiated one.
 async fn negotiate(builder: BpaBuilder, declared: Option<NonZeroU64>) -> (Bpa, Option<NonZeroU64>) {
     let bpa = builder.build().await.unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
-    let (cla, cap_rx) = CapCla::new();
-    bpa.register_cla(
-        "cap".to_string(),
-        cla,
-        None,
-        ClaInit {
-            max_bundle_size: declared,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    let effective = cap_rx.try_recv().expect("on_register was not called");
+    let cla = bpa
+        .register_cla("cap", CapCla::factory(declared))
+        .await
+        .unwrap();
+    let effective = cla.terms.max_reception_size;
     (bpa, effective)
 }
 
@@ -111,7 +88,7 @@ async fn no_declaration_receives_bpa_cap() {
 }
 
 /// A configured cap beyond the target's addressable bound is clamped to it
-/// at construction, and the clamped value is what registration advertises —
+/// at construction, and the clamped value is what attachment settles on:
 /// the advertised and enforced caps always agree.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn over_addressable_cap_is_clamped_before_advertising() {

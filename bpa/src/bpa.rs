@@ -9,155 +9,57 @@ use tracing::instrument;
 use crate::{
     Arc,
     builder::BpaBuilder,
-    cla::{self, Cla, ClaInit, registry::ClaRegistry},
+    cla::{self, BoxFactory, table::Table},
     dispatcher::Dispatcher,
     node_ids::NodeIds,
     otel_metrics,
-    policy::FlowControllerFactory,
     routing::{self, Agent, Rib},
     service::{self, Service, raw, registry::ServiceRegistry},
     storage::store::Store,
 };
 
-/// Trait for registering CLAs, services and routing agents with a BPA.
+/// Registering services and routing agents with a BPA.
 ///
-/// This trait abstracts the registration interface, allowing components
-/// to work with either a local [`Bpa`] instance or a remote BPA via gRPC.
+/// The trait abstracts the registration interface, so a component works
+/// against a local [`Bpa`] or against a remote BPA reached over gRPC.
+/// CLAs come in through [`cla::Registrar`], a supertrait of this one,
+/// where the BPA builds the component instead of being handed one: a CLA
+/// is constructed from a [`cla::Factory`] and receives its sink in the
+/// [`cla::Context`], so the lifecycle described here is the service and
+/// routing agent one.
 ///
-/// # Component Lifecycle
+/// # Component lifecycle
 ///
-/// Components follow a consistent lifecycle pattern:
+/// A service or routing agent is built by its own crate, where
+/// `new(&Config) -> Result<Self, Error>` validates the configuration
+/// eagerly, so errors surface before registration. A `register_*` method
+/// hands the component over and the BPA calls `on_register` with the sink
+/// the component talks back through, which it then uses until it
+/// unregisters: either by calling `sink.unregister()`, or by the BPA
+/// shutting down and calling `on_unregister`.
 ///
-/// 1. **Construction**: `new(&Config) -> Result<Self, Error>` validates configuration
-///    eagerly. Errors surface at construction time rather than during registration.
+/// # Sink storage
 ///
-/// 2. **Registration**: `register(&Arc<Self>, &dyn BpaRegistration)` calls the
-///    appropriate `register_*` method. The BPA calls `on_register()` on the component,
-///    providing a Sink for communication back to the BPA.
+/// A component keeps its sink for its whole active lifetime, typically in
+/// a `spin::Once`. An `on_register` that returns without storing the sink
+/// has dropped it, and the BPA reads that as a request to unregister.
 ///
-/// 3. **Active**: Component uses Sink methods to interact with the BPA. The Sink
-///    remains valid until unregistration.
+/// After unregistration the sink stays stored but answers
+/// `Error::Disconnected` to everything, so `on_unregister` handles only
+/// the component's own cleanup: stopping tasks, closing connections.
+/// Defensive patterns such as an `Option<Sink>` taken in `on_unregister`
+/// buy nothing.
 ///
-/// 4. **Unregistration**: Either the component calls `sink.unregister()`, or the BPA
-///    initiates shutdown and calls `on_unregister()`.
+/// # For implementors
 ///
-/// # Sink Storage Requirement
-///
-/// **Components MUST store the Sink for their entire active lifetime.**
-///
-/// The Sink is provided in `on_register()` and must be retained (typically in
-/// a `spin::Once<T>` or `OnceLock<T>`) until unregistration. If `on_register()`
-/// returns without storing the Sink, the Sink is dropped and the component is
-/// automatically unregistered.
-///
-/// ```ignore
-/// pub struct MyComponent {
-///     sink: spin::Once<Box<dyn Sink>>,
-///     // ... other fields
-/// }
-///
-/// impl MyTrait for MyComponent {
-///     fn on_register(&self, sink: Box<dyn Sink>) {
-///         // MUST store the sink - dropping it triggers unregistration
-///         self.sink.set(sink);
-///     }
-/// }
-/// ```
-///
-/// # Post-Disconnection Behaviour
-///
-/// After unregistration, the Sink remains stored but becomes non-functional:
-/// all operations return `Error::Disconnected`. Components don't need defensive
-/// patterns like `Option<Sink>` with `take()` in `on_unregister()` - the Sink
-/// can remain stored and post-disconnection calls simply fail gracefully.
-///
-/// This means `on_unregister()` only handles component-specific cleanup (stopping
-/// tasks, closing connections), not Sink lifecycle management.
-///
-/// # Recommended Implementation Pattern
-///
-/// ```ignore
-/// impl MyComponent {
-///     /// Creates a new component. Validates configuration eagerly.
-///     pub fn new(config: &Config) -> Result<Self, Error> {
-///         // Validate and prepare resources
-///         Ok(Self { sink: spin::Once::new(), /* ... */ })
-///     }
-///
-///     /// Registers with the BPA. Returns after Sink is stored.
-///     pub async fn register(
-///         self: &Arc<Self>,
-///         bpa: &dyn BpaRegistration,
-///     ) -> Result<(), Error> {
-///         bpa.register_xxx(/* ... */, self.clone(), /* ... */).await?;
-///         Ok(())
-///     }
-///
-///     /// Explicit unregistration.
-///     pub async fn unregister(&self) {
-///         if let Some(sink) = self.sink.get() {
-///             sink.unregister().await;
-///         }
-///     }
-/// }
-/// ```
-///
-/// # For CLA Implementors
-///
-/// CLAs receive callbacks via the [`cla::Sink`] trait, which is provided
-/// in [`cla::Cla::on_register`]. Key Sink methods:
-///
-/// - `dispatch()` - Submit received bundles to the BPA
-/// - `add_peer()` / `remove_peer()` - Manage peer connections (keyed by CL address)
-/// - `unregister()` - Disconnect from the BPA
-///
-/// # For Routing Agent Implementors
-///
-/// Routing agents receive [`routing::Sink`] in
-/// [`routing::Agent::on_register`]. Key Sink methods:
-///
-/// - `add_route()` / `remove_route()` - Manage routes in the RIB (source auto-injected)
-/// - `unregister()` - Disconnect from the BPA
-///
-/// For simple static route sets, use [`routing::StaticAgent`] instead
-/// of implementing the trait manually.
-///
-/// # For Service Implementors
-///
-/// Services receive [`raw::Sink`] (whole bundles) or
-/// [`Sink`](service::Sink) (payloads only), provided in their respective
-/// `on_register` methods.
+/// A routing agent receives [`routing::Sink`] in
+/// [`routing::Agent::on_register`], and maintains its routes with
+/// `add_route` and `remove_route`; a fixed route set needs no trait
+/// implementation at all, only [`routing::StaticAgent`]. A service
+/// receives [`raw::Sink`] for whole bundles, or [`Sink`](service::Sink)
+/// for payloads alone, in its own `on_register`.
 #[async_trait]
-pub trait BpaRegistration: Send + Sync {
-    /// Registers a Convergence Layer Adapter with the BPA.
-    ///
-    /// The CLA receives a [`cla::Sink`] via [`cla::Cla::on_register`] to
-    /// communicate back to the BPA.
-    ///
-    /// Implementations must drive [`cla::Cla::on_register`] to completion
-    /// before returning: once this method resolves, callers may rely on
-    /// everything `on_register` delivers (the sink, the effective cap)
-    /// having reached the CLA.
-    ///
-    /// `name` identifies this CLA instance, and `policy` is the optional
-    /// egress policy that shapes its traffic.
-    ///
-    /// `init` carries the CLA's set-once declarations
-    /// ([`cla::ClaInit`]), snapshotted at registration. Its
-    /// `max_bundle_size` is the CLA's declared receive limit; the BPA
-    /// folds it with its own configured cap into the effective value
-    /// delivered to [`cla::Cla::on_register`] — dispatch enforces the
-    /// BPA's configured cap, not the folded per-CLA value.
-    ///
-    /// Returns the BPA's node IDs.
-    async fn register_cla(
-        &self,
-        name: String,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn FlowControllerFactory>>,
-        init: ClaInit,
-    ) -> cla::Result<Vec<NodeId>>;
-
+pub trait BpaRegistration: cla::Registrar {
     /// Registers a payload-only service with the BPA.
     ///
     /// The service receives a [`Sink`](service::Sink) via
@@ -205,8 +107,9 @@ pub trait BpaRegistration: Send + Sync {
 
 /// The core Bundle Processing Agent (RFC 9171).
 ///
-/// Holds references to the store, RIB, CLA/service registries, and
-/// dispatcher. Construct via [`BpaBuilder`] (obtained from [`Bpa::builder()`]).
+/// Holds the store, the RIB, the CLA table, the service registry and the
+/// dispatcher. Construct via [`BpaBuilder`] (obtained from
+/// [`Bpa::builder()`]).
 ///
 /// After construction, call [`start()`](Bpa::start) to begin processing and
 /// [`shutdown()`](Bpa::shutdown) for ordered teardown.
@@ -214,7 +117,7 @@ pub struct Bpa {
     node_ids: Arc<NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
-    cla_registry: Arc<ClaRegistry>,
+    clas: Arc<Table>,
     service_registry: Arc<ServiceRegistry>,
     dispatcher: Arc<Dispatcher>,
 }
@@ -224,7 +127,7 @@ impl Bpa {
         node_ids: Arc<NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
-        cla_registry: Arc<ClaRegistry>,
+        clas: Arc<Table>,
         service_registry: Arc<ServiceRegistry>,
         dispatcher: Arc<Dispatcher>,
     ) -> Self {
@@ -232,7 +135,7 @@ impl Bpa {
             node_ids,
             store,
             rib,
-            cla_registry,
+            clas,
             service_registry,
             dispatcher,
         }
@@ -242,14 +145,24 @@ impl Bpa {
         BpaBuilder::new()
     }
 
-    /// Starts the BPA's background machinery.
+    /// Starts the BPA's background machinery, reporting the CLAs that
+    /// could not be started.
     ///
     /// When `recover_storage` is set, storage crash recovery runs to
     /// completion before this returns: recovery's checkpoint resets assume
-    /// a quiescent store, so CLAs and services must only be registered
-    /// after `start` resolves.
+    /// a quiescent store, so CLAs and services are only registered after
+    /// `start` resolves.
+    ///
+    /// A declared CLA whose [`start`](cla::Cla::start) fails is detached
+    /// and named in the report; the BPA runs on degraded rather than
+    /// refusing to come up, since one dead transport is no reason to
+    /// strand the bundles the others carry. An empty report means every
+    /// declared CLA is live.
+    ///
+    /// Every failure is logged as it happens, so the report is for an
+    /// embedder that takes a stronger line than running on degraded.
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    pub async fn start(&self, recover_storage: bool) {
+    pub async fn start(&self, recover_storage: bool) -> Vec<(String, cla::Error)> {
         otel_metrics::init();
 
         // Start the store, awaiting recovery so registrations that follow
@@ -258,16 +171,18 @@ impl Bpa {
             .start(self.dispatcher.clone(), recover_storage)
             .await;
 
-        // Only now activate the builder-configured CLAs and services: the
+        // Only now start the declared CLAs and services: the
         // quiescent-store precondition above covers the configuration path
         // exactly as it covers dynamic registrations.
-        self.cla_registry.start(&self.dispatcher).await;
+        let failures = self.clas.start().await;
         self.service_registry
             .start(&self.node_ids, &self.rib, &self.dispatcher)
             .await;
 
         // Start the RIB
         self.rib.start(self.dispatcher.clone());
+
+        failures
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
@@ -287,7 +202,7 @@ impl Bpa {
         // blocked on CLA forwarding or waiting for service responses.
 
         self.rib.shutdown_agents().await;
-        self.cla_registry.shutdown().await;
+        self.clas.shutdown().await;
         self.service_registry.shutdown(&self.rib).await;
         self.dispatcher.shutdown().await;
         self.rib.shutdown().await;
@@ -331,19 +246,6 @@ impl BpaRegistration for Bpa {
             .await
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, cla, policy)))]
-    async fn register_cla(
-        &self,
-        name: String,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn FlowControllerFactory>>,
-        init: ClaInit,
-    ) -> cla::Result<Vec<NodeId>> {
-        self.cla_registry
-            .register(name, cla, &self.dispatcher, policy, init)
-            .await
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
     async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid> {
         self.service_registry
@@ -371,9 +273,17 @@ impl BpaRegistration for Bpa {
     }
 }
 
+#[async_trait]
+impl cla::Registrar for Bpa {
+    #[cfg_attr(feature = "instrument", instrument(skip(self, factory)))]
+    async fn register_cla_boxed(&self, name: &str, factory: BoxFactory<'_>) -> cla::Result<()> {
+        self.clas.register(name, factory).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use core::{num::NonZeroU64, time::Duration};
+    use core::time::Duration;
 
     use hardy_async::sync::spin::Once;
     use hardy_bpv7::{
@@ -387,6 +297,7 @@ mod tests {
     use super::*;
     use crate::{
         Bytes,
+        cla::RegistrarExt,
         service::Sink,
         stream::{Receiver, Segment},
     };
@@ -394,23 +305,23 @@ mod tests {
     /// Fails every `forward` call synchronously, without pulling, recording
     /// the bundle each attempt was for.
     struct FailingCla {
-        sink: Once<Box<dyn cla::Sink>>,
+        sink: Arc<dyn cla::Sink>,
         attempts_tx: flume::Sender<Id>,
     }
 
-    #[async_trait]
-    impl Cla for FailingCla {
-        async fn on_register(
-            &self,
-            sink: Box<dyn cla::Sink>,
-            _node_ids: &[NodeId],
-            _max_bundle_size: Option<NonZeroU64>,
-        ) {
-            self.sink.call_once(|| sink);
+    impl FailingCla {
+        fn factory(attempts_tx: flume::Sender<Id>) -> impl cla::Factory<Component = Self> {
+            cla::factory_fn(cla::Request::default(), |cx: cla::Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    attempts_tx,
+                }))
+            })
         }
+    }
 
-        async fn on_unregister(&self) {}
-
+    #[async_trait]
+    impl cla::Cla for FailingCla {
         async fn forward(
             &self,
             _lane: Option<u32>,
@@ -466,19 +377,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_forward_does_not_retry_inline() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false).await;
+        assert!(bpa.start(false).await.is_empty());
 
         let (attempts_tx, attempts_rx) = flume::unbounded();
-        let cla = Arc::new(FailingCla {
-            sink: Once::new(),
-            attempts_tx,
-        });
-        bpa.register_cla("failing".to_string(), cla.clone(), None, ClaInit::default())
+        let cla = bpa
+            .register_cla("failing", FailingCla::factory(attempts_tx))
             .await
             .unwrap();
         cla.sink
-            .get()
-            .unwrap()
             .add_peer(
                 cla::Address::Private("peer-a".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {

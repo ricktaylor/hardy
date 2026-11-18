@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::{bpa::BpaRegistration, cla::RegistrarExt};
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +59,9 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     .await
     .map_err(|e| anyhow::anyhow!("Failed to register default routes: {e}"))?;
 
+    // ping declares no CLAs at build time, so the start report is always
+    // empty; the CLA it uses is registered below and reports its own
+    // failure there.
     bpa.start(false).await;
 
     if is_external_cla(&args.cla) {
@@ -98,13 +101,12 @@ async fn exec_builtin_cla(
         );
     }
 
-    let cla = alloc::sync::Arc::new(
-        builder
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?,
-    );
+    let factory = builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?;
 
-    bpa.register_cla(args.cla.clone(), cla.clone(), None, cla.cla_init())
+    let cla = bpa
+        .register_cla(&args.cla, factory)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", args.cla))?;
 

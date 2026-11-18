@@ -10,10 +10,7 @@
 //! bundle whose primary block forbids its edit: the flags are the sender's
 //! choice, so an abort there would hand any peer a node-kill.
 
-use core::{
-    num::{NonZeroU8, NonZeroU64},
-    time::Duration,
-};
+use core::{num::NonZeroU8, time::Duration};
 use std::{
     collections::VecDeque,
     sync::{
@@ -27,7 +24,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     builder::BpaBuilder,
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla,
+    cla::{self, Context, RegistrarExt, Request, factory_fn},
     filter::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, Verifier, VerifyContext,
         pack::FilterPack, slots::MetadataDelta,
@@ -335,23 +332,12 @@ impl Service for SendingService {
 }
 
 struct CapturingCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     forwarded_tx: flume::Sender<Bytes>,
 }
 
 #[async_trait]
 impl cla::Cla for CapturingCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
@@ -417,24 +403,22 @@ fn node(node_number: u32) -> NodeId {
 async fn setup(builder: BpaBuilder) -> (Bpa, Arc<CapturingCla>, flume::Receiver<Bytes>) {
     let node_ids = NodeIds::try_from([node(1)].as_slice()).unwrap();
     let bpa = builder.node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    assert!(bpa.start(false).await.is_empty());
 
     let (forwarded_tx, forwarded_rx) = flume::bounded(16);
-    let cla = Arc::new(CapturingCla {
-        sink: hardy_async::sync::spin::Once::new(),
-        forwarded_tx,
-    });
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = bpa
+        .register_cla(
+            "test",
+            factory_fn(Request::default(), |cx: Context| {
+                Ok(Arc::new(CapturingCla {
+                    sink: cx.sink,
+                    forwarded_tx,
+                }))
+            }),
+        )
+        .await
+        .unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
             cla::Address::Private("peer".as_bytes().into()),
             &[node(2), node(3)],
@@ -468,8 +452,6 @@ async fn arrive(cla: &CapturingCla, source: &str, flags: BundleFlags, destinatio
     let mut inbound = Bytes::from(data);
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&node(2)), None, &mut inbound)
             .await
             .unwrap(),
@@ -737,8 +719,6 @@ async fn per_hop_writes_supersede_an_egress_rewriter() {
     let mut inbound = Bytes::from(data);
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&node(2)), None, &mut inbound)
             .await
             .unwrap(),
@@ -942,8 +922,6 @@ async fn ingress_slot_reaches_egress_across_the_store() {
 
     // A route appears: the parked record re-enters from the store.
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(cla::Address::Private("peer4".as_bytes().into()), &[node(4)])
         .await
         .unwrap();
@@ -1035,8 +1013,6 @@ async fn ingress_reads_the_payload_whenever_resident() {
     let mut whole = build();
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&node(2)), None, &mut whole)
             .await
             .unwrap(),
@@ -1059,8 +1035,6 @@ async fn ingress_reads_the_payload_whenever_resident() {
         ]));
         assert_eq!(
             cla.sink
-                .get()
-                .unwrap()
                 .dispatch(Some(&node(2)), None, &mut segments)
                 .await
                 .unwrap(),
@@ -1101,8 +1075,6 @@ async fn arrive_peeked(
 ) -> Option<Vec<u8>> {
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&node(2)), None, stream)
             .await
             .unwrap(),

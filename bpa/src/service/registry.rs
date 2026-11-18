@@ -578,7 +578,7 @@ mod tests {
     #[tokio::test]
     async fn test_duplicate_reg() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false).await;
+        assert!(bpa.start(false).await.is_empty());
 
         let svc_id = ServiceId::Ipn(42);
 
@@ -601,7 +601,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false).await;
+        assert!(bpa.start(false).await.is_empty());
 
         let svc_id = ServiceId::Ipn(99);
 

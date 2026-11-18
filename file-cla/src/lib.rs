@@ -16,10 +16,12 @@ use std::{
     sync::Arc,
 };
 
-use hardy_async::{TaskPool, sync::spin::Once};
+use core::num::NonZeroU64;
+
+use hardy_async::TaskPool;
 // `cla` is this crate's own module holding the trait impl, so the BPA's
 // `cla` items are imported by name; its `Error` is aliased against ours.
-use hardy_bpa::cla::{Error as ClaError, Sink};
+use hardy_bpa::cla::{Context, Error as ClaError, Factory, Request, Sink, factory_fn};
 use hardy_bpv7::eid::NodeId;
 
 mod cla;
@@ -110,22 +112,24 @@ fn canonicalize_path(cwd: &Path, path: &PathBuf) -> Result<String, Error> {
 pub struct Cla {
     inboxes: HashMap<NodeId, String>,
     outbox: Option<String>,
-    sink: Once<Arc<dyn Sink>>,
+    sink: Arc<dyn Sink>,
+    max_reception_size: Option<NonZeroU64>,
     tasks: TaskPool,
 }
 
 impl Cla {
-    /// Creates a CLA from `config`, resolving every configured directory.
+    /// A factory for a file CLA, resolving every configured directory now.
     ///
     /// Outbox and inbox paths are canonicalized against the current working
-    /// directory, and created if they do not exist, so that later file
-    /// operations cannot be surprised by a missing or relative path.
+    /// directory, and created if they do not exist, so that a missing or
+    /// relative path is a configuration error rather than a surprise at the
+    /// first file operation.
     ///
     /// # Errors
     ///
     /// Returns an error if a configured path is not UTF-8, or cannot be
     /// created or canonicalized.
-    pub fn new(config: &Config) -> Result<Self, Error> {
+    pub fn factory(config: &Config) -> Result<impl Factory<Component = Self> + use<>, Error> {
         let cwd = env::current_dir().map_err(Error::CurrentDir)?;
 
         // Canonicalize all peer inbox paths eagerly
@@ -142,19 +146,20 @@ impl Cla {
             .map(|path| canonicalize_path(&cwd, path))
             .transpose()?;
 
-        Ok(Self {
-            inboxes,
-            outbox,
-            sink: Once::new(),
-            tasks: TaskPool::new(),
-        })
+        Ok(factory_fn(Request::default(), move |cx: Context| {
+            Ok(Arc::new(Self {
+                inboxes,
+                outbox,
+                sink: cx.sink,
+                max_reception_size: cx.terms.max_reception_size,
+                tasks: TaskPool::new(),
+            }))
+        }))
     }
 
-    /// Unregisters this CLA from the BPA, if it is registered.
+    /// Detaches this CLA from the BPA.
     pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
+        self.sink.unregister().await;
     }
 }
 

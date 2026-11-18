@@ -1,6 +1,9 @@
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
-use hardy_bpa::cla::{Address, Cla as _};
+use hardy_bpa::{
+    cla::{Address, Cla as _, Context, Factory as _, Terms},
+    node_ids::NodeIds,
+};
 use hardy_bpv7::eid::NodeId;
 use hardy_file_cla::{Cla, Config};
 
@@ -57,7 +60,7 @@ impl hardy_bpa::cla::Sink for StubSink {
         Ok(true)
     }
 
-    async fn transfer_outcome(
+    async fn report_transfer(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _outcome: hardy_bpa::cla::TransferOutcome,
@@ -67,15 +70,22 @@ impl hardy_bpa::cla::Sink for StubSink {
 }
 
 // Registered CLA watching `outbox`, plus the channel of dispatched bundles.
-async fn start_cla(outbox: &Path) -> (Cla, flume::Receiver<Vec<u8>>) {
-    let cla = Cla::new(&Config {
+async fn start_cla(outbox: &Path) -> (Arc<Cla>, flume::Receiver<Vec<u8>>) {
+    let factory = Cla::factory(&Config {
         outbox: Some(outbox.to_path_buf()),
         peers: HashMap::new(),
     })
     .unwrap();
 
     let (tx, rx) = flume::unbounded();
-    cla.on_register(Box::new(StubSink(tx)), &[], None).await;
+    let cla = factory
+        .build(Context::new(
+            Arc::new(StubSink(tx)),
+            Arc::new(NodeIds::default()),
+            Terms::default(),
+        ))
+        .expect("a file CLA builds under any terms");
+    cla.start().await.expect("the outbox watcher starts");
     (cla, rx)
 }
 
@@ -113,7 +123,7 @@ async fn test_outbox_pickup_preexisting_file() {
     assert_eq!(recv_dispatch(&rx).await, b"queued-bundle");
     wait_removed(&dir.path().join("queued")).await;
 
-    cla.on_unregister().await;
+    cla.shutdown().await.expect("the CLA shuts down cleanly");
 }
 
 // A symlink queued in the outbox before the CLA starts is dispatched like
@@ -137,7 +147,7 @@ async fn test_outbox_pickup_preexisting_symlink() {
     assert_eq!(recv_dispatch(&rx).await, b"symlinked-bundle");
     wait_removed(&dir.path().join("link")).await;
 
-    cla.on_unregister().await;
+    cla.shutdown().await.expect("the CLA shuts down cleanly");
 }
 
 // A file created after the watcher starts is dispatched and removed. The
@@ -155,10 +165,10 @@ async fn test_outbox_pickup_created_file() {
     assert_eq!(recv_dispatch(&rx).await, b"created-bundle");
     wait_removed(&dir.path().join("created")).await;
 
-    cla.on_unregister().await;
+    cla.shutdown().await.expect("the CLA shuts down cleanly");
 }
 
-// on_unregister stops the watcher and forwarder tasks; a hang here is a
+// shutdown stops the watcher and forwarder tasks; a hang here is a
 // shutdown regression.
 #[tokio::test]
 async fn test_shutdown_stops_watcher() {
@@ -169,7 +179,8 @@ async fn test_shutdown_stops_watcher() {
     std::fs::write(dir.path().join("live"), b"live-bundle").unwrap();
     assert_eq!(recv_dispatch(&rx).await, b"live-bundle");
 
-    tokio::time::timeout(REGRESSION_BOUND, cla.on_unregister())
+    tokio::time::timeout(REGRESSION_BOUND, cla.shutdown())
         .await
-        .expect("shutdown did not complete within the regression bound");
+        .expect("shutdown did not complete within the regression bound")
+        .expect("the CLA shuts down cleanly");
 }

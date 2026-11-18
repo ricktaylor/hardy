@@ -1,12 +1,17 @@
 // Shared infrastructure for TCPCLv4 fuzz targets.
 //
-// Provides a mock BPA and CLA setup that can be used by both the passive
+// Provides a mock sink and CLA setup that can be used by both the passive
 // (listener) and active (connector) fuzz targets.
 
 use std::{net::SocketAddr, sync::Arc};
 
-use hardy_bpa::{async_trait, bpa::BpaRegistration, cla};
-use hardy_bpv7::eid::NodeId;
+use hardy_bpa::{
+    async_trait,
+    cla::{self, Cla as _, Context, Factory, Terms},
+    node_ids::NodeIds,
+};
+use hardy_bpv7::eid::{IpnNodeId, NodeId};
+use hardy_tcpclv4::{ContactTimeout, Tcpclv4, builder::Tcpclv4Builder};
 
 // A mock CLA Sink that accepts everything and discards it.
 //
@@ -21,7 +26,7 @@ impl cla::Sink for MockSink {
         &self,
         _peer_node: Option<&NodeId>,
         _peer_addr: Option<&cla::Address>,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
     ) -> cla::Result<cla::Acceptance> {
         Ok(cla::Acceptance::Accepted)
     }
@@ -34,72 +39,12 @@ impl cla::Sink for MockSink {
         Ok(true)
     }
 
-    async fn transfer_outcome(
+    async fn report_transfer(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _outcome: cla::TransferOutcome,
     ) -> cla::Result<()> {
         Ok(())
-    }
-}
-
-// A mock BPA that registers CLAs by immediately calling `on_register` with a
-// `MockSink` and a default node ID.
-pub struct MockBpa;
-
-#[async_trait]
-impl hardy_bpa::bpa::BpaRegistration for MockBpa {
-    async fn register_cla(
-        &self,
-        _name: String,
-        cla: Arc<dyn cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
-        _init: cla::ClaInit,
-    ) -> cla::Result<Vec<NodeId>> {
-        let node_ids = vec![NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
-            allocator_id: 0,
-            node_number: 1,
-        })];
-        cla.on_register(Box::new(MockSink), &node_ids, None).await;
-        Ok(node_ids)
-    }
-
-    async fn register_routing_agent(
-        &self,
-        _name: String,
-        _agent: Arc<dyn hardy_bpa::routing::Agent>,
-    ) -> hardy_bpa::routing::Result<Vec<NodeId>> {
-        unimplemented!("not needed for CLA fuzzing")
-    }
-
-    async fn register_service(
-        &self,
-        _service_id: hardy_bpv7::eid::Service,
-        _service: Arc<dyn hardy_bpa::service::Service>,
-    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
-        unimplemented!("not needed for CLA fuzzing")
-    }
-
-    async fn register_raw_service(
-        &self,
-        _service_id: hardy_bpv7::eid::Service,
-        _service: Arc<dyn hardy_bpa::service::raw::Service>,
-    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
-        unimplemented!("not needed for CLA fuzzing")
-    }
-
-    async fn register_dynamic_service(
-        &self,
-        _service: Arc<dyn hardy_bpa::service::Service>,
-    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
-        unimplemented!("not needed for CLA fuzzing")
-    }
-
-    async fn register_dynamic_raw_service(
-        &self,
-        _service: Arc<dyn hardy_bpa::service::raw::Service>,
-    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
-        unimplemented!("not needed for CLA fuzzing")
     }
 }
 
@@ -123,55 +68,53 @@ pub fn fuzz_addr() -> SocketAddr {
 // Builder tuned for fuzzing — the shortest timeouts the builder accepts,
 // to keep corpus replay (coverage) fast. `contact_timeout` is in whole
 // seconds, so 1 is the floor.
-fn fuzz_builder() -> hardy_tcpclv4::builder::Tcpclv4Builder {
-    hardy_tcpclv4::Tcpclv4::builder()
-        .contact_timeout(
-            hardy_tcpclv4::ContactTimeout::new(1).expect("1 second is a valid timeout"),
-        )
+fn fuzz_builder() -> Tcpclv4Builder {
+    Tcpclv4::builder()
+        .contact_timeout(ContactTimeout::new(1).expect("1 second is a valid timeout"))
         .no_keepalive()
 }
 
-// Create a TCPCLv4 CLA with default settings, registered against a mock
-// BPA, listening on `fuzz_addr()`.
-pub async fn setup_listener() -> Arc<hardy_tcpclv4::Tcpclv4> {
-    let cla = Arc::new(
+// Build and start the CLA on a mock sink, as the BPA would.
+async fn start(factory: impl Factory<Component = Tcpclv4>) -> Arc<Tcpclv4> {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .expect("ipn:0.1 is a valid node identifier");
+
+    let cla = factory
+        .build(Context::new(
+            Arc::new(MockSink),
+            Arc::new(node_ids),
+            Terms::default(),
+        ))
+        .expect("a TCPCLv4 entity builds under the default terms");
+    cla.start().await.expect("the fuzz CLA starts");
+    cla
+}
+
+// Create a TCPCLv4 CLA with default settings, running on a mock sink and
+// listening on `fuzz_addr()`.
+pub async fn setup_listener() -> Arc<Tcpclv4> {
+    start(
         fuzz_builder()
             .listen(fuzz_addr())
             .build()
             .expect("failed to bind the fuzz listener"),
-    );
-
-    MockBpa
-        .register_cla(
-            "fuzz-tcpclv4".to_string(),
-            cla.clone(),
-            None,
-            cla::ClaInit::default(),
-        )
-        .await
-        .expect("CLA registration should not fail");
-
-    cla
+    )
+    .await
 }
 
-// Create a TCPCLv4 CLA with no listener (for active/connect fuzzing).
-// The CLA is registered against a mock BPA and ready to `connect()`.
-pub async fn setup_connector() -> Arc<hardy_tcpclv4::Tcpclv4> {
-    let cla = Arc::new(
+// Create a TCPCLv4 CLA with no listener (for active/connect fuzzing),
+// running on a mock sink and ready to `connect()`.
+pub async fn setup_connector() -> Arc<Tcpclv4> {
+    start(
         fuzz_builder()
             .build()
             .expect("a plaintext build cannot fail"),
-    );
-
-    MockBpa
-        .register_cla(
-            "fuzz-tcpclv4-active".to_string(),
-            cla.clone(),
-            None,
-            cla::ClaInit::default(),
-        )
-        .await
-        .expect("CLA registration should not fail");
-
-    cla
+    )
+    .await
 }

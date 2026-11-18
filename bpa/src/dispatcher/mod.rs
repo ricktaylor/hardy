@@ -5,7 +5,7 @@ use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
-use crate::filter::pack::chains::FilterChains;
+use crate::{cla::table::Table, filter::pack::chains::FilterChains};
 
 mod admin;
 mod deliver;
@@ -88,7 +88,7 @@ pub(crate) struct Dispatcher {
     rib: Arc<routing::Rib>,
     key_provider: Arc<dyn keys::KeyProvider>,
     filters: FilterChains,
-    cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
+    clas: hardy_async::sync::spin::Once<Arc<Table>>,
 
     // Dispatch queue
     dispatch_tx: storage::channel::Sender,
@@ -107,10 +107,10 @@ impl Dispatcher {
     /// Construct the dispatcher and return it with a deferred-start closure
     /// for the dispatch-queue consumer.
     ///
-    /// The closure demands the CLA registry by value and wires it before
+    /// The closure demands the CLA table by value and wires it before
     /// spawning the consumer, because the dispatch channel's storage poller
     /// recovers persisted `DispatchPending` bundles as soon as the consumer
-    /// drains them, and processing one dereferences the registry. It owns
+    /// drains them, and processing one dereferences the table. It owns
     /// the channel receiver, so a second start path cannot exist.
     pub fn new(
         config: Config,
@@ -119,7 +119,7 @@ impl Dispatcher {
         rib: Arc<routing::Rib>,
         key_provider: Arc<dyn keys::KeyProvider>,
         filters: FilterChains,
-    ) -> (Arc<Self>, impl FnOnce(Arc<cla::registry::ClaRegistry>)) {
+    ) -> (Arc<Self>, impl FnOnce(Arc<Table>)) {
         if config.status_reports {
             warn!("Bundle status reports are enabled");
         }
@@ -142,7 +142,7 @@ impl Dispatcher {
             rib,
             key_provider,
             filters,
-            cla_registry: hardy_async::sync::spin::Once::new(),
+            clas: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
             status_reports: config.status_reports,
             node_ids,
@@ -161,8 +161,8 @@ impl Dispatcher {
         });
 
         let d = dispatcher.clone();
-        (dispatcher, move |cla_registry| {
-            d.cla_registry.call_once(|| cla_registry);
+        (dispatcher, move |clas| {
+            d.clas.call_once(|| clas);
             let dispatcher = d.clone();
             hardy_async::spawn!(d.tasks, "dispatch_queue_consumer", async move {
                 dispatcher.run_dispatch_queue(dispatch_rx).await
@@ -171,7 +171,7 @@ impl Dispatcher {
     }
 
     // The dispatch size-cap policy, folded into the effective value
-    // advertised to CLAs at registration; `None` = no policy.
+    // settled with each CLA at attachment; `None` = no policy.
     pub(crate) fn max_bundle_size(&self) -> Option<NonZeroU64> {
         self.max_bundle_size
     }
@@ -193,12 +193,10 @@ impl Dispatcher {
             .trace_expect("cap clamped to the addressable bound at construction")
     }
 
-    fn cla_registry(&self) -> &Arc<cla::registry::ClaRegistry> {
+    fn clas(&self) -> &Arc<Table> {
         // Other readers (poll_waiting, driven from Rib::start) cannot be
         // proven wired by the type system; this expect is the backstop.
-        self.cla_registry
-            .get()
-            .trace_expect("CLA registry not initialized")
+        self.clas.get().trace_expect("CLA table not initialized")
     }
 
     pub async fn shutdown(&self) {

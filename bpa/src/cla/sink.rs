@@ -3,50 +3,43 @@ use hardy_bpv7::{bundle::Id, eid::NodeId};
 use super::{Acceptance, Address, Result, Segment, TransferOutcome};
 use crate::{async_trait, stream::Receiver};
 
-/// A communication channel from a CLA back to the main BPA components.
+/// A CLA's channel back into the BPA.
 ///
-/// This trait provides an abstraction that allows a CLA to be decoupled from the
-/// internal implementation of the BPA. It provides a stable interface for a CLA to
-/// dispatch incoming bundles and manage peer connections without needing direct access
-/// to the BPA internals.
+/// The sink decouples a CLA from the BPA's internals: a stable interface
+/// for handing received bundles over and for announcing the peers the
+/// convergence layer discovers.
 ///
 /// # Lifecycle
 ///
-/// The Sink is provided to the CLA in [`Cla::on_register`](super::Cla::on_register). The CLA **must store** this
-/// Sink for its entire active lifetime. When the Sink is dropped, the BPA interprets
-/// this as the CLA requesting disconnection.
-///
-/// Two disconnection paths exist:
-/// - **CLA drops Sink**: BPA detects the drop and calls [`Cla::on_unregister`](super::Cla::on_unregister)
-/// - **BPA shuts down**: BPA calls [`Cla::on_unregister`](super::Cla::on_unregister), then Sink operations return [`Error::Disconnected`](super::Error::Disconnected)
-///
-/// After disconnection, all Sink operations return [`Error::Disconnected`](super::Error::Disconnected).
+/// The sink arrives in the [`Context`](super::Context) a CLA is built
+/// from, and stays usable until the CLA detaches, by calling
+/// [`unregister`](Self::unregister) or because the BPA is shutting down.
+/// After that every operation here returns
+/// [`Error::Disconnected`](super::Error::Disconnected).
 #[async_trait]
 pub trait Sink: Send + Sync {
-    /// Explicitly unregisters the associated CLA from the BPA.
+    /// Detaches the CLA from the BPA.
     ///
-    /// This is equivalent to dropping the Sink, but allows explicit cleanup timing.
-    /// After calling this, the BPA will call [`Cla::on_unregister`](super::Cla::on_unregister) and this Sink
-    /// becomes non-functional.
-    ///
-    /// Typically called when the CLA encounters a fatal error and needs to shut down.
+    /// The BPA calls [`Cla::shutdown`](super::Cla::shutdown) and withdraws
+    /// every peer the CLA published; this sink is dead from then on.
+    /// Typically called when the CLA hits a fault it cannot recover from.
     async fn unregister(&self);
 
     /// Dispatches a received bundle, as a stream of segments, to the BPA.
     ///
-    /// Returns the [`Acceptance`] verdict for the transfer — its only
+    /// Returns the [`Acceptance`] verdict for the transfer, its only
     /// carrier: [`Accepted`](Acceptance::Accepted) means the CLA may
     /// acknowledge the transfer to its peer, [`Refused`](Acceptance::Refused)
     /// means it must not. `Err(_)` is reserved for faults that make the sink
-    /// unusable (the registration or the BPA has gone away) — never for a
-    /// verdict.
+    /// unusable (the CLA has detached, or the BPA has gone away), never for
+    /// a verdict.
     ///
-    /// The stream itself carries no verdict. The BPA may stop pulling — and
-    /// drop its end of `stream` — at any point: it may already have decided
+    /// The stream itself carries no verdict. The BPA may stop pulling, and
+    /// drop its end of `stream`, at any point: it may already have decided
     /// to accept (a duplicate identified from the headers needs no further
     /// bytes) or not yet have decided anything. A producer that sees
     /// [`SendError`](crate::stream::SendError) must stop pushing segments and
-    /// then take the verdict from `dispatch`'s return value, never from the
+    /// then take the verdict from this method's return value, never from the
     /// stream closing.
     ///
     /// A producer that drops its sender before [`Segment::Final`] has
@@ -55,9 +48,9 @@ pub trait Sink: Send + Sync {
     /// CLA withholds its transfer acknowledgement and the peer can
     /// retransmit.
     ///
-    /// A caller holding a complete bundle in memory dispatches it as a
+    /// A caller holding a complete bundle in memory passes it as a
     /// one-segment stream, since `Bytes` implements [`Receiver`]:
-    /// `sink.dispatch(&mut bundle, ..).await`.
+    /// `sink.dispatch(peer_node, peer_addr, &mut bundle).await`.
     ///
     /// `peer_node` and `peer_addr` carry what the CLA knows about the sender:
     /// the peer's node identifier, if the convergence layer learned it (a
@@ -80,7 +73,7 @@ pub trait Sink: Send + Sync {
     /// - A **non-empty slice** means the CLA knows one or more EIDs for the peer (a "Peer"). A node
     ///   known under several EIDs (an `ipn` and a `dtn` one, say) lists them all at its CL address.
     ///
-    /// The BPA will update its routing information accordingly.
+    /// The BPA updates its routing information accordingly.
     async fn add_peer(&self, cla_addr: Address, node_ids: &[NodeId]) -> Result<bool>;
 
     /// Notifies the BPA that a peer is no longer reachable at `cla_addr`,
@@ -91,9 +84,9 @@ pub trait Sink: Send + Sync {
     /// [`ForwardOutcome::Accepted`](super::ForwardOutcome::Accepted).
     ///
     /// Every accepted transfer resolves exactly once: `Completed`, `Failed`,
-    /// or implicitly outcome-unknown when the CLA unregisters or the peer is
+    /// or implicitly outcome-unknown when the CLA detaches or the peer is
     /// removed. An outcome is honoured only while the named bundle is still
-    /// awaiting one via a peer of the reporting CLA; anything else — already
-    /// resolved, expired, another CLA's transfer — is logged and dropped.
-    async fn transfer_outcome(&self, bundle_id: &Id, outcome: TransferOutcome) -> Result<()>;
+    /// awaiting one via a peer of the reporting CLA. Anything else (already
+    /// resolved, expired, another CLA's transfer) is logged and dropped.
+    async fn report_transfer(&self, bundle_id: &Id, outcome: TransferOutcome) -> Result<()>;
 }

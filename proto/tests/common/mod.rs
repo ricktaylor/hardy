@@ -8,7 +8,9 @@ pub mod sinks;
 
 use core::num::NonZeroU64;
 use hardy_async::async_trait;
+use hardy_async::sync::spin::Mutex;
 use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::node_ids::NodeIds;
 use hardy_bpa::{
     cla, routing,
     service::{self, SendOptions, Service, Sink, raw},
@@ -24,79 +26,102 @@ use std::sync::Arc;
 
 /// A mock BPA that implements `BpaRegistration` for all component types.
 ///
-/// Calls `on_register` with mock sinks and fixed node IDs.
-/// Tracks the last registered routing agent and sink for assertions.
+/// Builds each component with a mock sink and fixed node IDs, and tracks
+/// the last of each kind, and its sink, for assertions.
 pub struct MockBpa {
-    node_ids: Vec<NodeId>,
-    /// The effective cap this mock hands to `Cla::on_register`.
-    effective_max_bundle_size: Option<NonZeroU64>,
-    /// The declarations the last `register_cla` carried.
-    pub declared_init: hardy_async::sync::spin::Mutex<Option<cla::ClaInit>>,
-    pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
-    pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::Agent>>>,
-    pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
-    pub last_cla_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockClaSink>>>,
-    pub last_raw_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn raw::Service>>>,
-    pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn Service>>>,
+    node_ids: Arc<NodeIds>,
+    /// This BPA's own receive limit, folded into the terms it settles.
+    max_reception_size: Option<NonZeroU64>,
+    /// What the last `register_cla_boxed` asked for.
+    pub declared_request: Mutex<Option<cla::Request>>,
+    /// The terms the last `register_cla_boxed` settled on.
+    pub settled_terms: Mutex<Option<cla::Terms>>,
+    pub last_routing_sink: Mutex<Option<Arc<MockRoutingSink>>>,
+    pub last_routing_agent: Mutex<Option<Arc<dyn routing::Agent>>>,
+    pub last_cla: Mutex<Option<Arc<dyn cla::Cla>>>,
+    pub last_cla_sink: Mutex<Option<Arc<MockClaSink>>>,
+    pub last_raw_service: Mutex<Option<Arc<dyn raw::Service>>>,
+    pub last_service: Mutex<Option<Arc<dyn Service>>>,
 }
 
 impl MockBpa {
     pub fn new() -> Self {
+        let node_ids = NodeIds::try_from(["ipn:1.0".parse::<NodeId>().unwrap()].as_slice())
+            .expect("ipn:1.0 is a valid node identifier");
         Self {
-            node_ids: vec!["ipn:1.0".parse().unwrap()],
-            effective_max_bundle_size: None,
-            declared_init: hardy_async::sync::spin::Mutex::new(None),
-            last_routing_sink: hardy_async::sync::spin::Mutex::new(None),
-            last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
-            last_cla: hardy_async::sync::spin::Mutex::new(None),
-            last_cla_sink: hardy_async::sync::spin::Mutex::new(None),
-            last_raw_service: hardy_async::sync::spin::Mutex::new(None),
-            last_service: hardy_async::sync::spin::Mutex::new(None),
+            node_ids: Arc::new(node_ids),
+            max_reception_size: None,
+            declared_request: Mutex::new(None),
+            settled_terms: Mutex::new(None),
+            last_routing_sink: Mutex::new(None),
+            last_routing_agent: Mutex::new(None),
+            last_cla: Mutex::new(None),
+            last_cla_sink: Mutex::new(None),
+            last_raw_service: Mutex::new(None),
+            last_service: Mutex::new(None),
         }
     }
 
-    /// A mock whose `register_cla` hands `effective` to `Cla::on_register`.
-    pub fn with_effective_max_bundle_size(effective: NonZeroU64) -> Self {
+    /// A mock whose own receive limit is `octets`, so a CLA declaring a
+    /// larger one is settled down to it.
+    pub fn with_max_reception_size(octets: NonZeroU64) -> Self {
         Self {
-            effective_max_bundle_size: Some(effective),
+            max_reception_size: Some(octets),
             ..Self::new()
+        }
+    }
+
+    // Settles a request as the BPA does: the smaller receive limit wins,
+    // a side that declared none defers to the other, and the lane count
+    // passes through as asked.
+    fn negotiate(&self, request: &cla::Request) -> cla::Terms {
+        cla::Terms {
+            lane_count: request.lane_count,
+            max_reception_size: match (self.max_reception_size, request.max_reception_size) {
+                (Some(bpa), Some(cla)) => Some(bpa.min(cla)),
+                (bpa, cla) => bpa.or(cla),
+            },
         }
     }
 
     /// Simulate a server crash by forcing unregistration of all
     /// registered components.
     pub async fn crash(&self) {
-        if let Some(agent) = self.last_routing_agent.lock().take() {
+        let agent = self.last_routing_agent.lock().take();
+        if let Some(agent) = agent {
             agent.on_unregister().await;
         }
-        if let Some(cla) = self.last_cla.lock().take() {
-            cla.on_unregister().await;
+        let cla = self.last_cla.lock().take();
+        if let Some(cla) = cla {
+            cla.shutdown().await.expect("the CLA shuts down cleanly");
         }
     }
 }
 
 #[async_trait]
-impl BpaRegistration for MockBpa {
-    async fn register_cla(
+impl cla::Registrar for MockBpa {
+    async fn register_cla_boxed(
         &self,
-        _name: String,
-        cla: Arc<dyn cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
-        init: cla::ClaInit,
-    ) -> cla::Result<Vec<NodeId>> {
-        *self.declared_init.lock() = Some(init);
-        let sink = Arc::new(MockClaSink::new());
-        *self.last_cla.lock() = Some(cla.clone());
-        *self.last_cla_sink.lock() = Some(sink.clone());
-        cla.on_register(
-            Box::new(ClaSinkWrapper(sink)),
-            &self.node_ids,
-            self.effective_max_bundle_size,
-        )
-        .await;
-        Ok(self.node_ids.clone())
-    }
+        _name: &str,
+        factory: cla::BoxFactory<'_>,
+    ) -> cla::Result<()> {
+        let request = factory.request();
+        let terms = self.negotiate(&request);
+        *self.declared_request.lock() = Some(request);
+        *self.settled_terms.lock() = Some(terms);
 
+        let sink = Arc::new(MockClaSink::new());
+        *self.last_cla_sink.lock() = Some(sink.clone());
+
+        let cla = factory.build(cla::Context::new(sink, self.node_ids.clone(), terms))?;
+        cla.start().await?;
+        *self.last_cla.lock() = Some(cla);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BpaRegistration for MockBpa {
     async fn register_raw_service(
         &self,
         _service_id: ServiceId,
@@ -141,22 +166,22 @@ impl BpaRegistration for MockBpa {
         _name: String,
         agent: Arc<dyn routing::Agent>,
     ) -> routing::Result<Vec<NodeId>> {
+        let node_ids = Vec::<NodeId>::from(self.node_ids.as_ref());
         let sink = Arc::new(MockRoutingSink::new());
         *self.last_routing_sink.lock() = Some(sink.clone());
         *self.last_routing_agent.lock() = Some(agent.clone());
 
         agent
-            .on_register(Box::new(RoutingSinkWrapper(sink)), &self.node_ids)
+            .on_register(Box::new(RoutingSinkWrapper(sink)), &node_ids)
             .await;
 
-        Ok(self.node_ids.clone())
+        Ok(node_ids)
     }
 }
 
 // ── Sink wrappers (delegate to Arc<Mock>) ─────────────────────────────
 
 struct RoutingSinkWrapper(Arc<MockRoutingSink>);
-struct ClaSinkWrapper(Arc<MockClaSink>);
 struct RawServiceSinkWrapper(Arc<MockRawServiceSink>);
 struct ServiceSinkWrapper(Arc<MockServiceSink>);
 
@@ -180,34 +205,6 @@ impl routing::Sink for RoutingSinkWrapper {
         pri: u32,
     ) -> routing::Result<bool> {
         self.0.remove_route(p, a, pri).await
-    }
-}
-
-#[async_trait]
-impl cla::Sink for ClaSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn dispatch(
-        &self,
-        pn: Option<&NodeId>,
-        pa: Option<&cla::Address>,
-        s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> cla::Result<cla::Acceptance> {
-        self.0.dispatch(pn, pa, s).await
-    }
-    async fn add_peer(&self, a: cla::Address, n: &[NodeId]) -> cla::Result<bool> {
-        self.0.add_peer(a, n).await
-    }
-    async fn remove_peer(&self, a: &cla::Address) -> cla::Result<bool> {
-        self.0.remove_peer(a).await
-    }
-    async fn transfer_outcome(
-        &self,
-        id: &hardy_bpv7::bundle::Id,
-        o: cla::TransferOutcome,
-    ) -> cla::Result<()> {
-        self.0.transfer_outcome(id, o).await
     }
 }
 

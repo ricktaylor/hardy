@@ -1,26 +1,26 @@
 use core::num::{NonZeroU32, NonZeroU64};
 
+use hardy_bpa::{
+    cla::{Context, RegistrarExt, Request, Sink, Terms, factory_fn},
+    node_ids::NodeIds,
+};
+use hardy_bpv7::eid::NodeId;
+
 use super::*;
 use proto::cla::*;
 
-type ClaSink = Arc<dyn hardy_bpa::cla::Sink>;
-
+// The BPA's end of a remote CLA: it holds the sink the session dispatches
+// into, and forwards through the proxy standing in for the far CLA.
 struct Cla {
-    sink: Mutex<Option<ClaSink>>,
+    sink: Arc<dyn Sink>,
+    node_ids: Arc<NodeIds>,
+    terms: Terms,
+    // The CLA is built before the proxy, which needs a handler holding
+    // the CLA, so the proxy arrives once the session is running.
     proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
-    // The effective cap from the BPA at on_register, relayed to the remote
-    // CLA in the RegisterClaResponse.
-    max_bundle_size: std::sync::OnceLock<Option<NonZeroU64>>,
 }
 
 impl Cla {
-    fn sink(&self) -> Result<ClaSink, tonic::Status> {
-        self.sink
-            .lock()
-            .clone()
-            .ok_or(tonic::Status::unavailable("Unregistered"))
-    }
-
     async fn call(&self, msg: bpa_to_cla::Msg) -> hardy_bpa::cla::Result<cla_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
             error!("call made before on_register!");
@@ -53,7 +53,7 @@ impl Cla {
         // The unary wire message already delivered the whole bundle, so it
         // enters the BPA as a one-segment stream. The verdict rides the
         // response; only sink faults become gRPC errors.
-        self.sink()?
+        self.sink
             .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut request.bundle)
             .await
             .map(|verdict| {
@@ -83,7 +83,7 @@ impl Cla {
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
-        self.sink()?
+        self.sink
             .add_peer(cla_addr, &node_ids)
             .await
             .map(|added| bpa_to_cla::Msg::AddPeer(AddPeerResponse { added }))
@@ -99,7 +99,7 @@ impl Cla {
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
-        self.sink()?
+        self.sink
             .remove_peer(&cla_addr)
             .await
             .map(|removed| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse { removed }))
@@ -124,41 +124,21 @@ impl Cla {
             None => return Err(tonic::Status::invalid_argument("Missing outcome")),
         };
 
-        self.sink()?
-            .transfer_outcome(&bundle_id, outcome)
+        self.sink
+            .report_transfer(&bundle_id, outcome)
             .await
             .map(|_| bpa_to_cla::Msg::TransferOutcome(TransferOutcomeResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))
-    }
-
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
     }
 }
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[hardy_bpv7::eid::NodeId],
-        max_bundle_size: Option<NonZeroU64>,
-    ) {
-        let _ = self.max_bundle_size.set(max_bundle_size);
-        *self.sink.lock() = Some(Arc::from(sink));
-    }
-
-    async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
-            return;
-        }
-
+    async fn shutdown(&self) -> hardy_bpa::cla::Result<()> {
         if let Some(proxy) = self.proxy.get() {
             proxy.shutdown().await;
         }
+        Ok(())
     }
 
     // INTERIM BUFFERING: the wire protocol has no segmented bundle messages
@@ -237,7 +217,10 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.cla.unregister().await;
+        // The far CLA is gone: detach, which takes this CLA down with the
+        // session. `cancel` rather than `shutdown`, because the proxy task
+        // awaiting this handler is one of the tasks being stopped.
+        self.cla.sink.unregister().await;
         if let Some(proxy) = self.cla.proxy.get() {
             proxy.cancel();
         }
@@ -279,11 +262,9 @@ async fn run_cla_session(
     mut channel_receiver: tonic::Streaming<ClaToBpa>,
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
 ) {
-    let cla = Arc::new(Cla {
-        sink: Mutex::new(None),
-        proxy: Once::new(),
-        max_bundle_size: std::sync::OnceLock::new(),
-    });
+    // Filled by the registration handshake below, which the BPA drives
+    // through the factory.
+    let mut registered = None;
 
     // Wait for the client's registration message and process it
     let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
@@ -317,36 +298,39 @@ async fn run_cla_session(
                     }
                     declared => declared.and_then(NonZeroU32::new),
                 };
-                let node_ids = bpa
+
+                let cla_request = Request {
+                    address_type,
+                    lane_count,
+                    max_reception_size: max_bundle_size,
+                };
+
+                let cla = bpa
                     .register_cla(
-                        request.name,
-                        cla.clone(),
-                        None,
-                        hardy_bpa::cla::ClaInit {
-                            address_type,
-                            lane_count,
-                            max_bundle_size,
-                        },
+                        &request.name,
+                        factory_fn(cla_request, |cx: Context| {
+                            Ok(Arc::new(Cla {
+                                sink: cx.sink,
+                                node_ids: cx.node_ids,
+                                terms: cx.terms,
+                                proxy: Once::new(),
+                            }))
+                        }),
                     )
                     .await
-                    .map_err(|e| tonic::Status::from_error(e.into()))?
-                    .into_iter()
-                    .map(|node_id| node_id.to_string())
-                    .collect();
+                    .map_err(|e| tonic::Status::from_error(e.into()))?;
 
-                Ok(bpa_to_cla::Msg::Register(RegisterClaResponse {
-                    node_ids,
-                    // Set by on_register, which `register_cla` drives to
-                    // completion before returning — that is a documented
-                    // contract on `BpaRegistration::register_cla`, so the
-                    // expect fires only on a non-conforming implementation.
+                let response = RegisterClaResponse {
+                    node_ids: Vec::<NodeId>::from(cla.node_ids.as_ref())
+                        .into_iter()
+                        .map(|node_id| node_id.to_string())
+                        .collect(),
                     // Absent on the wire = no negotiated cap.
-                    max_bundle_size: cla
-                        .max_bundle_size
-                        .get()
-                        .expect("register_cla returned without driving on_register")
-                        .map(NonZeroU64::get),
-                }))
+                    max_bundle_size: cla.terms.max_reception_size.map(NonZeroU64::get),
+                };
+                registered = Some(cla);
+
+                Ok(bpa_to_cla::Msg::Register(response))
             }
             _ => {
                 warn!("CLA sent incorrect message: {msg:?}");
@@ -362,6 +346,11 @@ async fn run_cla_session(
         warn!("CLA registration failed: {e}");
         return;
     }
+
+    let Some(cla) = registered else {
+        warn!("CLA registration completed without registering a CLA");
+        return;
+    };
 
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { cla: cla.clone() });

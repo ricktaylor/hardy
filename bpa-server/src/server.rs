@@ -12,7 +12,7 @@ use anyhow::Context;
 use hardy_async::TaskPool;
 use hardy_bpa::{
     bpa::Bpa,
-    cla::{Cla, ClaInit},
+    cla::BoxFactory,
     policy::FlowControllerFactory,
     routing::Agent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
@@ -36,7 +36,11 @@ use hardy_tcpclv4::Tcpclv4;
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
-use crate::config::{Config, FlowControllerFactoryConfig, cla::ClaType, storage};
+use crate::config::{
+    Config, FlowControllerFactoryConfig,
+    cla::{ClaConfig, ClaType},
+    storage,
+};
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -265,48 +269,42 @@ impl BpaServer {
             )
             .collect();
 
-        for cla_config in config.clas {
-            let cla: Option<(Arc<dyn Cla>, ClaInit)> = match cla_config.cla_type {
+        for ClaConfig {
+            name,
+            cla_type,
+            policy: policy_name,
+        } in config.clas
+        {
+            // The factories have nothing in common but the trait, so the
+            // match yields an erased one and the declaration is written
+            // once. An unknown type is ignored whole, policy and all.
+            let factory = match cla_type {
                 #[cfg(feature = "tcpclv4")]
-                ClaType::TcpClv4(tcpcl) => {
-                    let cla = Tcpclv4::try_from(tcpcl)
-                        .with_context(|| format!("Failed to create CLA '{}'", cla_config.name))?;
-                    let init = cla.cla_init();
-                    Some((Arc::new(cla) as Arc<dyn Cla>, init))
-                }
+                ClaType::TcpClv4(tcpcl) => BoxFactory::new(
+                    Tcpclv4::factory(tcpcl)
+                        .with_context(|| format!("Failed to create CLA '{name}'"))?,
+                ),
                 #[cfg(feature = "file-cla")]
-                ClaType::File(file) => Some((
-                    Arc::new(FileCla::new(&file).map_err(|e| {
-                        anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
-                    })?) as Arc<dyn Cla>,
-                    ClaInit::default(),
-                )),
+                ClaType::File(file) => BoxFactory::new(
+                    FileCla::factory(&file)
+                        .with_context(|| format!("Failed to create CLA '{name}'"))?,
+                ),
                 ClaType::Other { cla_type, .. } => {
-                    warn!(
-                        "Ignoring CLA '{}' with unknown type '{cla_type}'",
-                        cla_config.name
-                    );
-                    None
+                    warn!("Ignoring CLA '{name}' with unknown type '{cla_type}'");
+                    continue;
                 }
             };
-            let Some((cla, init)) = cla else {
-                continue;
-            };
 
-            let egress_policy = cla_config
-                .policy
-                .as_ref()
-                .map(|name| {
-                    policies.get(name).cloned().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "CLA '{}' references unknown policy '{name}'",
-                            cla_config.name
-                        )
-                    })
-                })
-                .transpose()?;
+            // The CLA names the egress policy shaping its queues; the
+            // policies themselves are configured against the BPA.
+            if let Some(policy_name) = policy_name {
+                let policy = policies.get(&policy_name).cloned().ok_or_else(|| {
+                    anyhow::anyhow!("CLA '{name}' references unknown policy '{policy_name}'")
+                })?;
+                builder = builder.egress_policy(&name, policy);
+            }
 
-            builder = builder.cla(cla_config.name, cla, egress_policy, init);
+            builder = builder.cla_boxed(name, factory);
         }
 
         let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
@@ -325,6 +323,9 @@ impl BpaServer {
     // the pool's cancellation token (the composition root wires signals to
     // it) and shut down gracefully.
     pub async fn run(self) -> anyhow::Result<()> {
+        // A CLA that cannot start leaves the BPA running on the
+        // transports that did. The BPA logs each failure as it happens,
+        // and this server has no stronger line to take than carrying on.
         self.bpa.start(self.recover_storage).await;
 
         #[cfg(feature = "grpc")]
