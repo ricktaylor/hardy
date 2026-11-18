@@ -5,7 +5,10 @@
 #![allow(dead_code)]
 
 use hardy_async::async_trait;
-use hardy_bpa::{cla, routing, services};
+use hardy_bpa::{
+    cla, routing,
+    service::{self, SendOptions, Sink, raw},
+};
 use hardy_bpv7::eid::NodeId;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -108,7 +111,37 @@ impl cla::Sink for MockClaSink {
     }
 }
 
-// ── ServiceSink ───────────────────────────────────────────────────────
+// ── raw::Sink ─────────────────────────────────────────────────────────
+
+pub struct MockRawServiceSink {
+    unregistered: AtomicBool,
+}
+
+impl MockRawServiceSink {
+    pub fn new() -> Self {
+        Self {
+            unregistered: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl raw::Sink for MockRawServiceSink {
+    async fn unregister(&self) {
+        self.unregistered.store(true, Ordering::Relaxed);
+    }
+
+    async fn send(
+        &self,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+    ) -> service::Result<hardy_bpv7::bundle::Id> {
+        Err(service::Error::Internal(
+            "mock sink: send not implemented".into(),
+        ))
+    }
+}
+
+// ── service::Sink ─────────────────────────────────────────────────────
 
 pub struct MockServiceSink {
     unregistered: AtomicBool,
@@ -123,37 +156,7 @@ impl MockServiceSink {
 }
 
 #[async_trait]
-impl services::ServiceSink for MockServiceSink {
-    async fn unregister(&self) {
-        self.unregistered.store(true, Ordering::Relaxed);
-    }
-
-    async fn send(
-        &self,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        Err(services::Error::Internal(
-            "mock sink: send not implemented".into(),
-        ))
-    }
-}
-
-// ── ApplicationSink ───────────────────────────────────────────────────
-
-pub struct MockApplicationSink {
-    unregistered: AtomicBool,
-}
-
-impl MockApplicationSink {
-    pub fn new() -> Self {
-        Self {
-            unregistered: AtomicBool::new(false),
-        }
-    }
-}
-
-#[async_trait]
-impl services::ApplicationSink for MockApplicationSink {
+impl Sink for MockServiceSink {
     async fn unregister(&self) {
         self.unregistered.store(true, Ordering::Relaxed);
     }
@@ -163,9 +166,9 @@ impl services::ApplicationSink for MockApplicationSink {
         _destination: hardy_bpv7::eid::Eid,
         _data: hardy_bpa::Bytes,
         _lifetime: core::time::Duration,
-        _options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        Err(services::Error::Internal(
+        _options: Option<SendOptions>,
+    ) -> service::Result<hardy_bpv7::bundle::Id> {
+        Err(service::Error::Internal(
             "mock sink: send not implemented".into(),
         ))
     }

@@ -11,7 +11,7 @@ use tracing::instrument;
 use super::action::{Action, InternalAction, RouteAction};
 use super::{Error, Result};
 use crate::{
-    Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, services::registry::Record,
+    Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, service::registry::Record,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

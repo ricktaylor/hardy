@@ -6,7 +6,7 @@ use std::{
 
 use hardy_bpa::{
     async_trait,
-    services::StatusNotify,
+    service::{self, StatusNotify, raw},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
@@ -119,7 +119,7 @@ struct SharedState {
 }
 
 pub struct Service {
-    sink: OnceLock<Box<dyn hardy_bpa::services::ServiceSink>>,
+    sink: OnceLock<Box<dyn raw::Sink>>,
     local_node: NodeId,
     destination: Eid,
     lifetime: Duration,
@@ -580,8 +580,8 @@ fn verb(kind: StatusNotify) -> &'static str {
 }
 
 #[async_trait]
-impl hardy_bpa::services::Service for Service {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn hardy_bpa::services::ServiceSink>) {
+impl raw::Service for Service {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
         // Ensure single initialization
         self.sink.get_or_init(|| sink);
     }
@@ -601,7 +601,7 @@ impl hardy_bpa::services::Service for Service {
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> hardy_bpa::services::Result<()> {
+    ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
 
         // Record receive time immediately for accurate RTT

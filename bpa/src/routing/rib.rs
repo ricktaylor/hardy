@@ -29,7 +29,7 @@ use super::{
 };
 use crate::{
     Arc, HashMap, HashSet, bundle::Bundle, dispatcher::Dispatcher, hash_map::Entry as HashMapEntry,
-    node_ids::NodeIds, services::registry::Record, storage::store::Store,
+    node_ids::NodeIds, service::registry::Record, storage::store::Store,
 };
 
 /// The resolved inputs of a RIB lookup — the `{table, key}` pair
@@ -663,8 +663,8 @@ mod tests {
     use super::*;
     use crate::bundle::tests::test_bundle;
     use crate::filter::slots::MetadataDelta;
-    use crate::services::registry::ServiceImpl;
-    use crate::services::tests::NullService;
+    use crate::service::raw::tests::NullService;
+    use crate::service::registry::Kind;
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_store() -> Arc<Store> {
@@ -702,7 +702,7 @@ mod tests {
             1,
         );
         Record::new(
-            ServiceImpl::LowLevel(Arc::new(NullService)),
+            Kind::Bundle(Arc::new(NullService)),
             EidService::Ipn(42),
             eid,
             tx,

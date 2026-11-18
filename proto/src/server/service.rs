@@ -1,15 +1,15 @@
 use super::*;
 use proto::service::*;
 
-type ServiceSink = Arc<dyn hardy_bpa::services::ServiceSink>;
+type Sink = Arc<dyn hardy_bpa::service::raw::Sink>;
 
 struct LowLevelService {
-    sink: Mutex<Option<ServiceSink>>,
+    sink: Mutex<Option<Sink>>,
     proxy: Once<RpcProxy<Result<BpaToService, tonic::Status>, ServiceToBpa>>,
 }
 
 impl LowLevelService {
-    fn sink(&self) -> Result<ServiceSink, tonic::Status> {
+    fn sink(&self) -> Result<Sink, tonic::Status> {
         self.sink
             .lock()
             .clone()
@@ -19,16 +19,16 @@ impl LowLevelService {
     async fn call(
         &self,
         msg: bpa_to_service::Msg,
-    ) -> hardy_bpa::services::Result<service_to_bpa::Msg> {
+    ) -> hardy_bpa::service::Result<service_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
             error!("call made before on_register!");
-            hardy_bpa::services::Error::Disconnected
+            hardy_bpa::service::Error::Disconnected
         })?;
 
         match proxy.call(msg).await {
-            Ok(None) => Err(hardy_bpa::services::Error::Disconnected),
+            Ok(None) => Err(hardy_bpa::service::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
-            Err(e) => Err(hardy_bpa::services::Error::Internal(e.into())),
+            Err(e) => Err(hardy_bpa::service::Error::Internal(e.into())),
         }
     }
 
@@ -58,11 +58,11 @@ impl LowLevelService {
 }
 
 #[async_trait]
-impl hardy_bpa::services::Service for LowLevelService {
+impl hardy_bpa::service::raw::Service for LowLevelService {
     async fn on_register(
         &self,
         _endpoint: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::services::ServiceSink>,
+        sink: Box<dyn hardy_bpa::service::raw::Sink>,
     ) {
         *self.sink.lock() = Some(Arc::from(sink));
     }
@@ -89,7 +89,7 @@ impl hardy_bpa::services::Service for LowLevelService {
         expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<()> {
+    ) -> hardy_bpa::service::Result<()> {
         let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         match self
             .call(bpa_to_service::Msg::Receive(ServiceReceiveRequest {
@@ -102,7 +102,7 @@ impl hardy_bpa::services::Service for LowLevelService {
             service_to_bpa::Msg::Receive(_) => Ok(()),
             msg => {
                 warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::services::Error::Internal(
+                Err(hardy_bpa::service::Error::Internal(
                     tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
                 ))
             }
@@ -113,7 +113,7 @@ impl hardy_bpa::services::Service for LowLevelService {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         from: &hardy_bpv7::eid::Eid,
-        kind: hardy_bpa::services::StatusNotify,
+        kind: hardy_bpa::service::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -122,16 +122,16 @@ impl hardy_bpa::services::Service for LowLevelService {
                 bundle_id: bundle_id.to_key(),
                 from: from.to_string(),
                 kind: match kind {
-                    hardy_bpa::services::StatusNotify::Received => {
+                    hardy_bpa::service::StatusNotify::Received => {
                         status_notify_request::StatusKind::Received
                     }
-                    hardy_bpa::services::StatusNotify::Forwarded => {
+                    hardy_bpa::service::StatusNotify::Forwarded => {
                         status_notify_request::StatusKind::Forwarded
                     }
-                    hardy_bpa::services::StatusNotify::Delivered => {
+                    hardy_bpa::service::StatusNotify::Delivered => {
                         status_notify_request::StatusKind::Delivered
                     }
-                    hardy_bpa::services::StatusNotify::Deleted => {
+                    hardy_bpa::service::StatusNotify::Deleted => {
                         status_notify_request::StatusKind::Deleted
                     }
                 }
@@ -239,7 +239,7 @@ async fn run_service_session(
                     })
                     .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
                 let endpoint_id = bpa
-                    .register_service(service_id, svc.clone())
+                    .register_raw_service(service_id, svc.clone())
                     .await
                     .map(|endpoint_id| endpoint_id.to_string())
                     .map_err(|e| tonic::Status::from_error(e.into()))?;

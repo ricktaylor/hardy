@@ -389,7 +389,7 @@ impl Dispatcher {
     /// delivery at a time per service, in queue order.
     pub fn start_delivery_queue(
         self: &Arc<Self>,
-        service: Arc<services::registry::Record>,
+        service: Arc<service::registry::Record>,
         rx: hardy_async::closeable::Receiver<bundle::Bundle>,
     ) {
         let dispatcher = self.clone();

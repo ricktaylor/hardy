@@ -53,7 +53,7 @@ pub mod keys;
 pub mod node_ids;
 pub mod policy;
 pub mod routing;
-pub mod services;
+pub mod service;
 pub mod storage;
 pub mod stream;
 

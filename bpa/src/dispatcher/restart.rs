@@ -141,13 +141,14 @@ impl Dispatcher {
 mod tests {
     use hardy_bpv7::{
         bundle::Id,
-        eid::{Eid, IpnNodeId, NodeId},
+        eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     };
 
     use super::*;
     use crate::{
         bpa::{Bpa, BpaRegistration},
         cla::ClaInit,
+        service::raw,
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
@@ -483,13 +484,13 @@ mod tests {
     // bundle id.
     struct CapturingService {
         // Retained: dropping the sink unregisters the service.
-        sink: hardy_async::sync::spin::Once<Box<dyn crate::services::ServiceSink>>,
+        sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
         delivered_tx: flume::Sender<Id>,
     }
 
     #[async_trait]
-    impl crate::services::Service for CapturingService {
-        async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn crate::services::ServiceSink>) {
+    impl raw::Service for CapturingService {
+        async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
             self.sink.call_once(|| sink);
         }
 
@@ -501,7 +502,7 @@ mod tests {
             _expiry: time::OffsetDateTime,
             _total_len: u64,
             stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-        ) -> crate::services::Result<()> {
+        ) -> crate::service::Result<()> {
             loop {
                 match stream.recv().await {
                     Ok(crate::stream::Segment::Final(_)) | Err(_) => break,
@@ -516,7 +517,7 @@ mod tests {
             &self,
             _bundle_id: &Id,
             _from: &Eid,
-            _kind: crate::services::StatusNotify,
+            _kind: crate::service::StatusNotify,
             _reason: hardy_bpv7::status_report::ReasonCode,
             _timestamp: Option<time::OffsetDateTime>,
         ) {
@@ -608,8 +609,8 @@ mod tests {
 
         // The service registers: its WaitingForService poll delivers both.
         let (delivered_tx, delivered_rx) = flume::bounded(16);
-        bpa.register_service(
-            hardy_bpv7::eid::Service::Ipn(7),
+        bpa.register_raw_service(
+            ServiceId::Ipn(7),
             Arc::new(CapturingService {
                 sink: hardy_async::sync::spin::Once::new(),
                 delivered_tx,

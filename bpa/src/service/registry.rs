@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use hardy_async::{CancellationToken, TaskPool, async_trait, sync::spin::Mutex};
 // `eid::Service` is the service number inside an EID, not the trait of the
 // same name that this module registers; it is aliased to the word the code
@@ -8,34 +10,38 @@ use hardy_bpv7::{
     status_report::ReasonCode,
 };
 use portable_atomic::{AtomicU32, Ordering};
+use time::OffsetDateTime;
 use tracing::{error, info};
 
-use super::{
-    Application, ApplicationSink, Error, Result, SendOptions, Service, ServiceSink, StatusNotify,
-};
+// This module's own `Sink` implements both service sink traits, so it takes
+// the bare name here; the traits stay module-qualified at their few use
+// sites.
+use super::{Error, Result, SendOptions, Service, StatusNotify, raw};
 use crate::{
     Arc, Bytes, HashMap, Weak,
     bundle::Bundle,
     dispatcher::Dispatcher,
     node_ids::{NodeIds, service_is_admin_endpoint},
     routing::Rib,
+    service,
     storage::channel::{SendError, Sender},
+    stream::{CancellableReceiver, Receiver, Segment},
 };
 
 // The service map is behind a spin lock. Its critical section is a
 // `contains_key` and an insert, both O(1), with id allocation done outside
 // it, so the lock is never held long enough to repay an OS mutex's park.
 
-/// Distinguishes between low-level Service and high-level Application registrations
-pub enum ServiceImpl {
-    /// Low-level service with full bundle access
-    LowLevel(Arc<dyn Service>),
-    /// High-level application receiving only payload
-    Application(Arc<dyn Application>),
+/// Which of the two service contracts a registration was made against.
+pub enum Kind {
+    /// A service that receives whole bundles.
+    Bundle(Arc<dyn raw::Service>),
+    /// A service that receives payloads only.
+    Payload(Arc<dyn Service>),
 }
 
 pub struct Record {
-    pub service: ServiceImpl,
+    pub kind: Kind,
     pub service_id: ServiceId,
     // Cancelled at unregistration; every in-flight stream of this
     // registration races it and fails immediately.
@@ -52,9 +58,9 @@ impl Record {
     /// The sole constructor: a reachable `Record` always carries its live
     /// delivery queue and its canonical registration EID, so no consumer
     /// can observe a half-built registration.
-    pub fn new(service: ServiceImpl, service_id: ServiceId, eid: Eid, tx: Sender) -> Arc<Self> {
+    pub fn new(kind: Kind, service_id: ServiceId, eid: Eid, tx: Sender) -> Arc<Self> {
         Arc::new(Self {
-            service,
+            kind,
             service_id,
             cancel: CancellationToken::new(),
             eid,
@@ -62,7 +68,7 @@ impl Record {
         })
     }
 
-    /// Queue a bundle into this service's delivery channel.
+    /// Queues a bundle into this service's delivery channel.
     ///
     /// `Err(bundle)` hands ownership back for parking (the mirror of
     /// `Peer::forward`): the queue has closed (unregistration).
@@ -88,15 +94,17 @@ impl Record {
         from: &Eid,
         kind: StatusNotify,
         reason: ReasonCode,
-        timestamp: Option<time::OffsetDateTime>,
+        timestamp: Option<OffsetDateTime>,
     ) {
-        match &self.service {
-            ServiceImpl::LowLevel(svc) => {
-                svc.on_status_notify(bundle_id, from, kind, reason, timestamp)
+        match &self.kind {
+            Kind::Bundle(service) => {
+                service
+                    .on_status_notify(bundle_id, from, kind, reason, timestamp)
                     .await
             }
-            ServiceImpl::Application(app) => {
-                app.on_status_notify(bundle_id, from, kind, reason, timestamp)
+            Kind::Payload(service) => {
+                service
+                    .on_status_notify(bundle_id, from, kind, reason, timestamp)
                     .await
             }
         }
@@ -137,14 +145,14 @@ impl core::fmt::Debug for Record {
     }
 }
 
-/// Sink implementation for both the Service and Application traits
+/// The BPA's implementation of both service sink traits.
 // The back-edges are weak. `Bpa` owns the registry, the RIB and the
 // dispatcher for the life of the BPA, so a strong edge would add no
 // reachability — only a cycle through the service that holds this sink,
 // and a cycle of `Arc`s never drops. A failed upgrade is the condition the
 // trait already names, `Error::Disconnected`.
 struct Sink {
-    service: Weak<Record>,
+    record: Weak<Record>,
     /// Full EID for this service (pre-resolved at activation time)
     eid: Eid,
     registry: Weak<ServiceRegistry>,
@@ -154,11 +162,11 @@ struct Sink {
 
 impl Sink {
     async fn unregister_inner(&self) {
-        if let (Some(service), Some(registry), Some(rib)) = (
-            self.service.upgrade(),
+        if let (Some(record), Some(registry), Some(rib)) = (
+            self.record.upgrade(),
             self.registry.upgrade(),
             self.rib.upgrade(),
-        ) && let Err(e) = registry.unregister(service, &rib).await
+        ) && let Err(e) = registry.unregister(record, &rib).await
         {
             error!("Failed to unregister service: {e}");
         }
@@ -166,16 +174,13 @@ impl Sink {
 }
 
 #[async_trait]
-impl ServiceSink for Sink {
+impl raw::Sink for Sink {
     async fn unregister(&self) {
         self.unregister_inner().await
     }
 
-    async fn send(
-        &self,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-    ) -> Result<Id> {
-        let service = self.service.upgrade().ok_or(Error::Disconnected)?;
+    async fn send(&self, stream: &mut dyn Receiver<Segment>) -> Result<Id> {
+        let record = self.record.upgrade().ok_or(Error::Disconnected)?;
         let dispatcher = self.dispatcher.upgrade().ok_or(Error::Disconnected)?;
 
         // A service that unregisters mid-send must not originate its bundle:
@@ -183,16 +188,16 @@ impl ServiceSink for Sink {
         // stream immediately — even parked behind a stalled producer — and
         // the send surfaces as cancelled. Sink-side, so the dispatcher's
         // stream consumers stay registration-agnostic.
-        let mut stream = crate::stream::CancellableReceiver {
+        let mut stream = CancellableReceiver {
             inner: stream,
-            token: service.cancel.clone(),
+            token: record.cancel.clone(),
         };
         dispatcher.originate_raw(&self.eid, &mut stream).await
     }
 }
 
 #[async_trait]
-impl ApplicationSink for Sink {
+impl service::Sink for Sink {
     async fn unregister(&self) {
         self.unregister_inner().await
     }
@@ -201,10 +206,10 @@ impl ApplicationSink for Sink {
         &self,
         destination: Eid,
         data: Bytes,
-        lifetime: core::time::Duration,
+        lifetime: Duration,
         options: Option<SendOptions>,
     ) -> Result<Id> {
-        self.service.upgrade().ok_or(Error::Disconnected)?;
+        self.record.upgrade().ok_or(Error::Disconnected)?;
         let dispatcher = self.dispatcher.upgrade().ok_or(Error::Disconnected)?;
 
         dispatcher
@@ -216,18 +221,18 @@ impl ApplicationSink for Sink {
         &self,
         destination: Eid,
         total_len: u64,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-        lifetime: core::time::Duration,
+        stream: &mut dyn Receiver<Segment>,
+        lifetime: Duration,
         options: Option<SendOptions>,
     ) -> Result<Id> {
-        let service = self.service.upgrade().ok_or(Error::Disconnected)?;
+        let record = self.record.upgrade().ok_or(Error::Disconnected)?;
         let dispatcher = self.dispatcher.upgrade().ok_or(Error::Disconnected)?;
 
         // Registration teardown wakes an in-flight send exactly as on the
         // raw door: the token races every pull, sink-side.
-        let mut stream = crate::stream::CancellableReceiver {
+        let mut stream = CancellableReceiver {
             inner: stream,
-            token: service.cancel.clone(),
+            token: record.cancel.clone(),
         };
         dispatcher
             .originate_streamed(
@@ -244,14 +249,14 @@ impl ApplicationSink for Sink {
 
 impl Drop for Sink {
     fn drop(&mut self) {
-        if let (Some(service), Some(registry), Some(rib)) = (
-            self.service.upgrade(),
+        if let (Some(record), Some(registry), Some(rib)) = (
+            self.record.upgrade(),
             self.registry.upgrade(),
             self.rib.upgrade(),
         ) {
             let tasks = registry.tasks.clone();
             hardy_async::spawn!(tasks, "sink_drop_cleanup", async move {
-                if let Err(e) = registry.unregister(service, &rib).await {
+                if let Err(e) = registry.unregister(record, &rib).await {
                     error!("Failed to unregister service: {e}");
                 }
             });
@@ -262,7 +267,7 @@ impl Drop for Sink {
 type ServiceMap = HashMap<ServiceId, Arc<Record>>;
 
 pub struct ServiceRegistryBuilder {
-    services: Vec<(ServiceId, ServiceImpl)>,
+    services: Vec<(ServiceId, Kind)>,
 }
 
 impl ServiceRegistryBuilder {
@@ -272,7 +277,7 @@ impl ServiceRegistryBuilder {
         }
     }
 
-    pub fn insert(&mut self, service_id: ServiceId, service: ServiceImpl) -> Result<()> {
+    pub fn insert(&mut self, service_id: ServiceId, kind: Kind) -> Result<()> {
         if service_is_admin_endpoint(&service_id) {
             return Err(Error::AdministrativeEndpoint(service_id.to_string()));
         }
@@ -280,7 +285,7 @@ impl ServiceRegistryBuilder {
             return Err(Error::ServiceIdInUse(service_id.to_string()));
         }
         info!("Inserted service: {service_id}");
-        self.services.push((service_id, service));
+        self.services.push((service_id, kind));
         Ok(())
     }
 
@@ -309,7 +314,7 @@ pub struct ServiceRegistry {
     services: Mutex<ServiceMap>,
     // Builder-configured registrations, parked until `start` activates them
     // after storage recovery.
-    pending: Mutex<Vec<(ServiceId, ServiceImpl)>>,
+    pending: Mutex<Vec<(ServiceId, Kind)>>,
     next_dynamic: AtomicU32,
     tasks: TaskPool,
 }
@@ -325,10 +330,10 @@ impl ServiceRegistry {
         dispatcher: &Arc<Dispatcher>,
     ) {
         let pending = core::mem::take(&mut *self.pending.lock());
-        for (service_id, service) in pending {
+        for (service_id, kind) in pending {
             // Validated at build; a failure here is a bug, not a config error.
             if let Err(e) = self
-                .register(&service_id, service, node_ids, rib, dispatcher)
+                .register(&service_id, kind, node_ids, rib, dispatcher)
                 .await
             {
                 error!("Failed to activate configured service {service_id}: {e}");
@@ -347,8 +352,8 @@ impl ServiceRegistry {
             metrics::gauge!("bpa.service.registered").decrement(services.len() as f64);
         }
 
-        for service in services {
-            if let Err(e) = self.unregister_service(service, rib).await {
+        for record in services {
+            if let Err(e) = self.unregister_service(record, rib).await {
                 error!("Failed to unregister service: {e}");
             }
         }
@@ -356,6 +361,26 @@ impl ServiceRegistry {
         self.tasks.shutdown().await;
     }
 
+    /// Registers a whole-bundle service under `service_id`.
+    pub async fn register_raw_service(
+        self: &Arc<Self>,
+        service_id: ServiceId,
+        service: Arc<dyn raw::Service>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
+        dispatcher: &Arc<Dispatcher>,
+    ) -> Result<Eid> {
+        self.register(
+            &service_id,
+            Kind::Bundle(service),
+            node_ids,
+            rib,
+            dispatcher,
+        )
+        .await
+    }
+
+    /// Registers a payload-only service under `service_id`.
     pub async fn register_service(
         self: &Arc<Self>,
         service_id: ServiceId,
@@ -366,7 +391,7 @@ impl ServiceRegistry {
     ) -> Result<Eid> {
         self.register(
             &service_id,
-            ServiceImpl::LowLevel(service),
+            Kind::Payload(service),
             node_ids,
             rib,
             dispatcher,
@@ -374,25 +399,22 @@ impl ServiceRegistry {
         .await
     }
 
-    pub async fn register_application(
+    /// Registers a whole-bundle service with a dynamically assigned IPN
+    /// service number.
+    pub async fn register_dynamic_raw_service(
         self: &Arc<Self>,
-        service_id: ServiceId,
-        application: Arc<dyn Application>,
+        service: Arc<dyn raw::Service>,
         node_ids: &NodeIds,
         rib: &Arc<Rib>,
         dispatcher: &Arc<Dispatcher>,
     ) -> Result<Eid> {
-        self.register(
-            &service_id,
-            ServiceImpl::Application(application),
-            node_ids,
-            rib,
-            dispatcher,
-        )
-        .await
+        let service_id = self.allocate_dynamic_id();
+        self.register_raw_service(service_id, service, node_ids, rib, dispatcher)
+            .await
     }
 
-    /// Register a service with a dynamically assigned IPN service number.
+    /// Registers a payload-only service with a dynamically assigned IPN
+    /// service number.
     pub async fn register_dynamic_service(
         self: &Arc<Self>,
         service: Arc<dyn Service>,
@@ -405,19 +427,6 @@ impl ServiceRegistry {
             .await
     }
 
-    /// Register an application with a dynamically assigned IPN service number.
-    pub async fn register_dynamic_application(
-        self: &Arc<Self>,
-        application: Arc<dyn Application>,
-        node_ids: &NodeIds,
-        rib: &Arc<Rib>,
-        dispatcher: &Arc<Dispatcher>,
-    ) -> Result<Eid> {
-        let service_id = self.allocate_dynamic_id();
-        self.register_application(service_id, application, node_ids, rib, dispatcher)
-            .await
-    }
-
     fn allocate_dynamic_id(&self) -> ServiceId {
         let id = self.next_dynamic.fetch_add(1, Ordering::Relaxed);
         ServiceId::Ipn(id)
@@ -426,7 +435,7 @@ impl ServiceRegistry {
     async fn register(
         self: &Arc<Self>,
         service_id: &ServiceId,
-        service: ServiceImpl,
+        kind: Kind,
         node_ids: &NodeIds,
         rib: &Arc<Rib>,
         dispatcher: &Arc<Dispatcher>,
@@ -443,7 +452,7 @@ impl ServiceRegistry {
         // channel's creation-time poll recovers any DeliverPending bundles
         // left over from a previous registration under the same EID.
         let (tx, rx) = dispatcher.new_delivery_channel(&eid);
-        let service = Record::new(service, service_id.clone(), eid.clone(), tx);
+        let record = Record::new(kind, service_id.clone(), eid.clone(), tx);
         {
             let mut services = self.services.lock();
             if services.contains_key(service_id) {
@@ -451,25 +460,25 @@ impl ServiceRegistry {
                 // spawns its storage poller at creation, and dropping the
                 // sender does not close it — an unclosed loser parks that
                 // poller until store shutdown.
-                service.close_queue();
+                record.close_queue();
                 return Err(Error::ServiceIdInUse(service_id.to_string()));
             }
-            services.insert(service_id.clone(), service.clone());
+            services.insert(service_id.clone(), record.clone());
         }
-        dispatcher.start_delivery_queue(service.clone(), rx);
+        dispatcher.start_delivery_queue(record.clone(), rx);
 
-        let _ = rib.add_service(eid.clone(), service.clone()).await;
+        let _ = rib.add_service(eid.clone(), record.clone()).await;
 
         let sink = Sink {
-            service: Arc::downgrade(&service),
+            record: Arc::downgrade(&record),
             eid: eid.clone(),
             registry: Arc::downgrade(self),
             rib: Arc::downgrade(rib),
             dispatcher: Arc::downgrade(dispatcher),
         };
-        match &service.service {
-            ServiceImpl::LowLevel(s) => s.on_register(&eid, Box::new(sink)).await,
-            ServiceImpl::Application(a) => a.on_register(&eid, Box::new(sink)).await,
+        match &record.kind {
+            Kind::Bundle(service) => service.on_register(&eid, Box::new(sink)).await,
+            Kind::Payload(service) => service.on_register(&eid, Box::new(sink)).await,
         }
         // The post-registration poll is spawned, never awaited inline: a
         // sink whose event buffer drains only after registration returns —
@@ -487,31 +496,31 @@ impl ServiceRegistry {
         Ok(eid)
     }
 
-    async fn unregister(&self, service: Arc<Record>, rib: &Arc<Rib>) -> Result<()> {
-        let service = self.services.lock().remove(&service.service_id);
+    async fn unregister(&self, record: Arc<Record>, rib: &Arc<Rib>) -> Result<()> {
+        let record = self.services.lock().remove(&record.service_id);
 
-        if let Some(service) = service {
+        if let Some(record) = record {
             metrics::gauge!("bpa.service.registered").decrement(1.0);
-            self.unregister_service(service, rib).await?;
+            self.unregister_service(record, rib).await?;
         }
         Ok(())
     }
 
-    async fn unregister_service(&self, service: Arc<Record>, rib: &Arc<Rib>) -> Result<()> {
+    async fn unregister_service(&self, record: Arc<Record>, rib: &Arc<Rib>) -> Result<()> {
         // First: wake every in-flight stream of this registration.
-        service.cancel.cancel();
+        record.cancel.cancel();
 
         // Close the delivery queue: the consumer finishes its in-flight
         // delivery and exits; queued bundles are swept to WaitingForService
         // by the RIB removal below.
-        service.close_queue();
+        record.close_queue();
 
-        let eid = service.eid().clone();
-        rib.remove_service(&eid, service.clone()).await;
+        let eid = record.eid().clone();
+        rib.remove_service(&eid, record.clone()).await;
 
-        match &service.service {
-            ServiceImpl::LowLevel(svc) => svc.on_unregister().await,
-            ServiceImpl::Application(app) => app.on_unregister().await,
+        match &record.kind {
+            Kind::Bundle(service) => service.on_unregister().await,
+            Kind::Payload(service) => service.on_unregister().await,
         }
 
         info!("Unregistered service: {eid}");
@@ -526,29 +535,31 @@ mod tests {
     use super::*;
     use crate::bpa::{Bpa, BpaRegistration};
 
-    struct TestApp {
-        sink: Once<Box<dyn ApplicationSink>>,
+    // A minimal payload-only service: registration-shape tests never
+    // exercise delivery.
+    struct PayloadService {
+        sink: Once<Box<dyn service::Sink>>,
     }
 
-    impl TestApp {
+    impl PayloadService {
         fn new() -> Self {
             Self { sink: Once::new() }
         }
     }
 
     #[async_trait]
-    impl Application for TestApp {
-        async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
+    impl Service for PayloadService {
+        async fn on_register(&self, _source: &Eid, sink: Box<dyn service::Sink>) {
             self.sink.call_once(|| sink);
         }
         async fn on_unregister(&self) {}
         async fn on_deliver(
             &self,
             _bundle_id: &Id,
-            _expiry: time::OffsetDateTime,
+            _expiry: OffsetDateTime,
             _ack_requested: bool,
             _total_len: u64,
-            _stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+            _stream: &mut dyn Receiver<Segment>,
         ) -> Result<()> {
             Ok(())
         }
@@ -558,12 +569,12 @@ mod tests {
             _from: &Eid,
             _kind: StatusNotify,
             _reason: ReasonCode,
-            _timestamp: Option<time::OffsetDateTime>,
+            _timestamp: Option<OffsetDateTime>,
         ) {
         }
     }
 
-    // Registering two applications with the same explicit IPN service number should fail.
+    // Registering two services with the same explicit IPN service number should fail.
     #[tokio::test]
     async fn test_duplicate_reg() {
         let bpa = Bpa::builder().build().await.unwrap();
@@ -571,12 +582,12 @@ mod tests {
 
         let svc_id = ServiceId::Ipn(42);
 
-        let app1 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id.clone(), app1).await;
+        let first = Arc::new(PayloadService::new());
+        let result = bpa.register_service(svc_id.clone(), first).await;
         assert!(result.is_ok(), "First registration should succeed");
 
-        let app2 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id, app2).await;
+        let second = Arc::new(PayloadService::new());
+        let result = bpa.register_service(svc_id, second).await;
         assert!(
             matches!(result, Err(Error::ServiceIdInUse(ref id)) if id == "42"),
             "Duplicate registration should return ServiceIdInUse, got: {result:?}"
@@ -585,7 +596,7 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // After an application drops its sink (unregisters), the service ID should be freed
+    // After a service drops its sink (unregisters), the service ID should be freed
     // for re-registration.
     #[tokio::test]
     async fn test_cleanup() {
@@ -594,18 +605,19 @@ mod tests {
 
         let svc_id = ServiceId::Ipn(99);
 
-        let app1 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id.clone(), app1.clone()).await;
+        let first = Arc::new(PayloadService::new());
+        let result = bpa.register_service(svc_id.clone(), first.clone()).await;
         assert!(result.is_ok());
 
-        app1.sink
+        first
+            .sink
             .get()
             .expect("Sink should be set")
             .unregister()
             .await;
 
-        let app2 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id, app2).await;
+        let second = Arc::new(PayloadService::new());
+        let result = bpa.register_service(svc_id, second).await;
         assert!(
             result.is_ok(),
             "Re-registration after cleanup should succeed, got: {result:?}"
@@ -614,22 +626,21 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // A minimal low-level service: registration-shape tests never exercise
-    // delivery.
-    struct TestService;
+    // A minimal whole-bundle service, as above.
+    struct BundleService;
 
     #[async_trait]
-    impl Service for TestService {
-        async fn on_register(&self, _endpoint: &Eid, _sink: Box<dyn ServiceSink>) {}
+    impl raw::Service for BundleService {
+        async fn on_register(&self, _endpoint: &Eid, _sink: Box<dyn raw::Sink>) {}
 
         async fn on_unregister(&self) {}
 
         async fn on_deliver(
             &self,
             _bundle_id: &Id,
-            _expiry: time::OffsetDateTime,
+            _expiry: OffsetDateTime,
             _total_len: u64,
-            _stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+            _stream: &mut dyn Receiver<Segment>,
         ) -> Result<()> {
             Ok(())
         }
@@ -640,7 +651,7 @@ mod tests {
             _from: &Eid,
             _kind: StatusNotify,
             _reason: ReasonCode,
-            _timestamp: Option<time::OffsetDateTime>,
+            _timestamp: Option<OffsetDateTime>,
         ) {
         }
     }
@@ -653,16 +664,13 @@ mod tests {
     fn admin_endpoint_service_ids_are_rejected() {
         let mut builder = ServiceRegistryBuilder::new();
         assert!(matches!(
-            builder.insert(
-                ServiceId::Ipn(0),
-                ServiceImpl::LowLevel(Arc::new(TestService)),
-            ),
+            builder.insert(ServiceId::Ipn(0), Kind::Bundle(Arc::new(BundleService)),),
             Err(Error::AdministrativeEndpoint(_))
         ));
         assert!(matches!(
             builder.insert(
                 ServiceId::Dtn("".into()),
-                ServiceImpl::LowLevel(Arc::new(TestService)),
+                Kind::Bundle(Arc::new(BundleService)),
             ),
             Err(Error::AdministrativeEndpoint(_))
         ));
@@ -670,10 +678,7 @@ mod tests {
         // The neighbouring non-zero / non-empty ids remain registrable.
         assert!(
             builder
-                .insert(
-                    ServiceId::Ipn(1),
-                    ServiceImpl::LowLevel(Arc::new(TestService)),
-                )
+                .insert(ServiceId::Ipn(1), Kind::Bundle(Arc::new(BundleService)),)
                 .is_ok()
         );
     }

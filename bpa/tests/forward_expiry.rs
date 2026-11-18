@@ -15,7 +15,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     cla,
     node_ids::NodeIds,
-    services,
+    service::{self, StatusNotify, raw},
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -40,7 +40,7 @@ enum Event {
 // ---------------------------------------------------------------------------
 
 struct CaptureService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
     events_tx: flume::Sender<Event>,
 }
 
@@ -58,8 +58,8 @@ impl CaptureService {
 }
 
 #[async_trait]
-impl services::Service for CaptureService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
+impl raw::Service for CaptureService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -71,7 +71,7 @@ impl services::Service for CaptureService {
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let mut segments = Vec::new();
         loop {
             match stream.recv().await {
@@ -80,7 +80,7 @@ impl services::Service for CaptureService {
                     segments.push(segment);
                     break;
                 }
-                Err(_) => return Err(services::Error::StreamCancelled),
+                Err(_) => return Err(service::Error::StreamCancelled),
             }
         }
         let _ = self.events_tx.send(Event::Streamed { segments });
@@ -91,7 +91,7 @@ impl services::Service for CaptureService {
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -256,7 +256,7 @@ async fn expiry_mid_transfer_rig() -> (
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = CaptureService::new();
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    bpa.register_raw_service(Service::Ipn(9), reports.clone())
         .await
         .unwrap();
 
@@ -469,7 +469,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
     bpa.start(false).await;
 
     let (reports, reports_rx) = CaptureService::new();
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    bpa.register_raw_service(Service::Ipn(9), reports.clone())
         .await
         .unwrap();
 
