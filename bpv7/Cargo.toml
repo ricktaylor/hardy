@@ -63,3 +63,9 @@ serde_json = "1"
 rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
 base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 hardy-bpv7 = { path = ".", features = ["serde", "std"] }
+
+# `hashbrown` supplies the hash maps a `no_std` build has no `std` ones for,
+# so a build with `std` on never names it. Cargo cannot tell that apart from
+# an abandoned dependency.
+[lints.cargo]
+unused_dependencies = "allow"

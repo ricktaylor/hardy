@@ -44,3 +44,9 @@ path = "fuzz_targets/bpa.rs"
 test = false
 bench = false
 doc = false
+
+# `libfuzzer-sys` belongs to the fuzz target, which `cargo test` does not
+# build, and `hardy-postgres-storage` to the arm of `cfg_select!` that the
+# sqlite one shadows whenever both features are on.
+[lints.cargo]
+unused_dependencies = "allow"
