@@ -75,9 +75,10 @@ The tests utilize a **Mock Server** approach:
 
 | Test ID | Scenario | Client Action (Rust) | Mock Server Assertion | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **RTE-CLI-01** | **Registration** | Call `register_routing_agent("tvr", agent)` | Receives `RegisterRoutingAgentRequest { name: "tvr" }`.<br>Replies `RegisterRoutingAgentResponse { node_ids }`. Agent receives `on_register` with sink and node IDs. | Implemented |
+| **RTE-CLI-01** | **Registration** | Call `register_routing_agent("tvr", agent)` | Receives `RegisterRoutingAgentRequest { name: "tvr" }`.<br>Replies `RegisterRoutingAgentResponse { node_ids }`. The agent is built from a context carrying the sink and the node IDs. | Implemented |
 | **RTE-CLI-02** | **Add Route** | Call `sink.add_route(pattern, action, priority)` | Receives `AddRouteRequest { pattern, action, priority }`.<br>Replies `AddRouteResponse { added: true }`. | Implemented |
 | **RTE-CLI-03** | **Remove Route** | Call `sink.remove_route(pattern, action, priority)` | Receives `RemoveRouteRequest { pattern, action, priority }`.<br>Replies `RemoveRouteResponse { removed: true }`. | Implemented |
+| **RTE-CLI-04** | **Refused registration** | Register a second agent under a name the BPA has already given out | The registration fails `AlreadyExists`, carrying the reason the BPA gave, rather than ending as a dropped stream. | Implemented |
 
 ### Suite 5: Error Handling & Lifecycle
 
@@ -95,30 +96,31 @@ The tests utilize a **Mock Server** approach:
 
 *Objective: Verify that unregistration (handled via stream close) triggers correct cleanup on both client and server for all shutdown scenarios.*
 
-Unregistration does not use explicit protocol messages. Closing the stream is the sole unregistration mechanism. The client proxy delivers a synthetic `on_unregister()` callback to the trait implementation via `on_close`. The server proxy removes the component from the BPA and cancels the proxy infrastructure.
+Unregistration does not use explicit protocol messages. Closing the stream is the sole unregistration mechanism. The client proxy shuts the session's component down via `on_close`. The server proxy removes the component from the BPA and cancels the proxy infrastructure.
+
+*LIFE-03 (Drop without unregister) removed — the session owns the agent, the agent owns the sink, and the sink owns the proxy, so a client cannot drop the proxy without unregistering.*
 
 | Test ID | Scenario | Setup | Expected Behavior | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **LIFE-01** | **Client-initiated unregister** | Client calls `Sink::unregister()`. | Client proxy shuts down, stream closes. Server `on_close` fires: takes sink, calls `sink.unregister()` (BPA removes component), cancels proxy. Client `on_close` delivers synthetic `trait.on_unregister()`. | Implemented |
-| **LIFE-02** | **BPA-initiated unregister** | BPA calls `shutdown_agents()` (or equivalent). | Server `on_unregister()` takes sink, calls `proxy.shutdown()`. Stream closes. Client `on_close` delivers synthetic `trait.on_unregister()`. | Implemented |
-| **LIFE-03** | **Drop without unregister** | Client drops proxy without calling `unregister()`. | Proxy `Drop` cancels tasks, stream closes. Server `on_close` fires: takes sink, calls `sink.unregister()`, cancels proxy. BPA removes component. | Implemented |
-| **LIFE-04** | **Server crash** | Server stream drops unexpectedly. | Client reader detects error/close, `on_close` fires: delivers synthetic `trait.on_unregister()` to trait impl. | Implemented |
-| **LIFE-05** | **Race: simultaneous unregister** | Client and BPA unregister concurrently. | `Mutex<Option>.take()` ensures exactly one path takes the sink. No double-unregister, no deadlock. | Implemented |
-| **LIFE-06** | **Synthetic on_unregister exactly once** | BPA sends `on_unregister` then stream closes. | Client trait impl receives `on_unregister()` exactly once (from `on_close`), not twice. | Implemented |
+| **LIFE-01** | **Client-initiated unregister** | Client calls `Sink::unregister()`. | Client proxy shuts down, stream closes. Server `on_close` fires: unregisters the BPA-side sink and cancels the proxy. Client `on_close` shuts the session's agent down. | Implemented |
+| **LIFE-02** | **BPA-initiated unregister** | BPA shuts the server-side agent down. | The agent's `shutdown()` shuts the proxy down, stream closes. Client `on_close` shuts the session's agent down. | Implemented |
+| **LIFE-04** | **Server crash** | Server stream drops unexpectedly. | Client reader detects error/close, `on_close` fires and shuts the session's agent down. | Implemented |
+| **LIFE-05** | **Race: simultaneous unregister** | Client and BPA unregister concurrently. | `Mutex<Option>::take()` ensures exactly one path takes the agent. No double shutdown, no deadlock. | Implemented |
+| **LIFE-06** | **Shutdown exactly once** | BPA closes the stream after unregistering. | The client agent is shut down exactly once (from `on_close`), not twice. | Implemented |
 
 ### Suite 7: Server Proxy Handlers
 
-*Objective: Verify server-side proxy implementations correctly manage sink ownership and proxy lifecycle.*
+*Objective: Verify server-side proxy implementations correctly translate wire requests onto the BPA sink they were built with.*
 
 *SRV-01 (Registration handshake) removed — covered by every Suite 1–4 registration test.*
-*SRV-05 (on\_close cancels proxy) removed — covered by LIFE-03 and LIFE-04.*
+*SRV-05 (on\_close cancels proxy) removed — covered by LIFE-01 and LIFE-04.*
 *SRV-06 (on\_unregister drains proxy) removed — covered by LIFE-02.*
 
 | Test ID | Scenario | Setup | Expected Behavior | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **SRV-02** | **Sink available after register** | `on_register` stores a sink. | `sink()` returns `Ok(Arc<dyn Sink>)`. | Implemented |
-| **SRV-03** | **Sink unavailable after unregister** | Sink has been taken. | `sink()` returns `Err(Unavailable)`. | Implemented |
-| **SRV-04** | **Spin lock not held across await** | `unregister()` called, BPA callback re-enters `on_unregister()`. | No deadlock. Spin lock released before `sink.unregister().await`. | Implemented |
+| **SRV-02** | **Added route reaches the sink** | An `AddRouteRequest` arrives for a registered agent. | The pattern, action and priority are translated and handed to the BPA sink unchanged. | Implemented |
+| **SRV-03** | **Removed route reaches the sink** | A `RemoveRouteRequest` arrives for a registered agent. | The route is withdrawn from the BPA sink. | Implemented |
+| **SRV-04** | **Malformed route request refused** | An `AddRouteRequest` carries an unparsable pattern. | The call fails `InvalidArgument` and the sink is left untouched. | Implemented |
 
 ## 4. Execution Strategy
 

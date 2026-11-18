@@ -135,8 +135,8 @@ where
         // The reader exiting means the connection is gone: wind the whole proxy
         // down. Cancelling here (not only on the external `shutdown` path)
         // makes "reader exited" imply "cancelled", so a re-entrant `shutdown`
-        // from `on_close`/`on_unregister` hits its guard and returns instead of
-        // awaiting its own task.
+        // from `on_close` hits its guard and returns instead of awaiting its
+        // own task.
         cancel.cancel();
 
         // Fail in-flight calls (unblocking handlers parked in `call()`) and
@@ -219,6 +219,56 @@ impl Side {
     }
 }
 
+/// The serving end of a handshake, whose outbound items carry the RPC's
+/// terminal status.
+impl<T, R> RpcProxy<Result<T, tonic::Status>, R>
+where
+    R: RecvMsg + Send + 'static,
+    R::Msg: Send,
+    T: SendMsg + Send + 'static,
+    T::Msg: Send,
+{
+    /// Synchronous receive-then-send for the pre-proxy handshake phase.
+    /// Used before `run()` is called, when the caller owns both halves directly.
+    ///
+    /// A refusal from `f` travels to the peer as the stream's own status
+    /// before it is returned here, so the caller learns why the handshake
+    /// failed rather than watching the stream disappear.
+    pub async fn recv<F, Fut>(
+        channel_sender: &mut Sender<Result<T, tonic::Status>>,
+        channel_receiver: &mut tonic::Streaming<R>,
+        f: F,
+    ) -> Result<(), tonic::Status>
+    where
+        F: FnOnce(R::Msg) -> Fut,
+        Fut: Future<Output = Result<T::Msg, tonic::Status>>,
+    {
+        let msg = channel_receiver
+            .message()
+            .await?
+            .ok_or(tonic::Status::unavailable("Server shut down"))?;
+
+        let msg_id = msg.msg_id();
+        let outcome = match msg.msg() {
+            Ok(msg) => f(msg).await,
+            Err(status) => Err(status),
+        };
+
+        let msg = match outcome {
+            Ok(msg) => msg,
+            Err(status) => {
+                channel_sender.send(Err(status.clone())).await.ok();
+                return Err(status);
+            }
+        };
+
+        channel_sender
+            .send(SendMsg::compose(msg_id, msg))
+            .await
+            .map_err(|e| tonic::Status::unavailable(format!("Server shut down: {e}")))
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub struct RpcProxy<S, R>
 where
@@ -262,31 +312,6 @@ where
         } else {
             msg.msg().map(Some)
         }
-    }
-
-    /// Synchronous receive-then-send for the pre-proxy handshake phase.
-    /// Used before `run()` is called, when the caller owns both halves directly.
-    pub async fn recv<F, Fut>(
-        channel_sender: &mut Sender<S>,
-        channel_receiver: &mut tonic::Streaming<R>,
-        f: F,
-    ) -> Result<(), tonic::Status>
-    where
-        F: FnOnce(R::Msg) -> Fut,
-        Fut: Future<Output = Result<S::Msg, tonic::Status>>,
-    {
-        let msg = channel_receiver
-            .message()
-            .await?
-            .ok_or(tonic::Status::unavailable("Server shut down"))?;
-
-        let msg_id = msg.msg_id();
-        let msg = f(msg.msg()?).await?;
-
-        channel_sender
-            .send(S::compose(msg_id, msg))
-            .await
-            .map_err(|e| tonic::Status::unavailable(format!("Server shut down: {e}")))
     }
 
     /// Start the proxy.
@@ -379,8 +404,8 @@ where
     ///
     /// Idempotent. The reader cancels the pool on exit, so once the connection
     /// is gone the guard below short-circuits any re-entrant call from
-    /// `on_close`/`on_unregister` — it returns instead of awaiting its own
-    /// task. A `shutdown` from within a still-running handler would still
+    /// `on_close`: it returns instead of awaiting its own task. A
+    /// `shutdown` from within a still-running handler would still
     /// self-deadlock; use [`cancel`](Self::cancel) there.
     pub async fn shutdown(&self) {
         if self.tasks.is_cancelled() {

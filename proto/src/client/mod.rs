@@ -75,12 +75,12 @@ impl hardy_bpa::service::Registrar for RemoteBpa {
 }
 
 #[async_trait]
-impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
-    async fn register_routing_agent(
+impl hardy_bpa::routing::Registrar for RemoteBpa {
+    async fn register_routing_agent_boxed(
         &self,
-        name: String,
-        agent: Arc<dyn hardy_bpa::routing::Agent>,
-    ) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        routing::register_routing_agent(self.grpc_addr.clone(), name, agent).await
+        name: &str,
+        factory: hardy_bpa::routing::BoxFactory<'_>,
+    ) -> hardy_bpa::routing::Result<()> {
+        routing::register_routing_agent(self.grpc_addr.clone(), name, factory).await
     }
 }

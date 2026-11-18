@@ -23,7 +23,7 @@ struct Cla {
 impl Cla {
     async fn call(&self, msg: bpa_to_cla::Msg) -> hardy_bpa::cla::Result<cla_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
-            error!("call made before on_register!");
+            error!("call made before the session was running!");
             hardy_bpa::cla::Error::Disconnected
         })?;
 
@@ -228,7 +228,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct Service {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::cla::Registrar>,
     session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
@@ -260,7 +260,7 @@ impl cla_server::Cla for Service {
 async fn run_cla_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToCla, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<ClaToBpa>,
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::cla::Registrar>,
 ) {
     // Filled by the registration handshake below, which the BPA drives
     // through the factory.
@@ -360,11 +360,11 @@ async fn run_cla_session(
 
 /// Create a new CLA gRPC service.
 pub fn new_cla_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::cla::Registrar>,
     tasks: &hardy_async::TaskPool,
 ) -> cla_server::ClaServer<Service> {
     cla_server::ClaServer::new(Service {
-        bpa: bpa.clone(),
+        bpa,
         session_tasks: tasks.clone(),
         channel_size: 16,
     })

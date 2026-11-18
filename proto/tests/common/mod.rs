@@ -9,7 +9,6 @@ pub mod sinks;
 use core::num::NonZeroU64;
 use hardy_async::async_trait;
 use hardy_async::sync::spin::Mutex;
-use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpa::{
     cla, routing,
@@ -20,11 +19,12 @@ use hardy_bpa::{
 // for it.
 use hardy_bpv7::eid::{Eid, NodeId, Service as ServiceId};
 use sinks::*;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 // ── Mock BPA ──────────────────────────────────────────────────────────
 
-/// A mock BPA that implements `BpaRegistration` for all component types.
+/// A mock BPA answering every registration door.
 ///
 /// Builds each component with a mock sink and fixed node IDs, and tracks
 /// the last of each kind, and its sink, for assertions.
@@ -36,6 +36,10 @@ pub struct MockBpa {
     pub declared_request: Mutex<Option<cla::Request>>,
     /// The terms the last `register_cla_boxed` settled on.
     pub settled_terms: Mutex<Option<cla::Terms>>,
+    /// The routing agent names already taken, so a second
+    /// registration under one of them is refused as a real BPA
+    /// refuses it.
+    routing_names: Mutex<HashSet<String>>,
     pub last_routing_sink: Mutex<Option<Arc<MockRoutingSink>>>,
     pub last_routing_agent: Mutex<Option<Arc<dyn routing::Agent>>>,
     pub last_cla: Mutex<Option<Arc<dyn cla::Cla>>>,
@@ -53,6 +57,7 @@ impl MockBpa {
             max_reception_size: None,
             declared_request: Mutex::new(None),
             settled_terms: Mutex::new(None),
+            routing_names: Mutex::new(HashSet::new()),
             last_routing_sink: Mutex::new(None),
             last_routing_agent: Mutex::new(None),
             last_cla: Mutex::new(None),
@@ -89,7 +94,10 @@ impl MockBpa {
     pub async fn crash(&self) {
         let agent = self.last_routing_agent.lock().take();
         if let Some(agent) = agent {
-            agent.on_unregister().await;
+            agent
+                .shutdown()
+                .await
+                .expect("the agent shuts down cleanly");
         }
         let cla = self.last_cla.lock().take();
         if let Some(cla) = cla {
@@ -152,49 +160,23 @@ impl service::Registrar for MockBpa {
 }
 
 #[async_trait]
-impl BpaRegistration for MockBpa {
-    async fn register_routing_agent(
+impl routing::Registrar for MockBpa {
+    async fn register_routing_agent_boxed(
         &self,
-        _name: String,
-        agent: Arc<dyn routing::Agent>,
-    ) -> routing::Result<Vec<NodeId>> {
-        let node_ids = Vec::<NodeId>::from(self.node_ids.as_ref());
+        name: &str,
+        factory: routing::BoxFactory<'_>,
+    ) -> routing::Result<()> {
+        if !self.routing_names.lock().insert(name.to_owned()) {
+            return Err(routing::Error::DuplicateName(name.to_owned()));
+        }
+
         let sink = Arc::new(MockRoutingSink::new());
         *self.last_routing_sink.lock() = Some(sink.clone());
-        *self.last_routing_agent.lock() = Some(agent.clone());
 
-        agent
-            .on_register(Box::new(RoutingSinkWrapper(sink)), &node_ids)
-            .await;
-
-        Ok(node_ids)
-    }
-}
-
-// ── Sink wrappers (delegate to Arc<Mock>) ─────────────────────────────
-
-struct RoutingSinkWrapper(Arc<MockRoutingSink>);
-
-#[async_trait]
-impl routing::Sink for RoutingSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn add_route(
-        &self,
-        p: hardy_eid_patterns::EidPattern,
-        a: routing::RouteAction,
-        pri: u32,
-    ) -> routing::Result<bool> {
-        self.0.add_route(p, a, pri).await
-    }
-    async fn remove_route(
-        &self,
-        p: &hardy_eid_patterns::EidPattern,
-        a: &routing::RouteAction,
-        pri: u32,
-    ) -> routing::Result<bool> {
-        self.0.remove_route(p, a, pri).await
+        let agent = factory.build(routing::Context::new(sink, self.node_ids.clone()))?;
+        agent.start().await?;
+        *self.last_routing_agent.lock() = Some(agent);
+        Ok(())
     }
 }
 

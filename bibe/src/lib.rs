@@ -17,7 +17,12 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 
-use hardy_bpa::{bpa::BpaRegistration, cla::RegistrarExt, service::RegistrarExt as _};
+// Both subsystems name their typed door `Registrar`, so each is
+// aliased to the subsystem it belongs to.
+use hardy_bpa::{
+    cla::{Registrar as ClaRegistrar, RegistrarExt as _},
+    service::{Registrar as ServiceRegistrar, RegistrarExt as _},
+};
 use hardy_bpv7::eid::{Eid, NodeId};
 use thiserror::Error as ThisError;
 use tracing::debug;
@@ -62,7 +67,10 @@ impl Bibe {
     ///
     /// Returns an error if either registration is refused, or if a
     /// configured tunnel destination cannot be added as a peer.
-    pub async fn register(config: &Config, bpa: &dyn BpaRegistration) -> Result<Self, Error> {
+    pub async fn register<B>(config: &Config, bpa: &B) -> Result<Self, Error>
+    where
+        B: ClaRegistrar + ServiceRegistrar + ?Sized,
+    {
         // The CLA carries `Address::Private` peers and declares no receive
         // limit: the encapsulation overhead is per bundle, so the
         // outer-vs-limit check happens per forward instead.

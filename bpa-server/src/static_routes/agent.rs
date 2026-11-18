@@ -5,11 +5,9 @@ use std::{
 
 use hardy_async::{
     TaskPool,
-    sync::spin::Once,
     watcher::{self, WatchMode},
 };
-use hardy_bpa::routing::{Agent, RouteAction, Sink};
-use hardy_bpv7::eid::NodeId;
+use hardy_bpa::routing::{self, Agent, Context, Factory, RouteAction, Sink, factory_fn};
 use hardy_eid_patterns::EidPattern;
 use tracing::{error, info, warn};
 
@@ -29,7 +27,7 @@ pub struct StaticRoutesAgent {
     routes_file: PathBuf,
     priority: u32,
     watch: Option<WatchMode>,
-    sink: Once<Arc<dyn Sink>>,
+    sink: Arc<dyn Sink>,
     routes: Arc<Mutex<Vec<StaticRoute>>>,
     tasks: TaskPool,
 }
@@ -39,30 +37,32 @@ impl StaticRoutesAgent {
     /// configured.
     pub const DEFAULT_PROTOCOL_ID: &str = "static_routes";
 
-    /// Creates the agent. `None` applies the agent's own defaults: the
+    /// Builds the agent. `None` applies the agent's own defaults: the
     /// `static_routes` file in the platform config directory, and priority
     /// `100`. `watch` is `None` to disable watching the routes file.
-    pub fn new(
+    pub fn factory(
         routes_file: Option<PathBuf>,
         priority: Option<u32>,
         watch: Option<WatchMode>,
-    ) -> Self {
-        Self {
-            routes_file: routes_file
-                .unwrap_or_else(|| crate::config::default_config_dir().join("static_routes")),
-            priority: priority.unwrap_or(DEFAULT_PRIORITY),
-            watch,
-            sink: Once::new(),
-            routes: Arc::new(Mutex::new(Vec::new())),
-            tasks: TaskPool::new(),
-        }
+    ) -> impl Factory<Component = Self> {
+        factory_fn(move |cx: Context| {
+            Ok(Arc::new(Self {
+                routes_file: routes_file
+                    .unwrap_or_else(|| crate::config::default_config_dir().join("static_routes")),
+                priority: priority.unwrap_or(DEFAULT_PRIORITY),
+                watch,
+                sink: cx.sink,
+                routes: Arc::new(Mutex::new(Vec::new())),
+                tasks: TaskPool::new(),
+            }))
+        })
     }
 
     fn start_watcher(&self, mode: WatchMode) {
         let watch_path = self.routes_file.clone();
         let routes_file = self.routes_file.clone();
         let priority = self.priority;
-        let sink = self.sink.get().unwrap().clone();
+        let sink = self.sink.clone();
         let routes = self.routes.clone();
         let cancel = self.tasks.cancel_token().clone();
 
@@ -143,10 +143,7 @@ async fn reload_routes(
 
 #[hardy_async::async_trait]
 impl Agent for StaticRoutesAgent {
-    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
-        let sink: Arc<dyn Sink> = sink.into();
-        self.sink.call_once(|| sink);
-
+    async fn start(&self) -> routing::Result<()> {
         info!(
             "Loading static routes from '{}'",
             self.routes_file.display()
@@ -155,7 +152,7 @@ impl Agent for StaticRoutesAgent {
         reload_routes(
             &self.routes_file,
             self.priority,
-            &**self.sink.get().unwrap(),
+            &*self.sink,
             &self.routes,
             false,
         )
@@ -164,9 +161,11 @@ impl Agent for StaticRoutesAgent {
         if let Some(mode) = self.watch {
             self.start_watcher(mode);
         }
+        Ok(())
     }
 
-    async fn on_unregister(&self) {
+    async fn shutdown(&self) -> routing::Result<()> {
         self.tasks.shutdown().await;
+        Ok(())
     }
 }

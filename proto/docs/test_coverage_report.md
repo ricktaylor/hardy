@@ -16,10 +16,10 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | **—** | Application Client registration and message flow | Pass | `app_cli_01..06` | — |
 | **—** | CLA Client registration and message flow | Pass | `cla_cli_01..05` | — |
 | **—** | Service Client registration and message flow | Pass | `svc_cli_01..05` | — |
-| **—** | Routing Agent Client registration and message flow | Pass | `rte_cli_01..03` | — |
+| **—** | Routing Agent Client registration and message flow | Pass | `rte_cli_01..04` | — |
 | **—** | Error handling (premature close, duplicate response, invalid sequence) | Pass | `err_cli_02..04` | — |
-| **—** | Unregistration and lifecycle (client-init, BPA-init, drop, crash, simultaneous, exactly-once) | Pass | `life_01..06` | — |
-| **—** | Server proxy handlers (sink availability, lock safety) | Pass | `srv_02..04` | — |
+| **—** | Unregistration and lifecycle (client-init, BPA-init, crash, simultaneous, exactly-once) | Pass | `life_01..06` | — |
+| **—** | Server proxy handlers (route request translation and delegation) | Pass | `srv_02..04` | — |
 
 ## 2. Test Inventory
 
@@ -27,7 +27,7 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 
 | Test Function | Test ID | Scope |
 | :--- | :--- | :--- |
-| `app_cli_01_registration_ipn` | APP-CLI-01 | Register application (IPN), verify endpoint and on_register |
+| `app_cli_01_registration_ipn` | APP-CLI-01 | Register application (IPN), verify the endpoint the service is built with |
 | `app_cli_02_registration_dtn` | APP-CLI-02 | Register application (DTN service name) |
 | `app_cli_03_send_payload` | APP-CLI-03 | Send payload via sink, verify round-trip (mock returns error) |
 | `app_cli_04_receive_payload` | APP-CLI-04 | Receive payload (BPA→App) via server-side push |
@@ -37,7 +37,7 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 
 | Test Function | Test ID | Scope |
 | :--- | :--- | :--- |
-| `cla_cli_01_registration` | CLA-CLI-01 | Register CLA with address type, verify node IDs and on_register |
+| `cla_cli_01_registration` | CLA-CLI-01 | Register CLA with address type, verify the node IDs the CLA is built with |
 | `cla_cli_02_dispatch_bundle` | CLA-CLI-02 | Dispatch bundle (CLA→BPA) via sink round-trip |
 | `cla_cli_03_forward_bundle` | CLA-CLI-03 | Forward bundle (BPA→CLA) via server-side push to client |
 | `cla_cli_04_add_peer` | CLA-CLI-04 | Add peer via sink round-trip |
@@ -47,18 +47,19 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 
 | Test Function | Test ID | Scope |
 | :--- | :--- | :--- |
-| `svc_cli_01_registration` | SVC-CLI-01 | Register service with IPN service ID, verify endpoint and on_register |
+| `svc_cli_01_registration` | SVC-CLI-01 | Register service with IPN service ID, verify the endpoint the service is built with |
 | `svc_cli_02_send_bundle` | SVC-CLI-02 | Send raw bundle via sink, verify error from mock BPA |
 | `svc_cli_03_receive_bundle` | SVC-CLI-03 | Receive bundle (BPA→Service) via server-side push to client |
 | `svc_cli_04_status_notify` | SVC-CLI-04 | Status notification (BPA→Service) via server-side push to client |
 
-### Suite 4: Routing Agent Client (`tests/routing_agent_tests.rs`)
+### Suite 4: Routing Agent Client (`tests/routing.rs`)
 
 | Test Function | Test ID | Scope |
 | :--- | :--- | :--- |
-| `rte_cli_01_registration` | RTE-CLI-01 | Register routing agent via gRPC, verify node IDs and on_register callback |
+| `rte_cli_01_registration` | RTE-CLI-01 | Register routing agent via gRPC, verify the node IDs the agent is built with |
 | `rte_cli_02_add_route` | RTE-CLI-02 | Add route via sink, verify round-trip through gRPC proxy |
 | `rte_cli_03_remove_route` | RTE-CLI-03 | Remove route via sink, verify round-trip through gRPC proxy |
+| `rte_cli_04_refused_registration_reports_its_status` | RTE-CLI-04 | A registration the BPA refuses reaches the client as the status the BPA's error maps to |
 
 ### Suite 5: Error Handling (unit tests in `src/client/routing.rs`)
 
@@ -66,7 +67,7 @@ These are unit tests because they use custom mock servers built from crate-inter
 
 | Test Function | Test ID | Scope |
 | :--- | :--- | :--- |
-| `err_cli_02_premature_stream_end` | ERR-CLI-02 | Custom server closes stream after handshake, verify synthetic on_unregister |
+| `err_cli_02_premature_stream_end` | ERR-CLI-02 | Custom server closes stream after handshake, verify the agent is shut down |
 | `err_cli_03_duplicate_register_response` | ERR-CLI-03 | Custom server sends duplicate RegisterResponse, verify no panic |
 | `err_cli_04_invalid_message_sequence` | ERR-CLI-04 | Custom server sends out-of-sequence msg during handshake, verify error |
 
@@ -74,22 +75,23 @@ These are unit tests because they use custom mock servers built from crate-inter
 
 | Test Function | Test ID | Scope |
 | :--- | :--- | :--- |
-| `life_01_client_initiated_unregister` | LIFE-01 | Client calls `sink.unregister()`, server on_close cleans up, client receives synthetic on_unregister |
-| `life_02_bpa_initiated_unregister` | LIFE-02 | BPA calls on_unregister on server agent, proxy shuts down, client receives synthetic on_unregister |
-| `life_03_drop_without_unregister` | LIFE-03 | Client drops sink without unregister, RpcProxy Drop cancels tasks, server on_close cleans up |
-| `life_04_server_crash` | LIFE-04 | Server forces unregistration, client receives synthetic on_unregister via on_close |
-| `life_05_simultaneous_unregister` | LIFE-05 | Client and BPA unregister concurrently, Mutex take() ensures no double-unregister or deadlock |
-| `life_06_exactly_once_unregister` | LIFE-06 | BPA-initiated unregister delivers exactly one on_unregister to client trait impl |
+| `life_01_client_initiated_unregister` | LIFE-01 | Client calls `sink.unregister()`, server on_close unregisters the BPA sink, client shuts its agent down |
+| `life_02_bpa_initiated_unregister` | LIFE-02 | BPA shuts the server agent down, proxy shuts down, client shuts its agent down |
+| `life_04_server_crash` | LIFE-04 | Server forces unregistration, client shuts its agent down via on_close |
+| `life_05_simultaneous_unregister` | LIFE-05 | Client and BPA unregister concurrently, Mutex take() ensures no double shutdown or deadlock |
+| `life_06_exactly_once_unregister` | LIFE-06 | BPA-initiated unregister shuts the client agent down exactly once |
+
+LIFE-03 (drop without unregister) was removed: the session owns the agent, the agent owns the sink, and the sink owns the proxy, so a client can no longer drop the proxy without unregistering.
 
 ### Suite 7: Server Proxy Handlers (unit tests in `src/server/routing.rs`)
 
-These are unit tests on the `RemoteAgent` struct. SRV-01 (Registration handshake), SRV-05 (on_close cancels proxy), and SRV-06 (on_unregister drains proxy) were removed — they are covered by Suites 1–4 and Suite 6 lifecycle tests respectively.
+These are unit tests on the server-side `Agent`, the BPA's end of a remote routing agent. SRV-01 (Registration handshake), SRV-05 (on_close cancels proxy), and SRV-06 (on_unregister drains proxy) were removed — they are covered by Suites 1–4 and Suite 6 lifecycle tests respectively.
 
 | Test Function | Test ID | Scope |
 | :--- | :--- | :--- |
-| `srv_02_sink_available_after_register` | SRV-02 | `sink()` returns Ok after on_register stores a sink |
-| `srv_03_sink_unavailable_after_unregister` | SRV-03 | `sink()` returns Err(Unavailable) after sink is taken |
-| `srv_04_spin_lock_not_held_across_await` | SRV-04 | Re-entrant on_unregister during unregister() does not deadlock |
+| `srv_02_added_route_reaches_the_sink` | SRV-02 | An AddRouteRequest is translated and handed to the BPA sink |
+| `srv_03_removed_route_reaches_the_sink` | SRV-03 | A RemoveRouteRequest withdraws the route from the BPA sink |
+| `srv_04_malformed_route_request_is_refused` | SRV-04 | An unparsable pattern fails InvalidArgument and leaves the sink untouched |
 
 ## 3. Coverage vs Plan
 
@@ -98,9 +100,9 @@ These are unit tests on the `RemoteAgent` struct. SRV-01 (Registration handshake
 | 1 | Application Client | 6 | 6 | **Complete** |
 | 2 | CLA Client | 5 | 5 | **Complete** |
 | 3 | Service Client | 5 | 5 | **Complete** |
-| 4 | Routing Agent Client | 3 | 3 | **Complete** |
+| 4 | Routing Agent Client | 4 | 4 | **Complete** |
 | 5 | Error Handling | 3 | 3 | **Complete** |
-| 6 | Unregistration & Lifecycle | 6 | 6 | **Complete** |
+| 6 | Unregistration & Lifecycle | 5 | 5 | **Complete** |
 | 7 | Server Proxy Handlers | 3 | 3 | **Complete** |
 | | **Total** | **31** | **31** | **100%** |
 
@@ -164,4 +166,4 @@ The lowest-covered files are the Application and Service client proxies — thei
 
 ## 7. Conclusion
 
-The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 80.4% (1280/1593 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (6 tests) provides thorough verification of the unregistration protocol including concurrent, crash, and drop scenarios.
+The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 80.4% (1280/1593 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (5 tests) provides thorough verification of the unregistration protocol including concurrent and crash scenarios.

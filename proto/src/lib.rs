@@ -23,7 +23,7 @@ unregistration, ensuring automatic cleanup on disconnect or crash.
 use hardy_async::sync::spin::Mutex;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 pub(crate) mod proto;
@@ -45,7 +45,7 @@ pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 /// fits the check also fits the encoded message.
 pub const MAX_PAYLOAD_SIZE: usize = MAX_MESSAGE_SIZE - 64 * 1024;
 
-/// Client-side gRPC stubs that present a remote BPA as a local `BpaRegistration`.
+/// Client-side gRPC stubs that present a remote BPA as a local registration door.
 pub mod client;
 /// Server-side gRPC endpoints that expose a local BPA to remote components.
 pub mod server;

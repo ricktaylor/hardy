@@ -14,7 +14,6 @@ use hardy_bpa::{
     bpa::Bpa,
     cla::BoxFactory,
     policy::FlowControllerFactory,
-    routing::Agent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
 #[cfg(feature = "echo")]
@@ -214,16 +213,11 @@ impl BpaServer {
                     }
                 })
                 .transpose()?;
-            let agent: Arc<dyn Agent> = Arc::new(StaticRoutesAgent::new(
-                routes_file,
-                sr_config.priority,
-                sr_config.watch.into(),
-            ));
             builder = builder.routing_agent(
                 sr_config
                     .protocol_id
                     .unwrap_or_else(|| StaticRoutesAgent::DEFAULT_PROTOCOL_ID.to_string()),
-                agent,
+                StaticRoutesAgent::factory(routes_file, sr_config.priority, sr_config.watch.into()),
             );
         }
 

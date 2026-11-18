@@ -1,7 +1,7 @@
 use super::*;
 use hardy_bpa::{
-    bpa::BpaRegistration,
     cla::RegistrarExt,
+    routing::RegistrarExt as _,
     service::{Registrar, RegistrarExt as _},
 };
 
@@ -51,14 +51,14 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
 
     // Add a default 'drop' route, we don't want to cache locally
     bpa.register_routing_agent(
-        "ping".to_string(),
-        alloc::sync::Arc::new(hardy_bpa::routing::StaticAgent::new(&[(
+        "ping",
+        hardy_bpa::routing::StaticAgent::factory(&[(
             "*:**".parse().unwrap(),
             hardy_bpa::routing::RouteAction::Drop(Some(
                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
             )),
             1000,
-        )])),
+        )]),
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to register default routes: {e}"))?;
@@ -142,12 +142,12 @@ async fn exec_builtin_cla(
     // Now add a route if we are targeting a service
     if args.destination.service().is_some() {
         bpa.register_routing_agent(
-            "ping-target".to_string(),
-            alloc::sync::Arc::new(hardy_bpa::routing::StaticAgent::new(&[(
+            "ping-target",
+            hardy_bpa::routing::StaticAgent::factory(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
-            )])),
+            )]),
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;
@@ -231,12 +231,12 @@ async fn exec_external_cla(
         })?;
 
         bpa.register_routing_agent(
-            "ping-target".to_string(),
-            alloc::sync::Arc::new(hardy_bpa::routing::StaticAgent::new(&[(
+            "ping-target",
+            hardy_bpa::routing::StaticAgent::factory(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
-            )])),
+            )]),
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;

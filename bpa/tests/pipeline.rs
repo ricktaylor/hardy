@@ -10,7 +10,7 @@ use core::{
 use hardy_bpa::{
     Bytes,
     async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     filter::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, pack::FilterPack,
@@ -19,7 +19,7 @@ use hardy_bpa::{
     node_ids::NodeIds,
     // `routing::Sink` stays qualified: the bare `Sink` here is the service
     // sink imported below.
-    routing::{self, Agent, RouteAction, StaticAgent},
+    routing::{self, Agent, RegistrarExt as _, RouteAction, StaticAgent},
     service::{self, RegistrarExt as _, SendOptions, Service, Sink, StatusNotify, raw},
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
@@ -4476,15 +4476,15 @@ async fn early_route_drop_never_awaits_the_payload() {
         .await
         .unwrap();
     bpa.register_routing_agent(
-        "drop-routes".to_string(),
-        Arc::new(StaticAgent::new(&[
+        "drop-routes",
+        StaticAgent::factory(&[
             (
                 "ipn:0.9.99".parse().unwrap(),
                 RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
                 1,
             ),
             ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
-        ])),
+        ]),
     )
     .await
     .unwrap();
@@ -4569,17 +4569,16 @@ async fn early_route_drop_never_awaits_the_payload() {
 /// A routing agent that hands its sink to the test, which installs and
 /// withdraws routes at chosen moments.
 struct SinkAgent {
-    sink: hardy_async::sync::spin::Once<Box<dyn routing::Sink>>,
+    sink: Arc<dyn routing::Sink>,
 }
 
-#[async_trait]
-impl Agent for SinkAgent {
-    async fn on_register(&self, sink: Box<dyn routing::Sink>, _node_ids: &[NodeId]) {
-        self.sink.call_once(|| sink);
+impl SinkAgent {
+    fn factory() -> impl routing::Factory<Component = Self> {
+        routing::factory_fn(|cx: routing::Context| Ok(Arc::new(Self { sink: cx.sink })))
     }
-
-    async fn on_unregister(&self) {}
 }
+
+impl Agent for SinkAgent {}
 
 // The gate's decision of record is made again at the commit when the table
 // changed during the drain, so a route withdrawn while the payload was still
@@ -4628,13 +4627,11 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
         .await
         .unwrap();
 
-    let agent = Arc::new(SinkAgent {
-        sink: hardy_async::sync::spin::Once::new(),
-    });
-    bpa.register_routing_agent("swap".to_string(), agent.clone())
+    let agent = bpa
+        .register_routing_agent("swap", SinkAgent::factory())
         .await
         .unwrap();
-    let routes = agent.sink.get().unwrap();
+    let routes = &agent.sink;
     let old_via = RouteAction::Via("ipn:0.2.0".parse().unwrap());
     let new_via = RouteAction::Via("ipn:0.4.0".parse().unwrap());
     assert!(
@@ -4833,15 +4830,15 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
 async fn originate_route_drop_never_awaits_the_payload() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
     bpa.register_routing_agent(
-        "drop-routes".to_string(),
-        Arc::new(StaticAgent::new(&[
+        "drop-routes",
+        StaticAgent::factory(&[
             (
                 "ipn:0.9.99".parse().unwrap(),
                 RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
                 1,
             ),
             ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
-        ])),
+        ]),
     )
     .await
     .unwrap();

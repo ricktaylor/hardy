@@ -8,10 +8,14 @@ use tracing::trace;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::action::{Action, InternalAction, RouteAction};
-use super::{Error, Result};
 use crate::{
-    Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, service::table::Record,
+    Arc, BTreeMap, BTreeSet, HashSet, btree_map,
+    node_ids::NodeIds,
+    routing::{
+        Error, Result,
+        action::{Action, InternalAction, RouteAction},
+    },
+    service::table::Record,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

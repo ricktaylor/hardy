@@ -1,8 +1,7 @@
 use crate::scheduler::SchedulerHandle;
-use hardy_bpa::routing::{Agent, RouteAction, Sink};
-use hardy_bpv7::eid::NodeId;
+use hardy_bpa::routing::{Agent, Context, Factory, RouteAction, Sink, factory_fn};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::info;
 
 // A scheduled contact — the canonical internal representation used by
 // both the file parser and gRPC session service.
@@ -47,18 +46,24 @@ pub enum Schedule {
 pub struct TvrAgent {
     default_priority: u32,
     scheduler: SchedulerHandle,
-    sink: hardy_async::sync::spin::Once<Arc<dyn Sink>>,
+    sink: Arc<dyn Sink>,
 }
 
 impl TvrAgent {
-    // Create a new TVR agent with the given default contact priority
-    // and a handle to the scheduler.
-    pub fn new(default_priority: u32, scheduler: SchedulerHandle) -> Self {
-        Self {
-            default_priority,
-            scheduler,
-            sink: hardy_async::sync::spin::Once::new(),
-        }
+    // Builds the TVR agent with the given default contact priority and a
+    // handle to the scheduler.
+    pub fn factory(
+        default_priority: u32,
+        scheduler: SchedulerHandle,
+    ) -> impl Factory<Component = Self> {
+        factory_fn(move |cx: Context| {
+            info!("TVR agent registered with a BPA running as {}", cx.node_ids);
+            Ok(Arc::new(Self {
+                default_priority,
+                scheduler,
+                sink: cx.sink,
+            }))
+        })
     }
 
     // Returns the default priority used for contacts without an explicit priority.
@@ -71,31 +76,15 @@ impl TvrAgent {
         &self.scheduler
     }
 
-    // Get the stored sink (available after registration).
-    pub fn sink(&self) -> Option<Arc<dyn Sink>> {
-        self.sink.get().cloned()
+    // The channel the agent projects its active contacts through.
+    pub fn sink(&self) -> &Arc<dyn Sink> {
+        &self.sink
     }
 
     // Explicitly unregister from the BPA.
     pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
+        self.sink.unregister().await;
     }
 }
 
-#[hardy_bpa::async_trait]
-impl Agent for TvrAgent {
-    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]) {
-        info!(
-            "TVR agent registered, node IDs: {:?}",
-            node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
-        );
-        let sink: Arc<dyn Sink> = sink.into();
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {
-        debug!("TVR agent unregistered");
-    }
-}
+impl Agent for TvrAgent {}

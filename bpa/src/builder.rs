@@ -15,7 +15,7 @@ use crate::{
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
-    routing::{Agent, RibBuilder},
+    routing::{self, Rib},
     service::{self, table::FactoryKind},
     storage::{
         BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
@@ -49,7 +49,8 @@ pub struct BpaBuilder {
     services: Vec<(Option<ServiceId>, FactoryKind<'static>)>,
     clas: Vec<(String, BoxFactory<'static>)>,
     cla_policies: HashMap<String, Arc<dyn FlowControllerFactory>>,
-    rib_builder: RibBuilder,
+    routing_agents: Vec<(String, routing::BoxFactory<'static>)>,
+    service_priority: u32,
     filter_packs: Vec<FilterPack>,
     primary_block_integrity: bool,
     bundle_age_required: bool,
@@ -78,7 +79,8 @@ impl BpaBuilder {
             services: Vec::new(),
             clas: Vec::new(),
             cla_policies: HashMap::new(),
-            rib_builder: RibBuilder::new(),
+            routing_agents: Vec::new(),
+            service_priority: 1,
             filter_packs: Vec::new(),
             primary_block_integrity: true,
             bundle_age_required: true,
@@ -156,7 +158,7 @@ impl BpaBuilder {
     }
 
     pub fn service_priority(mut self, priority: u32) -> Self {
-        self.rib_builder.service_priority(priority);
+        self.service_priority = priority;
         self
     }
 
@@ -227,9 +229,32 @@ impl BpaBuilder {
         self
     }
 
-    /// Registers a routing agent, to be initialized when the BPA is built.
-    pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn Agent>) -> Self {
-        self.rib_builder.insert(name.into(), agent);
+    /// Declares a routing agent, built when the BPA is built.
+    ///
+    /// The agent is inert until [`Bpa::start`](crate::bpa::Bpa::start)
+    /// starts it, after storage recovery, so the routes it installs
+    /// cannot race the consistency check. A name already declared fails
+    /// [`build`](Self::build), not this call, so declaration stays
+    /// chainable.
+    pub fn routing_agent<F: routing::Factory + 'static>(
+        self,
+        name: impl Into<String>,
+        factory: F,
+    ) -> Self {
+        self.routing_agent_boxed(name, routing::BoxFactory::new(factory))
+    }
+
+    /// Declares a routing agent from an erased factory, for an embedder
+    /// choosing among factory types of its own.
+    ///
+    /// [`routing_agent`](Self::routing_agent) is the typed door, and
+    /// erases for the caller.
+    pub fn routing_agent_boxed(
+        mut self,
+        name: impl Into<String>,
+        factory: routing::BoxFactory<'static>,
+    ) -> Self {
+        self.routing_agents.push((name.into(), factory));
         self
     }
 
@@ -309,10 +334,11 @@ impl BpaBuilder {
         ));
 
         let node_ids = Arc::new(self.node_ids);
-        let rib = self
-            .rib_builder
-            .build(node_ids.clone(), store.clone())
-            .await?;
+        let rib = Arc::new(Rib::new(
+            node_ids.clone(),
+            store.clone(),
+            self.service_priority,
+        ));
 
         let (dispatcher, start_dispatcher) = Dispatcher::new(
             DispatcherConfig {
@@ -350,6 +376,10 @@ impl BpaBuilder {
             self.clas,
         )?;
 
+        // Each declared routing agent is built here, and installs no
+        // route until Bpa::start starts it, after storage recovery.
+        let agents = routing::agent::table::Table::new(node_ids, rib.clone(), self.routing_agents)?;
+
         // TODO: Dispatcher and the CLA table still reference each other:
         // the table holds the dispatcher, and the dispatcher late-binds the
         // table through its Once cell, so readers driven from Rib::start
@@ -358,6 +388,8 @@ impl BpaBuilder {
         // itself remains to be dissolved.
         start_dispatcher(clas.clone());
 
-        Ok(Bpa::from_parts(store, rib, clas, services, dispatcher))
+        Ok(Bpa::from_parts(
+            store, rib, clas, services, agents, dispatcher,
+        ))
     }
 }

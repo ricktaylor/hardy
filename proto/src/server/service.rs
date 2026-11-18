@@ -175,7 +175,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct GrpcService {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::service::Registrar>,
     session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
@@ -208,7 +208,7 @@ impl service_server::Service for GrpcService {
 async fn run_service_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToService, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<ServiceToBpa>,
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::service::Registrar>,
 ) {
     // Filled by the registration handshake below, which the BPA drives
     // through the factory.
@@ -276,11 +276,11 @@ async fn run_service_session(
 
 /// Create a new low-level Service gRPC service.
 pub fn new_endpoint_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::service::Registrar>,
     tasks: &hardy_async::TaskPool,
 ) -> service_server::ServiceServer<GrpcService> {
     service_server::ServiceServer::new(GrpcService {
-        bpa: bpa.clone(),
+        bpa,
         session_tasks: tasks.clone(),
         channel_size: 16,
     })

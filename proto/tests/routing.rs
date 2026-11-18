@@ -1,4 +1,4 @@
-//! Routing Agent client proxy tests (RTE-CLI-01 through RTE-CLI-03).
+//! Routing Agent client proxy tests (RTE-CLI-01 through RTE-CLI-04).
 //!
 //! Verify the routing agent client correctly maps Rust trait calls
 //! to routing.proto messages via the gRPC proxy.
@@ -6,74 +6,55 @@
 mod common;
 
 use common::MockBpa;
-use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routing::{Agent, RouteAction, Sink};
+use hardy_bpa::node_ids::NodeIds;
+use hardy_bpa::routing::{
+    Agent, Context, Error, Factory, RegistrarExt, RouteAction, Sink, factory_fn,
+};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-// A mock routing agent that stores the sink for test use.
+// A mock routing agent that records the context it was built from.
 struct MockRoutingAgent {
-    registered: AtomicBool,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn Sink>>>,
+    sink: Arc<dyn Sink>,
+    node_ids: Arc<NodeIds>,
 }
 
 impl MockRoutingAgent {
-    fn new() -> Self {
-        Self {
-            registered: AtomicBool::new(false),
-            sink: hardy_async::sync::spin::Mutex::new(None),
-        }
-    }
-
-    fn take_sink(&self) -> Option<Box<dyn Sink>> {
-        self.sink.lock().take()
+    fn factory() -> impl Factory<Component = Self> {
+        factory_fn(|cx: Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                node_ids: cx.node_ids,
+            }))
+        })
     }
 }
 
-#[async_trait]
-impl Agent for MockRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
-        *self.sink.lock() = Some(sink);
-        self.registered.store(true, Ordering::Relaxed);
-    }
-
-    async fn on_unregister(&self) {}
-}
+impl Agent for MockRoutingAgent {}
 
 // RTE-CLI-01: Register routing agent, receive node IDs.
 //
 // The client registers a routing agent via RemoteBpa. The mock BPA
-// calls on_register with a sink and node IDs. The client receives
-// the node IDs and the agent receives the sink.
+// builds it from a context carrying a sink and its node IDs, both of
+// which cross the wire to the agent.
 #[tokio::test]
 async fn rte_cli_01_registration() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = RemoteBpa::new(grpc_addr)
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
         .await
         .expect("registration should succeed");
 
-    assert!(!node_ids.is_empty(), "should receive at least one node ID");
     assert!(
-        agent.registered.load(Ordering::Relaxed),
-        "agent should have received on_register"
-    );
-    assert!(
-        agent.sink.lock().is_some(),
-        "agent should have a sink after registration"
+        !Vec::<NodeId>::from(agent.node_ids.as_ref()).is_empty(),
+        "agent should receive at least one node ID"
     );
 
     // Clean up
-    drop(agent.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    agent.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -87,19 +68,15 @@ async fn rte_cli_02_add_route() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = RemoteBpa::new(grpc_addr)
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
         .await
         .expect("registration should succeed");
 
-    let sink = agent.take_sink().expect("agent should have a sink");
-
     let pattern = "ipn:2.*.*".parse().expect("valid pattern");
     let action = RouteAction::Via("ipn:2.1.0".parse().expect("valid EID"));
-    let added = sink
+    let added = agent
+        .sink
         .add_route(pattern, action, 100)
         .await
         .expect("add_route should succeed");
@@ -107,7 +84,7 @@ async fn rte_cli_02_add_route() {
     assert!(added, "route should be newly added");
 
     // Clean up
-    sink.unregister().await;
+    agent.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -121,19 +98,15 @@ async fn rte_cli_03_remove_route() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = RemoteBpa::new(grpc_addr)
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
         .await
         .expect("registration should succeed");
 
-    let sink = agent.take_sink().expect("agent should have a sink");
-
     let pattern = "ipn:2.*.*".parse().expect("valid pattern");
     let action = RouteAction::Via("ipn:2.1.0".parse().expect("valid EID"));
-    let removed = sink
+    let removed = agent
+        .sink
         .remove_route(&pattern, &action, 100)
         .await
         .expect("remove_route should succeed");
@@ -141,6 +114,42 @@ async fn rte_cli_03_remove_route() {
     assert!(removed, "route should be removed");
 
     // Clean up
-    sink.unregister().await;
+    agent.sink.unregister().await;
+    server_tasks.shutdown().await;
+}
+
+// RTE-CLI-04: A refused registration reports why it was refused.
+//
+// The BPA rejects the second agent to claim a name. The refusal travels
+// as the registration stream's own status, so the client learns the
+// reason rather than watching the stream disappear.
+#[tokio::test]
+async fn rte_cli_04_refused_registration_reports_its_status() {
+    let bpa = Arc::new(MockBpa::new());
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
+    let remote_bpa = RemoteBpa::new(grpc_addr);
+
+    let agent = remote_bpa
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
+        .await
+        .expect("the first registration should succeed");
+
+    let Err(error) = remote_bpa
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
+        .await
+    else {
+        panic!("a name already taken should be refused");
+    };
+
+    let Error::Internal(source) = error else {
+        panic!("the refusal should carry the BPA's status, got {error}");
+    };
+    let status = source
+        .downcast_ref::<tonic::Status>()
+        .expect("the refusal should carry the BPA's status");
+    assert_eq!(status.code(), tonic::Code::AlreadyExists);
+
+    // Clean up
+    agent.sink.unregister().await;
     server_tasks.shutdown().await;
 }

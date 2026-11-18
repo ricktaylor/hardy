@@ -8,7 +8,8 @@ mod test;
 use arbitrary::Arbitrary;
 use core::num::NonZeroUsize;
 use hardy_bpa::{
-    bpa::BpaRegistration, cla::RegistrarExt, service::RegistrarExt as ServiceRegistrarExt,
+    cla::RegistrarExt, routing::RegistrarExt as RoutingRegistrarExt,
+    service::RegistrarExt as ServiceRegistrarExt,
 };
 use std::sync::Arc;
 
@@ -146,8 +147,8 @@ impl Msg {
 
                 // Load static routes
                 bpa.register_routing_agent(
-                    "fuzz".to_string(),
-                    Arc::new(hardy_bpa::routing::StaticAgent::new(&[
+                    "fuzz",
+                    hardy_bpa::routing::StaticAgent::factory(&[
                         (
                             "ipn:*.*".parse().unwrap(),
                             hardy_bpa::routing::RouteAction::Via("ipn:0.2.0".parse().unwrap()),
@@ -170,7 +171,7 @@ impl Msg {
                             hardy_bpa::routing::RouteAction::Reflect,
                             100,
                         ),
-                    ])),
+                    ]),
                 )
                 .await
                 .expect("Failed to register routing agent");

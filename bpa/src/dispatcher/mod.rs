@@ -505,10 +505,7 @@ pub mod tests {
             )
             .unwrap(),
         );
-        let rib = routing::RibBuilder::new()
-            .build(node_ids.clone(), store.clone())
-            .await
-            .unwrap();
+        let rib = Arc::new(routing::Rib::new(node_ids.clone(), store.clone(), 1));
         let filters = crate::filter::pack::chains::FilterChains::freeze(Vec::new());
         let (dispatcher, _start) = Dispatcher::new(
             Config {

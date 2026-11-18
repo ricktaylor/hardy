@@ -2,73 +2,28 @@ use hardy_async::async_trait;
 // `eid::Service` is the service number inside an EID, not the service
 // trait registered here; it is aliased to the word the code already uses
 // for it.
-use hardy_bpv7::eid::{NodeId, Service as ServiceId};
+use hardy_bpv7::eid::Service as ServiceId;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-// The CLA and service tables are both `Table`; each is aliased to the
-// subsystem it belongs to.
+// The CLA, service and routing agent tables are all `Table`; each is
+// aliased to the subsystem it belongs to.
 use crate::{
     Arc,
     builder::BpaBuilder,
     cla::{self, table::Table as ClaTable},
     dispatcher::Dispatcher,
     otel_metrics,
-    routing::{self, Agent, Rib},
+    routing::{self, Rib, agent::table::Table as AgentTable},
     service::{self, table::Table as ServiceTable},
     storage::store::Store,
 };
 
-/// Registering routing agents with a BPA.
-///
-/// The trait abstracts the registration interface, so a component works
-/// against a local [`Bpa`] or against a remote BPA reached over gRPC.
-/// CLAs and services come in through [`cla::Registrar`] and
-/// [`service::Registrar`], the supertraits of this one, where the BPA
-/// builds the component from a factory instead of being handed one.
-///
-/// # Component lifecycle
-///
-/// A routing agent is built by its own crate, where
-/// `new(&Config) -> Result<Self, Error>` validates the configuration
-/// eagerly, so errors surface before registration.
-/// [`register_routing_agent`](Self::register_routing_agent) hands the
-/// agent over and the BPA calls `on_register` with the [`routing::Sink`]
-/// it maintains its routes through, with `add_route` and `remove_route`;
-/// a fixed route set needs no trait implementation at all, only
-/// [`routing::StaticAgent`].
-///
-/// # Sink storage
-///
-/// An agent keeps its sink for its whole active lifetime, typically in a
-/// `spin::Once`. An `on_register` that returns without storing the sink
-/// has dropped it, and the BPA reads that as a request to unregister.
-///
-/// After unregistration the sink stays stored but answers
-/// `Error::Disconnected` to everything, so `on_unregister` handles only
-/// the agent's own cleanup: stopping tasks, closing connections.
-/// Defensive patterns such as an `Option<Sink>` taken in `on_unregister`
-/// buy nothing.
-#[async_trait]
-pub trait BpaRegistration: cla::Registrar + service::Registrar {
-    /// Registers a routing agent with the BPA.
-    ///
-    /// `name` identifies this agent instance, and is the source recorded
-    /// against every route it adds.
-    ///
-    /// Returns the BPA's node IDs.
-    async fn register_routing_agent(
-        &self,
-        name: String,
-        agent: Arc<dyn Agent>,
-    ) -> routing::Result<Vec<NodeId>>;
-}
-
 /// The core Bundle Processing Agent (RFC 9171).
 ///
-/// Holds the store, the RIB, the CLA table, the service table and the
-/// dispatcher. Construct via [`BpaBuilder`] (obtained from
-/// [`Bpa::builder()`]).
+/// Holds the store, the RIB, the CLA table, the service table, the
+/// routing agent table and the dispatcher. Construct via [`BpaBuilder`]
+/// (obtained from [`Bpa::builder()`]).
 ///
 /// After construction, call [`start()`](Bpa::start) to begin processing and
 /// [`shutdown()`](Bpa::shutdown) for ordered teardown.
@@ -77,6 +32,7 @@ pub struct Bpa {
     rib: Arc<Rib>,
     clas: Arc<ClaTable>,
     services: Arc<ServiceTable>,
+    agents: Arc<AgentTable>,
     dispatcher: Arc<Dispatcher>,
 }
 
@@ -86,6 +42,7 @@ impl Bpa {
         rib: Arc<Rib>,
         clas: Arc<ClaTable>,
         services: Arc<ServiceTable>,
+        agents: Arc<AgentTable>,
         dispatcher: Arc<Dispatcher>,
     ) -> Self {
         Self {
@@ -93,6 +50,7 @@ impl Bpa {
             rib,
             clas,
             services,
+            agents,
             dispatcher,
         }
     }
@@ -127,11 +85,13 @@ impl Bpa {
             .start(self.dispatcher.clone(), recover_storage)
             .await;
 
-        // Only now start the declared CLAs and services: the
-        // quiescent-store precondition above covers the configuration path
-        // exactly as it covers dynamic registrations.
+        // Only now start the declared components: the quiescent-store
+        // precondition above covers the configuration path exactly as it
+        // covers dynamic registrations. Start-up is teardown's mirror, so
+        // the routing agents come up last of the three and go down first.
         let failures = self.clas.start().await;
         self.services.start().await;
+        self.agents.start().await;
 
         // Start the RIB
         self.rib.start(self.dispatcher.clone());
@@ -155,7 +115,7 @@ impl Bpa {
         // are bundle sources. The dispatcher's processing pool may have tasks
         // blocked on CLA forwarding or waiting for service responses.
 
-        self.rib.shutdown_agents().await;
+        self.agents.shutdown().await;
         self.clas.shutdown().await;
         self.services.shutdown().await;
         self.dispatcher.shutdown().await;
@@ -165,14 +125,14 @@ impl Bpa {
 }
 
 #[async_trait]
-impl BpaRegistration for Bpa {
-    #[cfg_attr(feature = "instrument", instrument(skip(self, agent)))]
-    async fn register_routing_agent(
+impl routing::Registrar for Bpa {
+    #[cfg_attr(feature = "instrument", instrument(skip(self, factory)))]
+    async fn register_routing_agent_boxed(
         &self,
-        name: String,
-        agent: Arc<dyn Agent>,
-    ) -> routing::Result<Vec<NodeId>> {
-        self.rib.register_agent(name, agent).await
+        name: &str,
+        factory: routing::BoxFactory<'_>,
+    ) -> routing::Result<()> {
+        self.agents.register(name, factory).await
     }
 }
 
@@ -219,7 +179,7 @@ mod tests {
 
     use hardy_bpv7::{
         bundle::Id,
-        eid::{Eid, IpnNodeId, Service as ServiceId},
+        eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
         status_report::ReasonCode,
     };
     use time::OffsetDateTime;

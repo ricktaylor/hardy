@@ -7,55 +7,41 @@ mod common;
 
 use common::MockBpa;
 use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routing::{Agent, Sink};
-use hardy_bpv7::eid::NodeId;
+use hardy_bpa::routing::{Agent, Context, Factory, RegistrarExt, Sink, factory_fn};
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-// A mock routing agent that records lifecycle callbacks.
+// A mock routing agent that counts the shutdowns the session drives.
 struct MockRoutingAgent {
-    registered: AtomicBool,
-    unregister_count: AtomicUsize,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn Sink>>>,
+    sink: Arc<dyn Sink>,
+    shutdowns: AtomicUsize,
 }
 
 impl MockRoutingAgent {
-    fn new() -> Self {
-        Self {
-            registered: AtomicBool::new(false),
-            unregister_count: AtomicUsize::new(0),
-            sink: hardy_async::sync::spin::Mutex::new(None),
-        }
+    fn factory() -> impl Factory<Component = Self> {
+        factory_fn(|cx: Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                shutdowns: AtomicUsize::new(0),
+            }))
+        })
     }
 
-    fn is_registered(&self) -> bool {
-        self.registered.load(Ordering::Relaxed)
+    fn is_shutdown(&self) -> bool {
+        self.shutdown_count() > 0
     }
 
-    fn is_unregistered(&self) -> bool {
-        self.unregister_count.load(Ordering::Relaxed) > 0
-    }
-
-    fn unregister_count(&self) -> usize {
-        self.unregister_count.load(Ordering::Relaxed)
-    }
-
-    fn take_sink(&self) -> Option<Box<dyn Sink>> {
-        self.sink.lock().take()
+    fn shutdown_count(&self) -> usize {
+        self.shutdowns.load(Ordering::Relaxed)
     }
 }
 
 #[async_trait]
 impl Agent for MockRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
-        *self.sink.lock() = Some(sink);
-        self.registered.store(true, Ordering::Relaxed);
-    }
-
-    async fn on_unregister(&self) {
-        self.unregister_count.fetch_add(1, Ordering::Relaxed);
+    async fn shutdown(&self) -> hardy_bpa::routing::Result<()> {
+        self.shutdowns.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -63,51 +49,41 @@ impl Agent for MockRoutingAgent {
 //
 // The client calls `Sink::unregister()` which shuts down the proxy,
 // closing the stream. The server detects the close via `on_close`,
-// unregisters the component from the mock BPA, and cancels the proxy.
-// The client receives a synthetic `on_unregister()` callback.
+// detaches the agent from the mock BPA, and cancels the proxy. The
+// client shuts its own agent down.
 #[tokio::test]
 async fn life_01_client_initiated_unregister() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
-    // Create a mock routing agent and register it via the gRPC client
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = RemoteBpa::new(grpc_addr)
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
         .await
         .expect("registration should succeed");
 
-    assert!(!node_ids.is_empty(), "should receive node IDs");
-    assert!(
-        agent.is_registered(),
-        "agent should have received on_register"
-    );
-    assert!(
-        !agent.is_unregistered(),
-        "agent should not be unregistered yet"
-    );
+    assert!(!agent.is_shutdown(), "agent should not be shut down yet");
 
     // The mock BPA should have received the registration
-    assert!(
-        bpa.last_routing_sink.lock().is_some(),
-        "BPA should have a routing sink"
-    );
+    let bpa_sink = bpa
+        .last_routing_sink
+        .lock()
+        .clone()
+        .expect("BPA should have a routing sink");
+    assert!(!bpa_sink.is_unregistered());
 
-    // Client-initiated unregister: take the sink and call unregister()
-    let sink = agent
-        .take_sink()
-        .expect("agent should have a sink from on_register");
-    sink.unregister().await;
+    // Client-initiated unregister
+    agent.sink.unregister().await;
 
     // Give the server a moment to process the stream close
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // The client should have received a synthetic on_unregister()
     assert!(
-        agent.is_unregistered(),
-        "agent should have received on_unregister via on_close"
+        agent.is_shutdown(),
+        "agent should have been shut down via on_close"
+    );
+    assert!(
+        bpa_sink.is_unregistered(),
+        "BPA sink should have been unregistered by the server's on_close"
     );
 
     // Clean up server
@@ -116,85 +92,38 @@ async fn life_01_client_initiated_unregister() {
 
 // LIFE-02: BPA-initiated unregister.
 //
-// The BPA calls `on_unregister()` on the server-side RemoteAgent
-// (simulating BPA shutdown). The server shuts down the proxy, closing the
-// stream. The client receives a synthetic `on_unregister()` via `on_close`.
+// The BPA shuts down the server-side agent (simulating BPA shutdown).
+// The server shuts down the proxy, closing the stream, and the client
+// shuts its own agent down via `on_close`.
 #[tokio::test]
 async fn life_02_bpa_initiated_unregister() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = RemoteBpa::new(grpc_addr)
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
         .await
         .expect("registration should succeed");
 
-    assert!(agent.is_registered());
-    assert!(!agent.is_unregistered());
+    assert!(!agent.is_shutdown());
 
-    // BPA-initiated: call on_unregister on the server-side RemoteAgent
+    // BPA-initiated: shut down the server-side agent
     let server_agent = bpa
         .last_routing_agent
         .lock()
         .clone()
         .expect("BPA should have the server-side agent");
-    server_agent.on_unregister().await;
+    server_agent
+        .shutdown()
+        .await
+        .expect("the agent shuts down cleanly");
 
     // Give the client a moment to detect the stream close
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // The client should have received a synthetic on_unregister()
     assert!(
-        agent.is_unregistered(),
-        "agent should have received on_unregister via on_close"
-    );
-
-    // Clean up server
-    server_tasks.shutdown().await;
-}
-
-// LIFE-03: Client drops proxy without calling unregister.
-//
-// The client drops its sink (and thus the proxy) without calling
-// `unregister()`. The proxy's `Drop` impl cancels the tasks, closing
-// the stream. The server detects the close via `on_close`, unregisters
-// the component from the BPA, and cancels the server-side proxy.
-#[tokio::test]
-async fn life_03_drop_without_unregister() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
-
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
-        .await
-        .expect("registration should succeed");
-
-    assert!(agent.is_registered());
-
-    // Verify the mock BPA received the registration
-    let sink = bpa
-        .last_routing_sink
-        .lock()
-        .clone()
-        .expect("BPA should have a routing sink");
-    assert!(!sink.is_unregistered());
-
-    // Drop the sink without calling unregister.
-    drop(agent.take_sink());
-
-    // Give the server a moment to detect the stream close and clean up
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // The server's on_close should have called sink.unregister() on the BPA
-    assert!(
-        sink.is_unregistered(),
-        "BPA sink should have been unregistered by server on_close"
+        agent.is_shutdown(),
+        "agent should have been shut down via on_close"
     );
 
     // Clean up server
@@ -203,35 +132,30 @@ async fn life_03_drop_without_unregister() {
 
 // LIFE-04: Server crashes while client is connected.
 //
-// The server-side BPA forcefully unregisters all agents (simulating a
-// crash or abrupt shutdown). The client detects the stream close and
-// delivers a synthetic `on_unregister()` to the trait impl via `on_close`.
+// The server-side BPA forcefully shuts down every component (simulating
+// a crash or abrupt shutdown). The client detects the stream close and
+// shuts its own agent down via `on_close`.
 #[tokio::test]
 async fn life_04_server_crash() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = RemoteBpa::new(grpc_addr)
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
         .await
         .expect("registration should succeed");
 
-    assert!(agent.is_registered());
-    assert!(!agent.is_unregistered());
+    assert!(!agent.is_shutdown());
 
-    // Simulate crash: force-unregister all agents
+    // Simulate crash: force-shutdown every registered component
     bpa.crash().await;
 
     // Give the client a moment to detect the stream close
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // The client should have received a synthetic on_unregister()
     assert!(
-        agent.is_unregistered(),
-        "agent should have received on_unregister via on_close"
+        agent.is_shutdown(),
+        "agent should have been shut down via on_close"
     );
 
     // Clean up server
@@ -240,60 +164,51 @@ async fn life_04_server_crash() {
 
 // LIFE-05: Client and BPA unregister simultaneously.
 //
-// Both the client and BPA initiate unregister concurrently. The
-// `Mutex<Option>.take()` on the server ensures exactly one path
-// takes the sink. No double-unregister, no deadlock.
+// Both ends tear the session down at once. Each end takes its agent out
+// of the session exactly once, so neither a double shutdown nor a
+// deadlock can follow.
 #[tokio::test]
 async fn life_05_simultaneous_unregister() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = RemoteBpa::new(grpc_addr)
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
         .await
         .expect("registration should succeed");
 
-    assert!(agent.is_registered());
-
     // Fire both unregister paths concurrently
-    let sink = agent.take_sink().expect("agent should have a sink");
     let bpa_clone = bpa.clone();
-    let (_, _) = tokio::join!(sink.unregister(), bpa_clone.crash());
+    let (_, _) = tokio::join!(agent.sink.unregister(), bpa_clone.crash());
 
     // Give everything a moment to settle
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // The client should have received on_unregister
-    assert!(
-        agent.is_unregistered(),
-        "agent should have received on_unregister"
+    assert_eq!(
+        agent.shutdown_count(),
+        1,
+        "agent should have been shut down exactly once"
     );
 
     // No panic, no deadlock — test completing is the assertion
     server_tasks.shutdown().await;
 }
 
-// LIFE-06: Client receives on_unregister exactly once.
+// LIFE-06: Client shuts its agent down exactly once.
 //
 // After BPA-initiated unregister (which closes the stream), the client
-// must receive exactly one `on_unregister()` call — not zero, not two.
+// must shut its agent down exactly once — not zero times, not twice.
 #[tokio::test]
 async fn life_06_exactly_once_unregister() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
-    let agent = Arc::new(MockRoutingAgent::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _node_ids: Vec<NodeId> = remote_bpa
-        .register_routing_agent("test-agent".to_string(), agent.clone())
+    let agent = RemoteBpa::new(grpc_addr)
+        .register_routing_agent("test-agent", MockRoutingAgent::factory())
         .await
         .expect("registration should succeed");
 
-    assert_eq!(agent.unregister_count(), 0);
+    assert_eq!(agent.shutdown_count(), 0);
 
     // BPA-initiated unregister
     bpa.crash().await;
@@ -301,11 +216,11 @@ async fn life_06_exactly_once_unregister() {
     // Give the client time to process
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // Exactly one on_unregister — not zero (missed), not two (duplicate)
+    // Exactly one shutdown — not zero (missed), not two (duplicate)
     assert_eq!(
-        agent.unregister_count(),
+        agent.shutdown_count(),
         1,
-        "on_unregister should be called exactly once"
+        "the agent should be shut down exactly once"
     );
 
     server_tasks.shutdown().await;
