@@ -9,10 +9,10 @@ use std::{borrow::Cow, sync::Arc};
 
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     node_ids::NodeIds,
-    service::{self, StatusNotify, raw},
+    service::{self, RegistrarExt as _, StatusNotify, raw},
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -37,18 +37,14 @@ enum Event {
 // ---------------------------------------------------------------------------
 
 struct CaptureService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
     events_tx: flume::Sender<Event>,
 }
 
 impl CaptureService {
-    fn new() -> (Arc<Self>, flume::Receiver<Event>) {
+    fn factory() -> (impl raw::Factory<Component = Self>, flume::Receiver<Event>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                events_tx: tx,
-            }),
+            raw::factory_fn(|_| Ok(Arc::new(Self { events_tx: tx }))),
             rx,
         )
     }
@@ -56,13 +52,7 @@ impl CaptureService {
 
 #[async_trait]
 impl raw::Service for CaptureService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -84,7 +74,7 @@ impl raw::Service for CaptureService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -232,8 +222,8 @@ async fn expiry_mid_transfer_rig() -> (
     assert!(bpa.start(false).await.is_empty());
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
-    let (reports, reports_rx) = CaptureService::new();
-    bpa.register_raw_service(Service::Ipn(9), reports.clone())
+    let (reports, reports_rx) = CaptureService::factory();
+    bpa.register_raw_service(Some(Service::Ipn(9)), reports)
         .await
         .unwrap();
 
@@ -421,8 +411,8 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (reports, reports_rx) = CaptureService::new();
-    bpa.register_raw_service(Service::Ipn(9), reports.clone())
+    let (reports, reports_rx) = CaptureService::factory();
+    bpa.register_raw_service(Some(Service::Ipn(9)), reports)
         .await
         .unwrap();
 

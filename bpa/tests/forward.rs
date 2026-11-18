@@ -13,10 +13,10 @@ use std::sync::{
 use hardy_bpa::keys::KeyProvider;
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     cla::{self, Cla, Context, Factory, RegistrarExt, Request, Terms, factory_fn},
     node_ids::NodeIds,
-    service::{self, Service, Sink, StatusNotify},
+    service::{self, RegistrarExt as _, Service, Sink, StatusNotify},
     stream::{Receiver, Segment},
 };
 // `eid::Service` is the service number inside an EID, not the service
@@ -167,26 +167,28 @@ impl cla::Cla for BufferedCla {
 // ---------------------------------------------------------------------------
 
 struct SendOnlyService {
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
+    sink: Arc<dyn Sink>,
+    /// The endpoint the BPA settled on, and the source of every bundle
+    /// this service originates.
+    endpoint: Eid,
 }
 
 impl SendOnlyService {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
+    // `Context`, `Factory` and `factory_fn` name the CLA's here, so the
+    // service's namesakes are qualified.
+    fn factory() -> impl service::Factory<Component = Self> {
+        service::factory_fn(|cx: service::Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                endpoint: cx.endpoint,
+            }))
         })
     }
 }
 
 #[async_trait]
 impl Service for SendOnlyService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
@@ -197,7 +199,7 @@ impl Service for SendOnlyService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _from: &Eid,
@@ -255,8 +257,6 @@ async fn originate(service: &SendOnlyService, payload: &'static [u8]) -> Eid {
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
     service
         .sink
-        .get()
-        .unwrap()
         .send(
             dest.clone(),
             Bytes::from_static(payload),
@@ -289,9 +289,8 @@ async fn streaming_cla_receives_single_final_segment() {
         .await
         .unwrap();
 
-    let service = SendOnlyService::new();
-    let source_eid = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
         .await
         .unwrap();
     let dest = originate(&service, b"Hello remote").await;
@@ -310,7 +309,7 @@ async fn streaming_cla_receives_single_final_segment() {
     assert_eq!(total_len, data.len() as u64);
 
     let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse forwarded bundle");
-    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.id.source, service.endpoint);
     assert_eq!(parsed.bundle.primary.destination, dest);
 
     assert!(events_rx.is_empty());
@@ -334,9 +333,8 @@ async fn buffered_cla_receives_whole_bundle() {
         .await
         .unwrap();
 
-    let service = SendOnlyService::new();
-    let source_eid = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
         .await
         .unwrap();
     let dest = originate(&service, b"Hello adapter").await;
@@ -345,7 +343,7 @@ async fn buffered_cla_receives_whole_bundle() {
         panic!("Expected the buffering CLA to assemble the bundle");
     };
     let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse forwarded bundle");
-    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.id.source, service.endpoint);
     assert_eq!(parsed.bundle.primary.destination, dest);
 
     bpa.shutdown().await;
@@ -368,8 +366,8 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
         .await
         .unwrap();
 
-    let service = SendOnlyService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
         .await
         .unwrap();
     originate(&service, b"Try again").await;
@@ -569,9 +567,7 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
 /// Builds a BPA on an allocator-1 node — its 3-element IPN EIDs change bytes
 /// under the legacy re-encode — with the given legacy-peer patterns, wired
 /// to a buffering CLA and a send-only service.
-async fn legacy_fixture(
-    patterns: &[&str],
-) -> (Bpa, Arc<SendOnlyService>, flume::Receiver<Event>, Eid) {
+async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyService>, flume::Receiver<Event>) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 1,
@@ -601,25 +597,22 @@ async fn legacy_fixture(
         .await
         .unwrap();
 
-    let service = SendOnlyService::new();
-    let source_eid = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
         .await
         .unwrap();
-    (bpa, service, events_rx, source_eid)
+    (bpa, service, events_rx)
 }
 
 /// A next hop matching a configured legacy-peer pattern receives the bundle
 /// with `Ipn` source and destination re-encoded as `LegacyIpn` on the wire.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_receives_two_element_encoding() {
-    let (bpa, service, events_rx, _) = legacy_fixture(&["ipn:1.2.*"]).await;
+    let (bpa, service, events_rx) = legacy_fixture(&["ipn:1.2.*"]).await;
 
     let dest: Eid = "ipn:1.2.99".parse().unwrap();
     service
         .sink
-        .get()
-        .unwrap()
         .send(
             dest,
             Bytes::from_static(b"legacy"),
@@ -652,13 +645,11 @@ async fn legacy_peer_receives_two_element_encoding() {
 /// 3-element encoding untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_legacy_peer_keeps_canonical_encoding() {
-    let (bpa, service, events_rx, source_eid) = legacy_fixture(&["ipn:9.9.*"]).await;
+    let (bpa, service, events_rx) = legacy_fixture(&["ipn:9.9.*"]).await;
 
     let dest: Eid = "ipn:1.2.99".parse().unwrap();
     service
         .sink
-        .get()
-        .unwrap()
         .send(
             dest.clone(),
             Bytes::from_static(b"canonical"),
@@ -672,7 +663,7 @@ async fn non_legacy_peer_keeps_canonical_encoding() {
         panic!("Expected a forwarded bundle");
     };
     let parsed = hardy_bpv7::parse::parse(data).expect("Failed to parse forwarded bundle");
-    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.id.source, service.endpoint);
     assert_eq!(parsed.bundle.primary.destination, dest);
 
     assert!(events_rx.is_empty());

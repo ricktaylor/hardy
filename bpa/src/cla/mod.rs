@@ -99,7 +99,7 @@ impl From<BufferError> for Error {
 /// a session can pipeline many transfers concurrently. This deferred
 /// callback is the pipelining seam: a `forward` that awaited the final
 /// outcome would serialize every lane on a wire round-trip. Local delivery
-/// has no analogue of `Accepted` because `on_deliver` completes in-process,
+/// has no analogue of `Accepted` because delivery completes in-process,
 /// with no round-trip to wait out.
 pub enum ForwardOutcome {
     /// The bundle was sent, and no further outcome follows: the terminal,

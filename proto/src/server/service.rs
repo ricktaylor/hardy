@@ -1,27 +1,31 @@
+use hardy_bpa::service::{
+    RegistrarExt,
+    raw::{Context, Sink, factory_fn},
+};
+use hardy_bpv7::eid::Eid;
+
 use super::*;
 use proto::service::*;
 
-type Sink = Arc<dyn hardy_bpa::service::raw::Sink>;
-
+// The BPA's end of a remote whole-bundle service: it holds the sink the
+// session sends through, and forwards deliveries through the proxy
+// standing in for the far service.
 struct LowLevelService {
-    sink: Mutex<Option<Sink>>,
+    sink: Arc<dyn Sink>,
+    endpoint: Eid,
+    // The service is built before the proxy, which needs a handler
+    // holding the service, so the proxy arrives once the session is
+    // running.
     proxy: Once<RpcProxy<Result<BpaToService, tonic::Status>, ServiceToBpa>>,
 }
 
 impl LowLevelService {
-    fn sink(&self) -> Result<Sink, tonic::Status> {
-        self.sink
-            .lock()
-            .clone()
-            .ok_or(tonic::Status::unavailable("Unregistered"))
-    }
-
     async fn call(
         &self,
         msg: bpa_to_service::Msg,
     ) -> hardy_bpa::service::Result<service_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
-            error!("call made before on_register!");
+            error!("call made before the session started!");
             hardy_bpa::service::Error::Disconnected
         })?;
 
@@ -38,7 +42,7 @@ impl LowLevelService {
     ) -> Result<bpa_to_service::Msg, tonic::Status> {
         // The unary wire message already delivered the whole bundle, so it
         // enters the BPA as a one-segment stream.
-        self.sink()?
+        self.sink
             .send(&mut request.data)
             .await
             .map(|bundle_id| {
@@ -48,33 +52,15 @@ impl LowLevelService {
             })
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
-
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
-    }
 }
 
 #[async_trait]
 impl hardy_bpa::service::raw::Service for LowLevelService {
-    async fn on_register(
-        &self,
-        _endpoint: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::service::raw::Sink>,
-    ) {
-        *self.sink.lock() = Some(Arc::from(sink));
-    }
-
-    async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
-            return;
-        }
-
+    async fn shutdown(&self) -> hardy_bpa::service::Result<()> {
         if let Some(proxy) = self.proxy.get() {
             proxy.shutdown().await;
         }
+        Ok(())
     }
 
     // INTERIM BUFFERING: the wire protocol has no segmented bundle
@@ -83,7 +69,7 @@ impl hardy_bpa::service::raw::Service for LowLevelService {
     // before marshalling. This is a deliberate stepping stone toward the
     // full streaming pipeline (chunked wire messages are the blocker); see
     // bpa/docs/streaming_pipeline_design.md.
-    async fn on_deliver(
+    async fn deliver(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         expiry: time::OffsetDateTime,
@@ -109,7 +95,7 @@ impl hardy_bpa::service::raw::Service for LowLevelService {
         }
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         from: &hardy_bpv7::eid::Eid,
@@ -177,7 +163,11 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.svc.unregister().await;
+        // The far service is gone: unregister, which takes this service
+        // down with the session. `cancel` rather than `shutdown`, because
+        // the proxy task awaiting this handler is one of the tasks being
+        // stopped.
+        self.svc.sink.unregister().await;
         if let Some(proxy) = self.svc.proxy.get() {
             proxy.cancel();
         }
@@ -220,10 +210,9 @@ async fn run_service_session(
     mut channel_receiver: tonic::Streaming<ServiceToBpa>,
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
 ) {
-    let svc = Arc::new(LowLevelService {
-        sink: Mutex::new(None),
-        proxy: Once::new(),
-    });
+    // Filled by the registration handshake below, which the BPA drives
+    // through the factory.
+    let mut registered = None;
 
     let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
         match msg {
@@ -238,11 +227,22 @@ async fn run_service_session(
                         register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
                     })
                     .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
-                let endpoint_id = bpa
-                    .register_raw_service(service_id, svc.clone())
+                let svc = bpa
+                    .register_raw_service(
+                        Some(service_id),
+                        factory_fn(|cx: Context| {
+                            Ok(Arc::new(LowLevelService {
+                                sink: cx.sink,
+                                endpoint: cx.endpoint,
+                                proxy: Once::new(),
+                            }))
+                        }),
+                    )
                     .await
-                    .map(|endpoint_id| endpoint_id.to_string())
                     .map_err(|e| tonic::Status::from_error(e.into()))?;
+
+                let endpoint_id = svc.endpoint.to_string();
+                registered = Some(svc);
 
                 Ok(bpa_to_service::Msg::Register(RegisterResponse {
                     endpoint_id,
@@ -262,6 +262,11 @@ async fn run_service_session(
         warn!("Service registration failed: {e}");
         return;
     }
+
+    let Some(svc) = registered else {
+        warn!("Service registration completed without registering a service");
+        return;
+    };
 
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { svc: svc.clone() });

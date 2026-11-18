@@ -1,5 +1,9 @@
 use super::*;
-use hardy_bpa::{bpa::BpaRegistration, cla::RegistrarExt};
+use hardy_bpa::{
+    bpa::BpaRegistration,
+    cla::RegistrarExt,
+    service::{Registrar, RegistrarExt as _},
+};
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,8 +261,6 @@ async fn run_ping(
     let tasks = hardy_async::TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    let service = alloc::sync::Arc::new(service::Service::new(args));
-
     // Set by the deadline task alone, so an expired deadline can be told apart
     // from an operator's Ctrl+C when choosing the exit code — both cancel the
     // same token, but only the former is a failure.
@@ -281,7 +283,7 @@ async fn run_ping(
         });
     }
 
-    exec_inner(args, bpa.as_ref(), tasks.cancel_token(), service.clone()).await?;
+    let service = exec_inner(args, bpa.as_ref(), tasks.cancel_token()).await?;
 
     let stats = service.statistics();
     service.print_summary(&stats);
@@ -304,16 +306,16 @@ async fn run_ping(
 
 async fn exec_inner(
     args: &Command,
-    bpa: &dyn BpaRegistration,
+    bpa: &dyn Registrar,
     cancel_token: &tokio_util::sync::CancellationToken,
-    service: alloc::sync::Arc<service::Service>,
-) -> anyhow::Result<()> {
-    if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
-        bpa.register_raw_service(service_id, service.clone()).await
-    } else {
-        bpa.register_dynamic_raw_service(service.clone()).await
-    }
-    .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
+) -> anyhow::Result<alloc::sync::Arc<service::Service>> {
+    let service = bpa
+        .register_raw_service(
+            args.source.as_ref().and_then(|eid| eid.service()),
+            service::Service::factory(args),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 
     for seq_no in 0..args.count.unwrap_or(u32::MAX) {
         service.send(args, seq_no).await?;
@@ -346,7 +348,7 @@ async fn exec_inner(
             eprintln!("Timeout waiting for responses");
         }
     }
-    Ok(())
+    Ok(service)
 }
 
 pub fn exec(args: Command) -> ! {

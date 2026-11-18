@@ -385,14 +385,10 @@ impl Dispatcher {
     /// Spawn a published service's delivery consumer. Mirrors the per-peer
     /// egress queues (`cla::peers`), including their serialization: one
     /// delivery at a time per service, in queue order.
-    pub fn start_delivery_queue(
-        self: &Arc<Self>,
-        service: Arc<service::registry::Record>,
-        rx: hardy_async::closeable::Receiver<bundle::Bundle>,
-    ) {
+    pub fn start_delivery_queue(self: &Arc<Self>, service: Arc<service::table::Record>) {
         let dispatcher = self.clone();
         hardy_async::spawn!(self.tasks, "delivery_queue_poller", async move {
-            while let Ok(bundle) = rx.recv().await {
+            while let Some(bundle) = service.next_delivery().await {
                 dispatcher.deliver_bundle(service.clone(), bundle).await;
             }
         });

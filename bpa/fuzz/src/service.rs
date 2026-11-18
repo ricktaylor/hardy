@@ -1,6 +1,6 @@
 use core::time::Duration;
+use std::sync::Arc;
 
-use hardy_async::sync::spin::Once;
 // This module's `SendOptions` is an `Arbitrary` mirror of the BPA type,
 // so the BPA's own stays qualified.
 use hardy_bpa::{
@@ -47,12 +47,12 @@ pub struct Msg {
 }
 
 pub struct PipeService {
-    sink: Once<Box<dyn Sink>>,
+    sink: Arc<dyn Sink>,
 }
 
 impl PipeService {
-    pub fn new() -> Self {
-        Self { sink: Once::new() }
+    pub fn factory() -> impl service::Factory<Component = Self> {
+        service::factory_fn(|cx: service::Context| Ok(Arc::new(Self { sink: cx.sink })))
     }
 
     pub async fn send(
@@ -62,27 +62,13 @@ impl PipeService {
         lifetime: Duration,
         options: Option<service::SendOptions>,
     ) -> service::Result<Id> {
-        self.sink
-            .get()
-            .expect("send called before registration")
-            .send(destination, data, lifetime, options)
-            .await
+        self.sink.send(destination, data, lifetime, options).await
     }
 }
 
 #[async_trait]
 impl Service for PipeService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {
-        if self.sink.get().is_none() {
-            panic!("Extra unregister!");
-        }
-    }
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
@@ -94,7 +80,7 @@ impl Service for PipeService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,

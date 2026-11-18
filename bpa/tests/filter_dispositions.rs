@@ -21,7 +21,7 @@ use std::{
 
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     builder::BpaBuilder,
     bundle::{Bundle, BundleMetadata, BundleStatus},
     cla::{self, Context, RegistrarExt, Request, factory_fn},
@@ -30,7 +30,7 @@ use hardy_bpa::{
         pack::FilterPack, slots::MetadataDelta,
     },
     node_ids::NodeIds,
-    service::{self, SendOptions, Service, Sink, StatusNotify, raw},
+    service::{self, RegistrarExt as _, SendOptions, Service, Sink, StatusNotify, raw},
     storage::{
         BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
         Result as StorageResult,
@@ -296,19 +296,20 @@ impl Rewriter for SlotReader {
 
 // A service that only sends.
 struct SendingService {
-    // Held: dropping the sink unregisters the service.
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
+    sink: Arc<dyn Sink>,
+}
+
+impl SendingService {
+    // `Context` and `factory_fn` name the CLA's here, so the service's
+    // namesakes are qualified.
+    fn factory() -> impl service::Factory<Component = Self> {
+        service::factory_fn(|cx: service::Context| Ok(Arc::new(Self { sink: cx.sink })))
+    }
 }
 
 #[async_trait]
 impl Service for SendingService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -320,7 +321,7 @@ impl Service for SendingService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -354,20 +355,24 @@ impl cla::Cla for CapturingCla {
 
 // A raw-bundle service: sees the rewritten extension blocks.
 struct CapturingService {
-    // Held: dropping the sink unregisters the service.
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: Arc<dyn raw::Sink>,
     delivered_tx: flume::Sender<Bytes>,
+}
+
+impl CapturingService {
+    fn factory(delivered_tx: flume::Sender<Bytes>) -> impl raw::Factory<Component = Self> {
+        raw::factory_fn(move |cx: raw::Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                delivered_tx,
+            }))
+        })
+    }
 }
 
 #[async_trait]
 impl raw::Service for CapturingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -379,7 +384,7 @@ impl raw::Service for CapturingService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -428,15 +433,14 @@ async fn setup(builder: BpaBuilder) -> (Bpa, Arc<CapturingCla>, flume::Receiver<
     (bpa, cla, forwarded_rx)
 }
 
-// Registers a capturing raw service at `LOCAL`. The returned service must
-// be held for the test's duration: the registry does not keep it alive.
+// Registers a capturing raw service at `LOCAL`.
 async fn register_capturing_service(bpa: &Bpa) -> (Arc<CapturingService>, flume::Receiver<Bytes>) {
     let (delivered_tx, delivered_rx) = flume::bounded(16);
-    let service = Arc::new(CapturingService {
-        sink: hardy_async::sync::spin::Once::new(),
-        delivered_tx,
-    });
-    bpa.register_raw_service(ServiceId::Ipn(42), service.clone())
+    let service = bpa
+        .register_raw_service(
+            Some(ServiceId::Ipn(42)),
+            CapturingService::factory(delivered_tx),
+        )
         .await
         .unwrap();
     (service, delivered_rx)
@@ -756,10 +760,8 @@ async fn per_hop_writes_supersede_an_egress_rewriter() {
 // Registers a sending service at `LOCAL` and sends one report-requesting
 // payload to `REMOTE`, returning the send's outcome.
 async fn originate(bpa: &Bpa) -> service::Result<Id> {
-    let service = Arc::new(SendingService {
-        sink: hardy_async::sync::spin::Once::new(),
-    });
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendingService::factory())
         .await
         .unwrap();
     let options = SendOptions {
@@ -769,8 +771,6 @@ async fn originate(bpa: &Bpa) -> service::Result<Id> {
     };
     service
         .sink
-        .get()
-        .unwrap()
         .send(
             REMOTE.parse().unwrap(),
             Bytes::from_static(b"payload"),
@@ -1097,8 +1097,6 @@ async fn send_peeked(
 ) -> Option<Vec<u8>> {
     service
         .sink
-        .get()
-        .unwrap()
         .send(stream)
         .await
         .expect("the raw send is accepted");
@@ -1413,7 +1411,7 @@ async fn originate_reads_the_payload_whenever_resident() {
     pack.originate_verifier("witness", PayloadWitness { available_tx });
     let (bpa, _cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
     let (service, _delivered_rx) = register_capturing_service(&bpa).await;
-    let sink = service.sink.get().unwrap();
+    let sink = &service.sink;
     let build = || {
         let (_, data) = Builder::new(LOCAL.parse().unwrap(), REMOTE.parse().unwrap())
             .with_payload(b"payload".as_slice().into())
@@ -1529,13 +1527,11 @@ async fn the_adu_doors_hold_the_declared_peek() {
         let mut pack = FilterPack::new("test");
         pack.originate_classifier_with_peek("peek", PeekWitness { peek_tx }, peek);
         let (bpa, _cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
-        let service = Arc::new(SendingService {
-            sink: hardy_async::sync::spin::Once::new(),
-        });
-        bpa.register_service(ServiceId::Ipn(42), service.clone())
+        let service = bpa
+            .register_service(Some(ServiceId::Ipn(42)), SendingService::factory())
             .await
             .unwrap();
-        let sink = service.sink.get().unwrap();
+        let sink = &service.sink;
         // Each send is forwarded with the service's payload unchanged: the peek
         // never stands in for a bundle that went no further.
         let assert_forwarded = |forwarded: Bytes| {

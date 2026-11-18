@@ -17,7 +17,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 
-use hardy_bpa::{bpa::BpaRegistration, cla::RegistrarExt};
+use hardy_bpa::{bpa::BpaRegistration, cla::RegistrarExt, service::RegistrarExt as _};
 use hardy_bpv7::eid::{Eid, NodeId};
 use thiserror::Error as ThisError;
 use tracing::debug;
@@ -36,7 +36,7 @@ pub use config::{Config, Tunnel};
 /// Provides Bundle-in-Bundle Encapsulation for tunneling bundles
 /// through intermediate networks. Uses a hybrid architecture:
 /// - CLA for encapsulation (via `forward()`)
-/// - Service for decapsulation (via `on_deliver()`)
+/// - Service for decapsulation (via `deliver()`)
 pub struct Bibe {
     cla: Arc<BibeCla>,
     decap_service: Arc<DecapService>,
@@ -70,14 +70,12 @@ impl Bibe {
             .register_cla("bibe", BibeCla::factory(config.tunnel_source.clone()))
             .await?;
 
-        let decap_service = Arc::new(DecapService::new(cla.clone()));
-        if let Some(service_id) = config.decap_service_id.clone() {
-            bpa.register_raw_service(service_id, decap_service.clone())
-                .await?;
-        } else {
-            bpa.register_dynamic_raw_service(decap_service.clone())
-                .await?;
-        }
+        let decap_service = bpa
+            .register_raw_service(
+                config.decap_service_id.clone(),
+                DecapService::factory(cla.clone()),
+            )
+            .await?;
 
         for tunnel in &config.tunnels {
             cla.add_tunnel(tunnel.tunnel.clone(), tunnel.decap_endpoint.clone())

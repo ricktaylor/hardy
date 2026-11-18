@@ -7,7 +7,9 @@ mod test;
 
 use arbitrary::Arbitrary;
 use core::num::NonZeroUsize;
-use hardy_bpa::{bpa::BpaRegistration, cla::RegistrarExt};
+use hardy_bpa::{
+    bpa::BpaRegistration, cla::RegistrarExt, service::RegistrarExt as ServiceRegistrarExt,
+};
 use std::sync::Arc;
 
 #[derive(Arbitrary)]
@@ -173,8 +175,11 @@ impl Msg {
                 .await
                 .expect("Failed to register routing agent");
 
-                let service = Arc::new(service::PipeService::new());
-                bpa.register_service(hardy_bpv7::eid::Service::Ipn(1), service.clone())
+                let service = bpa
+                    .register_service(
+                        Some(hardy_bpv7::eid::Service::Ipn(1)),
+                        service::PipeService::factory(),
+                    )
                     .await
                     .expect("Failed to register service");
 

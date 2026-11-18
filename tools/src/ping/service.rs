@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -119,7 +119,9 @@ struct SharedState {
 }
 
 pub struct Service {
-    sink: OnceLock<Box<dyn raw::Sink>>,
+    // Communication channel back to the BPA, for the service's whole
+    // active lifetime.
+    sink: Arc<dyn raw::Sink>,
     local_node: NodeId,
     destination: Eid,
     lifetime: Duration,
@@ -130,25 +132,35 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(args: &Command) -> Self {
-        Self {
-            sink: OnceLock::new(),
-            local_node: args.node_id().unwrap(),
-            destination: args.destination.clone(),
-            lifetime: args.lifetime(),
-            quiet: args.quiet,
-            count: args.count,
-            semaphore: args.count.map(|_| Arc::new(tokio::sync::Semaphore::new(0))),
-            state: Mutex::new(SharedState {
-                sent_bundles: HashMap::new(),
-                expected_responses: HashMap::new(),
-                stats: Statistics::default(),
-                path_hops: HashMap::new(),
-                replied: HashSet::new(),
-                resolved: HashSet::new(),
-                return_journeys: HashMap::new(),
-            }),
-        }
+    // A factory for a ping client that pings the destination `args` names,
+    // from whichever endpoint the BPA settles on.
+    pub fn factory(args: &Command) -> impl raw::Factory<Component = Self> {
+        let local_node = args.node_id().unwrap();
+        let destination = args.destination.clone();
+        let lifetime = args.lifetime();
+        let quiet = args.quiet;
+        let count = args.count;
+
+        raw::factory_fn(move |cx: raw::Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                local_node,
+                destination,
+                lifetime,
+                quiet,
+                count,
+                semaphore: count.map(|_| Arc::new(tokio::sync::Semaphore::new(0))),
+                state: Mutex::new(SharedState {
+                    sent_bundles: HashMap::new(),
+                    expected_responses: HashMap::new(),
+                    stats: Statistics::default(),
+                    path_hops: HashMap::new(),
+                    replied: HashSet::new(),
+                    resolved: HashSet::new(),
+                    return_journeys: HashMap::new(),
+                }),
+            }))
+        })
     }
 
     // Remove entries older than bundle lifetime to prevent unbounded memory growth.
@@ -353,13 +365,11 @@ impl Service {
             eprintln!("Sending ping {seq_no}...");
         }
 
-        // Get sink first (may block on OnceLock initialization)
-        let sink = self.sink.wait();
-
         // Record send time immediately before the actual send for accurate RTT
         let send_time = time::OffsetDateTime::now_utc();
 
-        let id = sink
+        let id = self
+            .sink
             .send(&mut hardy_bpa::Bytes::from(bundle_bytes))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send bundle: {e}"))?;
@@ -581,21 +591,12 @@ fn verb(kind: StatusNotify) -> &'static str {
 
 #[async_trait]
 impl raw::Service for Service {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        // Ensure single initialization
-        self.sink.get_or_init(|| sink);
-    }
-
-    async fn on_unregister(&self) {
-        // Nothing to do
-    }
-
     // INTERIM BUFFERING: the ping client parses the whole response bundle
     // with a whole-buffer codec, so it assembles the stream in memory via
     // `stream::buffer_stream` before checking the reflected payload. This
     // is a deliberate stepping stone toward the full streaming pipeline;
     // see bpa/docs/streaming_pipeline_design.md.
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -710,7 +711,7 @@ impl raw::Service for Service {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -718,7 +719,7 @@ impl raw::Service for Service {
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Status reports arrive via on_deliver when report_to = service EID
+        // Status reports arrive via deliver when report_to = service EID
     }
 }
 

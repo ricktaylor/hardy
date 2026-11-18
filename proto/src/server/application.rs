@@ -1,24 +1,25 @@
+use hardy_bpa::service::{Context, RegistrarExt, Sink, factory_fn};
+use hardy_bpv7::eid::Eid;
+
 use super::*;
 use proto::service::*;
 
-type Sink = Arc<dyn hardy_bpa::service::Sink>;
-
+// The BPA's end of a remote application: it holds the sink the session
+// sends through, and forwards deliveries through the proxy standing in
+// for the far application.
 struct Application {
-    sink: Mutex<Option<Sink>>,
+    sink: Arc<dyn Sink>,
+    endpoint: Eid,
+    // The application is built before the proxy, which needs a handler
+    // holding the application, so the proxy arrives once the session is
+    // running.
     proxy: Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
-    fn sink(&self) -> Result<Sink, tonic::Status> {
-        self.sink
-            .lock()
-            .clone()
-            .ok_or(tonic::Status::unavailable("Unregistered"))
-    }
-
     async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::service::Result<app_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
-            error!("call made before on_register!");
+            error!("call made before the session started!");
             hardy_bpa::service::Error::Disconnected
         })?;
 
@@ -51,7 +52,7 @@ impl Application {
             }
         }
 
-        self.sink()?
+        self.sink
             .send(
                 request
                     .destination
@@ -71,33 +72,15 @@ impl Application {
             })
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
-
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
-    }
 }
 
 #[async_trait]
 impl hardy_bpa::service::Service for Application {
-    async fn on_register(
-        &self,
-        _source: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::service::Sink>,
-    ) {
-        *self.sink.lock() = Some(Arc::from(sink));
-    }
-
-    async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
-            return;
-        }
-
+    async fn shutdown(&self) -> hardy_bpa::service::Result<()> {
         if let Some(proxy) = self.proxy.get() {
             proxy.shutdown().await;
         }
+        Ok(())
     }
 
     // INTERIM BUFFERING: the wire protocol has no segmented payload
@@ -106,7 +89,7 @@ impl hardy_bpa::service::Service for Application {
     // marshalling. This is a deliberate stepping stone toward the full
     // streaming pipeline (chunked wire messages are the blocker); see
     // bpa/docs/streaming_pipeline_design.md.
-    async fn on_deliver(
+    async fn deliver(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         expiry: time::OffsetDateTime,
@@ -134,7 +117,7 @@ impl hardy_bpa::service::Service for Application {
         }
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         from: &hardy_bpv7::eid::Eid,
@@ -202,7 +185,11 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.app.unregister().await;
+        // The far application is gone: unregister, which takes this
+        // application down with the session. `cancel` rather than
+        // `shutdown`, because the proxy task awaiting this handler is one
+        // of the tasks being stopped.
+        self.app.sink.unregister().await;
         if let Some(proxy) = self.app.proxy.get() {
             proxy.cancel();
         }
@@ -244,10 +231,9 @@ async fn run_application_session(
     mut channel_receiver: tonic::Streaming<AppToBpa>,
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
 ) {
-    let app = Arc::new(Application {
-        sink: Mutex::new(None),
-        proxy: Once::new(),
-    });
+    // Filled by the registration handshake below, which the BPA drives
+    // through the factory.
+    let mut registered = None;
 
     let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
         match msg {
@@ -262,11 +248,22 @@ async fn run_application_session(
                         register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
                     })
                     .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
-                let endpoint_id = bpa
-                    .register_service(service_id, app.clone())
+                let app = bpa
+                    .register_service(
+                        Some(service_id),
+                        factory_fn(|cx: Context| {
+                            Ok(Arc::new(Application {
+                                sink: cx.sink,
+                                endpoint: cx.endpoint,
+                                proxy: Once::new(),
+                            }))
+                        }),
+                    )
                     .await
-                    .map(|endpoint_id| endpoint_id.to_string())
                     .map_err(|e| tonic::Status::from_error(e.into()))?;
+
+                let endpoint_id = app.endpoint.to_string();
+                registered = Some(app);
 
                 Ok(bpa_to_app::Msg::Register(RegisterResponse { endpoint_id }))
             }
@@ -284,6 +281,11 @@ async fn run_application_session(
         warn!("Application registration failed: {e}");
         return;
     }
+
+    let Some(app) = registered else {
+        warn!("Application registration completed without registering an application");
+        return;
+    };
 
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { app: app.clone() });

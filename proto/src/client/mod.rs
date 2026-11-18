@@ -56,37 +56,26 @@ impl hardy_bpa::cla::Registrar for RemoteBpa {
 }
 
 #[async_trait]
+impl hardy_bpa::service::Registrar for RemoteBpa {
+    async fn register_service_boxed(
+        &self,
+        id: Option<hardy_bpv7::eid::Service>,
+        factory: hardy_bpa::service::BoxFactory<'_>,
+    ) -> hardy_bpa::service::Result<()> {
+        application::register_service(self.grpc_addr.clone(), id, factory).await
+    }
+
+    async fn register_raw_service_boxed(
+        &self,
+        id: Option<hardy_bpv7::eid::Service>,
+        factory: hardy_bpa::service::raw::BoxFactory<'_>,
+    ) -> hardy_bpa::service::Result<()> {
+        service::register_raw_service(self.grpc_addr.clone(), id, factory).await
+    }
+}
+
+#[async_trait]
 impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
-    async fn register_raw_service(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn hardy_bpa::service::raw::Service>,
-    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
-        service::register_raw_service(self.grpc_addr.clone(), Some(service_id), service).await
-    }
-
-    async fn register_service(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn hardy_bpa::service::Service>,
-    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
-        application::register_service(self.grpc_addr.clone(), Some(service_id), application).await
-    }
-
-    async fn register_dynamic_raw_service(
-        &self,
-        service: Arc<dyn hardy_bpa::service::raw::Service>,
-    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
-        service::register_raw_service(self.grpc_addr.clone(), None, service).await
-    }
-
-    async fn register_dynamic_service(
-        &self,
-        application: Arc<dyn hardy_bpa::service::Service>,
-    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
-        application::register_service(self.grpc_addr.clone(), None, application).await
-    }
-
     async fn register_routing_agent(
         &self,
         name: String,

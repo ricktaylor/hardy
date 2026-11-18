@@ -1,3 +1,7 @@
+// `Sink` is this module's own proxy sink, so the BPA's trait of that
+// name is imported anonymously, for its methods alone.
+use hardy_bpa::service::raw::{BoxFactory, Context, Service, Sink as _};
+
 use super::*;
 use proto::service::*;
 
@@ -17,7 +21,7 @@ async fn receive(
     // reaches the service as a one-segment stream.
     let total_len = request.data.len() as u64;
     service
-        .on_deliver(&bundle_id, expiry, total_len, &mut request.data)
+        .deliver(&bundle_id, expiry, total_len, &mut request.data)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 
@@ -58,7 +62,7 @@ async fn status_notify(
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid from EID: {e}")))?;
 
     service
-        .on_status_notify(&bundle_id, &from, kind, reason, timestamp)
+        .report_status(&bundle_id, &from, kind, reason, timestamp)
         .await;
 
     Ok(())
@@ -131,8 +135,16 @@ impl hardy_bpa::service::raw::Sink for Sink {
     }
 }
 
+// The service the session owns, shared with the proxy's handler.
+//
+// The service is built from a context carrying the sink the proxy stands
+// behind, so the proxy exists first and learns the service it serves
+// here. The handler holds the only strong reference: the session owns
+// the service it registered, and drops it on close.
+type SessionService = Arc<Mutex<Option<Arc<dyn Service>>>>;
+
 struct Handler {
-    service: Weak<dyn hardy_bpa::service::raw::Service>,
+    service: SessionService,
 }
 
 #[async_trait]
@@ -143,7 +155,8 @@ impl ProxyHandler for Handler {
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         match msg {
             bpa_to_service::Msg::Receive(request) => {
-                if let Some(service) = self.service.upgrade() {
+                let service = self.service.lock().clone();
+                if let Some(service) = service {
                     match receive(service.as_ref(), request).await {
                         Ok(msg) => Some(service_to_bpa::Msg::Receive(msg)),
                         Err(e) => Some(service_to_bpa::Msg::Status(e.into())),
@@ -155,7 +168,8 @@ impl ProxyHandler for Handler {
                 }
             }
             bpa_to_service::Msg::StatusNotify(request) => {
-                if let Some(service) = self.service.upgrade() {
+                let service = self.service.lock().clone();
+                if let Some(service) = service {
                     match status_notify(service.as_ref(), request).await {
                         Ok(_) => Some(service_to_bpa::Msg::StatusNotify(StatusNotifyResponse {})),
                         Err(e) => Some(service_to_bpa::Msg::Status(e.into())),
@@ -174,8 +188,11 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        if let Some(service) = self.service.upgrade() {
-            service.on_unregister().await;
+        let service = self.service.lock().take();
+        if let Some(service) = service
+            && let Err(e) = service.shutdown().await
+        {
+            warn!("Service shutdown failed: {e}");
         }
     }
 }
@@ -187,8 +204,8 @@ impl ProxyHandler for Handler {
 pub async fn register_raw_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
-    service: Arc<dyn hardy_bpa::service::raw::Service>,
-) -> hardy_bpa::service::Result<eid::Eid> {
+    factory: BoxFactory<'_>,
+) -> hardy_bpa::service::Result<()> {
     let mut svc_client = service_client::ServiceClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
@@ -241,7 +258,7 @@ pub async fn register_raw_service(
         }
     };
 
-    let eid = response
+    let eid: eid::Eid = response
         .endpoint_id
         .parse()
         .map_err(|e: hardy_bpv7::eid::Error| {
@@ -249,17 +266,35 @@ pub async fn register_raw_service(
             hardy_bpa::service::Error::Internal(e.into())
         })?;
 
-    // Now we have got here, we can create a Sink proxy and call on_register()
-    let handler = Box::new(Handler {
-        service: Arc::downgrade(&service),
-    });
+    let session: SessionService = Arc::new(Mutex::new(None));
+    let proxy = RpcProxy::run(
+        channel_sender,
+        channel_receiver,
+        Box::new(Handler {
+            service: session.clone(),
+        }),
+        Side::Client,
+    );
+    let sink = Arc::new(Sink { proxy });
 
-    // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
+    // The service runs against the proxy from here, so a build or start
+    // failure takes the session down with it.
+    let started = async {
+        let service = factory.build(Context::new(sink.clone(), eid.clone()))?;
+        service.start().await?;
+        Ok(service)
+    }
+    .await;
 
-    // Call on_register()
-    service.on_register(&eid, Box::new(Sink { proxy })).await;
-
-    info!("Proxy Service {eid} started");
-    Ok(eid)
+    match started {
+        Ok(service) => {
+            *session.lock() = Some(service);
+            info!("Proxy Service {eid} started");
+            Ok(())
+        }
+        Err(e) => {
+            sink.unregister().await;
+            Err(e)
+        }
+    }
 }

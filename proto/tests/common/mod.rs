@@ -13,7 +13,7 @@ use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpa::{
     cla, routing,
-    service::{self, SendOptions, Service, Sink, raw},
+    service::{self, Service, raw},
 };
 // `eid::Service` is the service number inside an EID, not the service
 // trait registered here; it is aliased to the word the code already uses
@@ -121,46 +121,38 @@ impl cla::Registrar for MockBpa {
 }
 
 #[async_trait]
-impl BpaRegistration for MockBpa {
-    async fn register_raw_service(
+impl service::Registrar for MockBpa {
+    async fn register_raw_service_boxed(
         &self,
-        _service_id: ServiceId,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid> {
+        _id: Option<ServiceId>,
+        factory: raw::BoxFactory<'_>,
+    ) -> service::Result<()> {
         let endpoint: Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockRawServiceSink::new());
-        *self.last_raw_service.lock() = Some(service.clone());
-        service
-            .on_register(&endpoint, Box::new(RawServiceSinkWrapper(sink)))
-            .await;
-        Ok(endpoint)
+
+        let service = factory.build(raw::Context::new(sink, endpoint))?;
+        service.start().await?;
+        *self.last_raw_service.lock() = Some(service);
+        Ok(())
     }
 
-    async fn register_service(
+    async fn register_service_boxed(
         &self,
-        _service_id: ServiceId,
-        service: Arc<dyn Service>,
-    ) -> service::Result<Eid> {
+        _id: Option<ServiceId>,
+        factory: service::BoxFactory<'_>,
+    ) -> service::Result<()> {
         let endpoint: Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockServiceSink::new());
-        *self.last_service.lock() = Some(service.clone());
-        service
-            .on_register(&endpoint, Box::new(ServiceSinkWrapper(sink)))
-            .await;
-        Ok(endpoint)
-    }
 
-    async fn register_dynamic_raw_service(
-        &self,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid> {
-        self.register_raw_service(ServiceId::Ipn(0), service).await
+        let service = factory.build(service::Context::new(sink, endpoint))?;
+        service.start().await?;
+        *self.last_service.lock() = Some(service);
+        Ok(())
     }
+}
 
-    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid> {
-        self.register_service(ServiceId::Ipn(0), service).await
-    }
-
+#[async_trait]
+impl BpaRegistration for MockBpa {
     async fn register_routing_agent(
         &self,
         _name: String,
@@ -182,8 +174,6 @@ impl BpaRegistration for MockBpa {
 // ── Sink wrappers (delegate to Arc<Mock>) ─────────────────────────────
 
 struct RoutingSinkWrapper(Arc<MockRoutingSink>);
-struct RawServiceSinkWrapper(Arc<MockRawServiceSink>);
-struct ServiceSinkWrapper(Arc<MockServiceSink>);
 
 #[async_trait]
 impl routing::Sink for RoutingSinkWrapper {
@@ -205,35 +195,6 @@ impl routing::Sink for RoutingSinkWrapper {
         pri: u32,
     ) -> routing::Result<bool> {
         self.0.remove_route(p, a, pri).await
-    }
-}
-
-#[async_trait]
-impl raw::Sink for RawServiceSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn send(
-        &self,
-        s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> service::Result<hardy_bpv7::bundle::Id> {
-        self.0.send(s).await
-    }
-}
-
-#[async_trait]
-impl Sink for ServiceSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn send(
-        &self,
-        dest: Eid,
-        data: hardy_bpa::Bytes,
-        lt: core::time::Duration,
-        opts: Option<SendOptions>,
-    ) -> service::Result<hardy_bpv7::bundle::Id> {
-        self.0.send(dest, data, lt, opts).await
     }
 }
 

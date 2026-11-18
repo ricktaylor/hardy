@@ -1,14 +1,14 @@
-//! Integration tests for `Service::on_deliver` — the streamed delivery
-//! door — and `stream::buffer_stream`, the whole-buffer convenience used by
-//! services that need a contiguous bundle.
+//! Integration tests for `raw::Service::deliver`, the streamed delivery
+//! door, and `stream::buffer_stream`, the whole-buffer convenience used
+//! by services that need a contiguous bundle.
 
 use core::time::Duration;
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     node_ids::NodeIds,
-    service::{self, StatusNotify, raw},
+    service::{self, RegistrarExt as _, StatusNotify, raw},
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -48,20 +48,22 @@ enum Event {
 
 /// Consumes the stream segment by segment, recording every segment it pulls.
 struct StreamingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: Arc<dyn raw::Sink>,
     events_tx: flume::Sender<Event>,
-    /// When set, every `on_deliver` call fails without pulling.
+    /// When set, every `deliver` call fails without pulling.
     failing: AtomicBool,
 }
 
 impl StreamingService {
-    fn new(failing: bool) -> (Arc<Self>, flume::Receiver<Event>) {
+    fn factory(failing: bool) -> (impl raw::Factory<Component = Self>, flume::Receiver<Event>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                events_tx: tx,
-                failing: AtomicBool::new(failing),
+            raw::factory_fn(move |cx: raw::Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    events_tx: tx,
+                    failing: AtomicBool::new(failing),
+                }))
             }),
             rx,
         )
@@ -70,13 +72,7 @@ impl StreamingService {
 
 #[async_trait]
 impl raw::Service for StreamingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -109,7 +105,7 @@ impl raw::Service for StreamingService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -123,32 +119,26 @@ impl raw::Service for StreamingService {
 /// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
 /// — the shape every whole-buffer service takes on the streamed-only door.
 struct BufferedService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
     events_tx: flume::Sender<Event>,
 }
 
 impl BufferedService {
+    /// Builds the service directly, for the tests that drive `deliver`
+    /// without a BPA.
     fn new() -> (Arc<Self>, flume::Receiver<Event>) {
         let (tx, rx) = flume::bounded(16);
-        (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                events_tx: tx,
-            }),
-            rx,
-        )
+        (Arc::new(Self { events_tx: tx }), rx)
+    }
+
+    fn factory() -> (impl raw::Factory<Component = Self>, flume::Receiver<Event>) {
+        let (service, rx) = Self::new();
+        (raw::factory_fn(move |_| Ok(service)), rx)
     }
 }
 
 #[async_trait]
 impl raw::Service for BufferedService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -162,7 +152,7 @@ impl raw::Service for BufferedService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -177,22 +167,28 @@ impl raw::Service for BufferedService {
 /// and completes `Ok` or defers with an error: a delivery deliberately
 /// still in flight across the bundle's expiry.
 struct HoldingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
     failing: bool,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
 
 impl HoldingService {
-    fn new(failing: bool) -> (Arc<Self>, flume::Receiver<()>, flume::Sender<()>) {
+    fn factory(
+        failing: bool,
+    ) -> (
+        impl raw::Factory<Component = Self>,
+        flume::Receiver<()>,
+        flume::Sender<()>,
+    ) {
         let (started_tx, started_rx) = flume::bounded(1);
         let (release_tx, release_rx) = flume::bounded(1);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                failing,
-                started_tx,
-                release_rx,
+            raw::factory_fn(move |_| {
+                Ok(Arc::new(Self {
+                    failing,
+                    started_tx,
+                    release_rx,
+                }))
             }),
             started_rx,
             release_tx,
@@ -202,13 +198,7 @@ impl HoldingService {
 
 #[async_trait]
 impl raw::Service for HoldingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -235,7 +225,7 @@ impl raw::Service for HoldingService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -289,7 +279,7 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 }
 
 /// The identity of a bundle built by [`build_bundle`], for direct
-/// `on_deliver` calls.
+/// `deliver` calls.
 fn bundle_id_of(data: &Bytes) -> Id {
     parse(data.clone())
         .expect("Failed to parse built bundle")
@@ -352,7 +342,7 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
 }
 
 // ---------------------------------------------------------------------------
-// Full-path tests: deliver_bundle -> on_deliver
+// Full-path tests: deliver_bundle -> deliver
 // ---------------------------------------------------------------------------
 
 /// A streaming service receives the whole bundle as a single `Final`
@@ -370,8 +360,8 @@ async fn streaming_service_receives_single_final_segment() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    let (service, events_rx) = StreamingService::factory(false);
+    bpa.register_raw_service(Some(Service::Ipn(7)), service)
         .await
         .unwrap();
 
@@ -428,8 +418,8 @@ async fn streaming_service_receives_single_final_segment() {
 async fn buffered_service_receives_whole_bundle() {
     let (bpa, _inbound) = bpa_with_inbound(b"pong").await;
 
-    let (svc, events_rx) = BufferedService::new();
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    let (service, events_rx) = BufferedService::factory();
+    bpa.register_raw_service(Some(Service::Ipn(7)), service)
         .await
         .unwrap();
 
@@ -452,13 +442,14 @@ async fn buffered_service_receives_whole_bundle() {
 async fn failed_streamed_delivery_parks_and_redelivers() {
     let (bpa, _inbound) = bpa_with_inbound(b"park me").await;
 
-    let (failing_svc, failing_rx) = StreamingService::new(true);
-    bpa.register_raw_service(Service::Ipn(7), failing_svc.clone())
+    let (service, failing_rx) = StreamingService::factory(true);
+    let failing_svc = bpa
+        .register_raw_service(Some(Service::Ipn(7)), service)
         .await
         .unwrap();
     assert!(matches!(recv_event(&failing_rx, 5).await, Event::Failed));
 
-    failing_svc.sink.get().unwrap().unregister().await;
+    failing_svc.sink.unregister().await;
 
     // A single fresh registration suffices: the failed delivery's park
     // re-checks the routing snapshot, so whichever side the park lands on —
@@ -466,8 +457,8 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     // registration changed the table mid-flight) — the bundle re-enters
     // dispatch and reaches the new service. The timeout only bounds a
     // regression.
-    let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    let (service, events_rx) = StreamingService::factory(false);
+    bpa.register_raw_service(Some(Service::Ipn(7)), service)
         .await
         .unwrap();
     let Event::Streamed { segments, .. } = recv_event(&events_rx, 10).await else {
@@ -536,16 +527,17 @@ async fn expiry_mid_delivery_rig(
     assert!(bpa.start(false).await.is_empty());
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
-    let (reports, reports_rx) = StreamingService::new(false);
-    bpa.register_raw_service(Service::Ipn(9), reports.clone())
+    let (reports, reports_rx) = StreamingService::factory(false);
+    bpa.register_raw_service(Some(Service::Ipn(9)), reports)
         .await
         .unwrap();
 
     // A first delivery attempt fails, parking bundle A as
     // WaitingForService — which is also what places it on the reaper's
     // expiry watch list.
-    let (failing_svc, failing_rx) = StreamingService::new(true);
-    bpa.register_raw_service(Service::Ipn(7), failing_svc.clone())
+    let (service, failing_rx) = StreamingService::factory(true);
+    let failing_svc = bpa
+        .register_raw_service(Some(Service::Ipn(7)), service)
         .await
         .unwrap();
 
@@ -573,9 +565,9 @@ async fn expiry_mid_delivery_rig(
 
     // Re-register with a service that holds the redelivery open across
     // the bundle's expiry.
-    failing_svc.sink.get().unwrap().unregister().await;
-    let (svc, started_rx, release_tx) = HoldingService::new(holding_fails);
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    failing_svc.sink.unregister().await;
+    let (service, started_rx, release_tx) = HoldingService::factory(holding_fails);
+    bpa.register_raw_service(Some(Service::Ipn(7)), service)
         .await
         .unwrap();
 
@@ -723,7 +715,7 @@ async fn buffering_service_concats_multi_segment_stream() {
     let (head, tail) = (data.slice(..10), data.slice(10..));
     let mut rx = feed(vec![Segment::Next(head), Segment::Final(tail)]).await;
 
-    raw::Service::on_deliver(
+    raw::Service::deliver(
         &*svc,
         &bundle_id_of(&data),
         expiry(),
@@ -751,7 +743,7 @@ async fn buffering_service_is_zero_copy_for_single_final() {
     );
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    raw::Service::on_deliver(
+    raw::Service::deliver(
         &*svc,
         &bundle_id_of(&data),
         expiry(),
@@ -780,7 +772,7 @@ async fn buffering_service_truncated_stream_is_cancelled() {
     );
     let mut rx = feed(vec![Segment::Next(data.slice(..4))]).await;
 
-    let Err(err) = raw::Service::on_deliver(
+    let Err(err) = raw::Service::deliver(
         &*svc,
         &bundle_id_of(&data),
         expiry(),
@@ -808,7 +800,7 @@ async fn buffering_service_rejects_under_delivering_stream() {
     let short = data.slice(..data.len() - 1);
     let mut rx = feed(vec![Segment::Final(short.clone())]).await;
 
-    let Err(err) = raw::Service::on_deliver(
+    let Err(err) = raw::Service::deliver(
         &*svc,
         &bundle_id_of(&data),
         expiry(),
@@ -838,8 +830,7 @@ async fn buffering_service_rejects_stream_exceeding_total_len() {
     );
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    let Err(err) =
-        raw::Service::on_deliver(&*svc, &bundle_id_of(&data), expiry(), 4, &mut rx).await
+    let Err(err) = raw::Service::deliver(&*svc, &bundle_id_of(&data), expiry(), 4, &mut rx).await
     else {
         panic!("Expected an oversize stream to fail");
     };

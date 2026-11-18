@@ -20,7 +20,7 @@ use hardy_bpa::{
     // `routing::Sink` stays qualified: the bare `Sink` here is the service
     // sink imported below.
     routing::{self, Agent, RouteAction, StaticAgent},
-    service::{self, SendOptions, Service, Sink, StatusNotify, raw},
+    service::{self, RegistrarExt as _, SendOptions, Service, Sink, StatusNotify, raw},
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -106,17 +106,28 @@ impl cla::Cla for PipelineCla {
 // ---------------------------------------------------------------------------
 
 struct TestService {
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
+    sink: Arc<dyn Sink>,
+    /// The endpoint the BPA settled on, and the source of every bundle
+    /// this service originates.
+    endpoint: Eid,
     received_tx: flume::Sender<(Eid, Bytes)>,
 }
 
 impl TestService {
-    fn new() -> (Arc<Self>, flume::Receiver<(Eid, Bytes)>) {
+    // `Context` and `factory_fn` name the CLA's here, so the service's
+    // namesakes are qualified.
+    fn factory() -> (
+        impl service::Factory<Component = Self>,
+        flume::Receiver<(Eid, Bytes)>,
+    ) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                received_tx: tx,
+            service::factory_fn(move |cx: service::Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    endpoint: cx.endpoint,
+                    received_tx: tx,
+                }))
             }),
             rx,
         )
@@ -125,13 +136,7 @@ impl TestService {
 
 #[async_trait]
 impl Service for TestService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -145,7 +150,7 @@ impl Service for TestService {
             .map_err(|e| service::Error::Internal(e.into()))
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -161,26 +166,18 @@ impl Service for TestService {
 // ---------------------------------------------------------------------------
 
 struct EchoService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: Arc<dyn raw::Sink>,
 }
 
 impl EchoService {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
-        })
+    fn factory() -> impl raw::Factory<Component = Self> {
+        raw::factory_fn(|cx: raw::Context| Ok(Arc::new(Self { sink: cx.sink })))
     }
 }
 
 #[async_trait]
 impl raw::Service for EchoService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -188,10 +185,6 @@ impl raw::Service for EchoService {
         stream: &mut dyn Receiver<Segment>,
     ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
-        let Some(sink) = self.sink.get() else {
-            return Ok(());
-        };
-
         let Ok(Parsed {
             data, bundle: raw, ..
         }) = parse(data)
@@ -210,10 +203,10 @@ impl raw::Service for EchoService {
         };
 
         let mut reply = Chunk::flatten_bytes(chunks, data);
-        sink.send(&mut reply).await.map(|_| ())
+        self.sink.send(&mut reply).await.map(|_| ())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -364,18 +357,17 @@ async fn service_to_cla_routing() {
     cla.sink.add_peer(peer_addr, &[remote_node]).await.unwrap();
 
     // Register a service to send from
-    let (service, _service_rx) = TestService::new();
-    let source_eid = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
+    let source_eid = service.endpoint.clone();
 
     // Send a bundle to the remote node
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
     service
         .sink
-        .get()
-        .unwrap()
         .send(
             dest.clone(),
             Bytes::from_static(b"Hello remote"),
@@ -494,17 +486,21 @@ async fn deferred_removal_applied_at_egress() {
 // A low-level (raw-bundle) service that captures each delivered bundle's
 // wire bytes.
 struct CapturingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    /// The endpoint the BPA settled on, which delivered bundles are
+    /// addressed to.
+    endpoint: Eid,
     delivered_tx: flume::Sender<Bytes>,
 }
 
 impl CapturingService {
-    fn new() -> (Arc<Self>, flume::Receiver<Bytes>) {
+    fn factory() -> (impl raw::Factory<Component = Self>, flume::Receiver<Bytes>) {
         let (delivered_tx, rx) = flume::unbounded();
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                delivered_tx,
+            raw::factory_fn(move |cx: raw::Context| {
+                Ok(Arc::new(Self {
+                    endpoint: cx.endpoint,
+                    delivered_tx,
+                }))
             }),
             rx,
         )
@@ -513,11 +509,7 @@ impl CapturingService {
 
 #[async_trait]
 impl raw::Service for CapturingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        self.sink.call_once(|| sink);
-    }
-    async fn on_unregister(&self) {}
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -528,7 +520,8 @@ impl raw::Service for CapturingService {
         let _ = self.delivered_tx.send(data);
         Ok(())
     }
-    async fn on_status_notify(
+
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -553,11 +546,13 @@ async fn deferred_removal_applied_at_delivery() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (svc, delivered_rx) = CapturingService::new();
+    let (factory, delivered_rx) = CapturingService::factory();
     let endpoint = bpa
-        .register_raw_service(ServiceId::Ipn(7), svc)
+        .register_raw_service(Some(ServiceId::Ipn(7)), factory)
         .await
-        .unwrap();
+        .unwrap()
+        .endpoint
+        .clone();
 
     let (cla, _forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -780,11 +775,13 @@ async fn deferred_removal_precedes_the_deliver_chain() {
         .unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (svc, delivered_rx) = CapturingService::new();
+    let (factory, delivered_rx) = CapturingService::factory();
     let endpoint = bpa
-        .register_raw_service(ServiceId::Ipn(7), svc)
+        .register_raw_service(Some(ServiceId::Ipn(7)), factory)
         .await
-        .unwrap();
+        .unwrap()
+        .endpoint
+        .clone();
     let (cla, _forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
@@ -837,8 +834,7 @@ async fn echo_round_trip() {
     assert!(bpa.start(false).await.is_empty());
 
     // Register echo service on service number 7
-    let echo = EchoService::new();
-    bpa.register_raw_service(ServiceId::Ipn(7), echo)
+    bpa.register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
         .unwrap();
 
@@ -918,8 +914,8 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
     assert!(bpa.start(false).await.is_empty());
 
     // The service only captures its sink here; the test drives the sink itself.
-    let svc = EchoService::new();
-    bpa.register_raw_service(ServiceId::Ipn(7), svc.clone())
+    let svc = bpa
+        .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
         .unwrap();
 
@@ -962,13 +958,7 @@ async fn service_streamed_originate_forwards() {
         .unwrap();
     drop(tx);
 
-    let id = svc
-        .sink
-        .get()
-        .unwrap()
-        .send(&mut rx)
-        .await
-        .expect("streamed send failed");
+    let id = svc.sink.send(&mut rx).await.expect("streamed send failed");
     assert_eq!(id.source, source_eid);
 
     // Event-driven wait; the timeout only bounds a regression.
@@ -1002,7 +992,7 @@ async fn service_streamed_cancel_stores_nothing() {
         .unwrap();
     drop(tx); // no Final — the producer aborts
 
-    let result = svc.sink.get().unwrap().send(&mut rx).await;
+    let result = svc.sink.send(&mut rx).await;
     assert!(matches!(
         result,
         Err(hardy_bpa::service::Error::StreamCancelled)
@@ -1042,7 +1032,7 @@ async fn service_unregister_cancels_parked_send() {
 
     let parked = {
         let svc = svc.clone();
-        tokio::spawn(async move { svc.sink.get().unwrap().send(&mut rx).await })
+        tokio::spawn(async move { svc.sink.send(&mut rx).await })
     };
 
     // Let the consumer enter the stream and park on the second pull.
@@ -1050,7 +1040,7 @@ async fn service_unregister_cancels_parked_send() {
     // dedicated pipeline de-flake pass (see bpa/docs/TODO.md).
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    svc.sink.get().unwrap().unregister().await;
+    svc.sink.unregister().await;
 
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
         .await
@@ -1079,7 +1069,7 @@ async fn service_streamed_send_rejects_spoofed_source() {
     tx.send(Segment::Final(data)).await.unwrap();
     drop(tx);
 
-    let result = svc.sink.get().unwrap().send(&mut rx).await;
+    let result = svc.sink.send(&mut rx).await;
     assert!(matches!(
         result,
         Err(hardy_bpa::service::Error::InvalidDestination(_))
@@ -1100,8 +1090,6 @@ async fn originate_raw_and_forward(
     tx.send(Segment::Final(data)).await.unwrap();
     drop(tx);
     svc.sink
-        .get()
-        .unwrap()
         .send(&mut rx)
         .await
         .expect("origination admits the bundle");
@@ -1187,7 +1175,7 @@ async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
 // ---------------------------------------------------------------------------
 
 /// A bundle dispatched via CLA addressed to a local service is
-/// delivered to that service's on_deliver callback.
+/// delivered to that service's `deliver` door.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_delivery() {
     let node_id = IpnNodeId {
@@ -1200,8 +1188,8 @@ async fn local_delivery() {
     assert!(bpa.start(false).await.is_empty());
 
     // Register a service on service number 42
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -1410,8 +1398,8 @@ async fn cla_streamed_ingress_delivers() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -1526,8 +1514,8 @@ async fn cla_streamed_ingress_truncation_is_refused() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -1579,8 +1567,9 @@ async fn abandoned_transfer_setup() -> (
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -1752,8 +1741,8 @@ async fn segmented_payload_local_delivery() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -1803,8 +1792,8 @@ async fn duplicate_arrival_never_awaits_the_payload() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -1895,8 +1884,8 @@ async fn segmented_gate_drops_before_draining_payload() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -2823,8 +2812,9 @@ async fn short_final_setup() -> (
         .await
         .unwrap();
     assert!(bpa.start(false).await.is_empty());
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::factory();
@@ -3309,15 +3299,14 @@ async fn egress_filter_sees_consistent_extents() {
     // Register a service and send a bundle to the remote node — a
     // locally-originated bundle has no Previous Node block, so the per-hop
     // rewrite inserts one after the Rewriter's insert
-    let (service, _service_rx) = TestService::new();
-    let source = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
+    let source = service.endpoint.clone();
     service
         .sink
-        .get()
-        .unwrap()
         .send(
             "ipn:0.2.99".parse().unwrap(),
             Bytes::from_static(b"Hello remote"),
@@ -3420,14 +3409,13 @@ async fn classifier_route_key_drives_the_lookup() {
         .await
         .unwrap();
 
-    let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
     service
         .sink
-        .get()
-        .unwrap()
         .send(
             "ipn:0.3.99".parse().unwrap(),
             Bytes::from_static(b"Keyed onward"),
@@ -3532,24 +3520,30 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
 }
 
 // ---------------------------------------------------------------------------
-// Failing service — always returns Err from on_deliver
+// Failing service — always returns Err from deliver
 // ---------------------------------------------------------------------------
 
 struct FailingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
-    /// Fires once on_deliver completes (after constructing the Err), so a
+    sink: Arc<dyn Sink>,
+    /// The endpoint the BPA settled on, which delivered bundles are
+    /// addressed to.
+    endpoint: Eid,
+    /// Fires once `deliver` completes (after constructing the Err), so a
     /// waiter observes the point at which the dispatcher's Err-handling
     /// branch is about to run rather than the point at which it started.
     completed_tx: flume::Sender<()>,
 }
 
 impl FailingService {
-    fn new() -> (Arc<Self>, flume::Receiver<()>) {
+    fn factory() -> (impl service::Factory<Component = Self>, flume::Receiver<()>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                completed_tx: tx,
+            service::factory_fn(move |cx: service::Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    endpoint: cx.endpoint,
+                    completed_tx: tx,
+                }))
             }),
             rx,
         )
@@ -3558,13 +3552,7 @@ impl FailingService {
 
 #[async_trait]
 impl Service for FailingService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -3577,7 +3565,7 @@ impl Service for FailingService {
         Err(err)
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -3589,35 +3577,35 @@ impl Service for FailingService {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-05: dispatcher tolerates on_deliver returning Err
+// INT-BPA-05: dispatcher tolerates deliver returning Err
 // ---------------------------------------------------------------------------
 
-/// When `on_deliver` returns `Err`, the dispatcher must preserve the bundle
+/// When `deliver` returns `Err`, the dispatcher must preserve the bundle
 /// as `WaitingForService`, not report it delivered and delete it. Proven
 /// end-to-end: after the failing receiver rejects the bundle, a fresh working
 /// receiver registered on the same service id must have it re-delivered. A
 /// regression to the old drop-on-error behaviour makes the re-delivery time
 /// out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dispatcher_handles_on_deliver_err() {
+async fn dispatcher_handles_deliver_err() {
     let bpa = Bpa::builder().build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (sender, _sender_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(43), sender.clone())
+    let (factory, _sender_rx) = TestService::factory();
+    let sender = bpa
+        .register_service(Some(ServiceId::Ipn(43)), factory)
         .await
         .unwrap();
 
-    let (failing, completed_rx) = FailingService::new();
-    let receiver_eid = bpa
-        .register_service(ServiceId::Ipn(42), failing.clone())
+    let (factory, completed_rx) = FailingService::factory();
+    let failing = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
+    let receiver_eid = failing.endpoint.clone();
 
     sender
         .sink
-        .get()
-        .unwrap()
         .send(
             receiver_eid,
             Bytes::from_static(b"payload"),
@@ -3627,23 +3615,23 @@ async fn dispatcher_handles_on_deliver_err() {
         .await
         .unwrap();
 
-    // The failing receiver rejects the bundle from within on_deliver.
+    // The failing receiver rejects the bundle from within `deliver`.
     // Event-driven wait; the timeout only bounds a regression.
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         completed_rx.recv_async(),
     )
     .await
-    .expect("dispatcher must call on_deliver")
+    .expect("dispatcher must call deliver")
     .unwrap();
 
     // Swap in a working receiver on the same service id — no quiesce
     // needed: the failed delivery's park re-checks the routing snapshot, so
     // whether it lands before this registration's WaitingForService poll or
     // after it, the bundle re-enters dispatch and reaches the new receiver.
-    failing.sink.get().unwrap().unregister().await;
-    let (receiver, received_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), receiver.clone())
+    failing.sink.unregister().await;
+    let (factory, received_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -4071,14 +4059,13 @@ async fn forward_failure_park_recheck_redispatches() {
         .await
         .unwrap();
 
-    let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(90), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(90)), factory)
         .await
         .unwrap();
     let id = service
         .sink
-        .get()
-        .unwrap()
         .send(
             "ipn:0.2.7".parse().unwrap(),
             Bytes::from_static(b"recheck"),
@@ -4147,14 +4134,13 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .await
         .unwrap();
 
-    let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(91), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(91)), factory)
         .await
         .unwrap();
     let id = service
         .sink
-        .get()
-        .unwrap()
         .send(
             "ipn:0.2.7".parse().unwrap(),
             Bytes::from_static(b"resolve me"),
@@ -4233,8 +4219,8 @@ async fn gate_fixture(
         .unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -4725,20 +4711,13 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
 /// A service whose status notifications block until the test releases
 /// them, announcing each as it begins.
 struct BlockingNotifyApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
     entered_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
 
 #[async_trait]
 impl Service for BlockingNotifyApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -4749,7 +4728,7 @@ impl Service for BlockingNotifyApp {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -4782,11 +4761,12 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
     let (entered_tx, entered_rx) = flume::bounded(1);
     let (release_tx, release_rx) = flume::bounded(1);
     bpa.register_service(
-        ServiceId::Ipn(42),
-        Arc::new(BlockingNotifyApp {
-            sink: hardy_async::sync::spin::Once::new(),
-            entered_tx,
-            release_rx,
+        Some(ServiceId::Ipn(42)),
+        service::factory_fn(move |_| {
+            Ok(Arc::new(BlockingNotifyApp {
+                entered_tx,
+                release_rx,
+            }))
         }),
     )
     .await
@@ -4887,7 +4867,7 @@ async fn originate_route_drop_never_awaits_the_payload() {
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        svc.sink.get().unwrap().send(&mut stream),
+        svc.sink.send(&mut stream),
     )
     .await
     .expect("Timeout: the route drop must not wait for the payload");
@@ -4904,7 +4884,7 @@ async fn originate_route_drop_never_awaits_the_payload() {
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        svc.sink.get().unwrap().send(&mut stream),
+        svc.sink.send(&mut stream),
     )
     .await
     .expect("Timeout: the silent route drop must not wait for the payload");
@@ -4924,15 +4904,14 @@ async fn originate_route_drop_never_awaits_the_payload() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adu_originate_refuses_a_zero_lifetime() {
     let (bpa, _svc, forwarded_rx, _) = streamed_originate_setup().await;
-    let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
     let result = service
         .sink
-        .get()
-        .unwrap()
         .send(
             "ipn:0.2.1".parse().unwrap(),
             Bytes::from_static(b"expired"),
@@ -4950,7 +4929,7 @@ async fn adu_originate_refuses_a_zero_lifetime() {
     let mut stream = ParkedReceiver::new(b"expired", 7, 0);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        service.sink.get().unwrap().send_streamed(
+        service.sink.send_streamed(
             "ipn:0.2.1".parse().unwrap(),
             7,
             &mut stream,
@@ -4989,7 +4968,7 @@ async fn raw_originate_applies_the_admission_gates() {
         .with_payload(Cow::Borrowed(b"exhausted".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    let result = svc.sink.send(&mut Bytes::from(data)).await;
     assert!(matches!(
         result,
         Err(service::Error::Dropped(Some(ReasonCode::HopLimitExceeded)))
@@ -5002,7 +4981,7 @@ async fn raw_originate_applies_the_admission_gates() {
         .with_payload(Cow::Borrowed(b"no integrity".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    let result = svc.sink.send(&mut Bytes::from(data)).await;
     assert!(matches!(
         result,
         Err(service::Error::Dropped(Some(
@@ -5015,7 +4994,7 @@ async fn raw_originate_applies_the_admission_gates() {
         .with_payload(Cow::Borrowed(b"no clock".as_slice()))
         .build(CreationTimestamp::default())
         .expect("Failed to build bundle");
-    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    let result = svc.sink.send(&mut Bytes::from(data)).await;
     assert!(matches!(
         result,
         Err(service::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
@@ -5055,7 +5034,7 @@ async fn raw_originate_rejects_a_fragment() {
     let chunks = editor.rebuild().expect("rebuild the fragment");
     let mut fragment = Chunk::flatten_bytes(chunks, data);
 
-    let result = svc.sink.get().unwrap().send(&mut fragment).await;
+    let result = svc.sink.send(&mut fragment).await;
     assert!(matches!(result, Err(service::Error::FragmentedBundle)));
 
     // The completed shutdown is the barrier proving the absence.
@@ -5074,13 +5053,7 @@ async fn raw_originate_duplicate_surfaces_to_the_caller() {
     let data = build_bundle(&source_eid, &dest, b"send once");
 
     let mut first = data.clone();
-    let id = svc
-        .sink
-        .get()
-        .unwrap()
-        .send(&mut first)
-        .await
-        .expect("first send admits");
+    let id = svc.sink.send(&mut first).await.expect("first send admits");
 
     // Event-driven wait; the timeout only bounds a regression.
     let forwarded = tokio::time::timeout(
@@ -5096,7 +5069,7 @@ async fn raw_originate_duplicate_surfaces_to_the_caller() {
     );
 
     let mut second = data;
-    let result = svc.sink.get().unwrap().send(&mut second).await;
+    let result = svc.sink.send(&mut second).await;
     assert!(matches!(result, Err(service::Error::DuplicateBundle)));
 
     // The completed shutdown is the barrier proving the absence.
@@ -5118,12 +5091,7 @@ async fn raw_originate_duplicate_never_awaits_the_payload() {
     let data = build_bundle(&source_eid, &dest, &payload);
 
     let mut first = data.clone();
-    svc.sink
-        .get()
-        .unwrap()
-        .send(&mut first)
-        .await
-        .expect("first send admits");
+    svc.sink.send(&mut first).await.expect("first send admits");
     // Event-driven wait; the timeout only bounds a regression.
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -5140,7 +5108,7 @@ async fn raw_originate_duplicate_never_awaits_the_payload() {
     let mut replay = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        svc.sink.get().unwrap().send(&mut replay),
+        svc.sink.send(&mut replay),
     )
     .await
     .expect("Timeout: the duplicate origination awaited its parked payload");
@@ -5179,8 +5147,8 @@ async fn restart_setup(
         .await
         .unwrap();
     assert!(bpa.start(false).await.is_empty());
-    let svc = EchoService::new();
-    bpa.register_raw_service(ServiceId::Ipn(7), svc.clone())
+    let svc = bpa
+        .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::factory();
@@ -5234,8 +5202,6 @@ async fn a_duplicate_after_a_restart_is_refused_at_the_insert() {
         cla::Acceptance::Accepted
     );
     svc.sink
-        .get()
-        .unwrap()
         .send(&mut raw.clone())
         .await
         .expect("the first raw send admits");
@@ -5260,7 +5226,7 @@ async fn a_duplicate_after_a_restart_is_refused_at_the_insert() {
             .unwrap(),
         cla::Acceptance::Accepted
     );
-    let result = svc.sink.get().unwrap().send(&mut raw.clone()).await;
+    let result = svc.sink.send(&mut raw.clone()).await;
     assert!(matches!(result, Err(service::Error::DuplicateBundle)));
 
     // The completed shutdown is the barrier proving the absence.
@@ -5297,12 +5263,13 @@ async fn oversized_originate_refuses_before_the_payload() {
         .unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let svc = EchoService::new();
-    bpa.register_raw_service(ServiceId::Ipn(7), svc.clone())
+    let svc = bpa
+        .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
         .unwrap();
-    let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -5315,7 +5282,7 @@ async fn oversized_originate_refuses_before_the_payload() {
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        svc.sink.get().unwrap().send(&mut stream),
+        svc.sink.send(&mut stream),
     )
     .await
     .expect("Timeout: the raw size refusal must not wait for the payload");
@@ -5333,7 +5300,7 @@ async fn oversized_originate_refuses_before_the_payload() {
     let mut stream = ParkedReceiver::new(&payload, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        service.sink.get().unwrap().send_streamed(
+        service.sink.send_streamed(
             "ipn:0.2.1".parse().unwrap(),
             50_000,
             &mut stream,
@@ -5378,11 +5345,12 @@ async fn adu_originate_refuses_headers_over_the_cap() {
         .unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, _service_rx) = TestService::new();
-    let source = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
+    let source = service.endpoint.clone();
     let destination: Eid = "ipn:0.2.1".parse().unwrap();
     let lifetime = Duration::from_secs(60);
 
@@ -5413,8 +5381,6 @@ async fn adu_originate_refuses_headers_over_the_cap() {
         tokio::time::Duration::from_secs(5),
         service
             .sink
-            .get()
-            .unwrap()
             .send_streamed(destination, 2040, &mut stream, lifetime, None),
     )
     .await
@@ -5508,8 +5474,9 @@ async fn app_send_streamed_matches_whole_buffer_send() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -5539,8 +5506,6 @@ async fn app_send_streamed_matches_whole_buffer_send() {
     drop(tx);
     let streamed_id = service
         .sink
-        .get()
-        .unwrap()
         .send_streamed(
             dest.clone(),
             payload.len() as u64,
@@ -5554,8 +5519,6 @@ async fn app_send_streamed_matches_whole_buffer_send() {
     // Whole-buffer twin.
     let buffered_id = service
         .sink
-        .get()
-        .unwrap()
         .send(
             dest.clone(),
             Bytes::from(payload.clone()),
@@ -5621,8 +5584,9 @@ async fn app_send_streamed_producer_drop_cancels() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::factory();
@@ -5645,8 +5609,6 @@ async fn app_send_streamed_producer_drop_cancels() {
 
     let result = service
         .sink
-        .get()
-        .unwrap()
         .send_streamed(
             "ipn:0.2.1".parse().unwrap(),
             5000,
@@ -5682,8 +5644,9 @@ async fn app_send_streamed_enforces_the_declared_length() {
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     assert!(bpa.start(false).await.is_empty());
 
-    let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::factory();
@@ -5707,8 +5670,6 @@ async fn app_send_streamed_enforces_the_declared_length() {
     drop(tx);
     let result = service
         .sink
-        .get()
-        .unwrap()
         .send_streamed(dest.clone(), 1000, &mut rx, Duration::from_secs(3600), None)
         .await;
     assert!(matches!(
@@ -5724,8 +5685,6 @@ async fn app_send_streamed_enforces_the_declared_length() {
     drop(tx);
     let result = service
         .sink
-        .get()
-        .unwrap()
         .send_streamed(dest.clone(), 2000, &mut rx, Duration::from_secs(3600), None)
         .await;
     assert!(matches!(
@@ -5743,13 +5702,9 @@ async fn app_send_streamed_enforces_the_declared_length() {
     let mut stream = ParkedReceiver::new(&[], 1, 0);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        service.sink.get().unwrap().send_streamed(
-            dest,
-            u64::MAX,
-            &mut stream,
-            Duration::from_secs(3600),
-            None,
-        ),
+        service
+            .sink
+            .send_streamed(dest, u64::MAX, &mut stream, Duration::from_secs(3600), None),
     )
     .await
     .expect("Timeout: the size refusal must not wait for the payload");

@@ -16,10 +16,10 @@ use std::{
 
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     bundle::{Bundle, BundleMetadata, BundleStatus},
     node_ids::NodeIds,
-    service::{self, StatusNotify, raw},
+    service::{self, RegistrarExt as _, StatusNotify, raw},
     storage::{self, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, SendError, Sender},
 };
@@ -209,22 +209,28 @@ impl MetadataStorage for InjectingStorage {
 /// Holds each delivery open until the release sender is dropped, so the
 /// bundle under test stays in flight while the poller injects its duplicate.
 struct CountingHoldService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: Arc<dyn raw::Sink>,
     deliveries: AtomicUsize,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
 
 impl CountingHoldService {
-    fn new() -> (Arc<Self>, flume::Receiver<()>, flume::Sender<()>) {
+    fn factory() -> (
+        impl raw::Factory<Component = Self>,
+        flume::Receiver<()>,
+        flume::Sender<()>,
+    ) {
         let (started_tx, started_rx) = flume::unbounded();
         let (release_tx, release_rx) = flume::bounded(1);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                deliveries: AtomicUsize::new(0),
-                started_tx,
-                release_rx,
+            raw::factory_fn(move |cx: raw::Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    deliveries: AtomicUsize::new(0),
+                    started_tx,
+                    release_rx,
+                }))
             }),
             started_rx,
             release_tx,
@@ -234,14 +240,7 @@ impl CountingHoldService {
 
 #[async_trait]
 impl raw::Service for CountingHoldService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-        // Retain the sink: dropping it unregisters the service.
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
@@ -262,7 +261,7 @@ impl raw::Service for CountingHoldService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -307,9 +306,10 @@ async fn stale_poller_duplicate_never_redelivers() {
     // here is the service-registration poll: bundles originated to a
     // not-yet-registered service park WaitingForService, and registering
     // the service pushes them through `dispatch_bundle` into the queue.
-    let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
+    let (service, _originator_started_rx, originator_release_tx) = CountingHoldService::factory();
     drop(originator_release_tx);
-    bpa.register_raw_service(Service::Ipn(9), originator.clone())
+    let originator = bpa
+        .register_raw_service(Some(Service::Ipn(9)), service)
         .await
         .unwrap();
 
@@ -320,8 +320,6 @@ async fn stale_poller_duplicate_never_redelivers() {
         .expect("Failed to build bundle");
     originator
         .sink
-        .get()
-        .unwrap()
         .send(&mut Bytes::from(data))
         .await
         .expect("raw origination failed");
@@ -332,8 +330,6 @@ async fn stale_poller_duplicate_never_redelivers() {
         .expect("Failed to build bundle");
     originator
         .sink
-        .get()
-        .unwrap()
         .send(&mut Bytes::from(marker_data))
         .await
         .expect("raw origination failed");
@@ -344,8 +340,9 @@ async fn stale_poller_duplicate_never_redelivers() {
     // slow path — the channel's initial recovery poll is still blocked on
     // the arm signal, keeping the fast path closed. (Every timeout below
     // only bounds a regression.)
-    let (svc, started_rx, release_tx) = CountingHoldService::new();
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    let (service, started_rx, release_tx) = CountingHoldService::factory();
+    let svc = bpa
+        .register_raw_service(Some(Service::Ipn(7)), service)
         .await
         .unwrap();
     tokio::time::timeout(tokio::time::Duration::from_secs(10), queued_rx.recv_async())
@@ -379,9 +376,10 @@ async fn stale_poller_duplicate_never_redelivers() {
     // task while the first delivery is verifiably still held; the claim's
     // resolution itself is enforced by the shutdown barrier below, which
     // joins the processing pool.
-    let (marker_svc, marker_started_rx, marker_release_tx) = CountingHoldService::new();
+    let (service, marker_started_rx, marker_release_tx) = CountingHoldService::factory();
     drop(marker_release_tx);
-    bpa.register_raw_service(Service::Ipn(8), marker_svc.clone())
+    let marker_svc = bpa
+        .register_raw_service(Some(Service::Ipn(8)), service)
         .await
         .unwrap();
     tokio::time::timeout(
@@ -572,9 +570,10 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // registered services (parking WaitingForService), then register them
     // — each registration poll pushes its bundle through dispatch_bundle
     // into the queue.
-    let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
+    let (service, _originator_started_rx, originator_release_tx) = CountingHoldService::factory();
     drop(originator_release_tx);
-    bpa.register_raw_service(Service::Ipn(9), originator.clone())
+    let originator = bpa
+        .register_raw_service(Some(Service::Ipn(9)), service)
         .await
         .unwrap();
 
@@ -587,8 +586,6 @@ async fn slow_claim_does_not_serialize_dispatch() {
     *metadata_store.gated.lock().unwrap() = Some(bundle_a.primary.id);
     originator
         .sink
-        .get()
-        .unwrap()
         .send(&mut Bytes::from(data_a))
         .await
         .expect("raw origination failed");
@@ -599,17 +596,16 @@ async fn slow_claim_does_not_serialize_dispatch() {
         .expect("Failed to build bundle");
     originator
         .sink
-        .get()
-        .unwrap()
         .send(&mut Bytes::from(data_b))
         .await
         .expect("raw origination failed");
 
     // Both services complete deliveries immediately. Registering A's
     // service queues A, whose dequeue claim parks at the gate.
-    let (svc_a, a_started_rx, a_release_tx) = CountingHoldService::new();
+    let (service, a_started_rx, a_release_tx) = CountingHoldService::factory();
     drop(a_release_tx);
-    bpa.register_raw_service(Service::Ipn(7), svc_a.clone())
+    let svc_a = bpa
+        .register_raw_service(Some(Service::Ipn(7)), service)
         .await
         .unwrap();
     tokio::time::timeout(
@@ -624,9 +620,10 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // its delivery starting is the proof that claims overlap. (The timeout
     // only bounds a regression — an inline claim would serialize B behind
     // A.)
-    let (svc_b, b_started_rx, b_release_tx) = CountingHoldService::new();
+    let (service, b_started_rx, b_release_tx) = CountingHoldService::factory();
     drop(b_release_tx);
-    bpa.register_raw_service(Service::Ipn(8), svc_b.clone())
+    let svc_b = bpa
+        .register_raw_service(Some(Service::Ipn(8)), service)
         .await
         .unwrap();
     tokio::time::timeout(

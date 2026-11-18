@@ -1,22 +1,31 @@
-use core::{
-    fmt::{self, Display, Formatter},
-    time::Duration,
-};
+use core::fmt::{self, Display, Formatter};
 
-use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
+// `eid::Service` is the service number inside an EID, not the trait of the
+// same name this module defines; it is aliased to the word the code
+// already uses for it.
+use hardy_bpv7::{
+    bundle::Id,
+    eid::{Eid, Service as ServiceId},
+    status_report::ReasonCode,
+};
 use thiserror::Error;
 use time::OffsetDateTime;
 
 use crate::{
-    Bytes, async_trait,
-    stream::{BufferError, Receiver, buffer_stream},
+    Arc, async_trait,
+    stream::{BufferError, Receiver},
 };
+
+mod factory;
+mod sink;
 
 pub mod raw;
 
-pub(crate) mod registry;
+pub(crate) mod table;
 
 pub use crate::stream::Segment;
+pub use factory::{BoxFactory, Context, Factory, factory_fn};
+pub use sink::{SendOptions, Sink};
 
 /// A specialized `Result` type for service operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -169,34 +178,41 @@ impl From<BufferError> for Error {
 /// here. This is the contract most services want; one that must see or
 /// build the bundle itself implements [`raw::Service`].
 ///
-/// # Sink Lifecycle
-///
-/// The service receives a [`Sink`] in [`on_register`](Self::on_register)
-/// and must store it for its entire active lifetime: dropping the sink is
-/// how a service asks to be disconnected, so `on_register` has to store
-/// it before returning, or the BPA immediately calls
-/// [`on_unregister`](Self::on_unregister).
-///
-/// Disconnection runs in either direction. Service-initiated, the service
-/// drops its sink or calls `sink.unregister()`, and the BPA calls
-/// `on_unregister`. BPA-initiated, the BPA shuts down, calls
-/// `on_unregister`, and the sink stops functioning.
+/// The BPA builds the service from a [`Factory`], owns it, and drives its
+/// lifecycle: [`start`](Self::start) brings it up,
+/// [`deliver`](Self::deliver) hands it bundles addressed to its endpoint,
+/// and [`shutdown`](Self::shutdown) takes it down again. Traffic in the
+/// other direction goes through the [`Sink`] the [`Context`] carries,
+/// which the service keeps for as long as it is registered.
 #[async_trait]
 pub trait Service: Send + Sync {
-    /// Called when the service is registered with the BPA.
+    /// Brings the service up: spawns tasks, opens the resources it serves
+    /// from.
     ///
-    /// The `sink` must be stored for the service's entire active
-    /// lifetime; dropping it triggers unregistration.
+    /// Called once, after the BPA's storage recovery, so a service never
+    /// races the consistency check. An `Err` means the service cannot run
+    /// at all: the BPA unregisters it and carries on.
     ///
-    /// `source` is the endpoint ID assigned to this service, and the source
-    /// of every bundle it sends.
-    async fn on_register(&self, source: &Eid, sink: Box<dyn Sink>);
+    /// The default implementation does nothing, for a service that is
+    /// live from the moment it is built.
+    async fn start(&self) -> Result<()> {
+        Ok(())
+    }
 
-    /// Called when the service is being unregistered, either because the
-    /// service dropped its sink or because the BPA is shutting down.
-    async fn on_unregister(&self);
+    /// Takes the service down: stops background tasks, releases
+    /// resources.
+    ///
+    /// Called once, when the service unregisters or the BPA shuts down.
+    /// The sink answers [`Error::Disconnected`] to everything by then, so
+    /// nothing can be sent from here; an `Err` is logged and teardown
+    /// continues regardless.
+    ///
+    /// The default implementation does nothing.
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
 
-    /// Called when a bundle payload is delivered to this service as a stream of segments.
+    /// Delivers a bundle payload to this service as a stream of segments.
     ///
     /// The implementation pulls [`Segment::Next`] items from `stream`
     /// until [`Segment::Final`] (which may carry empty bytes) completes
@@ -210,15 +226,19 @@ pub trait Service: Send + Sync {
     /// `WaitingForService`; a subsequent registration on the same EID
     /// re-delivers it.
     ///
+    /// `ack_requested` carries the source's request for an
+    /// application-level acknowledgement (RFC 9171 Section 4.2.3); a
+    /// service that honours it answers through its [`Sink`].
+    ///
     /// `total_len` is the exact number of payload bytes the stream will
     /// deliver — the sum of all segment payload lengths — carried as `u64`
     /// so it remains valid on 32-bit targets. An implementation may size
     /// buffers from it before pulling the first segment.
     ///
     /// An implementation that needs the whole payload in memory buffers the
-    /// stream with [`buffer_stream`], whose errors convert into this
-    /// module's [`enum@Error`] via `?`.
-    async fn on_deliver(
+    /// stream with [`buffer_stream`](crate::stream::buffer_stream), whose
+    /// errors convert into this module's [`enum@Error`] via `?`.
+    async fn deliver(
         &self,
         bundle_id: &Id,
         expiry: OffsetDateTime,
@@ -227,8 +247,8 @@ pub trait Service: Send + Sync {
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<()>;
 
-    /// Called when a status report is received for a bundle sent by this service.
-    async fn on_status_notify(
+    /// Reports a status report received for a bundle this service sent.
+    async fn report_status(
         &self,
         bundle_id: &Id,
         from: &Eid,
@@ -238,83 +258,92 @@ pub trait Service: Send + Sync {
     );
 }
 
-/// Options controlling bundle construction when sending via [`Sink::send`].
+/// Somewhere a service can be registered: a local BPA, or a proxy
+/// standing in for a remote one.
 ///
-/// All fields default to `false`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SendOptions {
-    /// Sets the "do not fragment" bundle processing flag (RFC 9171 Section 4.2.3).
-    pub do_not_fragment: bool,
-    /// Requests an application-level acknowledgement from the destination.
-    pub request_ack: bool,
-    /// Includes timestamps in status reports (RFC 9171 Section 6.1.1).
-    pub report_status_time: bool,
-    /// Requests a "received" status report from each forwarding node.
-    pub notify_reception: bool,
-    /// Requests a "forwarded" status report from each forwarding node.
-    pub notify_forwarding: bool,
-    /// Requests a "delivered" status report when the bundle reaches its
-    /// destination.
-    pub notify_delivery: bool,
-    /// Requests a "deleted" status report if the bundle is deleted.
-    pub notify_deletion: bool,
+/// This is the dyn-compatible half of the door, taking an erased
+/// [`BoxFactory`]. Callers use [`RegistrarExt`] instead, which keeps the
+/// concrete component type and hands it back.
+///
+/// `id` names the endpoint's service number, and `None` asks the BPA to
+/// allocate one. The key comes first because the embedder owns the
+/// namespace: two instances of the same service crate are told apart
+/// here, without the crate's cooperation.
+///
+/// An `Ok` return means the factory was built and the service started;
+/// the registrar may not report success without having done both.
+#[async_trait]
+pub trait Registrar: Send + Sync {
+    /// Builds the payload-only service `factory` makes, registers it at
+    /// `id`, and starts it.
+    async fn register_service_boxed(
+        &self,
+        id: Option<ServiceId>,
+        factory: BoxFactory<'_>,
+    ) -> Result<()>;
+
+    /// Builds the whole-bundle service `factory` makes, registers it at
+    /// `id`, and starts it.
+    async fn register_raw_service_boxed(
+        &self,
+        id: Option<ServiceId>,
+        factory: raw::BoxFactory<'_>,
+    ) -> Result<()>;
 }
 
-/// The channel a [`Service`] sends payloads back through.
-///
-/// This is handed to [`Service::on_register`] and must be stored for the
-/// service's entire active lifetime.
-///
-/// # Lifecycle
-///
-/// Dropping this sink is how a service unregisters: the BPA detects the
-/// drop and calls [`Service::on_unregister`]. When the BPA shuts down
-/// instead, it calls [`Service::on_unregister`] first, after which every
-/// operation here returns [`Error::Disconnected`].
+/// The typed [`Registrar`] door.
 #[async_trait]
-pub trait Sink: Send + Sync {
-    /// Unregisters the associated service from the BPA.
+pub trait RegistrarExt: Registrar {
+    /// Builds the payload-only service `factory` makes, registers it at
+    /// `id`, starts it, and hands back the component the registrar now
+    /// owns.
     ///
-    /// Equivalent to dropping the sink, but lets the service choose when
-    /// the teardown happens.
-    async fn unregister(&self);
-
-    /// Sends a payload to a destination, wrapped in a bundle by the BPA.
-    async fn send(
+    /// The returned handle is for the embedder's own use: reading the
+    /// service's endpoint, driving it, reading its statistics. Holding it
+    /// does not keep the service registered, and dropping it does not
+    /// unregister it: the registrar owns the service until something
+    /// unregisters it.
+    async fn register_service<F: Factory>(
         &self,
-        destination: Eid,
-        data: Bytes,
-        lifetime: Duration,
-        options: Option<SendOptions>,
-    ) -> Result<Id>;
+        id: Option<ServiceId>,
+        factory: F,
+    ) -> Result<Arc<F::Component>>;
 
-    /// Sends a payload supplied as a segment stream, wrapped in a bundle
-    /// by the BPA.
-    ///
-    /// The stream must deliver exactly `total_len` payload bytes — the
-    /// declaration frames the bundle's wire form before the first segment
-    /// is pulled — and the stream is one-shot: an over- or
-    /// under-delivering producer is rejected
-    /// ([`PayloadTooLarge`](Error::PayloadTooLarge) /
-    /// [`PayloadUnderrun`](Error::PayloadUnderrun)), a producer that goes
-    /// away before its final segment cancels the send
-    /// ([`StreamCancelled`](Error::StreamCancelled)), and a
-    /// creation-timestamp collision surfaces as
-    /// [`DuplicateBundle`](Error::DuplicateBundle) (vanishingly rare; the
-    /// caller may resend).
-    ///
-    /// The provided implementation buffers the stream
-    /// ([`buffer_stream`]) and delegates to [`send`](Self::send), with the
-    /// same error surface; the BPA's own sink streams end to end.
-    async fn send_streamed(
+    /// Builds the whole-bundle service `factory` makes, registers it at
+    /// `id`, starts it, and hands back the component the registrar now
+    /// owns.
+    async fn register_raw_service<F: raw::Factory>(
         &self,
-        destination: Eid,
-        total_len: u64,
-        stream: &mut dyn Receiver<Segment>,
-        lifetime: Duration,
-        options: Option<SendOptions>,
-    ) -> Result<Id> {
-        let data = buffer_stream(stream, total_len).await?;
-        self.send(destination, data, lifetime, options).await
+        id: Option<ServiceId>,
+        factory: F,
+    ) -> Result<Arc<F::Component>>;
+}
+
+#[async_trait]
+impl<T: Registrar + ?Sized> RegistrarExt for T {
+    async fn register_service<F: Factory>(
+        &self,
+        id: Option<ServiceId>,
+        factory: F,
+    ) -> Result<Arc<F::Component>> {
+        let mut component = None;
+        self.register_service_boxed(id, BoxFactory::capturing(factory, &mut component))
+            .await?;
+
+        // `Registrar`'s contract: an `Ok` return means the factory was
+        // built, and building it fills the slot.
+        Ok(component.expect("Registrar reported success without building the factory"))
+    }
+
+    async fn register_raw_service<F: raw::Factory>(
+        &self,
+        id: Option<ServiceId>,
+        factory: F,
+    ) -> Result<Arc<F::Component>> {
+        let mut component = None;
+        self.register_raw_service_boxed(id, raw::BoxFactory::capturing(factory, &mut component))
+            .await?;
+
+        Ok(component.expect("Registrar reported success without building the factory"))
     }
 }

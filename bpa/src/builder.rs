@@ -9,17 +9,14 @@ use hardy_eid_patterns::EidPattern;
 use crate::{
     Arc, HashMap,
     bpa::Bpa,
-    cla::{BoxFactory, Factory, table::Table},
+    cla::{self, BoxFactory, Factory},
     dispatcher::{Config as DispatcherConfig, Dispatcher},
     filter::pack::{FilterPack, chains::FilterChains},
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
     routing::{Agent, RibBuilder},
-    service::{
-        Service, raw,
-        registry::{Kind, ServiceRegistryBuilder},
-    },
+    service::{self, table::FactoryKind},
     storage::{
         BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
         store::Store,
@@ -49,7 +46,7 @@ pub struct BpaBuilder {
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
     bundle_storage: Option<Arc<dyn BundleStorage>>,
     key_provider: Arc<dyn KeyProvider>,
-    service_registry_builder: ServiceRegistryBuilder,
+    services: Vec<(Option<ServiceId>, FactoryKind<'static>)>,
     clas: Vec<(String, BoxFactory<'static>)>,
     cla_policies: HashMap<String, Arc<dyn FlowControllerFactory>>,
     rib_builder: RibBuilder,
@@ -78,7 +75,7 @@ impl BpaBuilder {
             node_ids: NodeIds::default(),
             metadata_storage: None,
             bundle_storage: None,
-            service_registry_builder: ServiceRegistryBuilder::new(),
+            services: Vec::new(),
             clas: Vec::new(),
             cla_policies: HashMap::new(),
             rib_builder: RibBuilder::new(),
@@ -201,21 +198,32 @@ impl BpaBuilder {
         self
     }
 
-    /// Registers a payload-only service, to be initialized when the BPA
-    /// is built.
-    pub fn service(mut self, service: Arc<dyn Service>, service_id: ServiceId) -> Self {
-        self.service_registry_builder
-            .insert(service_id, Kind::Payload(service))
-            .expect("Failed to register service");
+    /// Declares a payload-only service, built when the BPA is built and
+    /// started when the BPA starts.
+    ///
+    /// `id` names the endpoint's service number, and `None` asks the BPA
+    /// to allocate one. The key comes first because the embedder owns the
+    /// namespace: two instances of the same service crate are told apart
+    /// here, without the crate's cooperation.
+    pub fn service<F: service::Factory + 'static>(
+        mut self,
+        id: Option<ServiceId>,
+        factory: F,
+    ) -> Self {
+        self.services
+            .push((id, FactoryKind::Payload(service::BoxFactory::new(factory))));
         self
     }
 
-    /// Registers a whole-bundle service, to be initialized when the BPA
-    /// is built.
-    pub fn raw_service(mut self, service: Arc<dyn raw::Service>, service_id: ServiceId) -> Self {
-        self.service_registry_builder
-            .insert(service_id, Kind::Bundle(service))
-            .expect("Failed to register service");
+    /// Declares a whole-bundle service, as [`service`](Self::service)
+    /// does.
+    pub fn raw_service<F: service::raw::Factory + 'static>(
+        mut self,
+        id: Option<ServiceId>,
+        factory: F,
+    ) -> Self {
+        self.services
+            .push((id, FactoryKind::Raw(service::raw::BoxFactory::new(factory))));
         self
     }
 
@@ -323,14 +331,16 @@ impl BpaBuilder {
             filter_chains,
         );
 
-        // The service registry parks its configured registrations:
-        // activation happens in Bpa::start, after storage recovery.
-        let service_registry = self.service_registry_builder.build(&node_ids)?;
+        // Each declared service is built here, and its delivery queue
+        // left undrained until Bpa::start: one running now would race
+        // storage recovery.
+        let services =
+            service::table::Table::new(node_ids.clone(), &dispatcher, rib.clone(), self.services)?;
 
         // Each declared CLA is built here, and left inert until
         // Bpa::start: a CLA that opened its transport now would race
         // storage recovery.
-        let clas = Table::new(
+        let clas = cla::table::Table::new(
             node_ids.clone(),
             &dispatcher,
             rib.clone(),
@@ -348,13 +358,6 @@ impl BpaBuilder {
         // itself remains to be dissolved.
         start_dispatcher(clas.clone());
 
-        Ok(Bpa::from_parts(
-            node_ids,
-            store,
-            rib,
-            clas,
-            service_registry,
-            dispatcher,
-        ))
+        Ok(Bpa::from_parts(store, rib, clas, services, dispatcher))
     }
 }

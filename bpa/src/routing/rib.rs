@@ -29,7 +29,7 @@ use super::{
 };
 use crate::{
     Arc, HashMap, HashSet, bundle::Bundle, dispatcher::Dispatcher, hash_map::Entry as HashMapEntry,
-    node_ids::NodeIds, service::registry::Record, storage::store::Store,
+    node_ids::NodeIds, service::table::Record, storage::store::Store,
 };
 
 /// The resolved inputs of a RIB lookup — the `{table, key}` pair
@@ -663,8 +663,7 @@ mod tests {
     use super::*;
     use crate::bundle::tests::test_bundle;
     use crate::filter::slots::MetadataDelta;
-    use crate::service::raw::tests::NullService;
-    use crate::service::registry::Kind;
+    use crate::service::{raw::tests::NullService, table::Kind};
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_store() -> Arc<Store> {
@@ -695,17 +694,17 @@ mod tests {
     /// delivery queue and canonical EID, so the test wires a real channel.
     fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Record> {
         let eid: Eid = eid.parse().unwrap();
-        let (tx, _rx) = store.channel(
+        let queue = store.channel(
             crate::bundle::BundleStatus::DeliverPending {
                 service: eid.clone(),
             },
             1,
         );
         Record::new(
-            Kind::Bundle(Arc::new(NullService)),
+            Kind::Raw(Arc::new(NullService)),
             EidService::Ipn(42),
             eid,
-            tx,
+            queue,
         )
     }
 

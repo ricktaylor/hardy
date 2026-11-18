@@ -9,7 +9,7 @@ use hardy_bpv7::{
 };
 
 use super::*;
-use crate::service::registry::{Kind, Record};
+use crate::service::table::{Kind, Record};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
@@ -94,12 +94,12 @@ impl Dispatcher {
         };
 
         let delivery_result = match &record.kind {
-            Kind::Bundle(service) => {
+            Kind::Raw(service) => {
                 // A whole-bundle service takes the bundle bytes: the whole
                 // bundle is in hand, so it travels as a single Final segment.
                 let total_len = data.len() as u64;
                 service
-                    .on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
+                    .deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
                     .await
             }
             Kind::Payload(service) => {
@@ -170,7 +170,7 @@ impl Dispatcher {
                 // hand, so it travels as a single Final segment.
                 let total_len = payload.len() as u64;
                 service
-                    .on_deliver(
+                    .deliver(
                         bundle.id(),
                         bundle.expiry(),
                         bundle.primary().flags.app_ack_requested,

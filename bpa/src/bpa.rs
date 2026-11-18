@@ -2,97 +2,56 @@ use hardy_async::async_trait;
 // `eid::Service` is the service number inside an EID, not the service
 // trait registered here; it is aliased to the word the code already uses
 // for it.
-use hardy_bpv7::eid::{Eid, NodeId, Service as ServiceId};
+use hardy_bpv7::eid::{NodeId, Service as ServiceId};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+// The CLA and service tables are both `Table`; each is aliased to the
+// subsystem it belongs to.
 use crate::{
     Arc,
     builder::BpaBuilder,
-    cla::{self, BoxFactory, table::Table},
+    cla::{self, table::Table as ClaTable},
     dispatcher::Dispatcher,
-    node_ids::NodeIds,
     otel_metrics,
     routing::{self, Agent, Rib},
-    service::{self, Service, raw, registry::ServiceRegistry},
+    service::{self, table::Table as ServiceTable},
     storage::store::Store,
 };
 
-/// Registering services and routing agents with a BPA.
+/// Registering routing agents with a BPA.
 ///
 /// The trait abstracts the registration interface, so a component works
 /// against a local [`Bpa`] or against a remote BPA reached over gRPC.
-/// CLAs come in through [`cla::Registrar`], a supertrait of this one,
-/// where the BPA builds the component instead of being handed one: a CLA
-/// is constructed from a [`cla::Factory`] and receives its sink in the
-/// [`cla::Context`], so the lifecycle described here is the service and
-/// routing agent one.
+/// CLAs and services come in through [`cla::Registrar`] and
+/// [`service::Registrar`], the supertraits of this one, where the BPA
+/// builds the component from a factory instead of being handed one.
 ///
 /// # Component lifecycle
 ///
-/// A service or routing agent is built by its own crate, where
+/// A routing agent is built by its own crate, where
 /// `new(&Config) -> Result<Self, Error>` validates the configuration
-/// eagerly, so errors surface before registration. A `register_*` method
-/// hands the component over and the BPA calls `on_register` with the sink
-/// the component talks back through, which it then uses until it
-/// unregisters: either by calling `sink.unregister()`, or by the BPA
-/// shutting down and calling `on_unregister`.
+/// eagerly, so errors surface before registration.
+/// [`register_routing_agent`](Self::register_routing_agent) hands the
+/// agent over and the BPA calls `on_register` with the [`routing::Sink`]
+/// it maintains its routes through, with `add_route` and `remove_route`;
+/// a fixed route set needs no trait implementation at all, only
+/// [`routing::StaticAgent`].
 ///
 /// # Sink storage
 ///
-/// A component keeps its sink for its whole active lifetime, typically in
-/// a `spin::Once`. An `on_register` that returns without storing the sink
+/// An agent keeps its sink for its whole active lifetime, typically in a
+/// `spin::Once`. An `on_register` that returns without storing the sink
 /// has dropped it, and the BPA reads that as a request to unregister.
 ///
 /// After unregistration the sink stays stored but answers
 /// `Error::Disconnected` to everything, so `on_unregister` handles only
-/// the component's own cleanup: stopping tasks, closing connections.
+/// the agent's own cleanup: stopping tasks, closing connections.
 /// Defensive patterns such as an `Option<Sink>` taken in `on_unregister`
 /// buy nothing.
-///
-/// # For implementors
-///
-/// A routing agent receives [`routing::Sink`] in
-/// [`routing::Agent::on_register`], and maintains its routes with
-/// `add_route` and `remove_route`; a fixed route set needs no trait
-/// implementation at all, only [`routing::StaticAgent`]. A service
-/// receives [`raw::Sink`] for whole bundles, or [`Sink`](service::Sink)
-/// for payloads alone, in its own `on_register`.
 #[async_trait]
-pub trait BpaRegistration: cla::Registrar {
-    /// Registers a payload-only service with the BPA.
-    ///
-    /// The service receives a [`Sink`](service::Sink) via
-    /// [`Service::on_register`].
-    async fn register_service(
-        &self,
-        service_id: ServiceId,
-        service: Arc<dyn Service>,
-    ) -> service::Result<Eid>;
-
-    /// Registers a whole-bundle service with the BPA.
-    ///
-    /// The service receives a [`raw::Sink`] via
-    /// [`raw::Service::on_register`].
-    async fn register_raw_service(
-        &self,
-        service_id: ServiceId,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid>;
-
-    /// Registers a payload-only service under a dynamically assigned service ID.
-    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid>;
-
-    /// Registers a whole-bundle service under a dynamically assigned service ID.
-    async fn register_dynamic_raw_service(
-        &self,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid>;
-
+pub trait BpaRegistration: cla::Registrar + service::Registrar {
     /// Registers a routing agent with the BPA.
-    ///
-    /// The agent receives a [`routing::Sink`] via
-    /// [`routing::Agent::on_register`] to manage routes in the RIB.
     ///
     /// `name` identifies this agent instance, and is the source recorded
     /// against every route it adds.
@@ -107,36 +66,33 @@ pub trait BpaRegistration: cla::Registrar {
 
 /// The core Bundle Processing Agent (RFC 9171).
 ///
-/// Holds the store, the RIB, the CLA table, the service registry and the
+/// Holds the store, the RIB, the CLA table, the service table and the
 /// dispatcher. Construct via [`BpaBuilder`] (obtained from
 /// [`Bpa::builder()`]).
 ///
 /// After construction, call [`start()`](Bpa::start) to begin processing and
 /// [`shutdown()`](Bpa::shutdown) for ordered teardown.
 pub struct Bpa {
-    node_ids: Arc<NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
-    clas: Arc<Table>,
-    service_registry: Arc<ServiceRegistry>,
+    clas: Arc<ClaTable>,
+    services: Arc<ServiceTable>,
     dispatcher: Arc<Dispatcher>,
 }
 
 impl Bpa {
     pub(crate) fn from_parts(
-        node_ids: Arc<NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
-        clas: Arc<Table>,
-        service_registry: Arc<ServiceRegistry>,
+        clas: Arc<ClaTable>,
+        services: Arc<ServiceTable>,
         dispatcher: Arc<Dispatcher>,
     ) -> Self {
         Self {
-            node_ids,
             store,
             rib,
             clas,
-            service_registry,
+            services,
             dispatcher,
         }
     }
@@ -175,9 +131,7 @@ impl Bpa {
         // quiescent-store precondition above covers the configuration path
         // exactly as it covers dynamic registrations.
         let failures = self.clas.start().await;
-        self.service_registry
-            .start(&self.node_ids, &self.rib, &self.dispatcher)
-            .await;
+        self.services.start().await;
 
         // Start the RIB
         self.rib.start(self.dispatcher.clone());
@@ -203,7 +157,7 @@ impl Bpa {
 
         self.rib.shutdown_agents().await;
         self.clas.shutdown().await;
-        self.service_registry.shutdown(&self.rib).await;
+        self.services.shutdown().await;
         self.dispatcher.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
@@ -212,57 +166,6 @@ impl Bpa {
 
 #[async_trait]
 impl BpaRegistration for Bpa {
-    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_service(
-        &self,
-        service_id: ServiceId,
-        service: Arc<dyn Service>,
-    ) -> service::Result<Eid> {
-        self.service_registry
-            .register_service(
-                service_id,
-                service,
-                &self.node_ids,
-                &self.rib,
-                &self.dispatcher,
-            )
-            .await
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_raw_service(
-        &self,
-        service_id: ServiceId,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid> {
-        self.service_registry
-            .register_raw_service(
-                service_id,
-                service,
-                &self.node_ids,
-                &self.rib,
-                &self.dispatcher,
-            )
-            .await
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid> {
-        self.service_registry
-            .register_dynamic_service(service, &self.node_ids, &self.rib, &self.dispatcher)
-            .await
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_dynamic_raw_service(
-        &self,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid> {
-        self.service_registry
-            .register_dynamic_raw_service(service, &self.node_ids, &self.rib, &self.dispatcher)
-            .await
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self, agent)))]
     async fn register_routing_agent(
         &self,
@@ -274,9 +177,38 @@ impl BpaRegistration for Bpa {
 }
 
 #[async_trait]
+impl service::Registrar for Bpa {
+    #[cfg_attr(feature = "instrument", instrument(skip(self, factory)))]
+    async fn register_service_boxed(
+        &self,
+        id: Option<ServiceId>,
+        factory: service::BoxFactory<'_>,
+    ) -> service::Result<()> {
+        self.services
+            .register(id, service::table::FactoryKind::Payload(factory))
+            .await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, factory)))]
+    async fn register_raw_service_boxed(
+        &self,
+        id: Option<ServiceId>,
+        factory: service::raw::BoxFactory<'_>,
+    ) -> service::Result<()> {
+        self.services
+            .register(id, service::table::FactoryKind::Raw(factory))
+            .await
+    }
+}
+
+#[async_trait]
 impl cla::Registrar for Bpa {
     #[cfg_attr(feature = "instrument", instrument(skip(self, factory)))]
-    async fn register_cla_boxed(&self, name: &str, factory: BoxFactory<'_>) -> cla::Result<()> {
+    async fn register_cla_boxed(
+        &self,
+        name: &str,
+        factory: cla::BoxFactory<'_>,
+    ) -> cla::Result<()> {
         self.clas.register(name, factory).await
     }
 }
@@ -285,10 +217,9 @@ impl cla::Registrar for Bpa {
 mod tests {
     use core::time::Duration;
 
-    use hardy_async::sync::spin::Once;
     use hardy_bpv7::{
         bundle::Id,
-        eid::{IpnNodeId, Service as ServiceId},
+        eid::{Eid, IpnNodeId, Service as ServiceId},
         status_report::ReasonCode,
     };
     use time::OffsetDateTime;
@@ -298,7 +229,7 @@ mod tests {
     use crate::{
         Bytes,
         cla::RegistrarExt,
-        service::Sink,
+        service::RegistrarExt as _,
         stream::{Receiver, Segment},
     };
 
@@ -337,18 +268,18 @@ mod tests {
 
     /// Originates bundles; never has any delivered.
     struct SendOnlyService {
-        sink: Once<Box<dyn Sink>>,
+        sink: Arc<dyn service::Sink>,
+    }
+
+    impl SendOnlyService {
+        fn factory() -> impl service::Factory<Component = Self> {
+            service::factory_fn(|cx: service::Context| Ok(Arc::new(Self { sink: cx.sink })))
+        }
     }
 
     #[async_trait]
-    impl Service for SendOnlyService {
-        async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
-            self.sink.call_once(|| sink);
-        }
-
-        async fn on_unregister(&self) {}
-
-        async fn on_deliver(
+    impl service::Service for SendOnlyService {
+        async fn deliver(
             &self,
             _bundle_id: &Id,
             _expiry: OffsetDateTime,
@@ -359,7 +290,7 @@ mod tests {
             Ok(())
         }
 
-        async fn on_status_notify(
+        async fn report_status(
             &self,
             _bundle_id: &Id,
             _from: &Eid,
@@ -395,8 +326,8 @@ mod tests {
             .await
             .unwrap();
 
-        let service = Arc::new(SendOnlyService { sink: Once::new() });
-        bpa.register_service(ServiceId::Ipn(42), service.clone())
+        let service = bpa
+            .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
             .await
             .unwrap();
 
@@ -407,8 +338,6 @@ mod tests {
 
         let sent = service
             .sink
-            .get()
-            .unwrap()
             .send(
                 "ipn:0.2.99".parse().unwrap(),
                 Bytes::from_static(b"One shot"),

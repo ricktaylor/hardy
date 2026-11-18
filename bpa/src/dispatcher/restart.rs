@@ -146,9 +146,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        bpa::{Bpa, BpaRegistration},
+        bpa::Bpa,
         cla::{Context, Factory, RegistrarExt, Request, factory_fn},
-        service::raw,
+        service::{RegistrarExt as ServiceRegistrarExt, raw},
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
@@ -461,20 +461,18 @@ mod tests {
     // A local delivery service that drains each delivery and records the
     // bundle id.
     struct CapturingService {
-        // Retained: dropping the sink unregisters the service.
-        sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
         delivered_tx: flume::Sender<Id>,
+    }
+
+    impl CapturingService {
+        fn factory(delivered_tx: flume::Sender<Id>) -> impl raw::Factory<Component = Self> {
+            raw::factory_fn(move |_| Ok(Arc::new(Self { delivered_tx })))
+        }
     }
 
     #[async_trait]
     impl raw::Service for CapturingService {
-        async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
-            self.sink.call_once(|| sink);
-        }
-
-        async fn on_unregister(&self) {}
-
-        async fn on_deliver(
+        async fn deliver(
             &self,
             bundle_id: &Id,
             _expiry: time::OffsetDateTime,
@@ -491,7 +489,7 @@ mod tests {
             Ok(())
         }
 
-        async fn on_status_notify(
+        async fn report_status(
             &self,
             _bundle_id: &Id,
             _from: &Eid,
@@ -512,7 +510,7 @@ mod tests {
         let data_store = Arc::new(BundleMemStorage::new(None, None));
 
         // Seed the stores as an unclean stop would leave them: one bundle
-        // still queued in its delivery channel, one mid-on_deliver.
+        // still queued in its delivery channel, one mid-delivery.
         let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
         let mut ids = Vec::new();
         for (i, status) in [
@@ -588,11 +586,8 @@ mod tests {
         // The service registers: its WaitingForService poll delivers both.
         let (delivered_tx, delivered_rx) = flume::bounded(16);
         bpa.register_raw_service(
-            ServiceId::Ipn(7),
-            Arc::new(CapturingService {
-                sink: hardy_async::sync::spin::Once::new(),
-                delivered_tx,
-            }),
+            Some(ServiceId::Ipn(7)),
+            CapturingService::factory(delivered_tx),
         )
         .await
         .unwrap();
