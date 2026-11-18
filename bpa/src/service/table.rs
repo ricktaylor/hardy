@@ -352,19 +352,21 @@ pub struct Table {
 }
 
 impl Table {
-    /// The table of one BPA, holding the `declared` services, each
-    /// built and filed inert.
+    /// The table of one BPA, holding the `services` declared for it,
+    /// each built and filed inert.
     ///
-    /// Building them here rather than afterwards leaves no moment at
-    /// which the table is live but incomplete, and reports a service the
-    /// BPA cannot honour from `Bpa::build` rather than from `start`.
+    /// The map is complete before it reaches the table, so there is no
+    /// moment at which the table is live but incomplete, and a service
+    /// the BPA cannot honour is reported from `Bpa::build` rather than
+    /// from `start`. A service that cannot be built takes the ones
+    /// before it down with it, leaving nothing behind.
     // The dispatcher is the one argument taken by reference: the table
     // holds a `Weak` to it, and keeps the others.
     pub fn new(
         node_ids: Arc<NodeIds>,
         dispatcher: &Arc<Dispatcher>,
         rib: Arc<Rib>,
-        declared: Vec<(Option<ServiceId>, FactoryKind<'static>)>,
+        services: Vec<(Option<ServiceId>, FactoryKind<'static>)>,
     ) -> Result<Arc<Self>> {
         let table = Arc::new(Self {
             node_ids,
@@ -375,9 +377,41 @@ impl Table {
             tasks: TaskPool::new(),
         });
 
-        for (id, factory) in declared {
-            table.attach(id, factory)?;
+        let mut built = HashMap::with_capacity(services.len());
+        for (id, factory) in services {
+            // An allocated service number collides with nothing by
+            // construction; an explicit one may name the administrative
+            // endpoint, which is structurally registered (RFC 9758
+            // Section 5.7).
+            let service_id = id.unwrap_or_else(|| {
+                ServiceId::Ipn(table.next_dynamic.fetch_add(1, Ordering::Relaxed))
+            });
+            if service_is_admin_endpoint(&service_id) {
+                return Err(Error::AdministrativeEndpoint(service_id.to_string()));
+            }
+            if built.contains_key(&service_id) {
+                return Err(Error::ServiceIdInUse(service_id.to_string()));
+            }
+
+            let eid = table.node_ids.resolve_eid(&service_id)?;
+            let sink = Sink::new(Arc::downgrade(&table), service_id.clone(), eid.clone());
+            let service = factory.build(sink, eid.clone())?;
+            info!("Attached service: {service_id}");
+
+            // The queue's creation-time poll recovers any DeliverPending
+            // bundles left over from an earlier registration on this
+            // EID; they wait in it until `start` drains them.
+            let record = Record::new(
+                service,
+                service_id.clone(),
+                eid.clone(),
+                dispatcher.new_delivery_channel(&eid),
+            );
+            built.insert(service_id, Slot::Attached(record));
         }
+
+        metrics::gauge!("bpa.service.registered").increment(built.len() as f64);
+        *table.services.lock() = built;
         Ok(table)
     }
 
@@ -429,58 +463,22 @@ impl Table {
         self.tasks.shutdown().await;
     }
 
-    /// Attaches the service and puts it into service: the runtime door,
-    /// where the two halves are one call. A service that cannot run is
-    /// unregistered again, so a failure leaves nothing behind.
+    /// Attaches the service and puts it into service: the runtime
+    /// door, where the two halves are one call. A service that cannot
+    /// run is unregistered again, so a failure leaves nothing behind.
+    ///
+    /// The service is filed under `id`, or under a freshly allocated
+    /// service number when `id` is `None`. The factory is the
+    /// embedder's code and may do anything, so it runs outside the
+    /// lock, and against a reservation: the id is claimed first, so no
+    /// service is ever built only to be discarded because another
+    /// registration took the id, and none can be reached while it is
+    /// still being built.
     pub async fn register(
         self: &Arc<Self>,
         id: Option<ServiceId>,
         factory: FactoryKind<'_>,
     ) -> Result<()> {
-        let record = self.attach(id, factory)?;
-        self.publish(record).await
-    }
-
-    /// Unregisters the service at `service_id` and withdraws everything
-    /// it published.
-    pub async fn unregister(&self, service_id: &ServiceId) {
-        // A reservation is taken out too: the build that holds it reads
-        // its absence and takes the service straight back down instead
-        // of filing it.
-        let Some(Slot::Attached(record)) = self.services.lock().remove(service_id) else {
-            return;
-        };
-
-        metrics::gauge!("bpa.service.registered").decrement(1.0);
-        self.withdraw(record).await;
-    }
-
-    // The registration at `service_id`, if there is one.
-    fn record(&self, service_id: &ServiceId) -> Option<Arc<Record>> {
-        self.services
-            .lock()
-            .get(service_id)
-            .and_then(|slot| match slot {
-                Slot::Attached(record) => Some(record.clone()),
-                Slot::Building => None,
-            })
-    }
-
-    // Builds the service `factory` makes and files it under `id`, or
-    // under a freshly allocated service number when `id` is `None`, with
-    // its delivery queue open but undrained.
-    //
-    // The factory is the embedder's code and may do anything, so it runs
-    // outside the lock, and against a reservation: the id is claimed
-    // first, so no service is ever built only to be discarded because
-    // another registration took the id, and none can be reached while it
-    // is still being built. The build-time door stops here; the runtime
-    // door continues into `register`.
-    fn attach(
-        self: &Arc<Self>,
-        id: Option<ServiceId>,
-        factory: FactoryKind<'_>,
-    ) -> Result<Arc<Record>> {
         // An allocated service number collides with nothing by
         // construction; an explicit one may name the administrative
         // endpoint, which is structurally registered (RFC 9758
@@ -537,7 +535,32 @@ impl Table {
         metrics::gauge!("bpa.service.registered").increment(1.0);
         info!("Attached service: {}", record.service_id);
 
-        Ok(record)
+        self.publish(record).await
+    }
+
+    /// Unregisters the service at `service_id` and withdraws everything
+    /// it published.
+    pub async fn unregister(&self, service_id: &ServiceId) {
+        // A reservation is taken out too: the build that holds it reads
+        // its absence and takes the service straight back down instead
+        // of filing it.
+        let Some(Slot::Attached(record)) = self.services.lock().remove(service_id) else {
+            return;
+        };
+
+        metrics::gauge!("bpa.service.registered").decrement(1.0);
+        self.withdraw(record).await;
+    }
+
+    // The registration at `service_id`, if there is one.
+    fn record(&self, service_id: &ServiceId) -> Option<Arc<Record>> {
+        self.services
+            .lock()
+            .get(service_id)
+            .and_then(|slot| match slot {
+                Slot::Attached(record) => Some(record.clone()),
+                Slot::Building => None,
+            })
     }
 
     // Puts an attached service into service: starts it, drains its
@@ -597,5 +620,19 @@ impl Table {
         }
 
         info!("Unregistered service: {}", record.eid);
+    }
+}
+
+// The gauge counts what the map holds: `unregister` takes services out
+// one at a time, and dropping the table takes whatever is left. A table
+// dropped before it is ever started, which is how a failed `Bpa::build`
+// unwinds, is accounted for here and needs nothing else: a service that
+// never ran holds nothing but itself.
+impl Drop for Table {
+    fn drop(&mut self) {
+        let attached = self.services.get_mut().len();
+        if attached > 0 {
+            metrics::gauge!("bpa.service.registered").decrement(attached as f64);
+        }
     }
 }

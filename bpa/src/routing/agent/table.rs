@@ -41,17 +41,17 @@ pub struct Table {
 }
 
 impl Table {
-    /// The table of one BPA, holding the agents `declared` names, each
+    /// The table of one BPA, holding the `agents` declared for it, each
     /// built and filed inert.
     ///
-    /// Building them here rather than afterwards leaves no moment at
-    /// which the table is live but incomplete, and keeps attachment the
-    /// table's own business: an agent declared at build time and one
-    /// registered at runtime take the same path.
+    /// The map is complete before it reaches the table, so there is no
+    /// moment at which the table is live but incomplete, and an agent
+    /// that cannot be built takes the ones before it down with it,
+    /// leaving nothing behind.
     pub fn new(
         node_ids: Arc<NodeIds>,
         rib: Arc<Rib>,
-        declared: Vec<(String, BoxFactory<'static>)>,
+        agents: Vec<(String, BoxFactory<'static>)>,
     ) -> Result<Arc<Self>> {
         let table = Arc::new(Self {
             node_ids,
@@ -59,25 +59,36 @@ impl Table {
             agents: Mutex::new(HashMap::new()),
         });
 
-        for (name, factory) in declared {
-            table.attach(&name, factory)?;
+        let mut built = HashMap::with_capacity(agents.len());
+        for (name, factory) in agents {
+            if built.contains_key(&name) {
+                return Err(Error::DuplicateName(name));
+            }
+
+            let sink = Arc::new(Sink {
+                table: Arc::downgrade(&table),
+                name: Arc::from(name.as_str()),
+            });
+            let agent = factory.build(Context::new(sink, table.node_ids.clone()))?;
+            info!("Attached routing agent: {name}");
+            built.insert(name, Slot::Attached(agent));
         }
+
+        metrics::gauge!("bpa.routing.agents").increment(built.len() as f64);
+        *table.agents.lock() = built;
         Ok(table)
     }
 
-    // Builds the agent `factory` makes and files it under `name`, inert.
-    //
-    // The factory is the embedder's code and may do anything, so it runs
-    // outside the lock: the name is reserved first, and the reservation
-    // is resolved into an agent or released again afterwards. No one
-    // else can claim the name in between, and no one can reach an agent
-    // that is still being built. The build-time door stops here; the
-    // runtime door continues into `register`.
-    fn attach(
-        self: &Arc<Self>,
-        name: &str,
-        factory: BoxFactory<'_>,
-    ) -> Result<Arc<dyn routing::Agent>> {
+    /// Attaches the agent and starts it: the runtime door, where the two
+    /// halves are one call. An agent that cannot run is detached again,
+    /// so a failure leaves nothing behind.
+    ///
+    /// The factory is the embedder's code and may do anything, so it
+    /// runs outside the lock: the name is reserved first, and the
+    /// reservation is resolved into an agent or released again
+    /// afterwards. No one else can claim the name in between, and no
+    /// one can reach an agent that is still being built.
+    pub async fn register(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<()> {
         match self.agents.lock().entry(name.to_owned()) {
             Entry::Vacant(slot) => {
                 slot.insert(Slot::Building);
@@ -123,14 +134,6 @@ impl Table {
         metrics::gauge!("bpa.routing.agents").increment(1.0);
         info!("Attached routing agent: {name}");
 
-        Ok(agent)
-    }
-
-    /// Attaches the agent and starts it: the runtime door, where the two
-    /// halves are one call. An agent that cannot run is detached again,
-    /// so a failure leaves nothing behind.
-    pub async fn register(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<()> {
-        let agent = self.attach(name, factory)?;
         if let Err(e) = agent.start().await {
             self.detach(name).await;
             return Err(e);
@@ -217,6 +220,20 @@ impl Table {
             .lock()
             .get(name)
             .is_some_and(|slot| matches!(slot, Slot::Attached(_)))
+    }
+}
+
+// The gauge counts what the map holds: `detach` takes agents out one
+// at a time, and dropping the table takes whatever is left. A table
+// dropped before it is ever started, which is how a failed `Bpa::build`
+// unwinds, is accounted for here and needs nothing else: an agent that
+// never ran holds nothing but itself.
+impl Drop for Table {
+    fn drop(&mut self) {
+        let attached = self.agents.get_mut().len();
+        if attached > 0 {
+            metrics::gauge!("bpa.routing.agents").decrement(attached as f64);
+        }
     }
 }
 

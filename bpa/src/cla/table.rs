@@ -103,13 +103,13 @@ pub struct Table {
 }
 
 impl Table {
-    /// The table of one BPA, holding the CLAs `declared` names, each built
-    /// and filed inert.
+    /// The table of one BPA, holding the `clas` declared for it, each
+    /// built and filed inert.
     ///
-    /// Building them here rather than afterwards leaves no moment at which
-    /// the table is live but incomplete, and keeps attachment the table's
-    /// own business: a CLA declared at build time and one registered at
-    /// runtime take the same path.
+    /// The map is complete before it reaches the table, so there is no
+    /// moment at which the table is live but incomplete, and a CLA that
+    /// cannot be built takes the ones before it down with it, leaving
+    /// nothing behind.
     // The dispatcher is the one argument taken by reference: the table
     // holds a `Weak` to it, and keeps the others.
     pub fn new(
@@ -119,7 +119,7 @@ impl Table {
         store: Arc<Store>,
         poll_channel_depth: usize,
         policies: HashMap<String, Arc<dyn FlowControllerFactory>>,
-        declared: Vec<(String, BoxFactory<'static>)>,
+        clas: Vec<(String, BoxFactory<'static>)>,
     ) -> Result<Arc<Self>> {
         let table = Arc::new(Self {
             node_ids,
@@ -134,21 +134,54 @@ impl Table {
             tasks: TaskPool::new(),
         });
 
-        for (name, factory) in declared {
-            table.attach(&name, factory)?;
+        let mut built = HashMap::with_capacity(clas.len());
+        for (name, factory) in clas {
+            if built.contains_key(&name) {
+                return Err(Error::DuplicateName(name));
+            }
+
+            let terms = Terms::negotiate(factory.request(), table.max_reception_size);
+            let policy = table
+                .policies
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(null_policy::FlowControllerFactory::new()));
+            let name: Arc<str> = Arc::from(name);
+            let sink = Arc::new(Sink {
+                table: Arc::downgrade(&table),
+                name: name.clone(),
+            });
+
+            let cla = factory.build(Context::new(sink, table.node_ids.clone(), terms))?;
+            info!("Attached CLA: {name}");
+            built.insert(
+                name.to_string(),
+                Slot::Attached(Arc::new(Record {
+                    cla,
+                    policy,
+                    terms,
+                    name,
+                    cancel: CancellationToken::new(),
+                    peers: Mutex::new(HashMap::new()),
+                })),
+            );
         }
+
+        metrics::gauge!("bpa.cla.registered").increment(built.len() as f64);
+        *table.clas.lock() = built;
         Ok(table)
     }
 
-    // Builds the CLA `factory` makes and files it under `name`, inert.
-    //
-    // The factory is the embedder's code and may do anything, so it runs
-    // outside the lock: the name is reserved first, and the reservation
-    // is resolved into a record or released again afterwards. No one
-    // else can claim the name in between, and no one can reach a CLA
-    // that is still being built. The build-time door stops here; the
-    // runtime door continues into `register`.
-    fn attach(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<Arc<dyn cla::Cla>> {
+    /// Attaches the CLA and starts it: the runtime door, where the two
+    /// halves are one call. A CLA that cannot run is detached again, so a
+    /// failure leaves nothing behind.
+    ///
+    /// The factory is the embedder's code and may do anything, so it runs
+    /// outside the lock: the name is reserved first, and the reservation
+    /// is resolved into a record or released again afterwards. No one
+    /// else can claim the name in between, and no one can reach a CLA
+    /// that is still being built.
+    pub async fn register(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<()> {
         let terms = Terms::negotiate(factory.request(), self.max_reception_size);
         let policy = self
             .policies
@@ -213,16 +246,8 @@ impl Table {
         metrics::gauge!("bpa.cla.registered").increment(1.0);
         info!("Attached CLA: {name}");
 
-        Ok(cla)
-    }
-
-    /// Attaches the CLA and starts it: the runtime door, where the two
-    /// halves are one call. A CLA that cannot run is detached again, so a
-    /// failure leaves nothing behind.
-    pub async fn register(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<()> {
-        let cla = self.attach(name, factory)?;
         if let Err(e) = cla.start().await {
-            self.detach(name).await;
+            self.detach(&name).await;
             return Err(e);
         }
         Ok(())
@@ -419,6 +444,20 @@ impl Table {
         debug!("Removed peer {peer_id}");
 
         true
+    }
+}
+
+// The gauge counts what the map holds: `detach` takes CLAs out one at
+// a time, and dropping the table takes whatever is left. A table
+// dropped before it is ever started, which is how a failed `Bpa::build`
+// unwinds, is accounted for here and needs nothing else: a CLA that
+// never ran holds nothing but itself.
+impl Drop for Table {
+    fn drop(&mut self) {
+        let attached = self.clas.get_mut().len();
+        if attached > 0 {
+            metrics::gauge!("bpa.cla.registered").decrement(attached as f64);
+        }
     }
 }
 

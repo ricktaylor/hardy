@@ -378,6 +378,10 @@ impl BpaBuilder {
 
         // Each declared routing agent is built here, and installs no
         // route until Bpa::start starts it, after storage recovery.
+        //
+        // A table that cannot be built takes the tables already built
+        // down with it: nothing is started yet, so dropping them is the
+        // whole teardown.
         let agents = routing::agent::table::Table::new(node_ids, rib.clone(), self.routing_agents)?;
 
         // TODO: Dispatcher and the CLA table still reference each other:
