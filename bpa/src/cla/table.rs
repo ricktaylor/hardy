@@ -29,7 +29,9 @@ use crate::{
 
 // The maps here are behind spin locks. Every critical section is an O(1)
 // lookup or insert with nothing awaited, blocked or iterated inside it, so
-// the lock is never held long enough to repay an OS mutex's park.
+// the lock is never held long enough to repay an OS mutex's park. In
+// particular the embedder's factory runs outside the table's lock,
+// against a reservation.
 
 /// One attached CLA: what it was built as, what it was built under, and
 /// what it has published.
@@ -67,18 +69,17 @@ impl core::fmt::Debug for Record {
     }
 }
 
-// Where a record stands. `Attached` is usable; `Detaching` marks the
-// window between `detach` taking the record and the teardown it awaits
-// completing, during which the record is published but no longer usable,
-// and holds its name against reuse.
-enum State {
-    Attached,
+// Where a record stands.
+//
+// `Building` holds the name while the factory runs, before there is a
+// record to hold; `Attached` is usable; `Detaching` marks the window
+// between `detach` taking the record and the teardown it awaits
+// completing. Only `Attached` is usable, and all three hold the name
+// against reuse.
+enum Slot {
+    Building,
+    Attached(Arc<Record>),
     Detaching,
-}
-
-struct Slot {
-    record: Arc<Record>,
-    state: State,
 }
 
 /// The CLAs of one BPA: the only place a CLA is built, and the authority
@@ -141,10 +142,12 @@ impl Table {
 
     // Builds the CLA `factory` makes and files it under `name`, inert.
     //
-    // Negotiating, minting the context and calling the factory involve no
-    // awaits, so the whole operation runs under one lock and no CLA is
-    // ever half-attached. The build-time door stops here; the runtime
-    // door continues into `register`.
+    // The factory is the embedder's code and may do anything, so it runs
+    // outside the lock: the name is reserved first, and the reservation
+    // is resolved into a record or released again afterwards. No one
+    // else can claim the name in between, and no one can reach a CLA
+    // that is still being built. The build-time door stops here; the
+    // runtime door continues into `register`.
     fn attach(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<Arc<dyn cla::Cla>> {
         let terms = Terms::negotiate(factory.request(), self.max_reception_size);
         let policy = self
@@ -153,39 +156,59 @@ impl Table {
             .cloned()
             .unwrap_or_else(|| Arc::new(null_policy::FlowControllerFactory::new()));
 
-        let mut clas = self.clas.lock();
-        let slot = match clas.entry(name.to_owned()) {
-            Entry::Vacant(slot) => slot,
+        match self.clas.lock().entry(name.to_owned()) {
+            Entry::Vacant(slot) => {
+                slot.insert(Slot::Building);
+            }
             Entry::Occupied(slot) => {
-                return Err(match slot.get().state {
-                    State::Attached => Error::DuplicateName(name.to_owned()),
-                    State::Detaching => Error::Detaching(name.to_owned()),
+                return Err(match slot.get() {
+                    Slot::Building | Slot::Attached(_) => Error::DuplicateName(name.to_owned()),
+                    Slot::Detaching => Error::Detaching(name.to_owned()),
                 });
             }
-        };
+        }
 
         let name: Arc<str> = Arc::from(name);
-        let cla = factory.build(Context::new(
+        let built = factory.build(Context::new(
             Arc::new(Sink {
                 table: Arc::downgrade(self),
                 name: name.clone(),
             }),
             self.node_ids.clone(),
             terms,
-        ))?;
+        ));
 
-        slot.insert(Slot {
-            record: Arc::new(Record {
-                cla: cla.clone(),
-                policy,
-                terms,
-                name: name.clone(),
-                cancel: CancellationToken::new(),
-                peers: Mutex::new(HashMap::new()),
-            }),
-            state: State::Attached,
-        });
-        drop(clas);
+        let cla = match built {
+            Ok(cla) => cla,
+            Err(e) => {
+                // The reservation existed only for this build.
+                self.clas.lock().remove(&*name);
+                return Err(e);
+            }
+        };
+
+        {
+            let mut clas = self.clas.lock();
+            if !matches!(clas.get(&*name), Some(Slot::Building)) {
+                // A `detach` arrived while the factory ran and left
+                // `Detaching` in the reservation. Nothing was published
+                // and the CLA was never started, so releasing the name
+                // and dropping it is the whole teardown.
+                clas.remove(&*name);
+                return Err(Error::Detaching(name.to_string()));
+            }
+            clas.insert(
+                name.to_string(),
+                Slot::Attached(Arc::new(Record {
+                    cla: cla.clone(),
+                    policy,
+                    terms,
+                    name: name.clone(),
+                    cancel: CancellationToken::new(),
+                    peers: Mutex::new(HashMap::new()),
+                })),
+            );
+        }
 
         metrics::gauge!("bpa.cla.registered").increment(1.0);
         info!("Attached CLA: {name}");
@@ -216,8 +239,10 @@ impl Table {
             .clas
             .lock()
             .iter()
-            .filter(|(_, slot)| matches!(slot.state, State::Attached))
-            .map(|(name, slot)| (name.clone(), slot.record.cla.clone()))
+            .filter_map(|(name, slot)| match slot {
+                Slot::Attached(record) => Some((name.clone(), record.cla.clone())),
+                Slot::Building | Slot::Detaching => None,
+            })
             .collect::<Vec<_>>();
 
         let mut failures = Vec::new();
@@ -233,19 +258,26 @@ impl Table {
 
     /// Tears the named CLA down and withdraws everything it published.
     ///
-    /// Returns whether this call did the detaching: a name that is absent,
-    /// or already being detached by another caller, answers `false`.
+    /// Returns whether this call did the detaching: a name that is
+    /// absent, already being detached by another caller, or still being
+    /// built, answers `false`. In the last case the build itself
+    /// completes the detachment.
     pub async fn detach(&self, name: &str) -> bool {
         let record = {
             let mut clas = self.clas.lock();
             let Some(slot) = clas.get_mut(name) else {
                 return false;
             };
-            if matches!(slot.state, State::Detaching) {
-                return false;
+            match core::mem::replace(slot, Slot::Detaching) {
+                Slot::Attached(record) => record,
+                // The factory is still running. Leaving `Detaching`
+                // behind is enough: `attach` reads it and takes the CLA
+                // straight back down instead of filing it.
+                Slot::Building => return false,
+                // Another caller is already taking this one down, and
+                // the replace put back what it found.
+                Slot::Detaching => return false,
             }
-            slot.state = State::Detaching;
-            slot.record.clone()
         };
 
         // First: wake every in-flight stream of this attachment.
@@ -298,16 +330,14 @@ impl Table {
         self.peers.forward(peer_id, next_hop, bundle).await
     }
 
-    // The record filed under `name`, if one is attached. A detaching
-    // record is already unusable, so it answers `None`.
+    // The record filed under `name`, if one is attached. A name a build
+    // still holds, and one a detaching record still holds, both answer
+    // `None`: only an attached CLA is usable.
     fn record(&self, name: &str) -> Option<Arc<Record>> {
-        self.clas
-            .lock()
-            .get(name)
-            .and_then(|slot| match slot.state {
-                State::Attached => Some(slot.record.clone()),
-                State::Detaching => None,
-            })
+        self.clas.lock().get(name).and_then(|slot| match slot {
+            Slot::Attached(record) => Some(record.clone()),
+            Slot::Building | Slot::Detaching => None,
+        })
     }
 
     async fn add_peer(
@@ -482,6 +512,7 @@ mod tests {
         eid::{IpnNodeId, NodeId},
     };
 
+    use super::Slot;
     use crate::{
         Arc, async_trait,
         bpa::Bpa,
@@ -534,6 +565,65 @@ mod tests {
             panic!("A second CLA claiming the name should be refused");
         };
         assert!(matches!(err, Error::DuplicateName(ref name) if name == "test-cla"));
+
+        bpa.shutdown().await;
+    }
+
+    // The embedder's factory is not called under the table's lock. A
+    // factory may log, allocate or reach back into the table, any of
+    // which would spin against a lock `attach` was still holding.
+    #[tokio::test]
+    async fn the_factory_runs_outside_the_table_lock() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        assert!(bpa.start(false).await.is_empty());
+
+        let probe = Arc::downgrade(bpa.cla_table());
+        bpa.register_cla(
+            "probe-cla",
+            factory_fn(Request::default(), move |cx: Context| {
+                let table = probe.upgrade().expect("The table outlives the build");
+                let reserved = {
+                    let clas = table
+                        .clas
+                        .try_lock()
+                        .expect("The table's lock is held while the factory runs");
+                    matches!(clas.get("probe-cla"), Some(Slot::Building))
+                };
+                // The name is reserved for the duration, so nothing else
+                // can claim it while this runs.
+                assert!(reserved, "The name is not reserved while the factory runs");
+                Ok(Arc::new(TestCla { sink: cx.sink }))
+            }),
+        )
+        .await
+        .expect("Registration should succeed");
+
+        bpa.shutdown().await;
+    }
+
+    // A factory that fails leaves nothing behind, so the name it
+    // reserved is free for the next attempt.
+    #[tokio::test]
+    async fn a_failed_build_releases_the_name() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        assert!(bpa.start(false).await.is_empty());
+
+        let Err(err) = bpa
+            .register_cla(
+                "flaky-cla",
+                factory_fn(Request::default(), |_cx: Context| -> Result<Arc<TestCla>> {
+                    Err(Error::Internal("The factory refused".into()))
+                }),
+            )
+            .await
+        else {
+            panic!("A factory that fails should fail the registration");
+        };
+        assert!(matches!(err, Error::Internal(_)));
+
+        bpa.register_cla("flaky-cla", TestCla::factory())
+            .await
+            .expect("The refused name should be free again");
 
         bpa.shutdown().await;
     }

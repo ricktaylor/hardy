@@ -55,6 +55,13 @@ impl Bpa {
         }
     }
 
+    // The CLA table, for that table's own unit tests: a factory that
+    // runs under the table's lock is otherwise unobservable from here.
+    #[cfg(test)]
+    pub(crate) fn cla_table(&self) -> &Arc<ClaTable> {
+        &self.clas
+    }
+
     pub fn builder() -> BpaBuilder {
         BpaBuilder::new()
     }

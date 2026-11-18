@@ -325,6 +325,18 @@ impl Kind {
 /// Starts high to avoid collisions with explicitly assigned IDs.
 const DYNAMIC_SERVICE_BASE: u32 = 0x8000_0000;
 
+// Where a registration stands.
+//
+// `Building` holds the service id while the factory runs, before there
+// is a record to hold; `Attached` is the registration itself. Both hold
+// the id against reuse. There is no detaching state: `unregister` takes
+// the record out under the lock and the withdrawal that follows no
+// longer holds the id.
+enum Slot {
+    Building,
+    Attached(Arc<Record>),
+}
+
 /// The services of one BPA: the only place a service is built, and the
 /// authority on which ones are live.
 pub struct Table {
@@ -334,7 +346,7 @@ pub struct Table {
     // `Error::Disconnected`.
     dispatcher: Weak<Dispatcher>,
     rib: Arc<Rib>,
-    services: Mutex<HashMap<ServiceId, Arc<Record>>>,
+    services: Mutex<HashMap<ServiceId, Slot>>,
     next_dynamic: AtomicU32,
     tasks: TaskPool,
 }
@@ -377,7 +389,15 @@ impl Table {
     /// consistency check has yet to settle. A service that cannot run is
     /// unregistered and logged rather than keeping the whole BPA down.
     pub async fn start(self: &Arc<Self>) {
-        let mut attached = self.services.lock().values().cloned().collect::<Vec<_>>();
+        let mut attached = self
+            .services
+            .lock()
+            .values()
+            .filter_map(|slot| match slot {
+                Slot::Attached(record) => Some(record.clone()),
+                Slot::Building => None,
+            })
+            .collect::<Vec<_>>();
         attached.sort();
 
         for record in attached {
@@ -392,7 +412,10 @@ impl Table {
             .services
             .lock()
             .drain()
-            .map(|(_, record)| record)
+            .filter_map(|(_, slot)| match slot {
+                Slot::Attached(record) => Some(record),
+                Slot::Building => None,
+            })
             .collect::<Vec<_>>();
 
         if !records.is_empty() {
@@ -421,7 +444,10 @@ impl Table {
     /// Unregisters the service at `service_id` and withdraws everything
     /// it published.
     pub async fn unregister(&self, service_id: &ServiceId) {
-        let Some(record) = self.services.lock().remove(service_id) else {
+        // A reservation is taken out too: the build that holds it reads
+        // its absence and takes the service straight back down instead
+        // of filing it.
+        let Some(Slot::Attached(record)) = self.services.lock().remove(service_id) else {
             return;
         };
 
@@ -431,17 +457,25 @@ impl Table {
 
     // The registration at `service_id`, if there is one.
     fn record(&self, service_id: &ServiceId) -> Option<Arc<Record>> {
-        self.services.lock().get(service_id).cloned()
+        self.services
+            .lock()
+            .get(service_id)
+            .and_then(|slot| match slot {
+                Slot::Attached(record) => Some(record.clone()),
+                Slot::Building => None,
+            })
     }
 
     // Builds the service `factory` makes and files it under `id`, or
     // under a freshly allocated service number when `id` is `None`, with
     // its delivery queue open but undrained.
     //
-    // Settling the number, minting the sink and calling the factory
-    // involve no awaits, so the filing runs under one lock and no
-    // service is ever half-attached. The build-time door stops here; the
-    // runtime door continues into `register`.
+    // The factory is the embedder's code and may do anything, so it runs
+    // outside the lock, and against a reservation: the id is claimed
+    // first, so no service is ever built only to be discarded because
+    // another registration took the id, and none can be reached while it
+    // is still being built. The build-time door stops here; the runtime
+    // door continues into `register`.
     fn attach(
         self: &Arc<Self>,
         id: Option<ServiceId>,
@@ -458,25 +492,47 @@ impl Table {
         }
 
         let eid = self.node_ids.resolve_eid(&service_id)?;
-        let sink = Sink::new(Arc::downgrade(self), service_id.clone(), eid.clone());
-        let service = factory.build(sink, eid.clone())?;
 
-        let mut services = self.services.lock();
-        let Entry::Vacant(slot) = services.entry(service_id.clone()) else {
-            return Err(Error::ServiceIdInUse(service_id.to_string()));
+        match self.services.lock().entry(service_id.clone()) {
+            Entry::Vacant(slot) => {
+                slot.insert(Slot::Building);
+            }
+            Entry::Occupied(_) => return Err(Error::ServiceIdInUse(service_id.to_string())),
+        }
+
+        let sink = Sink::new(Arc::downgrade(self), service_id.clone(), eid.clone());
+        let built = factory.build(sink, eid.clone()).and_then(|service| {
+            // The queue's creation-time poll recovers any DeliverPending
+            // bundles left over from an earlier registration on this EID;
+            // they wait in it until `publish` drains them.
+            Ok(Record::new(
+                service,
+                service_id.clone(),
+                eid.clone(),
+                self.dispatcher()?.new_delivery_channel(&eid),
+            ))
+        });
+
+        let record = match built {
+            Ok(record) => record,
+            Err(e) => {
+                // The reservation existed only for this build.
+                self.services.lock().remove(&service_id);
+                return Err(e);
+            }
         };
 
-        // The queue's creation-time poll recovers any DeliverPending
-        // bundles left over from an earlier registration on this EID;
-        // they wait in it until `publish` drains them.
-        let record = Record::new(
-            service,
-            service_id,
-            eid.clone(),
-            self.dispatcher()?.new_delivery_channel(&eid),
-        );
-        slot.insert(record.clone());
-        drop(services);
+        {
+            let mut services = self.services.lock();
+            if !matches!(services.get(&service_id), Some(Slot::Building)) {
+                // An `unregister` arrived while the factory ran and took
+                // the reservation with it. Nothing reached the service
+                // and it was never started, so dropping it is the whole
+                // teardown.
+                return Err(Error::Disconnected);
+            }
+            services.insert(service_id, Slot::Attached(record.clone()));
+        }
 
         metrics::gauge!("bpa.service.registered").increment(1.0);
         info!("Attached service: {}", record.service_id);
