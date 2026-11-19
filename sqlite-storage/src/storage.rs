@@ -26,6 +26,10 @@ use super::{migrate::migrate, readers::Readers, writer::Writer};
 // Filename of the SQLite database.
 const DEFAULT_DB_NAME: &str = "metadata.db";
 
+// The prepared statements the writing connection keeps: twice the write
+// statements the store has.
+const WRITER_STATEMENTS: usize = 32;
+
 // Directory in which the database file is stored: the platform-specific
 // cache directory for the project (e.g. `~/.cache/hardy-sqlite-storage` on
 // Linux), or `/var/spool/<pkg>` on Unix when no project directory can be
@@ -121,6 +125,10 @@ fn open_writer(path: &Path, mut upgrade: bool) -> Connection {
     // commit. A crash loses at most the un-checkpointed tail of commits,
     // never consistency — and bundle data storage is ground truth: restart
     // replay re-ingests anything whose metadata the tail forgot.
+    //
+    // No busy timeout is set here: rusqlite gives every connection one of
+    // five seconds, which is what rides out another process holding the
+    // database's write lock.
     connection
         .execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -131,6 +139,11 @@ fn open_writer(path: &Path, mut upgrade: bool) -> Connection {
         .trace_expect("Failed to prepare metadata store database");
 
     load_module(&connection).trace_expect("Failed to load array module");
+
+    // Every write statement is prepared once and kept: the store has nearly
+    // as many as the default cache of 16 holds, and one past it would evict
+    // and re-prepare on every call.
+    connection.set_prepared_statement_cache_capacity(WRITER_STATEMENTS);
 
     // Migrate the database to the latest schema
     migrate(&mut connection, upgrade).trace_expect("Failed to migrate metadata store database");
