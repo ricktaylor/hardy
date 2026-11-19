@@ -1,5 +1,9 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    fs::create_dir_all,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
 
 use hardy_bpa::{
     async_trait,
@@ -8,16 +12,16 @@ use hardy_bpa::{
     stream::Sender,
 };
 use hardy_bpv7::eid::Eid;
-
-use rusqlite::OptionalExtension;
+use rusqlite::{
+    Connection, ErrorCode, OpenFlags, OptionalExtension, types::Value, vtab::array::load_module,
+};
 use time::UtcOffset;
 use trace_err::*;
-use tracing::{debug, error, info, warn};
-
 #[cfg(feature = "instrument")]
 use tracing::instrument;
+use tracing::{debug, error, info, warn};
 
-use super::{migrate, pool::ConnectionPool};
+use super::{migrate::migrate, readers::Readers, writer::Writer};
 
 // Filename of the SQLite database.
 const DEFAULT_DB_NAME: &str = "metadata.db";
@@ -39,11 +43,14 @@ fn default_db_dir() -> PathBuf {
 
 /// SQLite-backed implementation of [`MetadataStorage`](storage::MetadataStorage).
 ///
-/// Manages a pool of read connections and a single serialized write lock to
-/// avoid SQLite busy errors. Bundle metadata is stored as JSON blobs alongside
-/// typed status columns for efficient status-based queries.
+/// Every write runs on one dedicated writer thread, which batches whatever
+/// has queued into a single transaction; reads run on a bounded pool of
+/// connections on the blocking thread pool, so no SQLite call stalls an
+/// async worker. Bundle metadata is stored as JSON blobs alongside typed
+/// status columns for efficient status-based queries.
 pub struct SqliteStorage {
-    pool: Arc<ConnectionPool>,
+    writer: Writer,
+    readers: Arc<Readers>,
 }
 
 impl SqliteStorage {
@@ -53,12 +60,12 @@ impl SqliteStorage {
     /// directory, and `metadata.db`. If the database file does not exist it
     /// is created and `upgrade` is forced to `true`. When `upgrade` is
     /// `true`, pending schema migrations are applied.
-    pub fn new(db_dir: Option<PathBuf>, db_name: Option<String>, mut upgrade: bool) -> Self {
+    pub fn new(db_dir: Option<PathBuf>, db_name: Option<String>, upgrade: bool) -> Self {
         let db_dir = db_dir.unwrap_or_else(default_db_dir);
         let db_name = db_name.as_deref().unwrap_or(DEFAULT_DB_NAME);
 
         // Ensure directory exists
-        std::fs::create_dir_all(&db_dir).trace_expect(&format!(
+        create_dir_all(&db_dir).trace_expect(&format!(
             "Failed to create metadata store directory {}",
             db_dir.display()
         ));
@@ -68,83 +75,67 @@ impl SqliteStorage {
 
         info!("Using database: {}", path.display());
 
-        // Attempt to open existing database first
-        let mut connection = match rusqlite::Connection::open_with_flags(
-            &path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) {
-            Err(rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error {
-                    code: rusqlite::ffi::ErrorCode::CannotOpen,
-                    ..
-                },
-                _,
-            )) => {
-                // Create database
-                upgrade = true;
-                rusqlite::Connection::open_with_flags(
-                    &path,
-                    rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-                        | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
-                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                )
-            }
-            r => r,
-        }
-        .trace_expect("Failed to open metadata store database");
-
-        // connection
-        //     .busy_timeout(std::time::Duration::ZERO)
-        //     .trace_expect("Failed to set timeout");
-
-        // journal_mode cannot be changed inside a transaction (migrations run
-        // in one), so WAL is applied here, before migrate(), not in the schema.
-        // synchronous is a per-connection pragma; NORMAL under WAL fsyncs at
-        // checkpoint rather than per commit (see new_connection for the
-        // durability rationale).
-        connection
-            .execute_batch(
-                "PRAGMA journal_mode = WAL;
-                PRAGMA synchronous = NORMAL;
-                PRAGMA foreign_keys = ON;
-                PRAGMA optimize = 0x10002;",
-            )
-            .trace_expect("Failed to prepare metadata store database");
-
-        rusqlite::vtab::array::load_module(&connection).trace_expect("Failed to load array module");
-
-        // Migrate the database to the latest schema
-        migrate::migrate(&mut connection, upgrade)
-            .trace_expect("Failed to migrate metadata store database");
-
         Self {
-            pool: Arc::new(ConnectionPool::new(path, connection)),
+            writer: Writer::new(open_writer(&path, upgrade)),
+            readers: Arc::new(Readers::new(path)),
         }
     }
 
     async fn read<F, R>(&self, f: F) -> storage::Result<R>
     where
-        F: FnOnce(&mut rusqlite::Connection) -> storage::Result<R> + Send + 'static,
+        F: FnOnce(&Connection) -> storage::Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let mut conn = self.pool.get(None).await;
-        let r = f(&mut conn);
-        self.pool.put(conn);
-        r
+        self.readers.read(f).await
     }
 
     async fn write<F, R>(&self, f: F) -> storage::Result<R>
     where
-        F: FnOnce(&mut rusqlite::Connection) -> storage::Result<R> + Send + 'static,
+        F: FnOnce(&Connection) -> storage::Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let guard = self.pool.write_lock.lock().await;
-        let mut conn = self.pool.get(Some(&guard)).await;
-        let r = f(&mut conn);
-        drop(guard);
-        self.pool.put(conn);
-        r
+        self.writer.write(f).await
     }
+}
+
+// Opens the store's writing connection, creating the database if it does
+// not exist (which forces `upgrade`), and migrates it to the latest schema.
+fn open_writer(path: &Path, mut upgrade: bool) -> Connection {
+    // Attempt to open existing database first
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let mut connection = match Connection::open_with_flags(path, flags) {
+        Err(e) if e.sqlite_error_code() == Some(ErrorCode::CannotOpen) => {
+            // Create database
+            upgrade = true;
+            Connection::open_with_flags(path, flags | OpenFlags::SQLITE_OPEN_CREATE)
+        }
+        r => r,
+    }
+    .trace_expect("Failed to open metadata store database");
+
+    // journal_mode cannot be changed inside a transaction (migrations run
+    // in one), so WAL is applied here, before migrate(), not in the schema;
+    // it persists in the database file, so the readers inherit it.
+    // synchronous is a per-connection pragma, and this is the only
+    // connection that writes; NORMAL under WAL fsyncs at checkpoint rather
+    // than per commit. A crash loses at most the un-checkpointed tail of
+    // commits, never consistency — and bundle data storage is ground truth:
+    // restart replay re-ingests anything whose metadata the tail forgot.
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA foreign_keys = ON;
+            PRAGMA optimize = 0x10002;",
+        )
+        .trace_expect("Failed to prepare metadata store database");
+
+    load_module(&connection).trace_expect("Failed to load array module");
+
+    // Migrate the database to the latest schema
+    migrate(&mut connection, upgrade).trace_expect("Failed to migrate metadata store database");
+
+    connection
 }
 
 // status_code layout:
@@ -457,10 +448,7 @@ impl MetadataStorage for SqliteStorage {
         loop {
             let bundles = self
                 .write(move |conn| {
-                    let trans =
-                        conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-
-                    let ids = trans
+                    let ids = conn
                         .prepare_cached(
                             "DELETE FROM unconfirmed_bundles
                             WHERE id IN (SELECT id FROM unconfirmed_bundles LIMIT 64)
@@ -473,20 +461,18 @@ impl MetadataStorage for SqliteStorage {
                         return Ok(Vec::new());
                     }
 
-                    let id_values = std::rc::Rc::new(
+                    let id_values = Rc::new(
                         ids.into_iter()
-                            .map(rusqlite::types::Value::from)
+                            .map(Value::from)
                             .collect::<Vec<_>>(),
                     );
 
-                    let bundles = trans
+                    let bundles = conn
                         .prepare_cached(
                             "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE id IN rarray(?1) AND bundle IS NOT NULL RETURNING bundle",
                         )?
                         .query_map([id_values], |row| row.get(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
-
-                    trans.commit()?;
 
                     Ok(bundles)
                 })
@@ -664,10 +650,7 @@ impl MetadataStorage for SqliteStorage {
         loop {
             let bundles = self
                 .write(move |conn| {
-                    let trans =
-                        conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-
-                    let ids = trans
+                    let ids = conn
                         .prepare_cached(
                             "DELETE FROM waiting_queue 
                             WHERE id IN (SELECT id FROM waiting_queue ORDER BY received_at ASC LIMIT 64)
@@ -680,18 +663,16 @@ impl MetadataStorage for SqliteStorage {
                         return Ok(Vec::new()); // No bundles to process
                     }
 
-                    let id_values = std::rc::Rc::new(
+                    let id_values = Rc::new(
                         ids.into_iter()
-                            .map(rusqlite::types::Value::from)
+                            .map(Value::from)
                             .collect::<Vec<_>>(),
                     );
 
-                    let bundles = trans
+                    let bundles = conn
                         .prepare_cached("SELECT bundle FROM bundles WHERE id IN rarray(?1) AND bundle IS NOT NULL ORDER BY received_at ASC")?
                         .query_map([id_values], |row| row.get::<_, Vec<u8>>(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
-
-                    trans.commit()?;
 
                     Ok(bundles)
                 })

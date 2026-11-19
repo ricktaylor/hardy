@@ -10,6 +10,8 @@ SQLite-based metadata storage implementing the MetadataStorage trait.
 
 - **Concurrent access.** Allow multiple readers while supporting serialised writes. The BPA's parallel processing model requires concurrent metadata access.
 
+- **A non-blocking runtime.** Keep SQLite's blocking I/O off the async runtime's worker threads, so a slow write or checkpoint never stalls unrelated tasks.
+
 - **Schema evolution.** Support database migrations when the schema changes between versions without requiring manual intervention.
 
 ## Architecture Overview
@@ -18,18 +20,14 @@ The storage layer sits between the BPA and a SQLite database file:
 
 ```mermaid
 flowchart LR
-    BPA --> store["insert()"]
-    BPA --> poll["poll_*()"]
-    BPA --> update["swap_status()"]
-    BPA --> get["get()"]
-    BPA --> remove["tombstone()"]
-
-    store & poll & update & get & remove --> pool["ConnectionPool"]
-    pool --> sqlite["SQLite (WAL mode)"]
-    pool --- lock["write_lock (serialises writes)"]
+    BPA --> writes["Writes: insert(), swap_status(), tombstone*(), resets, recovery, poll_waiting()"]
+    BPA --> reads["Reads: get(), the other poll_*()"]
+    writes --> writer["Writer thread (one connection, batched transactions)"]
+    reads --> readers["Reader pool (query-only connections, blocking thread pool)"]
+    writer & readers --> sqlite["SQLite (WAL mode)"]
 ```
 
-Bundle metadata is serialised as JSON and stored alongside indexed columns that enable efficient querying without deserialising every row. The connection pool manages SQLite connections, with a dedicated write lock ensuring serialised writes while allowing concurrent reads.
+Bundle metadata is serialised as JSON and stored alongside indexed columns that enable efficient querying without deserialising every row. Every write runs on a single dedicated writer thread that owns the only writing connection; reads run on a bounded pool of query-only connections on Tokio's blocking thread pool. No SQLite call runs on an async worker thread.
 
 ## Key Design Decisions
 
@@ -67,11 +65,27 @@ This matters most for status transitions, which touch only the columns. `swap_st
 
 The trade-off is a small amount of extra work on every read (extracting and mapping the status columns), but this cost is negligible compared to the I/O already involved in reading the row. The benefit is that status transitions remain simple SQL updates with no serialisation overhead.
 
-### Write Serialisation
+### A Single Writer Thread with Opportunistic Batching
 
-SQLite in WAL mode allows concurrent reads but requires serialised writes to avoid SQLITE_BUSY errors. Rather than relying on SQLite's busy timeout and retry logic, the pool uses an explicit Tokio mutex to queue write operations.
+SQLite allows one writer at a time, so writes must be serialised somewhere. They are serialised on a dedicated OS thread that owns the store's only writing connection. Each trait method submits its write to the thread as a closure over a queue and awaits the reply. The thread runs in arrival order, so writers never race for SQLite's write lock or retry on `SQLITE_BUSY`.
 
-This provides predictable behaviour under load. Writers wait in a fair queue rather than racing with exponential backoff. The cost is that write throughput is limited to one operation at a time, but this matches SQLite's inherent single-writer constraint.
+Running the writes on their own thread keeps them off Tokio's async workers. A SQLite write is blocking I/O, and under `synchronous = NORMAL` the occasional write that crosses the WAL auto-checkpoint threshold performs the checkpoint's fsync inline. On a worker thread that would stall every task scheduled there.
+
+The writer batches without a timer. It blocks until a write arrives, then takes whatever else has queued meanwhile (up to 64 writes) and runs the batch in one transaction, with each write in its own savepoint. An idle store therefore commits each write on its own with no added latency, while under load the batches grow by themselves and the per-transaction cost is shared. The savepoints keep each write atomic and independent: a write that fails rolls back alone and the rest of the batch commits. Every caller is answered only after its batch's commit has resolved, so no caller acts on a write that did not commit, and if the commit itself fails, every write in the batch reports the failure. A write whose caller has already gone by the time its turn comes is skipped.
+
+The trade-off is one cross-thread hand-off per operation, which adds roughly a tenth of a millisecond of latency. A strictly sequential caller is therefore slower than running SQLite inline: in a local benchmark of the forwarding lifecycle's metadata traffic, a little over half the throughput. The two break even at between one and four concurrent callers, and with dozens in flight the batching roughly doubles throughput. The BPA's workload is concurrent, and a bundle's metadata writes sit beside bundle-data I/O that costs far more, so the design favours throughput under load and an unblocked runtime.
+
+Rejected alternatives:
+
+- **A Tokio mutex around a pooled connection.** It serialises writes but runs them, and their checkpoints, on async workers, and every write pays its own transaction.
+- **A batching window.** Waiting a few milliseconds to collect writes adds that delay to every write on a lightly loaded node, where nothing would have joined the batch anyway.
+- **Batching only inserts.** After ingress, a bundle's writes are mostly conditional status swaps and tombstones, so insert-only batching would leave most of the traffic unbatched.
+
+### Pooled Readers off the Async Runtime
+
+Reads run on Tokio's blocking thread pool, each on a connection taken from a pool bounded at one connection per hardware thread. The connections are query-only (`PRAGMA query_only`), so a write routed through them by mistake fails rather than racing the writer. Under WAL a reader sees a consistent snapshot and never blocks or waits on the writer. Because the writer answers a caller only after the commit, a read issued after a write's reply always sees that write.
+
+Tokio's blocking pool already provides the threads, so the store keeps no reader threads of its own. Reader connections are separate from the writing connection, so each commit invalidates a reader's page cache and the next read re-fetches its pages from the WAL. That cost is accepted to keep reads concurrent with writes.
 
 ### Flyway-Inspired Migration
 
@@ -118,10 +132,7 @@ The server instantiates sqlite-storage based on configuration and injects it int
 | rusqlite | SQLite database access (bundled SQLite) |
 | serde_json | Bundle serialisation |
 | directories | Platform-specific default paths |
-
-## Future Work
-
-- **IO-thread write queue with INSERT batching.** Move all SQLite operations onto dedicated IO threads — a single batching write thread plus a read-only connection pool — per [insert_batch_design.md](insert_batch_design.md). The design's WAL-mode prerequisite is already met — WAL is applied at connection setup (the schema copy of the pragma is inert: journal mode cannot be changed inside the migration transaction).
+| tokio | Writer queue and replies; the blocking thread pool for reads |
 
 ## Testing
 

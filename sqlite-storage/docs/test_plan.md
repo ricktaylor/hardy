@@ -8,7 +8,7 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#sqlite-storage-72) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 
 ## 1. Introduction
 
@@ -45,6 +45,10 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-04** | **Concurrency (SQLITE_BUSY)** | `storage.rs` | 1. Spawn N concurrent async writers.<br>2. All insert different bundles. | No `SQLITE_BUSY` errors; all inserts succeed. |
 | **SQL-05** | **Corrupt data handling** | `storage.rs` | 1. Insert bundle via trait.<br>2. Manually corrupt row bytes in DB.<br>3. Call `get()`. | Graceful error or tombstone, not panic. |
 | **SQL-06** | **Waiting queue invalidation** | `storage.rs` | 1. Insert bundle (Status=`Waiting`).<br>2. Claim it to `Dispatching` via `swap_status()`.<br>3. Call `poll_waiting()`. | Bundle not returned (cache correctly invalidated). |
+| **SQL-07** | **Batched write isolation** | `writer.rs` | 1. Hold the writer thread inside one write.<br>2. Queue three writes, the middle one failing after its first statement.<br>3. Release the writer. | The failing write reports its own error and leaves no trace; the other two commit. |
+| **SQL-08** | **Batch commit failure** | `writer.rs` | 1. Hold the writer thread.<br>2. Queue a valid insert and a write that violates a deferred foreign key.<br>3. Release the writer. | Both writes report the batch's transaction failure; neither takes effect. |
+| **SQL-09** | **Abandoned write** | `writer.rs` | 1. Hold the writer thread.<br>2. Queue a write, then drop its caller.<br>3. Release the writer. | The write is never run. |
+| **SQL-10** | **Query-only readers** | `readers.rs` | 1. Route an `INSERT` through the reader pool. | Fails with `SQLITE_READONLY`. |
 
 ## 5. Execution
 
