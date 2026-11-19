@@ -9,7 +9,7 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-The `BundleStorage` trait contract is verified by the shared storage harness (4 tests, all pass). Recovery requirements are satisfied by the harness test exercising `BundleStorage::recover()` (BLOB-04) and the backend-specific recovery cleanup test (LD-02).
+The `BundleStorage` trait contract is verified by the shared storage harness (5 tests, all pass; four are the scenarios `PLAN-STORE-01` lists, and `blob_05_repeatable_load` is in the harness but not yet in that plan). Recovery requirements are satisfied by the harness test exercising `BundleStorage::recover()` (BLOB-04) and the backend-specific recovery cleanup test (LD-02).
 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
@@ -22,21 +22,31 @@ The `BundleStorage` trait contract is verified by the shared storage harness (4 
 
 ### Generic harness tests (via `tests/storage/`)
 
-4 integration tests run against localdisk via `storage_blob_tests!(localdisk, ...)`. See [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §3.5 for registration details and §5 for test scenarios.
+5 integration tests run against localdisk via `storage_blob_tests!(localdisk, ...)`: `blob_01` to `blob_05`. See [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §3.5 for registration details and §5 for test scenarios.
 
-All 4 pass. No failures or skips.
+All 5 pass. No failures or skips.
 
 ### Backend-specific tests (`storage.rs`)
 
-5 unit tests covering all 5 planned scenarios (LD-01..05).
+15 unit tests covering all 15 planned scenarios (LD-01..15).
 
 | Test Function | Plan Ref | Scope |
 | :--- | :--- | :--- |
 | `test_configuration_custom_store_dir` | LD-01 | Bundle file created under configured store_dir |
 | `test_recovery_cleanup` | LD-02 | .tmp files, zero-byte placeholders, empty dirs cleaned up; valid bundles recovered |
 | `test_filesystem_structure` | LD-03 | Files distributed in xx/yy/ two-level hex directories |
-| `test_atomic_save_no_tmp_residue` | LD-04 | fsync=true save leaves no .tmp files; data round-trips correctly |
-| `test_save_to_readonly_dir_returns_error` | LD-05 | Save to read-only directory returns Err, not panic |
+| `test_atomic_save_no_tmp_residue` | LD-04 | fsync=true save leaves only the bundle's file; data round-trips correctly |
+| `test_save_to_readonly_dir_returns_error` | LD-05 | Save to read-only directory returns permission denied, not panic |
+| `test_save_never_overwrites_an_existing_name` | LD-06 | A save whose name is taken moves to the next id, in both fsync modes; the existing bundle is untouched |
+| `test_unsynced_save_writes_final_name_only` | LD-07 | fsync=false save creates only the bundle's file; data round-trips correctly |
+| `test_stale_tmp_file_does_not_block_a_save` | LD-08 | A leftover `.tmp` beside a free name does not fail a save; what remains differs by fsync mode, which pins the mode dispatch |
+| `test_failed_atomic_save_leaves_nothing_behind` | LD-09 | A failed atomic save removes its placeholder |
+| `test_concurrent_saves_claim_distinct_names` | LD-10 | 16 saves racing for one name each claim their own, in both fsync modes |
+| `test_unsynced_save_never_reopens_its_name` | LD-11 | fsync=false save writes only through the claiming handle |
+| `test_failed_rename_removes_the_temporary_file` | LD-12 | A failed rename removes the temporary file and the placeholder |
+| `test_claim_reports_whether_it_created_the_bucket` | LD-13 | A claim reports a bucket it created, and not one it found |
+| `test_claim_recreates_a_bucket_removed_under_it` | LD-14 | A bucket removed once under a claim is created again and the claim succeeds |
+| `test_claim_gives_up_on_a_bucket_that_keeps_disappearing` | LD-15 | A bucket missing after every creation fails the claim with `NotFound`, at the limit |
 
 ## 3. Coverage vs Plan
 
@@ -45,8 +55,8 @@ Coverage is measured against [`PLAN-LD-01`](test_plan.md) (backend-specific) and
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | `PLAN-STORE-01` Suite D (BLOB-01..04) | BundleStorage trait contract | 4 | 4 | Complete |
-| `PLAN-LD-01` §4 (LD-01..05) | Backend-specific | 5 | 5 | Complete |
-| **Total** | | **9** | **9** | **100%** |
+| `PLAN-LD-01` §4 (LD-01..15) | Backend-specific | 15 | 15 | Complete |
+| **Total** | | **19** | **19** | **100%** |
 
 ## 4. Line Coverage
 
@@ -58,12 +68,12 @@ lcov --summary lcov.info
 ```
 
 ```
-  lines......: 71.8% (250 of 348 lines)
-  functions..: 35.0% (28 of 80 functions)
+  lines......: 94.0% (519 of 552 lines)
+  functions..: 86.8% (66 of 76 functions)
 ```
 
-Unit tests (5) exercise configuration, recovery cleanup, filesystem structure, atomic save, and write failure handling. The uncovered lines are primarily in the `recover()` parallel directory walker and mmap load path. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`. The crate has since grown (`StreamIn`-based result adoption added lines that the unit tests do not yet exercise), so the headline percentage is lower than the previous report despite the larger covered-line count.
+Unit tests only: the 15 tests exercise configuration, recovery cleanup, filesystem structure, both save modes, their name claim (sequential and concurrent), and each failure path of a save. The uncovered lines are the platform default store directory, the recovery walk's error and early-exit branches, the `load` and `delete` error arms, and the mmap load path, which is behind a feature the measurement does not enable. The generic storage harness runs in a separate crate and is not captured by `llvm-cov`.
 
 ## 5. Conclusion
 
-9 tests (4 integration + 5 unit) verify both the `BundleStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). Trait-level operations (save, load, delete, recovery scan) pass via the shared harness. Backend-specific tests cover configuration, recovery cleanup, filesystem layout, atomic save with fsync, and error handling on write failure.
+20 tests (5 integration + 15 unit) verify both the `BundleStorage` trait contract and all backend-specific scenarios (19 planned scenarios, all covered; the fifth harness test has no scenario in `PLAN-STORE-01` yet). Trait-level operations (save, load, delete, recovery scan) pass via the shared harness. Backend-specific tests cover configuration, recovery cleanup, filesystem layout, the atomic save with fsync and the unsynced save without it, the name claim in both modes and under concurrent saves, a stale temporary file, and the clean-up after each way a save can fail.
