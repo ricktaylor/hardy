@@ -29,9 +29,12 @@ clap = { version = "4", features = ["derive"] }
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
-directories = "6"
 serde = { version = "1", features = ["derive"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
+
+# Only the Windows branch of `default_config_dir` has a directory to look up.
+[target.'cfg(windows)'.dependencies]
+directories = "6"
 
 [dev-dependencies]
 tempfile = "3"
