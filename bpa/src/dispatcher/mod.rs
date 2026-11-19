@@ -1,11 +1,25 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
 use futures::join;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+// Aliased: `Bundle` and `Error` in this module are the BPA's own, and
+// bpsec's `Error` would collide with bpv7's.
+use hardy_bpv7::{
+    Bundle as Bpv7Bundle, Error as Bpv7Error, block,
+    bpsec::{SecurityServices, edit::BPSecEditor, key::KeySource},
+    builder,
+    bundle::Id,
+    editor::{self, Chunk, Editor},
+    eid::Eid,
+    parse::Parsed,
+    status_report::ReasonCode,
+};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
-use crate::filter::pack::chains::FilterChains;
+use crate::{
+    filter::pack::chains::FilterChains,
+    stream::{Receiver, Segment},
+};
 
 mod admin;
 mod deliver;
@@ -13,6 +27,7 @@ mod dispatch;
 mod forward;
 mod ingress;
 mod originate;
+mod output;
 mod reassemble;
 mod report;
 mod restart;
@@ -42,9 +57,6 @@ pub struct Config {
     /// Pre-drain gate: require primary-block integrity protection
     /// (RFC 9171 §4.3.1).
     pub primary_block_integrity: bool,
-    /// Pre-drain gate: require a Bundle Age block on clockless bundles
-    /// (RFC 9171 §4.4.2).
-    pub bundle_age_required: bool,
     /// Peers whose next hop requires legacy 2-element IPN EID encoding in
     /// the per-hop rewrite stage.
     pub ipn_legacy_peers: Vec<EidPattern>,
@@ -70,7 +82,9 @@ enum OfferOutcome {
     /// Deliberate detach: the CLA owns the transfer (`Accepted`) and
     /// resolves the claim later via `transfer_outcome`.
     Detached(bundle::Bundle),
-    /// Re-enter dispatch for a fresh routing decision.
+    /// Re-enter dispatch for a fresh routing decision: `resolve_offer`
+    /// re-claims the bundle out of its hand-off status and dispatches the
+    /// record in hand, which must still index the stored bytes.
     Redispatch(bundle::Bundle),
 }
 
@@ -99,7 +113,6 @@ pub(crate) struct Dispatcher {
     poll_channel_depth: usize,
     max_bundle_size: Option<NonZeroU64>,
     primary_block_integrity: bool,
-    bundle_age_required: bool,
     ipn_legacy_peers: Vec<EidPattern>,
 }
 
@@ -156,7 +169,6 @@ impl Dispatcher {
                     .min(ADDRESSABLE_CAP),
             ),
             primary_block_integrity: config.primary_block_integrity,
-            bundle_age_required: config.bundle_age_required,
             ipn_legacy_peers: config.ipn_legacy_peers,
         });
 
@@ -207,20 +219,17 @@ impl Dispatcher {
         self.tasks.shutdown().await;
     }
 
-    /// Load bundle data, dropping the bundle with `DepletedStorage` if the
-    /// data is missing and the bundle has not yet expired. Expired-and-missing
-    /// bundles are left for the reaper to handle (it will drop them with
-    /// `LifetimeExpired`).
+    /// Open bundle data as a segment stream, dropping the bundle with
+    /// `DepletedStorage` if the data is missing and the bundle has not yet
+    /// expired. Expired-and-missing bundles are left for the reaper to handle
+    /// (it will drop them with `LifetimeExpired`).
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn load_data_or_drop(&self, bundle: bundle::Bundle) -> Option<(bundle::Bundle, Bytes)> {
-        let storage_name = bundle
-            .metadata
-            .storage_name
-            .as_ref()
-            .trace_expect("Bundle without storage_name reached load_data_or_drop");
-
-        match self.store.load_data(storage_name).await {
-            Some(data) => Some((bundle, data)),
+    async fn load_or_drop(
+        &self,
+        bundle: bundle::Bundle,
+    ) -> Option<(bundle::Bundle, Box<dyn Receiver<Segment>>)> {
+        match self.store.load(stored_name(&bundle)).await {
+            Some(stream) => Some((bundle, stream)),
             None => {
                 if !bundle.has_expired() {
                     // Bundle data was deleted while queued - not reaped
@@ -266,11 +275,7 @@ impl Dispatcher {
     /// arbitrates through the claim-back CAS, so exactly one side proceeds.
     ///
     /// A re-dispatch discards the in-hand copy and re-enters from the
-    /// persisted representation: parks persist status only, and a failure
-    /// exit may hand in a bundle carrying in-memory rewrites (hop count,
-    /// filter mutations) whose block extents no longer index the stored
-    /// bytes. Reloading here keeps that invariant in one place instead of
-    /// at every caller's exit.
+    /// persisted representation ([`reenter_dispatch`](Self::reenter_dispatch)).
     pub async fn park_bundle(
         &self,
         mut bundle: bundle::Bundle,
@@ -288,17 +293,27 @@ impl Dispatcher {
                 .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
                 .await
         {
-            let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
-                // Someone resolved the bundle after the swap (e.g. the
-                // reaper dropped it as expired); their resolution stands.
-                debug!("Re-dispatch lost the bundle to a concurrent resolution");
-                return;
-            };
             debug!("Routing changed mid-flight, re-dispatching parked bundle");
-            return self.dispatch_bundle(bundle).await;
+            return self.reenter_dispatch(bundle.id()).await;
         }
 
         self.store.watch_bundle(bundle).await
+    }
+
+    /// Re-enters dispatch for a parked bundle the caller has just re-claimed
+    /// into `Dispatching`, from its persisted record rather than the copy in
+    /// hand: parks persist status only, and the delivery door's failure exit
+    /// hands in a bundle whose block index is the attempt's rebuild (the
+    /// Deliver Rewriters' edits), whose extents no longer index the stored
+    /// bytes.
+    async fn reenter_dispatch(&self, id: &Id) {
+        let Some(bundle) = self.store.get_metadata(id).await else {
+            // Someone resolved the bundle after the swap (e.g. the reaper
+            // dropped it as expired); their resolution stands.
+            debug!("Re-dispatch lost the bundle to a concurrent resolution");
+            return;
+        };
+        self.dispatch_bundle(bundle).await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
@@ -358,7 +373,29 @@ impl Dispatcher {
                 // still reaps it promptly.
                 self.store.watch_bundle(bundle).await
             }
-            OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
+            OfferOutcome::Redispatch(mut bundle) => {
+                // The re-claim is a conditional swap from the in-hand status:
+                // a concurrent resolver (the reaper, a peer sweep, a
+                // duplicate outcome) may have got there first, and its
+                // resolution stands. Both producers hand in a record that
+                // still indexes the stored bytes: the egress door edits none
+                // of it, and a deferred outcome reads it fresh.
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!(
+                        "Re-dispatch of {} lost the resolution race, ignored",
+                        bundle.id()
+                    );
+                    return;
+                }
+                if matches!(kind, OfferKind::Forward) {
+                    metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
+                }
+                self.dispatch_bundle(bundle).await
+            }
         }
     }
 
@@ -431,70 +468,283 @@ impl Dispatcher {
             }
         );
     }
+}
 
-    fn key_provider(
-        &self,
-    ) -> impl Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> + Clone + '_
-    {
-        |bundle, data| self.key_provider.key_source(bundle, data)
+// The ingress rewrite of an admitted arrival's resident headers, before its
+// first persistence: each per-hop block whose security operations the header
+// pass accepted is written in plaintext without them, and the scheduled block
+// removals (RFC 9172 §5.1.1 failure-drops and honoured
+// `delete_block_on_failure` unknowns) leave, so the stored bundle carries
+// none of either. Returns the bundle the editor rebuilds and the rebuild's
+// chunks, which `RebuiltHeaders` splices into the drain, or `None` when there
+// is nothing to rewrite.
+//
+// Acceptance comes first, from the arrival's plaintext cache, while the
+// cache still matches the received bytes. The removal cascade
+// decrypts and checks the encrypted BIBs it passes through with `keys`, and
+// never encrypts one again. Where a removal would shrink an encrypted BIB
+// that also covers a block that stays, a block the RFCs require gone, one
+// whose ciphertext did not authenticate (RFC 9172 §5.1.1) or one flagged to
+// be discarded (RFC 9171 §5.6 Step 4), goes with that BIB, whole, as §5.1.1
+// discards a target with every security block associated with it, the
+// BIB's other targets keeping their ciphertext without its operations; any
+// other stays as received. A removal the cascade refuses otherwise, since
+// it would orphan a block an unreadable BIB may list, also leaves that
+// block as received. Each is logged, and the rest go. A BIB it
+// decrypts and finds invalid is the bundle's fault, an `Err`; anything else
+// it refuses, the header pass that scheduled the removals has checked, so
+// it is a BPA bug, and fatal.
+fn rewrite_received_headers(
+    parsed: &Parsed,
+    accepted: &HashMap<u64, SecurityServices>,
+    to_remove: HashSet<u64>,
+    keys: &dyn KeySource,
+) -> Result<Option<(Bpv7Bundle, Vec<Chunk>)>, Bpv7Error> {
+    if accepted.is_empty() && to_remove.is_empty() {
+        return Ok(None);
     }
+    let editor = edit_received(
+        Editor::new(&parsed.bundle, &parsed.data),
+        parsed,
+        accepted,
+        to_remove,
+        keys,
+    )?;
+    Ok(Some(editor.rebuild_bundle().trace_expect(
+        "The ingress rewrite failed to rebuild the bundle",
+    )))
+}
 
-    fn key_source(
-        &self,
-        bundle: &hardy_bpv7::Bundle,
-        data: &[u8],
-    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
-        self.key_provider.key_source(bundle, data)
+// The ingress rewrite of an arrival whose payload this node accepts (RFC
+// 9172 §1.4): as `rewrite_received_headers`, with the payload's own
+// operations accepted too, its BCB's for a plaintext of `plaintext_len`
+// bytes that the drain's decrypt stage hands on as the payload streams, and
+// its BIB's. Returns the rebuilt bundle, the header chunks through the
+// payload block's header, and the trailer that frames the payload's data
+// and ends the bundle.
+fn rewrite_received_bundle(
+    parsed: &Parsed,
+    accepted: &HashMap<u64, SecurityServices>,
+    to_remove: HashSet<u64>,
+    keys: &dyn KeySource,
+    plaintext_len: u64,
+) -> Result<(Bpv7Bundle, Vec<Chunk>, builder::PayloadTrailer), Bpv7Error> {
+    let editor = Editor::new(&parsed.bundle, &parsed.data).with_streamed_payload(plaintext_len);
+    let editor = edit_received(editor, parsed, accepted, to_remove, keys)?;
+    Ok(editor
+        .rebuild_streamed()
+        .trace_expect("The ingress rewrite failed to rebuild the bundle"))
+}
+
+// The edits both ingress rewrites make: the accepted operations removed,
+// then the scheduled removals applied.
+fn edit_received<'a>(
+    editor: Editor<'a>,
+    parsed: &'a Parsed,
+    accepted: &HashMap<u64, SecurityServices>,
+    to_remove: HashSet<u64>,
+    keys: &'a dyn KeySource,
+) -> Result<Editor<'a>, Bpv7Error> {
+    let bundle = &parsed.bundle;
+    // The editor reads the arrival's keys and the plaintext its header pass
+    // and gate decrypted, so nothing is decrypted twice.
+    let mut editor = editor
+        .with_key_source(keys)
+        .with_decrypted(&parsed.decrypted);
+    // The primary block is emitted as received: an accepted BIB on it goes,
+    // and nothing in the primary changes (RFC 9171 §4.3.1).
+    for (&number, &services) in accepted {
+        let block = bundle
+            .blocks
+            .get(&number)
+            .trace_expect("an accepted block is in the bundle");
+        accept_operations(&mut editor, number, block, services);
     }
+    // RFC 9172 §5.1.1 discards a target whose ciphertext did not
+    // authenticate with every security block associated with it, RFC 9171
+    // §5.6 Step 4 removes a block flagged to be discarded, and a per-hop
+    // block the fate discards is one this node replaces (RFC 9171 §5.4) or,
+    // as its acceptor, found failed: those removals go first, each taking
+    // with it, whole, an encrypted BIB it would shrink. The rest follow, and
+    // one that would still shrink an encrypted BIB stays as received.
+    let (forced, rest): (HashSet<u64>, HashSet<u64>) = to_remove.into_iter().partition(|n| {
+        parsed.decrypted.failed.contains(n)
+            || bundle.blocks.get(n).is_some_and(|b| {
+                // Compared by encoding, so an alias of a type counts.
+                b.flags.delete_block_on_failure
+                    || b.block_type == block::Type::PreviousNode
+                    || b.block_type == block::Type::BundleAge
+                    || b.block_type == block::Type::HopCount
+            })
+    });
+    remove_scheduled(&mut editor, forced, true)?;
+    remove_scheduled(&mut editor, rest, false)?;
+    Ok(editor)
+}
 
-    // Applies the §E block removals the ingress gate deferred (RFC 9172
-    // §5.1.1 failure-drops and honoured `delete_block_on_failure` unknowns)
-    // to a bundle's wire form for one output attempt, ahead of the door's
-    // filter chain; the stored bundle keeps the blocks. The rebuilt block map
-    // replaces the record's, so the pair stays consistent (the primary is
-    // never replaced). Nothing scheduled costs one branch. bpv7's cascade
-    // retains, rather than fails on, a removal it cannot complete for want of
-    // a key; the bytes were validated at ingress, so any failure here is a
-    // BPA bug or storage corruption, and fatal.
-    fn strip_removed_blocks(&self, bundle: &mut bundle::Bundle, data: Bytes) -> Bytes {
-        use hardy_bpv7::bpsec::edit::BPSecEditor;
-
-        if bundle.metadata.to_remove.is_empty() {
-            return data;
+// The scheduled removals of `to_remove`, the cascade's refusals handled: a
+// block whose removal would shrink an encrypted BIB takes that BIB with it,
+// whole, where `forced`, and otherwise stays as received, as does one an
+// encrypted BIB this node cannot read may cover; each is logged.
+fn remove_scheduled(
+    editor: &mut Editor<'_>,
+    mut to_remove: HashSet<u64>,
+    forced: bool,
+) -> Result<(), Bpv7Error> {
+    while !to_remove.is_empty() {
+        match editor.remove_blocks(&to_remove) {
+            Ok(_) => return Ok(()),
+            Err(editor::Error::ShrinksEncryptedBib { block, bib })
+                if forced && to_remove.insert(bib) =>
+            {
+                info!(
+                    "Block {block} is removed with encrypted BIB {bib}, which also covers a block that stays"
+                );
+            }
+            Err(error) => match refused_removal(&error).filter(|n| to_remove.remove(n)) {
+                // A block the RFCs require gone stays, and the bundle
+                // travels on with it: the operator should see that.
+                Some(block) if forced => warn!(
+                    "Block {block} stays as received, though it must go (RFC 9172 §5.1.1, RFC 9171 §5.6): {error}"
+                ),
+                Some(block) => info!("Block {block} stays as received: {error}"),
+                None => match error {
+                    editor::Error::Bpsec(e) => return Err(e.into()),
+                    editor::Error::Builder(builder::Error::InternalError(e)) => return Err(e),
+                    error => Err(error).trace_expect("The scheduled block removals failed"),
+                },
+            },
         }
-        let hardy_bpv7::parse::Parsed {
-            data, bundle: raw, ..
-        } = hardy_bpv7::parse::parse(data).trace_expect("The stored bundle's bytes do not decode");
-        let key_source = self.key_source(&raw, &data);
-        let to_remove = bundle.metadata.to_remove.iter().copied().collect();
-        let (editor, _) = hardy_bpv7::editor::Editor::new(&raw, &data)
-            .remove_blocks(to_remove, key_source.as_ref())
-            .map_err(|(_, e)| e)
-            .trace_expect("The scheduled block removals failed");
-        let (stripped, chunks) = editor
-            .rebuild_bundle()
-            .trace_expect("The scheduled block removals failed to rebuild the bundle");
-        bundle.bpv7.blocks = stripped.blocks;
-        hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data)
     }
+    Ok(())
+}
+
+// The scheduled removal the cascade refused, which stays: one that would
+// shrink an encrypted BIB, or one an encrypted BIB this node cannot read
+// may cover.
+fn refused_removal(error: &editor::Error) -> Option<u64> {
+    match error {
+        editor::Error::ShrinksEncryptedBib { block, .. } | editor::Error::MaybeHasBib(block) => {
+            Some(*block)
+        }
+        _ => None,
+    }
+}
+
+// The security operations on `block` accepted at ingress, `services`,
+// removed from it: its BCB operation, by writing the plaintext the
+// editor's cache holds, then its BIB operation; one not accepted stays.
+// Removing the BCB operation takes with it, all or
+// none, those on the encrypted BIB over the block and on that BIB's other
+// targets (RFC 9172 §3.9), each a block this node accepts too, whose
+// plaintext the cache holds; one an earlier acceptance already removed so
+// is left as it is. Every refusal is of an operation the header pass or the
+// gate has checked, so it is a BPA bug, and fatal.
+fn accept_operations(
+    editor: &mut Editor<'_>,
+    number: u64,
+    block: &block::Block,
+    services: SecurityServices,
+) {
+    if services.confidentiality && block.bcb.is_some() {
+        match editor.remove_encryption(number) {
+            Ok(()) => {}
+            Err(e) if taken_already(&e) => {}
+            Err(e) => Err(e).trace_expect("The acceptance of a block's BCB failed"),
+        }
+    }
+    if services.integrity && matches!(block.bib, block::BibCoverage::Some(_)) {
+        match editor.remove_integrity(number) {
+            Ok(()) => {}
+            Err(e) if taken_already(&e) => {}
+            Err(e) => Err(e).trace_expect("The acceptance of a block's BIB failed"),
+        }
+    }
+}
+
+// Whether `error` says the operation was already gone: an earlier acceptance
+// took this block's BCB operation with its own, or removed the encrypted BIB
+// it named once that BIB emptied.
+fn taken_already(error: &editor::Error) -> bool {
+    matches!(
+        error,
+        editor::Error::NoSuchBlock(_) | editor::Error::NotEncrypted | editor::Error::NotSigned
+    )
+}
+
+// The storage name of a bundle an output door loads: every record in the
+// pipeline has its data stored.
+fn stored_name(bundle: &bundle::Bundle) -> &str {
+    bundle
+        .metadata
+        .storage_name
+        .as_ref()
+        .trace_expect("Bundle without storage_name reached an output door")
 }
 
 // Fixtures shared by the dispatcher's submodule tests.
 #[cfg(test)]
 pub mod tests {
     use hardy_bpv7::eid::{IpnNodeId, NodeId};
+    #[cfg(feature = "rfc9173")]
+    use hardy_bpv7::{
+        bpsec::{
+            encryptor::{Context, Encryptor},
+            key::{EncAlgorithm, Key, Operation, Type},
+        },
+        builder::Builder,
+        bundle::Flags,
+        creation_timestamp::CreationTimestamp,
+        parse::parse,
+    };
+    #[cfg(feature = "rfc9173")]
+    use rand::{TryRng, rngs::SysRng};
 
     use super::*;
     use crate::{
+        filter::pack::FilterPack,
+        keys::{KeyProvider, NullKeyProvider},
         node_ids::NodeIds,
         storage::{BundleMemStorage, MetadataMemStorage},
     };
 
-    // A dispatcher over the given stores, with no filters, no legacy peers
-    // and no status reports.
+    // The test dispatcher's configuration: no status reports, no size cap, no
+    // primary-integrity requirement and no legacy peers.
+    pub fn config() -> Config {
+        Config {
+            status_reports: false,
+            poll_channel_depth: NonZeroUsize::new(16).unwrap(),
+            processing_pool_size: NonZeroUsize::new(4).unwrap(),
+            max_bundle_size: None,
+            primary_block_integrity: false,
+            ipn_legacy_peers: Vec::new(),
+        }
+    }
+
+    // A dispatcher over the given stores, configured by `config`, with no
+    // filters and no keys.
     pub async fn dispatcher(
         metadata_store: Arc<MetadataMemStorage>,
         data_store: Arc<BundleMemStorage>,
+    ) -> Arc<Dispatcher> {
+        dispatcher_with(
+            metadata_store,
+            data_store,
+            config(),
+            Arc::new(NullKeyProvider),
+            Vec::new(),
+        )
+        .await
+    }
+
+    // A dispatcher over the given stores, configuration, key provider and
+    // filter packs.
+    pub async fn dispatcher_with(
+        metadata_store: Arc<MetadataMemStorage>,
+        data_store: Arc<BundleMemStorage>,
+        config: Config,
+        key_provider: Arc<dyn KeyProvider>,
+        packs: Vec<FilterPack>,
     ) -> Arc<Dispatcher> {
         let store = Arc::new(storage::store::Store::new(
             NonZeroUsize::new(16).unwrap(),
@@ -515,23 +765,52 @@ pub mod tests {
             .build(node_ids.clone(), store.clone())
             .await
             .unwrap();
-        let filters = crate::filter::pack::chains::FilterChains::freeze(Vec::new());
-        let (dispatcher, _start) = Dispatcher::new(
-            Config {
-                status_reports: false,
-                poll_channel_depth: NonZeroUsize::new(16).unwrap(),
-                processing_pool_size: NonZeroUsize::new(4).unwrap(),
-                max_bundle_size: None,
-                primary_block_integrity: false,
-                bundle_age_required: false,
-                ipn_legacy_peers: Vec::new(),
-            },
-            node_ids,
-            store,
-            rib,
-            Arc::new(crate::keys::NullKeyProvider),
-            filters,
-        );
+        let filters = FilterChains::freeze(packs);
+        let (dispatcher, _start) =
+            Dispatcher::new(config, node_ids, store, rib, key_provider, filters);
         dispatcher
+    }
+
+    // A bundle to `destination`, reporting to it, whose payload is under a
+    // BCB, under a key generated per the no-literal-keys rule.
+    #[cfg(feature = "rfc9173")]
+    pub fn encrypted_payload_to(destination: &str) -> (hardy_bpv7::Bundle, Bytes) {
+        let mut key_bytes = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut key_bytes).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(key_bytes),
+            key_algorithm: None,
+            enc_algorithm: Some(EncAlgorithm::A256GCM),
+            operations: Some(
+                [Operation::Encrypt, Operation::Decrypt]
+                    .into_iter()
+                    .collect(),
+            ),
+            id: Some("ipn:2.1".into()),
+            key_use: None,
+        };
+        let destination: Eid = destination.parse().unwrap();
+        let (built, data) = Builder::new("ipn:0.2.1".parse().unwrap(), destination.clone())
+            .with_report_to(destination)
+            .with_flags(Flags {
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_lifetime(core::time::Duration::from_secs(3600))
+            .with_payload(b"secret".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let mut encryptor = Encryptor::new(&built, &data);
+        encryptor
+            .encrypt_block(
+                1,
+                Context::AES_GCM(Default::default()),
+                "ipn:0.2.1".parse().unwrap(),
+                &key,
+            )
+            .expect("encrypt the payload");
+        let encrypted = Bytes::from(encryptor.rebuild().expect("rebuild the encrypted bundle"));
+        let parsed = parse(encrypted).expect("the encrypted bundle parses");
+        (parsed.bundle, parsed.data)
     }
 }

@@ -505,6 +505,7 @@ fn byte_by_byte_push_of_tag24_block_data_streams_the_payload() {
     // this is receive-side interop input by construction.
     let full = hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240"
+        "85070200004100" // Bundle Age block 2: no creation time (RFC 9171 §4.4.2)
         "8501010000d8184548454c4c4f"
         "ff"
     );

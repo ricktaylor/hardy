@@ -16,6 +16,7 @@
 //! for architectural context.
 
 use core::cmp::Ordering;
+use trace_err::*;
 
 use futures::{FutureExt, join, select_biased};
 use hardy_async::{Notify, TaskPool, sync::Mutex};
@@ -99,7 +100,10 @@ impl Reaper {
                     return;
                 }
             } else {
-                let last_expiry = cache.last().map(|e| e.expiry).unwrap();
+                let last_expiry = cache
+                    .last()
+                    .map(|e| e.expiry)
+                    .trace_expect("a full cache has a last entry");
                 if new_expiry < last_expiry {
                     cache.pop_last();
                     if !cache.insert(new_entry) {
@@ -158,7 +162,12 @@ impl Reaper {
                     if entry.expiry >= now {
                         break;
                     }
-                    dead_bundle_ids.push(cache.pop_first().unwrap().id);
+                    dead_bundle_ids.push(
+                        cache
+                            .pop_first()
+                            .trace_expect("the entry just read is still first")
+                            .id,
+                    );
                 }
                 cache.is_empty()
             };

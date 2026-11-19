@@ -61,6 +61,8 @@ The `Store` struct is the central coordinator for all storage operations. It hol
 
 The storage subsystem defines two core traits that backends must implement. See rustdoc for full API details.
 
+**A storage call succeeds or the node stops.** A backend rides out a transient failure inside the call and panics on one it cannot recover from, so nothing above it handles a storage failure. A load is no exception: its stream never fails, and yields exactly the bytes saved. A call that must succeed or panic needs no `Result`, so the target traits return their values directly. The traits still return `Result`, and the `Store` stands in for the backend's panic: it logs an `Err` and aborts the process, so the contract already holds above the `Store` ([refactor_plan.md](refactor_plan.md) removes the `Result`).
+
 ### BundleStorage
 
 The `BundleStorage` trait manages binary bundle data as opaque blobs. Implementations handle recovery (walking stored files), load/save by storage name, and deletion. The trait is designed for large data with infrequent access.
@@ -332,12 +334,13 @@ flowchart TD
 ### Store (Two-Phase Atomic)
 
 ```
-1. save_data(bytes)
+1. save(stream, max_size)
+   → concat_stream(stream, max_size) → bytes
    → bundle_storage.save(bytes) → returns storage_name
    → cache if size < max_cached_bundle_size
 
 2. store(bundle, data)
-   → save_data(data) → storage_name
+   → save(data, its length) → storage_name
    → bundle.metadata.storage_name = storage_name
    → metadata_storage.insert(bundle)
    → if insert fails (duplicate): delete_data(storage_name)
@@ -346,8 +349,8 @@ flowchart TD
 ### Load
 
 ```
-load_data(storage_name)
-   → bundle_storage.load(storage_name)
+load(storage_name)
+   → bundle_storage.load(storage_name), yielded as a one-segment stream
       (CachedBundleStorage: pop a cached copy, else the inner backend's load)
 ```
 

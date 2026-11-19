@@ -8,26 +8,27 @@ The pipeline turns untrusted wire bytes into a validated bundle while keeping th
 
 - **Wire truth vs operational meaning.** bpv7 decides only what the bytes *are* — structure and BPSec validity. What they *mean* operationally — hop-limit enforcement, which failures should reject a bundle, whether to accept or merely verify a security operation — is the consumer's business. Keeping that line sharp is what lets bpv7 be reused unchanged by very different callers.
 - **Mechanism, not policy.** The validation helpers are fact-producers: they report outcomes (decrypted / NoKey / decrypt-failed, block coverage, unsupported-block classification) and never themselves decide accept-or-reject. The consumer layers policy on top of the facts. Because the helpers are also non-mutating, the (read-only) ones can be run in parallel by a filter framework.
-- **Composability.** Each stage is a small helper a caller can use on its own, with one composed entry point — `verify` — for the common keyed pass, so callers get the load-bearing ordering for free rather than re-stitching it (and drifting).
+- **Composability.** Each stage is a small helper a caller can use on its own, with one composed entry point — `Parsed::check` — for the common keyed pass, so callers get the load-bearing ordering for free rather than re-stitching it (and drifting).
 
 ## Architecture Overview
 
-A bundle moves through three layers, lowest to highest. The lower two are pure bpv7 mechanism; policy sits above them in the consumer, primarily the BPA's keyed parse pipelines (`bpa/src/bundle/parse.rs`).
+A bundle moves through four stages, lowest to highest, each pure bpv7 mechanism; policy sits above them in the consumer, primarily the BPA's keyed parse pipelines (`bpa/src/bundle/arrival/`).
 
-1. **Structural parse** (`parse::parse`) — keyless. Decodes the CBOR into a `Bundle` (primary block plus a map of canonical blocks) and the BPSec OperationSets. Having no keys, it cannot read the target list of a BCB-encrypted BIB, so it conservatively marks every block such a BIB *might* cover as "maybe covered" (see *Coverage stamping*).
-2. **Keyed validation** (`checks`) — the §A–§C steps: keyless classification (§A) plus the keyed decrypt/verify steps (§B, §C8, §C7), composed by `checks::verify`.
-3. **Rewrite application** (`rewrite::apply_rewrites`) — §E: applies block removals and canonical re-emits through the BPSec-aware editor cascade, returning the new wire bytes.
+1. **Structural parse** (`parse::parse`) — keyless. Decodes the CBOR into a `Bundle` (primary block plus a map of canonical blocks), the BPSec OperationSets, and the values of the Previous Node, Bundle Age and Hop Count blocks no BCB covers (`Parsed::per_hop`), rejecting one whose data does not decode (RFC 9171 §5.6 Step 3), and a bundle without a creation time that carries no Bundle Age block (§4.4.2). Having no keys, it cannot read the target list of a BCB-encrypted BIB, so it conservatively marks every block such a BIB *might* cover as "maybe covered" (see *Coverage stamping*).
+2. **Keyless classification** (`Parsed::classification`, at the parser's tail) — §A: the blocks this node cannot process, `Type::Unrecognised` blocks (A1), BCBs (A2) and plaintext BIBs (A3) with an unsupported security operation, classified by their flags, with the deletion one of them may demand.
+3. **Keyed check** (`bpsec::checks`, `Parsed::check`) — the §B–§C steps: the security operations checked in this node's roles on each block, the acceptor's decryption, §B by necessity and §C8, the verifier's decryption of its own block into the cache, §C8, and the integrity checks, §C7, in one pass.
+4. **Rewrite application** (`rewrite::apply_rewrites`) — §E: applies block removals and canonical re-emits through the BPSec-aware editor cascade, returning the new wire bytes.
 
 The §-sections, in execution order:
 
 | § | Stage | Keys? | What it establishes |
 |---|---|---|---|
-| A1 / A2 / A3 | classify unrecognised blocks / unsupported BCBs / unsupported BIBs | no | which blocks this node cannot process (delete/report facts; a hard error on `delete_bundle_on_failure`) |
-| B | decrypt & validate BCB-encrypted BIBs | yes | the real targets of encrypted BIBs, replacing "maybe" coverage |
+| A1 / A2 / A3 | classify unrecognised blocks / unsupported BCBs / unsupported BIBs | no | which blocks this node cannot process (delete/report facts; a hard error on `delete_bundle_on_failure`). An unrecognised block (A1) is every receiver's; an unsupported security operation (A2, A3) is its acceptor's, which `check` records as `Unsupported` outcomes, never processed, and which elsewhere travels untouched |
+| B | decrypt & validate the BCB-encrypted BIBs under a BCB from an accepted block's security source | yes | the real targets of those BIBs, replacing "maybe" coverage |
 | B6 | resolve residual "maybe" coverage | no | finalised coverage, once every encrypted BIB is accounted for |
-| C8 | decrypt BCB-protected `PreviousNode` / `BundleAge` / `HopCount` | yes | plaintext extension-block bodies (or NoKey / decrypt-failed) |
+| C8 | decrypt the blocks the consumer accepts, the per-hop blocks at a receiver | yes | plaintext block bodies in the cache (or NoKey / decrypt-failed) |
 | C7 | verify every BIB | yes | the integrity of each covered block |
-| D | decode extension-block fields | reads §C8 output | typed field values + canonical re-emit candidates (in the consumer) |
+| D | decode the per-hop blocks §C8 decrypted | reads the cache | their values, beside those the parse decoded (`PerHopFields::decode`, in the consumer) |
 | E | apply rewrites | yes | the rewritten wire bytes |
 
 The letters are stage *names*, not a strict numeric sequence — the numbering is historical (from the original step list), which is why `C8` runs before `C7`.
@@ -36,19 +37,21 @@ The letters are stage *names*, not a strict numeric sequence — the numbering i
 
 ### Policy-free fact-producers
 
-The `checks` helpers return facts rather than verdicts because the same security outcome means different things to different callers: at BPA ingress a wrong key may mean "drop the corrupt block", at delivery it means "drop the bundle", and in the fuzz harness it means nothing at all. Encoding any one of those choices into bpv7 would force the others to fight it. Returning the raw outcome (and leaving `accept`/`reject`/`ignore` to the caller) is also what enables the BPA's Verifier/Acceptor role model, and — because a fact-producer need not mutate the bundle — lets read-only checks run concurrently.
+`bpsec::checks` returns facts rather than verdicts because the same security outcome means different things to different callers: at BPA ingress a wrong key may mean "drop the corrupt block", at delivery it means "drop the bundle", and in the fuzz harness it means nothing at all. Encoding any one of those choices into bpv7 would force the others to fight it. Returning the raw outcome (and leaving `accept`/`reject`/`ignore` to the caller) is also what enables the BPA's Verifier/Acceptor role model, and — because a fact-producer need not mutate the bundle — lets read-only checks run concurrently.
+
+No verdict is bpv7's. A failed target is discarded, but a bundle cannot lose its primary block, its payload (RFC 9171 §4.1), or, without a creation time, its Bundle Age (§4.4.2), which it also loses when this node holds no key for it: the consumer deletes the bundle for those, as their fate, from the same outcomes; bpv7 records them.
 
 ### Eager "maybe" coverage, resolved after decryption
 
-The structural parser cannot read a BCB-encrypted BIB's target list, so at parse time it genuinely does not know which blocks that BIB covers. Rather than fail, guess, or demand keys at the structural layer, it marks every candidate `BibCoverage::Maybe`; §B then decrypts the BIB and rewrites those marks to the real `BibCoverage::Some(bib)`, and §B6 collapses any leftover `Maybe` to `None` once all encrypted BIBs are resolved. The practical consequence is a safety rule: a `Maybe` block must not be removed before resolution, because a still-hidden BIB might depend on it.
+The structural parser cannot read a BCB-encrypted BIB's target list, so at parse time it genuinely does not know which blocks that BIB covers. Rather than fail, guess, or demand keys at the structural layer, it marks every candidate `BibCoverage::Maybe` but a Previous Node or Bundle Age block, which no valid bundle has under an encrypted BIB (only the forwarder that inserted one can source an operation on it, and RFC 9172 §3.9 forbids it a BIB and then a BCB on one target), so a reader without the BIB's key treats either as covered by none; §B, run by the BIB's acceptor, then decrypts the BIB and rewrites those marks to the real `BibCoverage::Some(bib)`, and §B6 collapses any leftover `Maybe` to `None` once all encrypted BIBs are resolved. A node that is not the BIB's acceptor leaves it encrypted and the marks in place: RFC 9172 §3.9 forbids checking a BIB that is the target of a BCB. An editor given a key source (`Editor::with_key_source`) resolves a `Maybe` itself when an operation meets one, decrypting the encrypted BIBs until one lists the block. The practical consequence is a safety rule: a `Maybe` block must not be removed before resolution, because a still-hidden BIB might depend on it.
 
 ### Execution order §B → §C8 → §C7
 
-Verification (§C7) reads plaintext recovered earlier: encrypted BIB bodies from §B and encrypted extension blocks from §C8. Because a BIB may cover an extension block, decryption has to precede verification — so `verify` always runs the steps in this order and threads one shared decrypted-plaintext map through them. This ordering is the main reason the three keyed steps are composed into a single entry point rather than left to each call site.
+Verification (§C7) reads plaintext recovered earlier: encrypted BIB bodies from §B and encrypted blocks from §C8, through the one cache (`bpsec::Decrypted`) that the decryptions fill and the integrity checks read. Because a BIB may cover an encrypted block, decryption has to precede verification, so `Parsed::check` runs them in that order in one pass, over the roles the consumer names by block number (`bpsec::Roles`), confidentiality's role deciding how a block is decrypted, as an acceptor's with the blocks coupled to it or as a verifier's alone, and an integrity role, either one, which BIB operations are checked; the call's `others` is this node's roles on every block the map does not name, so a verifier of everything readable names none. §B runs only by necessity: when a block this node accepts is BCB-covered beside an encrypted BIB, which may carry an operation on it (on a Previous Node or Bundle Age block, only in an invalid bundle, which the decryption proves and the check records as conflicting). Which blocks a node accepts is the consumer's to say: the BPA's header pass names every Previous Node and Bundle Age block and a Hop Count it holds the key for, and its ingress gate the blocks its filters announce, learnt after the header pass; a caller inspecting the bundle with its user's keys removes the encryption it accepts with `BPSecEditor::remove_encryption`, which decrypts and checks the BIBs coupled to it.
 
 ### Extension-field decode (§D) lives in the BPA, not bpv7
 
-`PreviousNode` / `BundleAge` / `HopCount` values are operational meaning, not wire truth, so they are decoded where they are consumed (`bpa/src/bundle/parse.rs`) rather than cached permanently on the bpv7 `Bundle`. Keeping them out of bpv7 avoids entrenching a typed field cache that the streaming refactor intends to remove, and matches its decode-on-demand seam (byte availability differs by phase: an in-memory header buffer early, a storage stream later).
+`PreviousNode` / `BundleAge` / `HopCount` values are operational meaning, not wire truth, so they are decoded where they are consumed (`bpa/src/bundle/arrival/`) rather than cached permanently on the bpv7 `Bundle`. Keeping them out of bpv7 avoids entrenching a typed field cache that the streaming refactor intends to remove, and matches its decode-on-demand seam (byte availability differs by phase: an in-memory header buffer early, a storage stream later).
 
 ### The keyless / keyed seam
 
@@ -56,7 +59,7 @@ Classification (§A) and the per-OperationSet structural checks (`bpsec::{bib,bc
 
 ## Integration
 
-bpv7 supplies the mechanism; the BPA's `bundle::parse` module (`bpa/src/bundle/parse.rs`) composes it with BPA policy — the NoKey disposition, which failures reject, the §D field cache, and the status-report reason mapping. The bpv7 CLI tools (`bpv7/tools`), the fuzz harness (`bpv7/fuzz`), and the integration tests (`bpv7/tests`) compose the same sections for their own purposes. The BPSec edit cascade that §E drives lives in `bpsec::edit`, layered over the keyless `editor`.
+bpv7 supplies the mechanism; the BPA's `bundle::arrival` module (`bpa/src/bundle/arrival/`) composes it with BPA policy — the NoKey disposition, which failures reject, the §D field cache, and the status-report reason mapping. The bpv7 CLI tools (`bpv7/tools`), the fuzz harness (`bpv7/fuzz`), and the integration tests (`bpv7/tests`) compose the same sections for their own purposes. The BPSec edit cascade that §E drives lives in `bpsec::edit`, layered over the keyless `editor`.
 
 ## Standards Compliance
 

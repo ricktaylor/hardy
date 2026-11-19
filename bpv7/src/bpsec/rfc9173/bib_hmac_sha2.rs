@@ -141,7 +141,7 @@ impl ToCbor for Results {
 
 /// Incremental verifier for one HMAC-SHA2 payload-target operation.
 ///
-/// Created by the crate's streaming `begin_verify` with every
+/// Created by [`bib::Operation::begin_verify`] with every
 /// header-resident IPPT part already absorbed; the caller feeds the target's
 /// block-type-specific data through [`update`](Self::update) as it streams
 /// past, then settles the operation with [`finish`](Self::finish).
@@ -150,9 +150,8 @@ impl ToCbor for Results {
 /// resolved content-encryption key — so it is deliberately `Send` and may
 /// cross `await` points and task boundaries: the streamed target's bytes
 /// are not resident, so the keyed state must live for the duration of the
-/// drain. This is a recorded exception to the header pass's
-/// no-key-material-across-awaits rule. The CEK copy `begin_verify` resolves
-/// is zeroized once the MAC is keyed, but the MAC state itself — the `hmac`
+/// drain. The CEK copy `begin_verify` resolves is zeroized once the MAC is
+/// keyed, but the MAC state itself — the `hmac`
 /// crate's inner and outer pads, derived from the key — is not zeroized
 /// when the verifier drops: the crate's zeroize support is not enabled.
 #[must_use = "an unfinished verifier is an unchecked integrity statement — call finish()"]
@@ -212,14 +211,14 @@ impl MacInner {
 
 impl Verifier {
     /// Absorb the next run of the target's block-type-specific data.
-    pub fn update(&mut self, bytes: &[u8]) {
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
         self.mac.update(bytes);
     }
 
     /// Settle the operation: every byte of the target's data has been
     /// absorbed. Fails with [`Error::IntegrityCheckFailed`] on tag mismatch
     /// (constant-time comparison).
-    pub fn finish(self) -> Result<(), Error> {
+    pub(crate) fn finish(self) -> Result<(), Error> {
         if self.mac.verify_tag(&self.expected) {
             Ok(())
         } else {
@@ -302,11 +301,11 @@ fn ippt_prefix(
     if flags.include_security_header {
         let source_block = args
             .blocks
-            .block_header(args.source)
+            .block_header(args.security_block)
             .ok_or(Error::MissingSecurityTarget)?;
         let mut encoder = Encoder::new();
         encoder.emit(&source_block.block_type);
-        encoder.emit(&args.source);
+        encoder.emit(&args.security_block);
         encoder.emit(&source_block.flags);
         mac.update(&encoder.build());
     }
@@ -416,13 +415,13 @@ pub struct Operation {
 }
 
 impl Operation {
-    pub fn is_unsupported(&self) -> bool {
+    pub(crate) fn is_unsupported(&self) -> bool {
         matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
     // Whether the integrity scope puts the primary block in this
     // operation's IPPT (RFC 9173 §3.7 step 2).
-    pub fn scope_includes_primary(&self) -> bool {
+    pub(crate) fn scope_includes_primary(&self) -> bool {
         self.parameters
             .flags
             .clone()
@@ -457,9 +456,11 @@ impl Operation {
 
     /// Begin incremental verification of this operation against a target
     /// whose block-type-specific data is not resident (the streaming
-    /// ingress drain). Absorbs every header-resident IPPT part — the
-    /// target's data length comes from its parsed extent — and returns the
-    /// [`Verifier`] the caller feeds as the data streams past.
+    /// ingress drain). Absorbs every header-resident IPPT part and the head
+    /// of the target's byte string, sized `target_len`, and returns the
+    /// [`Verifier`] the caller feeds exactly `target_len` bytes as the data
+    /// streams past: the received data's parsed extent, or the plaintext of
+    /// a target this node decrypted.
     ///
     /// The resolved key material is *copied* into the returned MAC state
     /// (see [`Verifier`] for the recorded key-handling exception).
@@ -468,6 +469,7 @@ impl Operation {
         &self,
         key_source: &K,
         args: &bib::OperationArgs,
+        target_len: u64,
     ) -> Result<Verifier, Error>
     where
         K: key::KeySource + ?Sized,
@@ -475,17 +477,11 @@ impl Operation {
         let mut mac = self.prepared_mac(key_source, args)?;
 
         // The streamed target's bytes are not resident, so the byte-string
-        // head sizes from the parsed extent — the drain feeds exactly that
-        // many bytes through `Verifier::update`. (The resident `verify` path
-        // sizes its head from the payload's own length in
+        // head sizes from the length the caller will feed. (The resident
+        // `verify` path sizes its head from the payload's own length in
         // `absorb_resident_target`, because the editor's in-flight template
         // carries a placeholder `Block.data` range.)
-        let target_block = args
-            .blocks
-            .block_header(args.target)
-            .ok_or(Error::MissingSecurityTarget)?;
-        let extent_len = target_block.data.end - target_block.data.start;
-        mac.update(&emit(&hardy_cbor::encode::BytesHeader(extent_len)).0);
+        mac.update(&emit(&hardy_cbor::encode::BytesHeader(target_len)).0);
 
         Ok(Verifier {
             mac,
@@ -501,7 +497,7 @@ impl Operation {
     /// every other primitive — [`prepared_mac`](Self::prepared_mac) for the
     /// IPPT header, `absorb_resident_target` for the resident head + body,
     /// and [`Verifier::finish`] for the constant-time settle.
-    pub fn verify<K>(&self, key_source: &K, args: &bib::OperationArgs) -> Result<(), Error>
+    pub(crate) fn verify<K>(&self, key_source: &K, args: &bib::OperationArgs) -> Result<(), Error>
     where
         K: key::KeySource + ?Sized,
     {
@@ -521,64 +517,67 @@ impl Operation {
     where
         K: key::KeySource + ?Sized,
     {
-        let cek = self.resolve_cek_owned(key_source, args.bpsec_source)?;
+        // The MAC key: the unwrapped CEK in key-wrap mode, a copy of the key
+        // source's key in direct mode. Owned and wiped, because a streaming
+        // verifier outlives the key source's borrow; the resident path pays
+        // one small key copy for the shared code path.
+        let jwk = self.verification_key(key_source, args.source)?;
+        if Some(self.parameters.variant) != as_variant(jwk.key_algorithm) {
+            return Err(Error::IntegrityCheckFailed);
+        }
+        let key::Type::OctetSequence { key } = &jwk.key_type else {
+            return Err(Error::IntegrityCheckFailed);
+        };
+        let cek = match &self.parameters.key {
+            Some(wrapped_cek) => jwk
+                .key_algorithm
+                .and_then(KeyWrap::from_alg)
+                .ok_or(Error::IntegrityCheckFailed)?
+                .unwrap_key(key.expose_secret(), wrapped_cek)
+                .map_err(|_| Error::IntegrityCheckFailed)?,
+            None => zeroize::Zeroizing::from(Box::from(key.expose_secret())),
+        };
         let mut mac = MacInner::new(self.parameters.variant, &cek)?;
         ippt_prefix(&mut mac, &self.parameters.flags, args)?;
         Ok(mac)
     }
 
-    // The single verification-key resolver, shared by `verify` and
-    // `begin_verify`: the unwrapped CEK in key-wrap mode, a copy of the
-    // KeySource's key in direct mode — owned, because a streaming verifier
-    // outlives the KeySource borrow (the resident path pays one small key
-    // copy for the shared code path).
-    fn resolve_cek_owned<K>(
-        &self,
-        key_source: &K,
-        bpsec_source: &eid::Eid,
-    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error>
+    /// Whether `key_source` holds a key this operation can verify with,
+    /// looked up as [`verify`](Self::verify) looks it up, without
+    /// verifying.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoKey`] when it holds none. A key that is present but wrong
+    /// for the result still fails at `verify`, as
+    /// [`Error::IntegrityCheckFailed`].
+    pub(crate) fn require_key<K>(&self, key_source: &K, source: &eid::Eid) -> Result<(), Error>
     where
         K: key::KeySource + ?Sized,
     {
-        if let Some(wrapped_cek) = &self.parameters.key {
-            let jwk = key_source
-                .key(
-                    bpsec_source,
-                    &[key::Operation::UnwrapKey, key::Operation::Verify],
-                )
-                .ok_or(Error::NoKey)?;
-
-            if Some(self.parameters.variant) != as_variant(jwk.key_algorithm) {
-                return Err(Error::IntegrityCheckFailed);
-            }
-
-            let key::Type::OctetSequence { key } = &jwk.key_type else {
-                return Err(Error::IntegrityCheckFailed);
-            };
-
-            jwk.key_algorithm
-                .and_then(KeyWrap::from_alg)
-                .ok_or(Error::IntegrityCheckFailed)?
-                .unwrap_key(key.expose_secret(), wrapped_cek)
-                .map_err(|_| Error::IntegrityCheckFailed)
-        } else {
-            let jwk = key_source
-                .key(bpsec_source, &[key::Operation::Verify])
-                .ok_or(Error::NoKey)?;
-
-            if Some(self.parameters.variant) != as_variant(jwk.key_algorithm) {
-                return Err(Error::IntegrityCheckFailed);
-            }
-
-            let key::Type::OctetSequence { key } = &jwk.key_type else {
-                return Err(Error::IntegrityCheckFailed);
-            };
-
-            Ok(zeroize::Zeroizing::from(Box::from(key.expose_secret())))
-        }
+        self.verification_key(key_source, source).map(|_| ())
     }
 
-    pub fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
+    // The key verification needs, as the security source keyed the
+    // operation: a key-encryption key in key-wrap mode, the MAC key in
+    // direct mode. The one lookup `prepared_mac` and `require_key` share.
+    fn verification_key<'k, K>(
+        &self,
+        key_source: &'k K,
+        source: &eid::Eid,
+    ) -> Result<&'k key::Key, Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        let operations: &[key::Operation] = if self.parameters.key.is_some() {
+            &[key::Operation::UnwrapKey, key::Operation::Verify]
+        } else {
+            &[key::Operation::Verify]
+        };
+        key_source.key(source, operations).ok_or(Error::NoKey)
+    }
+
+    pub(crate) fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
         encoder.emit(&Context::BIB_HMAC_SHA2);
         if self.parameters.as_ref() == &Parameters::default() {
             encoder.emit(&0);
@@ -590,7 +589,7 @@ impl Operation {
         }
     }
 
-    pub fn emit_result(&self, array: &mut Array) {
+    pub(crate) fn emit_result(&self, array: &mut Array) {
         array.emit(&self.results);
     }
 }

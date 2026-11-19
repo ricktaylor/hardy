@@ -3,23 +3,41 @@
 //! services that need a contiguous bundle.
 
 use core::{num::NonZeroU64, time::Duration};
+#[cfg(feature = "rfc9173")]
+use hardy_bpa::keys::KeyProvider;
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
+    builder::BpaBuilder,
     cla,
+    filter::{RewriteContext, Rewriter, pack::FilterPack},
     node_ids::NodeIds,
     services,
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
+#[cfg(feature = "rfc9173")]
 use hardy_bpv7::{
+    Bundle,
+    bpsec::{
+        encryptor::{Context, Encryptor},
+        key::{EncAlgorithm, Key, KeySet, KeySource, Operation, Type},
+        rfc9173::ScopeFlags,
+    },
+};
+use hardy_bpv7::{
+    // Aliased: the key `Type` from bpsec is imported above.
+    block::{self, Type as BlockType},
     builder::Builder,
     bundle::{Flags, Id},
+    crc::CrcType,
     creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId, Service},
     parse::parse,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
+#[cfg(feature = "rfc9173")]
+use rand::{TryRng, rngs::SysRng};
 use std::{
     borrow::Cow,
     sync::{
@@ -30,15 +48,15 @@ use std::{
 // ---------------------------------------------------------------------------
 
 enum Event {
-    /// The buffering service assembled the whole bundle.
+    // The buffering service assembled the whole bundle.
     Received(Id, Bytes),
-    /// The streaming service pulled the stream to completion.
+    // The streaming service pulled the stream to completion.
     Streamed {
         bundle_id: Id,
         segments: Vec<Segment>,
         total_len: u64,
     },
-    /// The delivery failed.
+    // The delivery failed.
     Failed,
 }
 
@@ -46,11 +64,11 @@ enum Event {
 // Mock services
 // ---------------------------------------------------------------------------
 
-/// Consumes the stream segment by segment, recording every segment it pulls.
+// Consumes the stream segment by segment, recording every segment it pulls.
 struct StreamingService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     events_tx: flume::Sender<Event>,
-    /// When set, every `on_deliver` call fails without pulling.
+    // When set, every `on_deliver` call fails without pulling.
     failing: AtomicBool,
 }
 
@@ -120,8 +138,8 @@ impl services::Service for StreamingService {
     }
 }
 
-/// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
-/// — the shape every whole-buffer service takes on the streamed-only door.
+// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
+// — the shape every whole-buffer service takes on the streamed-only door.
 struct BufferedService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     events_tx: flume::Sender<Event>,
@@ -173,9 +191,9 @@ impl services::Service for BufferedService {
     }
 }
 
-/// Holds every delivery open until released, then either drains the stream
-/// and completes `Ok` or defers with an error: a delivery deliberately
-/// still in flight across the bundle's expiry.
+// Holds every delivery open until released, then either drains the stream
+// and completes `Ok` or defers with an error: a delivery deliberately
+// still in flight across the bundle's expiry.
 struct HoldingService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     failing: bool,
@@ -299,8 +317,8 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
     Bytes::from(data)
 }
 
-/// The identity of a bundle built by [`build_bundle`], for direct
-/// `on_deliver` calls.
+// The identity of a bundle built by [`build_bundle`], for direct
+// `on_deliver` calls.
 fn bundle_id_of(data: &Bytes) -> Id {
     parse(data.clone())
         .expect("Failed to parse built bundle")
@@ -309,8 +327,8 @@ fn bundle_id_of(data: &Bytes) -> Id {
         .id
 }
 
-/// A pre-filled segment stream. The sender is dropped on return, so a
-/// sequence not ending in `Final` reads as a truncated stream.
+// A pre-filled segment stream. The sender is dropped on return, so a
+// sequence not ending in `Final` reads as a truncated stream.
 async fn feed(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment> {
     let (tx, rx) = hardy_async::channel::bounded(segments.len().max(1));
     for segment in segments {
@@ -329,8 +347,8 @@ async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
         .expect("Service event channel closed")
 }
 
-/// Builds a BPA as node ipn:0.1 with an ingress CLA, and dispatches an
-/// inbound bundle from ipn:0.2.1 addressed to the local service ipn:0.1.7.
+// Builds a BPA as node ipn:0.1 with an ingress CLA, and dispatches an
+// inbound bundle from ipn:0.2.1 addressed to the local service ipn:0.1.7.
 async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
@@ -375,10 +393,11 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
 // Full-path tests: deliver_bundle -> on_deliver
 // ---------------------------------------------------------------------------
 
-/// A streaming service receives the whole bundle as a single `Final`
-/// segment with an exact `total_len`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streaming_service_receives_single_final_segment() {
+// Delivers an inbound bundle from ipn:0.2.1 to a streaming service at
+// ipn:0.1.7 on a BPA built from `builder` as node ipn:0.1, and returns what
+// the service pulled: the bundle id, the segments through the `Final`, and
+// the declared `total_len`, with the bundle as it arrived.
+async fn stream_to_service(builder: BpaBuilder) -> (Id, Vec<Segment>, u64, Bytes) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
@@ -387,7 +406,7 @@ async fn streaming_service_receives_single_final_segment() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = builder.node_ids(node_ids).build().await.unwrap();
     bpa.start(false).await;
 
     let (svc, events_rx) = StreamingService::new(false);
@@ -395,6 +414,11 @@ async fn streaming_service_receives_single_final_segment() {
         .await
         .unwrap();
 
+    let inbound = build_bundle(
+        &"ipn:0.2.1".parse().unwrap(),
+        &"ipn:0.1.7".parse().unwrap(),
+        b"ping",
+    );
     let cla = IngressCla::new();
     bpa.register_cla(
         "ingress".to_string(),
@@ -408,15 +432,7 @@ async fn streaming_service_receives_single_final_segment() {
         cla.sink
             .get()
             .unwrap()
-            .dispatch(
-                None,
-                None,
-                &mut build_bundle(
-                    &"ipn:0.2.1".parse().unwrap(),
-                    &"ipn:0.1.7".parse().unwrap(),
-                    b"ping",
-                ),
-            )
+            .dispatch(None, None, &mut inbound.clone())
             .await
             .unwrap(),
         cla::Acceptance::Accepted
@@ -430,29 +446,94 @@ async fn streaming_service_receives_single_final_segment() {
     else {
         panic!("Expected the streamed door, got another event");
     };
-    assert_eq!(segments.len(), 1);
-    let Segment::Final(data) = &segments[0] else {
-        panic!("Expected a single Final segment");
-    };
-    assert_eq!(total_len, data.len() as u64);
 
-    let parsed = parse(data.clone()).expect("Failed to parse delivered bundle");
-    assert_eq!(bundle_id, parsed.bundle.primary.id);
-    assert_eq!(
-        parsed.bundle.primary.id.source,
-        "ipn:0.2.1".parse().unwrap()
-    );
-    assert_eq!(
-        parsed.bundle.primary.destination,
-        "ipn:0.1.7".parse().unwrap()
-    );
-
-    assert!(events_rx.is_empty());
+    // A completed shutdown is the barrier: nothing else reaches the service.
     bpa.shutdown().await;
+    assert!(events_rx.is_empty());
+    (bundle_id, segments, total_len, inbound)
 }
 
-/// A service that buffers via `stream::buffer_stream` still receives the
-/// whole bundle.
+// The segments' bytes, checked to end in exactly one `Final`.
+fn assemble(segments: &[Segment]) -> Bytes {
+    let (last, init) = segments.split_last().expect("at least the Final");
+    assert!(
+        matches!(last, Segment::Final(_)),
+        "the stream ends in a Final"
+    );
+    assert!(
+        init.iter().all(|s| matches!(s, Segment::Next(_))),
+        "only the last segment is a Final"
+    );
+    segments
+        .iter()
+        .flat_map(|(Segment::Next(data) | Segment::Final(data))| data.iter().copied())
+        .collect::<Vec<u8>>()
+        .into()
+}
+
+// A streaming service receives the stored bundle, unedited, ending in a
+// `Final`, with an exact `total_len`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streaming_service_receives_the_stored_bundle() {
+    let (bundle_id, segments, total_len, inbound) = stream_to_service(Bpa::builder()).await;
+    let data = assemble(&segments);
+    assert_eq!(total_len, data.len() as u64);
+    assert_eq!(
+        data, inbound,
+        "an unedited delivery is the bundle as stored"
+    );
+    assert_eq!(bundle_id, parse(data).unwrap().bundle.primary.id);
+}
+
+// A Deliver Rewriter inserting an extension block.
+struct Inserter;
+
+const INSERTED: BlockType = BlockType::Unrecognised(200);
+
+impl Rewriter for Inserter {
+    fn rewrite(&self, ctx: &mut RewriteContext<'_, '_>) {
+        ctx.editor()
+            .insert(
+                INSERTED,
+                block::Flags::default(),
+                CrcType::None,
+                b"inserted".as_slice().into(),
+            )
+            .expect("an unprotected bundle accepts the insert");
+    }
+}
+
+// A Deliver Rewriter's edit reaches a raw service as the rebuilt header
+// region, then the stored payload block: several segments ending in a
+// `Final`, with an exact `total_len`, the insert among the blocks and the
+// payload intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streaming_service_receives_a_rewritten_bundle_as_segments() {
+    let mut pack = FilterPack::new("test");
+    pack.deliver_rewriter("inserter", Inserter);
+    let (bundle_id, segments, total_len, _) =
+        stream_to_service(Bpa::builder().add_filters(pack)).await;
+    assert!(segments.len() > 1, "the rebuilt headers travel apart");
+    let data = assemble(&segments);
+    assert_eq!(total_len, data.len() as u64);
+
+    let parsed = parse(data).expect("the delivered bundle parses");
+    assert_eq!(parsed.bundle.primary.id, bundle_id);
+    let inserted = parsed
+        .bundle
+        .blocks
+        .values()
+        .find(|b| b.block_type == INSERTED)
+        .expect("the Rewriter's insert is delivered");
+    assert_eq!(inserted.payload(&parsed.data), Some(&b"inserted"[..]));
+    assert_eq!(
+        parsed.bundle.blocks[&1].payload(&parsed.data),
+        Some(&b"ping"[..])
+    );
+}
+
+// A service that buffers via `stream::buffer_stream` still receives the
+// whole bundle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_service_receives_whole_bundle() {
     let (bpa, _inbound) = bpa_with_inbound(b"pong").await;
@@ -475,8 +556,8 @@ async fn buffered_service_receives_whole_bundle() {
     bpa.shutdown().await;
 }
 
-/// A failed streamed delivery parks the bundle as WaitingForService, and a
-/// subsequent registration on the same EID re-delivers it.
+// A failed streamed delivery parks the bundle as WaitingForService, and a
+// subsequent registration on the same EID re-delivers it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_delivery_parks_and_redelivers() {
     let (bpa, _inbound) = bpa_with_inbound(b"park me").await;
@@ -507,7 +588,7 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     bpa.shutdown().await;
 }
 
-/// Decode the status report carried by a captured report bundle.
+// Decode the status report carried by a captured report bundle.
 fn decode_report(segments: &[Segment]) -> BundleStatusReport {
     let Some(Segment::Final(report)) = segments.last() else {
         panic!("Expected a whole report bundle");
@@ -525,19 +606,19 @@ fn decode_report(segments: &[Segment]) -> BundleStatusReport {
     status
 }
 
-/// Shared rig for the mid-delivery expiry tests: node ipn:0.1 with report
-/// capture at ipn:0.1.9; bundle A (ipn:0.2.1 → ipn:0.1.7, 2 s lifetime,
-/// deletion report requested) fails a first delivery — parking it as
-/// WaitingForService, on the reaper's watch — and is then re-delivered to a
-/// [`HoldingService`] that holds it open across its expiry. A companion
-/// bundle B (ipn:0.2.2 → ipn:0.1.6, same lifetime, created after A) has no
-/// service at all, so it parks as WaitingForService at dispatch and is
-/// reaped normally: B's LifetimeExpired deletion report is the
-/// deterministic signal that the reaper's expiry pass has run past A's
-/// (earlier) expiry — and popped A's watch entry — while A was verifiably
-/// still held. Had the reaper wrongly reaped in-flight A, A expires first,
-/// so A's report would arrive *before* B's and fail the first source
-/// assertion.
+// Shared rig for the mid-delivery expiry tests: node ipn:0.1 with report
+// capture at ipn:0.1.9; bundle A (ipn:0.2.1 → ipn:0.1.7, 2 s lifetime,
+// deletion report requested) fails a first delivery — parking it as
+// WaitingForService, on the reaper's watch — and is then re-delivered to a
+// [`HoldingService`] that holds it open across its expiry. A companion
+// bundle B (ipn:0.2.2 → ipn:0.1.6, same lifetime, created after A) has no
+// service at all, so it parks as WaitingForService at dispatch and is
+// reaped normally: B's LifetimeExpired deletion report is the
+// deterministic signal that the reaper's expiry pass has run past A's
+// (earlier) expiry — and popped A's watch entry — while A was verifiably
+// still held. Had the reaper wrongly reaped in-flight A, A expires first,
+// so A's report would arrive *before* B's and fail the first source
+// assertion.
 async fn expiry_mid_delivery_rig(
     holding_fails: bool,
 ) -> (
@@ -663,12 +744,12 @@ async fn expiry_mid_delivery_rig(
     (bpa, metadata_store, reports_rx, release_tx)
 }
 
-/// Assert that shutdown leaves no further reports and no live metadata.
-/// shutdown() is the barrier: it joins the pools, so by the time it
-/// returns a wrongly-emitted extra report has either been delivered
-/// (visible on reports_rx) or persisted-then-stranded when the dispatch
-/// channel closed (visible as live metadata). Both are asserted empty; no
-/// quiet window is involved.
+// Assert that shutdown leaves no further reports and no live metadata.
+// shutdown() is the barrier: it joins the pools, so by the time it
+// returns a wrongly-emitted extra report has either been delivered
+// (visible on reports_rx) or persisted-then-stranded when the dispatch
+// channel closed (visible as live metadata). Both are asserted empty; no
+// quiet window is involved.
 async fn assert_fully_resolved(
     bpa: Bpa,
     metadata_store: &MetadataMemStorage,
@@ -691,13 +772,13 @@ async fn assert_fully_resolved(
     );
 }
 
-/// A bundle that expires while its delivery is in flight is resolved
-/// exactly once — by the delivery. Once a delivery has commenced the BPA
-/// is committed: the service consumes the bundle, so a "deleted: lifetime
-/// expired" report would be a lie. The reaper defers the in-flight bundle,
-/// and the released completion wins the terminal claim, reporting the
-/// deletion as a completed delivery (NoAdditionalInformation) — never
-/// LifetimeExpired.
+// A bundle that expires while its delivery is in flight is resolved
+// exactly once — by the delivery. Once a delivery has commenced the BPA
+// is committed: the service consumes the bundle, so a "deleted: lifetime
+// expired" report would be a lie. The reaper defers the in-flight bundle,
+// and the released completion wins the terminal claim, reporting the
+// deletion as a completed delivery (NoAdditionalInformation) — never
+// LifetimeExpired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expiry_mid_delivery_resolves_once() {
     let (bpa, metadata_store, reports_rx, release_tx) = expiry_mid_delivery_rig(false).await;
@@ -720,10 +801,10 @@ async fn expiry_mid_delivery_resolves_once() {
     assert_fully_resolved(bpa, &metadata_store, &reports_rx).await;
 }
 
-/// Deferral does not launder expiry: when the held delivery is instead
-/// *failed* by the service, nothing was consumed — the park from
-/// DeliveryAckPending wins, re-arms the expiry watch, and the reaper then
-/// resolves the expired bundle honestly with LifetimeExpired.
+// Deferral does not launder expiry: when the held delivery is instead
+// *failed* by the service, nothing was consumed — the park from
+// DeliveryAckPending wins, re-arms the expiry watch, and the reaper then
+// resolves the expired bundle honestly with LifetimeExpired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_delivery_expires_honestly() {
     let (bpa, metadata_store, reports_rx, release_tx) = expiry_mid_delivery_rig(true).await;
@@ -751,7 +832,7 @@ fn expiry() -> time::OffsetDateTime {
     time::OffsetDateTime::now_utc() + time::Duration::hours(1)
 }
 
-/// The buffering path reassembles a multi-segment stream.
+// The buffering path reassembles a multi-segment stream.
 #[tokio::test]
 async fn buffering_service_concats_multi_segment_stream() {
     let (svc, events_rx) = BufferedService::new();
@@ -780,7 +861,7 @@ async fn buffering_service_concats_multi_segment_stream() {
     assert_eq!(received, data);
 }
 
-/// A single-`Final` stream passes through the buffering path zero-copy.
+// A single-`Final` stream passes through the buffering path zero-copy.
 #[tokio::test]
 async fn buffering_service_is_zero_copy_for_single_final() {
     let (svc, events_rx) = BufferedService::new();
@@ -808,8 +889,8 @@ async fn buffering_service_is_zero_copy_for_single_final() {
     assert_eq!(received.as_ptr(), data.as_ptr());
 }
 
-/// A truncated stream is an error, and no partial bundle reaches the
-/// service's consumer.
+// A truncated stream is an error, and no partial bundle reaches the
+// service's consumer.
 #[tokio::test]
 async fn buffering_service_truncated_stream_is_cancelled() {
     let (svc, events_rx) = BufferedService::new();
@@ -835,8 +916,8 @@ async fn buffering_service_truncated_stream_is_cancelled() {
     assert!(events_rx.is_empty());
 }
 
-/// A stream completing with fewer bytes than the declared `total_len` is
-/// rejected — no short bundle reaches the service's consumer.
+// A stream completing with fewer bytes than the declared `total_len` is
+// rejected — no short bundle reaches the service's consumer.
 #[tokio::test]
 async fn buffering_service_rejects_under_delivering_stream() {
     let (svc, events_rx) = BufferedService::new();
@@ -867,7 +948,7 @@ async fn buffering_service_rejects_under_delivering_stream() {
     assert!(events_rx.is_empty());
 }
 
-/// A stream exceeding the declared `total_len` is rejected.
+// A stream exceeding the declared `total_len` is rejected.
 #[tokio::test]
 async fn buffering_service_rejects_stream_exceeding_total_len() {
     let (svc, events_rx) = BufferedService::new();
@@ -888,4 +969,113 @@ async fn buffering_service_rejects_stream_exceeding_total_len() {
         services::Error::PayloadTooLarge { size, max: 4 } if size > 4
     ));
     assert!(events_rx.is_empty());
+}
+
+// A key provider that hands out one fixed key.
+#[cfg(feature = "rfc9173")]
+struct OneKey(Key);
+
+#[cfg(feature = "rfc9173")]
+impl KeyProvider for OneKey {
+    fn key_source(&self, _bundle: &Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+        Box::new(KeySet::new(vec![self.0.clone()]))
+    }
+}
+
+// A service receives an encrypted payload in plaintext: the destination
+// accepted the payload's BCB at ingress, so the stored bundle it is
+// delivered carries the plaintext and no BCB, and delivery decrypts
+// nothing.
+#[cfg(feature = "rfc9173")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_receives_an_accepted_payload_in_plaintext() {
+    // Immaterial key value: generated per the no-literal-keys rule.
+    let mut k = vec![0u8; 32];
+    SysRng.try_fill_bytes(&mut k).unwrap();
+    let key = Key {
+        key_type: Type::octet_sequence(k),
+        key_algorithm: None,
+        enc_algorithm: Some(EncAlgorithm::A256GCM),
+        operations: Some(
+            [Operation::Encrypt, Operation::Decrypt]
+                .into_iter()
+                .collect(),
+        ),
+        id: None,
+        key_use: None,
+    };
+    let plaintext: Vec<u8> = (0..3000u32).map(|i| (i % 233) as u8).collect();
+    let built = build_bundle(
+        &"ipn:0.2.1".parse().unwrap(),
+        &"ipn:0.1.7".parse().unwrap(),
+        &plaintext,
+    );
+    let parsed = parse(built).unwrap();
+    let mut encryptor = Encryptor::new(&parsed.bundle, &parsed.data);
+    encryptor
+        .encrypt_block(
+            1,
+            Context::AES_GCM(ScopeFlags::default()),
+            "ipn:0.2.1".parse().unwrap(),
+            &key,
+        )
+        .unwrap();
+    let encrypted = Bytes::from(encryptor.rebuild().unwrap());
+
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .key_provider(Arc::new(OneKey(key)))
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let (svc, events_rx) = StreamingService::new(false);
+    bpa.register_service(Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+    let cla = IngressCla::new();
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut encrypted.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let Event::Streamed { segments, .. } = recv_event(&events_rx, 5).await else {
+        panic!("Expected the streamed door, got another event");
+    };
+    let mut delivered = Vec::new();
+    for segment in segments {
+        let (Segment::Next(bytes) | Segment::Final(bytes)) = segment;
+        delivered.extend_from_slice(&bytes);
+    }
+    let delivered = parse(Bytes::from(delivered)).expect("the delivered bundle parses");
+    assert!(
+        delivered.bcbs.is_empty(),
+        "the payload's BCB was accepted at ingress"
+    );
+    assert_eq!(
+        delivered.bundle.blocks[&1].payload(&delivered.data),
+        Some(plaintext.as_slice())
+    );
+    bpa.shutdown().await;
 }

@@ -84,7 +84,7 @@ The internal `Action` enum covers all route types:
 | `AdminEndpoint` | Deliver to the administrative endpoint | Built-in (priority 0) |
 | `Local(service)` | Deliver to a registered local service | Service registration (configurable priority, default 1) |
 | `Forward(peer)` | Forward to a CLA peer | CLA peer discovery (priority 0) |
-| `Reflect` | Return to sender (previous node or source) | Routing agents, static routes |
+| `Reflect` | Return to sender: the peer the CLA announced, else the Previous Node block's node, else the source | Routing agents, static routes |
 | `Via(Eid)` | Forward toward the specified EID (recursive lookup) | Routing agents, static routes |
 
 When multiple entries exist under the same pattern, precedence follows enum ordering: Drop > AdminEndpoint > Local > Forward > Reflect > Via. Terminal actions (Drop, AdminEndpoint, Local, Reflect) return immediately. Multiple Forward and Via entries under the same pattern accumulate next-hop peers for ECMP selection. Patterns are evaluated in specificity order (most specific first); once a pattern matches and yields any result, no further patterns are consulted.

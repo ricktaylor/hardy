@@ -3,7 +3,7 @@ This module defines the core bundle data model: the [`Bundle`] structure
 (primary block + blocks map) together with its identifying types
 ([`Id`], [`Flags`], [`FragmentInfo`]). The wire parser lives in
 [`crate::parse`]; the BPSec validation/transform primitives in
-[`crate::checks`] and [`crate::rewrite`].
+[`crate::bpsec::checks`] and [`crate::rewrite`].
 */
 
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -43,6 +43,18 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    /// Whether the primary block has integrity protection: a CRC, or a BIB
+    /// that targets it or may (an encrypted BIB whose targets cannot be
+    /// read). RFC 9171 §4.3.1 requires one of them.
+    #[must_use]
+    pub fn primary_has_integrity(&self) -> bool {
+        !matches!(self.primary.crc_type, crc::CrcType::None)
+            || self
+                .blocks
+                .get(&0)
+                .is_some_and(|primary| !matches!(primary.bib, block::BibCoverage::None))
+    }
+
     /// The exact byte length of the bundle's encoded form, derived from
     /// the block index alone.
     ///
@@ -513,7 +525,7 @@ impl core::fmt::Display for Id {
 /// values are canonical, serde canonicalizes in both directions, and the
 /// methods that take bundle flags canonicalize them:
 /// [`Builder::with_flags`](crate::builder::Builder::with_flags) and
-/// [`Editor::with_bundle_flags`](crate::editor::Editor::with_bundle_flags).
+/// [`Editor::set_bundle_flags`](crate::editor::Editor::set_bundle_flags).
 /// Direct field writes are not canonicalized.
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(

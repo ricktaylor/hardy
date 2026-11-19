@@ -85,6 +85,18 @@ pub enum Error {
     #[error("Cannot originate a bundle fragment")]
     FragmentedBundle,
 
+    /// The bundle carries a Previous Node block. An originated bundle has no
+    /// previous node (RFC 9171 §4.4.1); this node's egress inserts its own
+    /// when it forwards the bundle.
+    #[error("Cannot originate a bundle carrying a Previous Node block")]
+    PreviousNodeBlock,
+
+    /// A BIB or BCB targets the per-hop block with this number, a Bundle Age
+    /// or Hop Count. This node's egress rewrites the block when it forwards
+    /// the bundle, so the operation could never reach its acceptor.
+    #[error("Cannot originate a bundle with a security operation on per-hop block {0}")]
+    ProtectedPerHopBlock(u64),
+
     /// The bundle stream was cancelled: the producer dropped its sender
     /// before delivering the final segment, so no complete bundle arrived.
     #[error("The bundle stream was cancelled before completion")]
@@ -214,7 +226,9 @@ pub trait Application: Send + Sync {
     /// `total_len` is the exact number of payload bytes the stream will
     /// deliver — the sum of all segment payload lengths — carried as `u64`
     /// so it remains valid on 32-bit targets. An implementation may size
-    /// buffers from it before pulling the first segment.
+    /// buffers from it before pulling the first segment. It is the payload
+    /// block's stored data length: a payload's security operations are
+    /// accepted at ingress, so every stored payload is plaintext.
     ///
     /// An implementation that needs the whole payload in memory buffers the
     /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
@@ -324,7 +338,7 @@ pub trait ApplicationSink: Send + Sync {
 /// the raw bundle bytes. This enables system services like echo that need
 /// to inspect/modify bundle structure. Services can parse the bundle
 /// themselves with [`hardy_bpv7::parse::parse`] for a structural parse, then
-/// apply the [`hardy_bpv7::checks`] primitives (e.g. `verify`) if they have
+/// apply the keyed check ([`hardy_bpv7::bpsec::checks`], `Parsed::check`) if they have
 /// key access.
 ///
 /// # Sink Lifecycle
@@ -383,6 +397,17 @@ pub trait Service: Send + Sync {
     /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
     /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
     /// carry empty bytes) completes the delivery.
+    ///
+    /// The bundle is the one stored: the wire form as it arrived, less the
+    /// removals the ingress gate scheduled, and as any Deliver
+    /// [`Rewriter`](crate::filter::Rewriter) left it. Its per-hop blocks —
+    /// Previous Node, Hop Count and Bundle Age — are as they arrived: a
+    /// delivery is not a hop, so the BPA neither updates nor strips them
+    /// (RFC 9171 §5.4's writes are forwarding's). A Bundle Age block
+    /// therefore gives the age at the last forwarding, not now; `expiry` is
+    /// the deadline the BPA computed for this bundle (RFC 9171 §5.5), and
+    /// the one to act on. A service that wants the per-hop blocks gone
+    /// registers a Deliver Rewriter.
     ///
     /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
     /// before `Final` means the producer aborted the delivery: the

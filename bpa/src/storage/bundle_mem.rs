@@ -1,4 +1,5 @@
 use core::num::NonZeroUsize;
+use trace_err::*;
 
 use hardy_async::{async_trait, sync::Mutex};
 use lru::LruCache;
@@ -113,7 +114,7 @@ impl BundleMemStorage {
             cache: LruCache::unbounded(),
             capacity: 0,
             rng: SmallRng::try_from_rng(&mut SysRng)
-                .expect("OS RNG must be available to seed the storage-name PRNG"),
+                .trace_expect("OS RNG must be available to seed the storage-name PRNG"),
             near_capacity: false,
             evicted_count: 0,
             evicted_bytes: 0,

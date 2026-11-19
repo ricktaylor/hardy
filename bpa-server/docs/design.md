@@ -113,12 +113,11 @@ These config sections map onto the BPA's own configuration-gated pipeline checks
 
 ### RFC 9171 Validity Checks
 
-The server maps the `rfc9171-validity` section onto the BPA's builder toggles, enforced at the ingress gate before anything is stored:
+The server maps the `rfc9171-validity` section onto the BPA's builder toggle, enforced at the ingress gate before anything is stored:
 
 ```yaml
 rfc9171-validity:
   primary-block-integrity: true  # Require CRC or BIB on primary block
-  bundle-age-required: true      # Require Bundle Age when timestamp is zero
 ```
 
 Both options default to `true`, enforcing RFC 9171 recommendations. Disable `primary-block-integrity` for interoperability with implementations that omit primary block CRCs (e.g., dtn7-rs).
@@ -133,7 +132,7 @@ ipn-legacy-nodes:
   - "ipn:200.1"  # Specific endpoint
 ```
 
-This enables interoperability with implementations that support only RFC 9171's two-element IPN encoding (RFC 9758 §7.2). A bundle carrying a BPSec operation that covers the primary block, as its target or through its scope (RFC 9173's default scope includes it, and an encrypted BIB counts whatever its scope, since its ciphertext hides it), cannot be re-encoded without breaking that operation, so it is deleted at a matching next hop, not re-routed, with a deletion status report giving "Unexpected security operation" if the bundle requests one and status reports are enabled. That is a misconfiguration of the system as a whole, since such a sender and a route through a legacy peer cannot both hold (RFC 9172 §7.1).
+This enables interoperability with implementations that support only RFC 9171's two-element IPN encoding (RFC 9758 §7.2). Only EIDs with a non-default allocator change, since default-allocator EIDs are two-element already. A bundle whose primary block needs the re-encode and carries a BPSec operation that covers that block, as its target or through its scope (RFC 9173's default scope includes it, and an encrypted BIB counts whatever its scope, since its ciphertext hides it), cannot be re-encoded without breaking that operation, so it is deleted at a matching next hop, not re-routed, with a deletion status report giving "Unexpected security operation" if the bundle requests one and status reports are enabled. That is a misconfiguration of the system as a whole, since such a sender and a route through a legacy peer cannot both hold (RFC 9172 §7.1).
 
 ## Command Line Options
 

@@ -39,7 +39,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 hardy-async = { version = "0.2", path = "../async", default-features = false }
-hardy-bpv7 = { version = "0.6", path = "../bpv7", default-features = false }
+hardy-bpv7 = { version = "0.6", path = "../bpv7", default-features = false, features = ["bpsec"] }
 hardy-cbor = { version = "2", path = "../cbor" }
 hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item"] }
 time = { version = "0.3", default-features = false, features = ["serde-human-readable"] }

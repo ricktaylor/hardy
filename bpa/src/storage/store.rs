@@ -95,8 +95,12 @@ impl Store {
     /// can never misreport a storage outage as a duplicate.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub async fn store(&self, bundle: &mut Bundle, data: &Bytes) -> bool {
-        // Write to bundle storage
-        let storage_name = self.save_data(data.clone()).await;
+        // Write to bundle storage: a whole buffer is a one-segment stream,
+        // within its own length.
+        let (storage_name, _) = self
+            .save(&mut data.clone(), data.len())
+            .await
+            .trace_expect("A whole buffer saves within its own length");
 
         // Update storage_name in existing metadata
         bundle.metadata.storage_name = Some(storage_name);
@@ -125,9 +129,9 @@ impl Store {
     /// Save bundle data assembled from a segment stream, bounded by
     /// `max_size`; returns the storage name and total size.
     ///
-    /// This is the streaming write seam: callers hand the store one stream
-    /// carrying the whole bundle and assume an asynchronous store
-    /// (`docs/streaming_pipeline_design.md` §3). The body spools to memory
+    /// Callers hand the store one stream carrying the whole bundle and assume
+    /// an asynchronous store (`docs/streaming_pipeline_design.md` §3); a
+    /// whole buffer is a one-segment stream. The body spools to memory
     /// ([`concat_stream`] — the crate's one bounded accumulator) and commits
     /// through the backends' whole-buffer `save` on the final segment.
     ///
@@ -139,31 +143,37 @@ impl Store {
     /// [`delete_data`](Self::delete_data): staging commits before such a
     /// verdict can exist.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn save_stream(
+    pub async fn save(
         &self,
         stream: &mut dyn Receiver<Segment>,
         max_size: usize,
     ) -> Result<(Arc<str>, usize), ConcatError> {
         let data = concat_stream(stream, max_size).await?;
         let len = data.len();
-        Ok((self.save_data(data).await, len))
+        let storage_name = self
+            .bundle_storage
+            .save(data)
+            .await
+            .trace_expect("Failed to save bundle data");
+        Ok((storage_name, len))
     }
 
-    /// Load bundle data by storage name (read-through cache).
+    /// Open bundle data by storage name as a segment stream; `None` when the
+    /// data is gone.
+    ///
+    /// Callers pull the stored bundle a segment at a time and hold only what
+    /// they need. The stream never returns
+    /// `Err(`[`RecvError`](crate::stream::RecvError)`)`: it yields exactly
+    /// the bytes saved, ending in its [`Segment::Final`], because a backend
+    /// failure is fatal here as on every storage call. The body loads the
+    /// whole buffer from the backend and yields it as one `Final`.
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
+    pub async fn load(&self, storage_name: &str) -> Option<Box<dyn Receiver<Segment>>> {
         self.bundle_storage
             .load(storage_name)
             .await
             .trace_expect("Failed to load bundle data")
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn save_data(&self, data: Bytes) -> Arc<str> {
-        self.bundle_storage
-            .save(data)
-            .await
-            .trace_expect("Failed to save bundle data")
+            .map(|data| Box::new(data) as Box<dyn Receiver<Segment>>)
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
@@ -408,7 +418,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_stream_commits_the_assembled_segments() {
+    async fn save_commits_the_assembled_segments() {
         let store = make_store();
         let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
         assert!(
@@ -427,16 +437,20 @@ mod tests {
                 .is_ok()
         );
 
-        let (name, len) = store.save_stream(&mut rx, 1024).await.unwrap();
+        let (name, len) = store.save(&mut rx, 1024).await.unwrap();
         assert_eq!(len, 16);
+        let mut loaded = store.load(&name).await.unwrap();
         assert_eq!(
-            store.load_data(&name).await.unwrap().as_ref(),
+            concat_stream(&mut *loaded, usize::MAX)
+                .await
+                .unwrap()
+                .as_ref(),
             b"head-tail1-tail2"
         );
     }
 
     #[tokio::test]
-    async fn save_stream_refuses_over_bound() {
+    async fn save_refuses_over_bound() {
         let store = make_store();
         let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
         assert!(
@@ -450,7 +464,7 @@ mod tests {
                 .is_ok()
         );
 
-        let result = store.save_stream(&mut rx, 8).await;
+        let result = store.save(&mut rx, 8).await;
         assert!(
             matches!(result, Err(ConcatError::TooLarge { size: 14, max: 8 })),
             "got {result:?}"
@@ -458,7 +472,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_stream_discards_an_incomplete_stream() {
+    async fn save_discards_an_incomplete_stream() {
         let store = make_store();
         let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
         assert!(
@@ -468,7 +482,7 @@ mod tests {
         );
         drop(tx);
 
-        let result = store.save_stream(&mut rx, 1024).await;
+        let result = store.save(&mut rx, 1024).await;
         assert!(
             matches!(result, Err(ConcatError::Cancelled)),
             "got {result:?}"
@@ -511,7 +525,7 @@ mod tests {
         store.delete_data(&storage_name).await;
 
         // Loading deleted data should return None
-        assert!(store.load_data(&storage_name).await.is_none());
+        assert!(store.load(&storage_name).await.is_none());
     }
 
     // When metadata insertion fails (duplicate), bundle data should be cleaned up.
@@ -531,7 +545,7 @@ mod tests {
         assert!(!store.store(&mut bundle2, &data).await);
 
         // Original data should still be accessible
-        assert!(store.load_data(&first_storage_name).await.is_some());
+        assert!(store.load(&first_storage_name).await.is_some());
     }
 
     // A metadata-backend failure aborts — it must never surface as the

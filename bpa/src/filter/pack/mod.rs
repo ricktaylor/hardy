@@ -39,11 +39,13 @@ pub(crate) mod chains;
 ///
 /// Hook registrations take a `label`, carried as `"<pack>.<label>"` in logs
 /// and metrics — purely diagnostic, never unique. The `_with_peek` variants
-/// at the input hooks declare a payload-prefix byte count folded into the
-/// hook's payload peek P at `build()`; the base methods declare 0. Before
-/// an input chain runs, its door holds the payload's first min(P, payload
-/// length) bytes — up to P bytes per concurrent arrival, held before header
-/// verification — which a filter reads through
+/// at the input hooks and at Deliver declare a payload-prefix byte count
+/// folded into the hook's payload peek P at `build()`; the base methods
+/// declare 0. Before the hook's Verifiers and Classifiers run, its door
+/// holds the payload's first min(P, payload length) bytes — at an input
+/// door up to P bytes per concurrent arrival, held before header
+/// verification; at Deliver, read from the store — which a filter reads
+/// through
 /// [`VerifyContext::payload_peek`](crate::filter::VerifyContext::payload_peek),
 /// whose doc states what they are.
 #[must_use = "a filter pack registers nothing until it is handed to BpaBuilder::add_filters"]
@@ -51,7 +53,7 @@ pub struct FilterPack {
     name: Arc<str>,
     ingress_verifiers: Vec<Pending<VerifierEntry>>,
     originate_verifiers: Vec<Pending<VerifierEntry>>,
-    deliver_verifiers: Vec<VerifierEntry>,
+    deliver_verifiers: Vec<Pending<VerifierEntry>>,
     ingress_classifiers: Vec<Pending<ClassifierEntry>>,
     originate_classifiers: Vec<Pending<ClassifierEntry>>,
     egress_rewriters: Vec<RewriterEntry>,
@@ -151,16 +153,31 @@ impl FilterPack {
         self
     }
 
-    /// Appends a [`Verifier`] to the Deliver chain. No peek variant: the
-    /// bundle's bytes are resident at the output hooks. There is no Egress
-    /// Verifier: see [`Verifier`].
+    /// Appends a [`Verifier`] to the Deliver chain, with no payload peek.
+    /// There is no Egress Verifier: see [`Verifier`].
     pub fn deliver_verifier(
         &mut self,
         label: &str,
         verifier: impl Verifier + 'static,
     ) -> &mut Self {
+        self.deliver_verifier_with_peek(label, verifier, 0)
+    }
+
+    /// Appends a [`Verifier`] to the Deliver chain, declaring a `peek`-byte
+    /// payload prefix.
+    ///
+    /// The delivery door holds the payload's first min(P, payload length)
+    /// bytes, read from the store, before the Deliver Verifiers run, P being
+    /// the largest peek declared at Deliver; see
+    /// [`VerifyContext::payload_peek`](crate::filter::VerifyContext::payload_peek).
+    pub fn deliver_verifier_with_peek(
+        &mut self,
+        label: &str,
+        verifier: impl Verifier + 'static,
+        peek: usize,
+    ) -> &mut Self {
         let entry = self.verifier_entry(label, verifier);
-        self.deliver_verifiers.push(entry);
+        self.deliver_verifiers.push(Pending { peek, entry });
         self
     }
 

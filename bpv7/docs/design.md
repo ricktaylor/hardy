@@ -20,7 +20,7 @@ Parsing is layered rather than moded, so each caller composes exactly the proces
 
 The **structural parse** (`parse::parse`, or `parse::BundleParser` driven incrementally over a stream) is keyless: it decodes the primary block, the block map, and the BPSec OperationSets, verifies CRCs, and rejects malformed or non-deterministically encoded input. A streamed parse can stop once the header blocks are resident and hand back a `PayloadTail` continuation that validates the payload's CRC and trailer as the remaining bytes arrive.
 
-**Keyed validation** (`checks`) layers BPSec on top: keyless classification of the blocks the node cannot process, then decryption and verification with a caller-supplied `KeySource`, composed by `checks::verify`. The helpers report facts — decrypted, no key, decryption failed, coverage — and never decide accept-or-reject themselves.
+**Keyed validation** (`bpsec::checks`) layers BPSec on top, as a method on `Parsed`: the parser having classified the blocks the node cannot process by their flags (`Parsed::classification`), the security operations are checked with a caller-supplied `KeySource` in this node's roles on each block (`check`): the acceptor's decryption, the verifier's decryption of its own block and the integrity checks, in one pass. On a fragment the check processes the per-hop blocks' operations alone, the forwarder's writes to the fragment, and defers every other, looking up no key for it, since it is checkable only once the bundle is reassembled (RFC 9172 §5.2). The checks report facts — decrypted, no key, decryption failed, coverage — and never decide accept-or-reject themselves.
 
 **Rewrite application** (`rewrite::apply_rewrites`) applies the block removals and canonical re-emits the caller has decided on, through the BPSec-aware editor cascade.
 
@@ -42,6 +42,8 @@ The library provides two patterns for bundle construction.
 
 **Editor** is for modifying existing bundles. It's optimised for the forwarding case where most of the bundle stays the same. Rather than re-encoding everything, Editor tracks what changed and surgically updates only the affected portions. For a forwarding node adding Previous Node and incrementing Hop Count, this avoids re-encoding the entire payload.
 
+Both can frame a payload that streams rather than sitting in memory: `Builder::build_stream` for a bundle being originated, and `Editor::with_streamed_payload` with `Editor::rebuild_streamed` for a received one whose payload's acceptor decrypts it as it streams. Each returns the headers and the payload block's header for the declared length, and a `PayloadTrailer` that is fed the payload and ends the wire form; the two share that framing, so they agree byte for byte.
+
 The distinction matters for performance. A node forwarding thousands of bundles per second benefits significantly from patching two fields versus re-encoding megabytes of payload data.
 
 ## BPSec Integration
@@ -61,9 +63,32 @@ The library exposes a common key representation based on JWK (JSON Web Key) form
 
 Following RFC 9172's design, security operations within a BIB or BCB share context parameters but produce unique results per target. The library reflects this by using reference-counted parameters shared across operations while maintaining separate result storage for each target block. This matches the wire format where a single security block can protect multiple targets with one set of parameters but distinct cryptographic results.
 
+### Operations, Acceptance and Removal
+
+A security operation is one security service applied to one security target, OP(service, target) (RFC 9172 §1.4): one entry in a BIB's or a BCB's target list, with its results. Each is unique in a bundle (§3.2), so a block is the target of at most one BIB operation and one BCB operation, and a security block is itself a block, the target of a BCB operation when it is encrypted. Acceptance and removal act on operations, never on a security block as a whole. Removing an operation removes its entry from its security block, and the security block goes only when its last operation goes: a cascading delete, which removes in turn the operation that targets that block, the BCB operation on an encrypted BIB, whose BCB may then empty and go the same way.
+
+Removing a block and accepting one walk the same references, from a block to the operations that target it, from an operation to its security block, and from an emptied security block to the operation that targets it. Removing a block removes every operation that targets it and cascades as above (`BPSecEditor::remove_blocks`). Accepting a block is the security acceptor's walk (§5.1.1, §5.1.2): it processes and removes every operation that targets the block, decrypting the BCB operation and verifying the BIB operation over the plaintext. Where the BIB is encrypted, reading it accepts the BCB operation on it too, and that goes with the BCB operations on the BIB's other targets, all or none, so that no reader meets a plaintext BIB over ciphertext (§3.9): the walk accepts each of those targets with the block, its BIB operation too, so the BIB empties, and the cascade removes it and any BCB it empties. A caller that does not accept every block the walk reaches can accept none of them (`Parsed::check` reports the block `incomplete`), and `bpsec::edit::remove_encryption` removes the coupled operations together. Neither walk ever encrypts anything again: shrinking an encrypted BIB that also covers a block that stays would mean writing new ciphertext under its BCB's security source, which only that source may do, and under RFC 9173, whose IV belongs to the whole BCB, cannot be done soundly for a BIB that shares its BCB. So `remove_blocks` refuses such a removal, naming the block (`editor::Error::ShrinksEncryptedBib`), as it refuses one that would orphan a block an unreadable encrypted BIB may list, or restore the primary's CRC under an operation that scopes it; it removes every requested block or none. Naming the encrypted BIB too removes it whole, its BCB operation with it.
+
+The table gives what each walk does to a block A, in every security context:
+
+| A's protection | Accepting A | Removing A |
+|---|---|---|
+| A BCB operation, no BIB | Decrypt A and remove its BCB operation | Remove its BCB operation |
+| A plaintext BIB, covering A alone or with others | Verify A and remove its BIB operation | Remove its BIB operation |
+| A BCB operation and an encrypted BIB covering A alone | Decrypt A and the BIB, verify, and remove all three operations: the BIB empties | Remove A: the BIB empties and goes unread |
+| A BCB operation and an encrypted BIB also covering B, which goes too | As above, for A and B together, all or none | As above, for A and B together |
+| A BCB operation and an encrypted BIB also covering B, which stays | Refused: an incomplete acceptance | Refused: the BIB would shrink |
+| An encrypted BIB this node cannot read may cover A (`Maybe`) | Refused: an incomplete acceptance | Refused while that BIB stays |
+
+Removing an operation removes its security block when it was the last; the rows' removals cascade so.
+
+As built under §3.9, an encrypted BIB's targets are among its BCB's: a BCB added over all of a BIB's targets encrypts that BIB too, and one added over only some of them splits the BIB, moving the matched results into a new BIB that is encrypted with them. The BCB may target more. A reader that cannot decrypt an encrypted BIB so knows only that the BIB covers some of its BCB's other targets, yet the parser marks every BCB-covered block as maybe covered, not just that BCB's: acceptance is per operation, so an acceptor elsewhere may remove a target's BCB operation and leave the encrypted BIB over it, after which a later node may encrypt that target under another BCB, and a sender that does not follow §3.9 may build the same. Hardy never leaves that state: it removes coupled operations together.
+
 ### Editing Under BPSec
 
-An operation can cover the primary block without targeting it: RFC 9173's default scope puts the primary in every BIB's integrity-protected plaintext and every BCB's additional authenticated data. Each security context reports, from its own parameters, whether an operation's scope includes the primary (`scope_includes_primary()` on `bib::Operation` and `bcb::Operation`); an unrecognised context counts as including it, and a consumer such as the BPA never reads a context's parameters itself. The owner `Editor` refuses a primary-block edit while a BIB targets the primary or any remaining operation's scope includes it, an unreadable BIB counting as one, and the BIB removals that would restore the primary's CRC (RFC 9171 §4.3.1) are refused or retained on the same terms. Fragment info is exempt: no BIB or BCB is added to a fragment (RFC 9172 §5.2), so every operation covers the unfragmented primary.
+An operation can cover the primary block without targeting it: RFC 9173's default scope puts the primary in every BIB's integrity-protected plaintext and every BCB's additional authenticated data. Each security context reports, from its own parameters, whether an operation's scope includes the primary (`scope_includes_primary()` on `bib::Operation` and `bcb::Operation`); an unrecognised context counts as including it, and a consumer such as the BPA never reads a context's parameters itself. The owner `Editor` refuses a primary-block edit while a BIB targets the primary or any remaining operation's scope includes it, an unreadable BIB counting as one. No security operation changes the primary: it is immutable (RFC 9171 §4.3.1), so signing it and removing its BIB leave it as it stands, CRC included, and every other operation that covers it keeps verifying. Fragment info is exempt: no BIB or BCB is added to a fragment (RFC 9172 §5.2), so every operation covers the unfragmented primary.
+
+No security operation changes a target's CRC, on any block, under any context. RFC 9172 §9.3 leaves a target's CRC to the security context's own statement, and RFC 9173's contexts have the security source remove it and a security acceptor short of the destination include one again (§3.8.1, §3.8.2, §4.8.1, §4.8.2); bpv7 does neither, as the draft COSE context does not. The CRC is in neither the IPPT (RFC 9173 §3.7) nor the AAD (§4.7), so an operation's result is the same with it or without it; a CRC the source removes is the one check every node between it and the acceptor can make (RFC 9171 §5.6); and the primary block is immutable, its CRC covered by every operation whose scope includes it, so each change to it broke those operations. The Signer and the Encryptor leave a target's CRC type as it stands, the Encryptor's rebuild computing the CRC over the ciphertext as any block edit does; verification and decryption take a target with a CRC or without one; and the editor's removals add none, so a target whose source removed its CRC travels on without one.
 
 ### Processing Order
 
@@ -73,11 +98,11 @@ First, all blocks are parsed and BCB targets are marked. Without keys the parser
 
 Second, BCB-encrypted BIBs are decrypted and validated, replacing the "maybe" marks with their real coverage.
 
-Third, BCB-protected Previous Node, Bundle Age, and Hop Count blocks are decrypted.
+Third, the blocks the consumer accepts for confidentiality are decrypted: at a receiver the per-hop blocks, every Previous Node and Bundle Age block and a Hop Count it holds the key for, and at the ingress gate the blocks its policy announces. An encrypted BIB that may cover one of them, one under a BCB from the same security source as the block's own, since the node that encrypts a signed block encrypts its BIB too (RFC 9172 §3.9), is read by necessity, and the blocks coupled through it are taken all or none; none is read on a Previous Node's or Bundle Age's account, which no valid bundle has under an encrypted BIB. A block the consumer verifies for confidentiality is decrypted alone, into the cache, the block travelling as received.
 
-Fourth, every BIB is verified. A BIB may cover a block that was encrypted, so verification has to follow decryption; `checks::verify` composes the three keyed steps in this order so no caller has to re-stitch it. A BIB whose payload target is not resident when the headers are verified is deferred to the payload drain.
+Fourth, every BIB operation on a block the consumer names for integrity, as its acceptor or its verifier, is verified where its target is readable, reading the plaintext the decryption cached: verification follows decryption, and `Parsed::check` runs the two in that order in one pass, over the roles the consumer names by block number (`bpsec::Roles`) and its roles on every other block. A BIB whose payload target is not resident when the headers are verified, or lies under a BCB, is deferred to the payload drain, its key required now.
 
-The payload's own BCB is not part of this pass: the payload stays encrypted until the consumer decrypts it at delivery (`bpsec::DecryptingReader`).
+The payload's own BCB is not part of these passes, since the payload need not be resident. With the payload's confidentiality accepted, `Parsed::check` settles everything about its BCB operation that needs a key before the first byte, and the BIB over it the same way: the keys are resolved, the operations recorded deferred, and an encrypted BIB over the payload is decrypted, so its operation can be checked against the plaintext. Its security acceptor decrypts it as it streams: `bcb::Operation::begin_decrypt` begins a `bcb::Decryptor` from the headers alone, resolving the key before the first byte, and the plaintext it returns at `finish`, authenticated, is what a BIB over the payload is checked against (`bib::Operation::begin_verify`, fed the plaintext). bpv7 supplies these per-operation stages; which operations to begin, and what a missing key means, is the consumer's policy, so the BPA composes them. Under BCB-AES-GCM the decryptor collects the ciphertext and decrypts it whole when finished; an incremental AES-GCM can replace that behind the same interface. A consumer reading a resident encrypted payload decrypts it through `bpsec::DecryptingReader`.
 
 ### Future Work: COSE Security Contexts
 
@@ -124,7 +149,7 @@ Extension blocks use the same zero-copy approach as the primary block. Each `Blo
 
 The `BibCoverage` enum tracks integrity protection state: `None` (no BIB covers this block), `Some(block_number)` (protected by a specific BIB), or `Maybe` (encrypted BIBs couldn't be decrypted, so coverage is unknown). This three-state model allows code to distinguish between "definitely unprotected" and "unknown protection status."
 
-Unrecognised blocks are handled per RFC 9171 rules. The keyless classification (`checks::classify_unsupported`) reports the unprocessable blocks flagged "delete block if block can't be processed", and fails the bundle for any flagged "delete bundle"; the caller decides whether to honour the removals, which `rewrite::apply_rewrites` applies. The library rewrites BIBs and BCBs that targeted removed blocks, potentially removing security blocks entirely if all their targets are gone.
+Unrecognised blocks are handled per RFC 9171 rules. The parser's keyless classification (`Parsed::classification`) reports the unprocessable blocks flagged "delete block if block can't be processed", and the deletion any flagged "delete bundle" demands; the caller decides whether to honour the removals, which `rewrite::apply_rewrites` applies. The library rewrites BIBs and BCBs that targeted removed blocks, potentially removing security blocks entirely if all their targets are gone.
 
 ## Utility Types
 
@@ -142,7 +167,7 @@ The library builds on hardy-cbor's wire-format parsing. It uses closure-based ar
 
 ### With hardy-bpa
 
-The Bundle Processing Agent composes the structural parser, `checks`, and `rewrite` with its own policy — which failures reject a bundle, the NoKey disposition, the status-report reason mapping — in its `bundle::parse` module. At ingress it parses the header blocks off the arriving stream, verifies them before anything is stored, and drains the payload through the `PayloadTail` continuation.
+The Bundle Processing Agent composes the structural parser, `bpsec::checks`, and `rewrite` with its own policy — which failures reject a bundle, the NoKey disposition, the status-report reason mapping — in its `bundle::arrival` module. At ingress it parses the header blocks off the arriving stream, verifies them before anything is stored, and drains the payload through the `PayloadTail` continuation.
 
 ### CLI Tools
 

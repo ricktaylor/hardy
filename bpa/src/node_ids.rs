@@ -1,4 +1,5 @@
 use core::ops::Range;
+use trace_err::*;
 
 use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId, Service};
 use rand::{
@@ -144,7 +145,7 @@ impl Default for NodeIds {
     fn default() -> Self {
         // Node IDs are public identifiers, so a non-cryptographic PRNG suffices.
         let mut rng = SmallRng::try_from_rng(&mut SysRng)
-            .expect("OS RNG must be available to seed the node-id PRNG");
+            .trace_expect("OS RNG must be available to seed the node-id PRNG");
         Self {
             ipn: Some(IpnNodeId {
                 allocator_id: rng.random_range(EXPERIMENTAL_USE_ALLOCATORS),

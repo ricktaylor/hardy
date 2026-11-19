@@ -1,5 +1,7 @@
-use super::*;
 use hardy_bpv7::status_report::AdministrativeRecord;
+
+use super::*;
+use crate::stream::concat_stream;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
@@ -17,66 +19,38 @@ impl Dispatcher {
                 .await;
         }
 
-        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
+        let Some((mut bundle, mut stream)) = self.load_or_drop(bundle).await else {
             return;
         };
+        // INTERIM BUFFERING: an administrative record is parsed whole. The
+        // store holds only bundles bounded and validated at a door, and its
+        // load never fails, so the gather neither caps nor errs.
+        let data = concat_stream(&mut *stream, usize::MAX)
+            .await
+            .trace_expect("A stored bundle's load ends in its Final");
 
-        // KeyProvider needs a &Bundle; do the structural
-        // re-parse + key lookup + block_data inline. Scope it as a match
-        // expression so the parse OperationSets (which contain
-        // `Rc<…>` and are therefore `!Send`) are dropped at the arm
-        // boundary, before any `.await` in this async fn. Consume `data`
-        // into the parse and work from the authoritative buffer it
-        // returns (the streaming path concatenates pushes), converting
-        // the payload to an owned `Bytes` before the arm ends.
-        let payload_result = match hardy_bpv7::parse::parse(data) {
-            Ok(hardy_bpv7::parse::Parsed {
-                data: buf,
-                bundle: raw,
-                bcbs: bcb_ops,
-                ..
-            }) => {
-                let key_source = self.key_source(&raw, &buf);
-                match hardy_bpv7::bpsec::DecryptingReader::new(
-                    &raw.blocks,
-                    &buf,
-                    &bcb_ops,
-                    &*key_source,
-                )
-                .into_block_data(1)
-                .and_then(|p| p.ok_or(hardy_bpv7::Error::Altered))
-                {
-                    Ok(hardy_bpv7::block::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
-                    Ok(hardy_bpv7::block::Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
-                    Err(e) => Err(e),
-                }
-            }
-            Err(e) => Err(e),
-        };
-
-        let data = match payload_result {
-            Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
-                // TODO: We are unable to decrypt the payload, what do we do?
-                // Park in Waiting so each routing event retries the decrypt
-                // (keys can arrive later); the reaper still expires it. A
-                // lost swap means another resolver got there first.
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await
-                {
-                    return self.store.watch_bundle(bundle).await;
-                }
-                return;
-            }
-            Err(e) => {
-                debug!("Received an invalid administrative record: {e}");
-                return self
-                    .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
-                    .await;
-            }
-            Ok(data) => data,
-        };
+        // The record as stored. Its security operations were accepted at
+        // the door it entered by, where this node decrypted the payload
+        // into the store or refused the bundle (RFC 9172 §1.4), so one
+        // still under a BCB here is a record no door of this build wrote:
+        // dropped, as the gate drops a bundle its destination cannot
+        // accept. The record's block index and its bytes were validated at
+        // ingress, so a disagreement between them is a BPA bug or storage
+        // corruption, and fatal.
+        let block = bundle
+            .bpv7
+            .blocks
+            .get(&1)
+            .trace_expect("A stored bundle has no payload block");
+        if block.bcb.is_some() {
+            debug!("Administrative record still encrypted; dropped");
+            return self.drop_bundle(bundle, ReasonCode::BlockUnsupported).await;
+        }
+        let data = data.slice_ref(
+            block
+                .payload(&data)
+                .trace_expect("A stored bundle's payload extent exceeds its bytes"),
+        );
 
         // The administrative record is the whole payload — reject any trailing
         // bytes after it (a smuggling vector) with `parse_exact`, not `parse`.

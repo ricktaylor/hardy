@@ -32,8 +32,10 @@ std = [
 critical-section = ["portable-atomic/critical-section"]
 rfc9173 = ["bpsec", "dep:hmac", "dep:sha2", "dep:aes-gcm", "dep:aes-kw", "dep:rand", "dep:subtle"]
 serde = ["dep:serde","hashbrown/serde"]
-# Internal feature: enables BPSec signing/encryption modules.
-# Automatically enabled by security context features (rfc9173, and future cose).
+# BPSec processing, both sides: the keyed check, the decrypting reader, the
+# editor's security edits, the signer and the encryptor. Enabled by every
+# security-context feature (rfc9173, and the future cose); a build without it
+# still parses, classifies and removes security blocks by their flags.
 bpsec = []
 
 [dependencies]
