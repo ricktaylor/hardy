@@ -23,7 +23,8 @@ flowchart LR
     BPA --> delete["delete(storage_name)"]
     BPA --> recover["recover()"]
 
-    save --> tmp["write .tmp file"] --> fsync["fsync"] --> rename["atomic rename"]
+    save --> claim["claim name (placeholder)"] --> tmp["write .tmp file"] --> fsync["fsync"] --> rename["atomic rename"] --> dirsync["fsync directory"]
+    claim -. "fsync disabled" .-> direct["write through the claim"]
     load --> mmap["mmap file (or read)"]
     delete --> unlink["unlink file"]
     recover --> walk["parallel directory walk"] --> emit["emit (name, timestamp) pairs"]
@@ -43,14 +44,25 @@ File names are random 32-bit hex values. On collision, the value is incremented 
 
 Writes follow a careful protocol to ensure crash safety:
 
-1. Write bundle data to a temporary file (`.tmp` extension) in the target directory
-2. `fsync` the temporary file to ensure data reaches disk
-3. Atomic rename from temporary to final path
-4. `fsync` the parent directory to ensure the rename is durable
+1. Claim the final name with an exclusive create, which leaves a zero-length placeholder under it; where the claim had to create the bucket, `fsync` the two directories above it
+2. Write bundle data to a temporary file (`.tmp` extension) beside the placeholder
+3. `fsync` the temporary file to ensure data reaches disk
+4. Atomic rename from temporary to final path, replacing the placeholder
+5. `fsync` the bucket directory to ensure the rename is durable
 
-This protocol means bundles are either fully present or fully absent. A crash during step 1 leaves a `.tmp` file that recovery will clean up. A crash after step 3 leaves a complete bundle.
+This protocol means bundles are either fully present or fully absent. A crash before step 4 leaves a `.tmp` file and a zero-length placeholder, both of which recovery cleans up. A crash after step 4 leaves a complete bundle.
 
-The `fsync` operations have performance cost. Configuration allows disabling them for deployments where the underlying storage provides its own durability guarantees (e.g., battery-backed RAID controllers, ZFS with synchronous writes). With `fsync` disabled, `save` currently skips the temporary file too and writes the final path directly, so a crash can leave a partial file under its final name. Nothing references it, because metadata is inserted only after `save` returns, and recovery discards it as unparseable. The storage leg's streamed write keeps the temporary-file protocol in both modes.
+The placeholder is what makes the rename safe. A rename replaces whatever holds the destination name, so the name must already be this save's own: the exclusive create fails where a stored bundle or a concurrent save holds it, and the save moves to the next name. Renaming without the claim was rejected, since a name collision, however rare, would silently replace a stored bundle. Publishing with a hard link, which does refuse to replace, would avoid the placeholder but is unavailable on FAT, exFAT and some network filesystems.
+
+A save that fails removes what it created. The placeholder and the temporary file are each removed on any error return, so a store that is failing saves, a full disk for instance, does not accumulate a zero-length file per attempt. A `.tmp` file found where the save's own belongs was left by an earlier process: its name derives from the name just claimed, which no live save shares, so it is removed and the save proceeds. Failing the save there was rejected, because the BPA treats a failed save as fatal, and one stale file would stop the node.
+
+The bucket directory is created only when the claim finds it missing. A save into an existing bucket, the usual case once a store has run for a while, then makes no directory call at all. If the recovery walk removes an empty bucket between its creation and the claim, the claim creates it again. It does so a bounded number of times: the walk visits each directory once, so it can take a bucket from under a claim once, and a bucket still missing after that fails the save with the filesystem's error, so the claim cannot retry without end.
+
+The directory syncs are best effort: a failure is logged and the save stands, its data already synced, because some filesystems refuse to sync a directory. A new bucket is named by entries that are new too, its own and possibly its parent's, so the save that creates a bucket syncs the two directories above it, and does so straight after the claim: were it left to the end, a save that created the bucket and then failed would leave them unsynced for a later save that finds the bucket already there. Windows has no directory sync, so these steps are skipped there and the rename's durability is the filesystem's.
+
+The `fsync` operations have performance cost. Configuration allows disabling them for deployments where the underlying storage provides its own durability guarantees (e.g., battery-backed RAID controllers, ZFS with synchronous writes). With `fsync` disabled, `save` skips the temporary file too: the exclusive create that claims the final name is also the file the bundle is written through, in one step, so the name is protected as in the atomic protocol and no file is opened twice. A crash can leave an empty or partial file under its final name. Nothing references it, because metadata is inserted only after `save` returns, and recovery discards it, the empty file as a placeholder and the partial one as unparseable.
+
+An unsynced save checks only the write itself. An error the filesystem reports later, at write-back or as the file is closed (a network filesystem's deferred write, a quota), is not seen, because observing it takes the sync this mode exists to skip. A deployment that needs such errors reported keeps `fsync` enabled.
 
 ### Memory-Mapped Loading
 

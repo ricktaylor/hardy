@@ -2137,7 +2137,6 @@ dependencies = [
  "flume",
  "futures",
  "hardy-bpa",
- "libc",
  "memmap2",
  "rand 0.10.3",
  "tempfile",
@@ -2145,7 +2144,6 @@ dependencies = [
  "tokio",
  "trace-err",
  "tracing",
- "winapi",
 ]
 
 [[package]]
