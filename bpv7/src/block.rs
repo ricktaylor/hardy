@@ -462,7 +462,7 @@ impl AsRef<[u8]> for Payload<'_> {
 /// This enum tracks whether a block is protected by a Block Integrity Block (BIB)
 /// and handles the case where encrypted BIBs couldn't be decrypted during parsing,
 /// meaning their targets are unknown.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "state", content = "block_number"))]
 pub enum BibCoverage {

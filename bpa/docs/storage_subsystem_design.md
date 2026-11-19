@@ -61,6 +61,8 @@ The `Store` struct is the central coordinator for all storage operations. It hol
 
 The storage subsystem defines two core traits that backends must implement. See rustdoc for full API details.
 
+**A storage call succeeds or the node stops.** A backend rides out a transient failure inside the call and panics on one it cannot recover from, so nothing above it handles a storage failure. A load is no exception: its stream never fails, and yields exactly the bytes saved. A call that must succeed or panic needs no `Result`, so the target traits return their values directly. The traits still return `Result`, and the `Store` stands in for the backend's panic: it logs an `Err` and aborts the process, so the contract already holds above the `Store` ([refactor_plan.md](refactor_plan.md) removes the `Result`).
+
 ### BundleStorage
 
 The `BundleStorage` trait manages binary bundle data as opaque blobs. Implementations handle recovery (walking stored files), load/save by storage name, and deletion. The trait is designed for large data with infrequent access.

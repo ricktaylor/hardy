@@ -32,14 +32,13 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     // bp is a diagnostic client, so it must accept echoes from peers that don't
     // meet every RFC9171 ingress policy — notably dtn7-rs's dtnecho2, which
     // reflects bundles without a primary-block CRC. --lax-rfc9171 relaxes the
-    // BPA's config-gated ingress checks; the reflected payload is still
+    // BPA's config-gated ingress check; the reflected payload is still
     // compared byte-for-byte by the client.
     let bpa = alloc::sync::Arc::new(
         hardy_bpa::bpa::Bpa::builder()
             .status_reports(true)
             .node_ids(node_ids)
             .primary_block_integrity(!args.lax_rfc9171)
-            .bundle_age_required(!args.lax_rfc9171)
             .build()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to build BPA: {e}"))?,

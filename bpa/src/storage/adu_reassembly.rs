@@ -42,7 +42,15 @@ pub enum ReassemblyResult {
 struct FragmentSet {
     received_at: OffsetDateTime,
     origin: Origin,
-    adus: HashMap<u64, (Bpv7Id, Arc<str>, Range<usize>)>,
+    adus: HashMap<u64, (Bpv7Id, Arc<str>, Range<u64>)>,
+}
+
+// A stored fragment's payload extent as a range this host addresses, or
+// `None` where it cannot: reassembly materialises the whole ADU in memory
+// until it streams, so a fragment beyond this host's address space is a
+// failed reassembly, not a fault.
+fn addressable(extent: &Range<u64>) -> Option<Range<usize>> {
+    Some(usize::try_from(extent.start).ok()?..usize::try_from(extent.end).ok()?)
 }
 
 impl Store {
@@ -103,12 +111,9 @@ impl Store {
             .get(&1)
             .trace_expect("Bundle without payload?!")
             .payload_range();
-        let (Ok(start), Ok(end)) = (usize::try_from(r.start), usize::try_from(r.end)) else {
-            return None;
-        };
-        let payload: Range<usize> = start..end;
+        let payload = r;
 
-        let mut adu_totals = payload.len() as u64;
+        let mut adu_totals = payload.end.saturating_sub(payload.start);
         let mut results = FragmentSet {
             received_at: bundle.metadata.received_at(),
             origin: bundle.metadata.origin().clone(),
@@ -160,14 +165,10 @@ impl Store {
                                     .get(&1)
                                     .trace_expect("Bundle fragment without payload?!")
                                     .payload_range();
-                                let (Ok(start), Ok(end)) =
-                                    (usize::try_from(r.start), usize::try_from(r.end))
-                                else {
-                                    continue;
-                                };
-                                let payload: Range<usize> = start..end;
+                                let payload = r;
 
-                                adu_totals = adu_totals.saturating_add(payload.len() as u64);
+                                adu_totals = adu_totals
+                                    .saturating_add(payload.end.saturating_sub(payload.start));
 
                                 let received_at = bundle.metadata.received_at();
                                 if received_at < results.received_at {
@@ -241,7 +242,7 @@ impl Store {
         let mut extents = results
             .adus
             .iter()
-            .map(|(offset, (_, _, payload))| (*offset, payload.len() as u64))
+            .map(|(offset, (_, _, payload))| (*offset, payload.end.saturating_sub(payload.start)))
             .collect::<Vec<_>>();
         extents.sort_unstable();
         let mut covered: u64 = 0;
@@ -276,21 +277,21 @@ impl Store {
 
         // Copy fragment 0's payload from old_data (already loaded)
         {
-            let len = first.2.len();
+            let Some(range) = addressable(&first.2) else {
+                debug!("Fragment 0's payload is not addressable here: {}", first.0);
+                return None;
+            };
+            let len = range.len();
             if len > adu_len {
                 debug!("Fragment 0 extends beyond total ADU length: {}", first.0);
                 return None;
             }
-            // Defence-in-depth: the range is stored metadata, the loaded
-            // bytes are ground truth. A disagreement is a failed
-            // reassembly, never a panic.
-            let Some(payload) = old_data.get(first.2.clone()) else {
-                debug!(
-                    "Fragment 0 payload range exceeds its stored data: {}",
-                    first.0
-                );
-                return None;
-            };
+            // The record's extent was validated against these bytes at the
+            // door, so one beyond them is a BPA bug or storage corruption,
+            // and fatal.
+            let payload = old_data
+                .get(range)
+                .trace_expect("A stored fragment's payload extent exceeds its bytes");
             new_data[..len].copy_from_slice(payload);
         }
 
@@ -311,7 +312,11 @@ impl Store {
                 return None;
             }
 
-            let len = payload.len();
+            let Some(range) = addressable(payload) else {
+                debug!("Fragment payload is not addressable here: {bundle_id}");
+                return None;
+            };
+            let len = range.len();
             if fi.offset.saturating_add(len as u64) > total_adu_length {
                 debug!("Fragment extends beyond total ADU length: {bundle_id}");
                 return None;
@@ -322,11 +327,11 @@ impl Store {
             };
 
             let data = self.load_data(storage_name).await?;
-            // Same defence-in-depth as fragment 0 above.
-            let Some(adu) = data.get(payload.clone()) else {
-                debug!("Fragment payload range exceeds its stored data: {bundle_id}");
-                return None;
-            };
+            // As for fragment 0: the extent was validated against these
+            // bytes at the door.
+            let adu = data
+                .get(range)
+                .trace_expect("A stored fragment's payload extent exceeds its bytes");
             new_data[offset..offset + len].copy_from_slice(adu);
         }
 
@@ -345,27 +350,27 @@ impl Store {
             }
         };
         let mut editor = Editor::new(&raw, &old_data);
-        editor = match editor.with_fragment_info(None) {
-            Ok(e) => e,
-            Err((_, e)) => {
-                debug!("Failed to clear fragment info: {e}");
-                return None;
-            }
-        };
+        if let Err(e) = editor.set_fragment_info(None) {
+            debug!("Failed to clear fragment info: {e}");
+            return None;
+        }
 
-        // Now rebuild
-        let chunks = match editor.update_block(1) {
-            Err((_, e)) => {
+        // Now rebuild: the payload restored to the whole the fragmenter
+        // split, under the security operations fragment 0 carries over it
+        // (RFC 9172 §5.2), which the reassembled bundle's receiver checks.
+        match editor.restore_block(1) {
+            Err(e) => {
                 debug!("Missing payload block?: {e}");
                 return None;
             }
-            Ok(b) => match b.with_data(new_data.into()).rebuild().rebuild() {
-                Err(e) => {
-                    debug!("Failed to rebuild bundle: {e}");
-                    return None;
-                }
-                Ok(chunks) => chunks,
-            },
+            Ok(b) => b.with_data(new_data.into()).rebuild(),
+        }
+        let chunks = match editor.rebuild() {
+            Err(e) => {
+                debug!("Failed to rebuild bundle: {e}");
+                return None;
+            }
+            Ok(chunks) => chunks,
         };
 
         // Write the rewritten bundle now for safety. Zero-copy when
@@ -411,8 +416,7 @@ mod tests {
     /// Structural parse into the `hardy_bpv7::bundle::Bundle` the BPA wrapper
     /// expects. Used by tests that build bundles via `Editor::flatten` and need
     /// to feed them back through the BPA's `Bundle { bundle, metadata }`
-    /// container; the keyed validate pipeline (`parse_validate_with_provider`)
-    /// would just do this same parse after redundant BPSec validation.
+    /// container.
     fn bundle_from_bytes(data: &[u8]) -> hardy_bpv7::bundle::Bundle {
         let hardy_bpv7::parse::Parsed { bundle, .. } =
             hardy_bpv7::parse::parse(Bytes::copy_from_slice(data)).unwrap();
@@ -496,60 +500,6 @@ mod tests {
         assert!(
             result.is_none(),
             "Should reject fragment extending beyond ADU length"
-        );
-    }
-
-    /// A stored fragment-0 payload range that exceeds the stored data is a
-    /// failed reassembly, never a panic: the range is metadata, the loaded
-    /// bytes are ground truth.
-    #[tokio::test]
-    async fn reassemble_rejects_first_fragment_range_beyond_stored_data() {
-        let store = make_store();
-        let ts = CreationTimestamp::now();
-
-        // 5 bytes stored, but the recorded payload range claims 9.
-        let name0 = store_bytes(&store, b"Hello").await;
-        let id0 = make_id("ipn:0.1.1", &ts, 0, 9);
-        store_fragment_metadata(&store, &id0, &name0).await;
-
-        let fragments = FragmentSet {
-            received_at: OffsetDateTime::now_utc(),
-            origin: Origin::Originated,
-            adus: [(0, (id0, name0, 0..9))].into(),
-        };
-
-        let result = store.reassemble(&fragments).await;
-        assert!(
-            result.is_none(),
-            "Should fail reassembly when the stored range exceeds the data"
-        );
-    }
-
-    /// The same guard for a non-first fragment: its recorded payload range
-    /// exceeds its own stored bytes.
-    #[tokio::test]
-    async fn reassemble_rejects_fragment_range_beyond_stored_data() {
-        let store = make_store();
-        let ts = CreationTimestamp::now();
-
-        let name0 = store_bytes(&store, b"Hello").await;
-        // 2 bytes stored, but the recorded payload range claims 5.
-        let name1 = store_bytes(&store, b"Wo").await;
-
-        let id0 = make_id("ipn:0.1.1", &ts, 0, 10);
-        let id1 = make_id("ipn:0.1.1", &ts, 5, 10);
-        store_fragment_metadata(&store, &id0, &name0).await;
-
-        let fragments = FragmentSet {
-            received_at: OffsetDateTime::now_utc(),
-            origin: Origin::Originated,
-            adus: [(0, (id0, name0, 0..5)), (5, (id1, name1, 0..5))].into(),
-        };
-
-        let result = store.reassemble(&fragments).await;
-        assert!(
-            result.is_none(),
-            "Should fail reassembly when a fragment's stored range exceeds its data"
         );
     }
 
@@ -663,35 +613,37 @@ mod tests {
         } = hardy_bpv7::parse::parse(Bytes::copy_from_slice(&complete_data)).unwrap();
 
         // Create fragment 0: offset=0, total=10, payload="Hello"
-        let frag0_data = Editor::new(&raw_bundle, &complete_data)
-            .with_fragment_info(Some(FragmentInfo {
+        let mut editor = Editor::new(&raw_bundle, &complete_data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
                 offset: 0,
                 total_adu_length: 10,
             }))
-            .map_err(|(_, e)| e)
-            .unwrap()
+            .unwrap();
+        editor
             .update_block(1)
-            .map_err(|(_, e)| e)
             .unwrap()
             .with_data(alloc::borrow::Cow::Borrowed(&b"Hello"[..]))
-            .rebuild()
+            .rebuild();
+        let frag0_data = editor
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();
 
         // Create fragment 1: offset=5, total=10, payload="World"
-        let frag1_data = Editor::new(&raw_bundle, &complete_data)
-            .with_fragment_info(Some(FragmentInfo {
+        let mut editor = Editor::new(&raw_bundle, &complete_data);
+        editor
+            .set_fragment_info(Some(FragmentInfo {
                 offset: 5,
                 total_adu_length: 10,
             }))
-            .map_err(|(_, e)| e)
-            .unwrap()
+            .unwrap();
+        editor
             .update_block(1)
-            .map_err(|(_, e)| e)
             .unwrap()
             .with_data(alloc::borrow::Cow::Borrowed(&b"World"[..]))
-            .rebuild()
+            .rebuild();
+        let frag1_data = editor
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();
@@ -713,10 +665,8 @@ mod tests {
         store.insert_metadata(&meta_bundle).await;
 
         // Get payload ranges from the parsed bundles
-        let r0 = bundle0.blocks.get(&1).unwrap().payload_range();
-        let r1 = bundle1.blocks.get(&1).unwrap().payload_range();
-        let payload0_range: Range<usize> = r0.start as usize..r0.end as usize;
-        let payload1_range: Range<usize> = r1.start as usize..r1.end as usize;
+        let payload0_range = bundle0.blocks.get(&1).unwrap().payload_range();
+        let payload1_range = bundle1.blocks.get(&1).unwrap().payload_range();
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),

@@ -16,23 +16,25 @@ This is a living document: the sections below mix shipped behaviour with design 
 - Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready, Partial}`, one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. `Partial { consumed, tail: PayloadTail }` is the deferred-payload signal: `push` returns it at the payload boundary and the caller drains the remaining payload through `PayloadTail` (CRC + termination + anti-smuggling checks) without re-buffering headers. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check`.
 - CLA segment delivery — `cla::Segment::{Next, Final}` and the streamed-only `Sink::dispatch(&mut dyn Receiver<Segment>)` (the buffered/streamed trait pairs were collapsed; no `Bytes` variant remains). Stream traits `Sender<T>` / `Receiver<T>` live in `bpa::stream` with adapters over `hardy_async::channel`.
 - Streamed ingress drain — `dispatcher::ingress` drives the parser per `Segment` and drains the bundle through a `ValidatingReceiver` (below, yielding the resident head first so one receiver carries the whole bundle) into one `Store::save_stream(&mut dyn Receiver<Segment>)` call: the store owns the spool, so the pipeline already assumes an asynchronous streaming store, and the reject paths already stage-then-discard as the streaming contract requires.
-- Pre-drain gate — `bundle::parse::parse_headers` + `HeaderVerify::gate_reason`: lifetime/hop/expiry rejection, the config-gated RFC 9171 validity checks, and the Ingress filter chain all run on the accumulation buffer before the payload drain (§5.4's early reject in interim form; link-layer reach-back per §1.3 rides the CLA's streaming dispatch path). A gate drop is pre-custody and never persisted. The RIB lookup also runs at the gate as the routing decision of record — an explicit Drop route rejects here before the drain begins, with nothing spooled, and the commit executes the carried decision, deciding again if the table changed during the drain (§5.7's routing-at-commit, both halves).
+- Pre-drain gate — `bundle::arrival::parse_headers` + `Headers::gate_reason`: lifetime/hop/expiry rejection, the config-gated RFC 9171 validity checks, and the Ingress filter chain all run on the accumulation buffer before the payload drain (§5.4's early reject in interim form; link-layer reach-back per §1.3 rides the CLA's streaming dispatch path). A gate drop is pre-custody and never persisted. The RIB lookup also runs at the gate as the routing decision of record — an explicit Drop route rejects here before the drain begins, with nothing spooled, and the commit executes the carried decision, deciding again if the table changed during the drain (§5.7's routing-at-commit, both halves).
 - `ValidatingReceiver` validating drain (§5.5's pull-through) — the dispatcher's shared `Receiver<Segment>` decorator, wrapped by an input door over its arrival stream: as each segment flows through it feeds the sync `PayloadTail` checks (payload CRC, block/outer breaks, anti-smuggling) plus one incremental digest per deferred payload BIB, then yields the same segment onward; the categorised verdict (`Truncated` / `Invalid` / `IntegrityFailed`) is read from `finish()` after the drain returns, and the door owns the discard of a save the verdict rejects. Layering is as designed: `PayloadTail` and the digest framing are `bpv7`'s (no_std, sans-IO), the async wrapper is bpa's — and validation is the door's, so the store drain (`Store::save_stream`) stays validation-blind and any door can drive it (the originate doors decorate their own streams).
-- Deferred payload-BIB verification is streaming — `checks::begin_payload_verification` begins a `bpsec::bib::Verifier` per BIB the header verify deferred, *inside `parse_headers`' keyed scope* (`HeaderVerify::deferred_verifiers`): the `!Send` `KeySource` is resolved once per bundle and never crosses an `await`; only the `Send` verifiers — copied key material, the recorded exception documented on `bib::Verifier` — ride the drain. `checks::verify_payload` and `finalize_with_provider` are deleted, resolving the key-material re-adjudication this block previously flagged.
+- Deferred payload-BIB verification is streaming — the header pass begins a `bpsec::bib::Verifier` (bpv7's `bib::Operation::begin_verify`) per BIB the header verify deferred, *in `parse_headers`' keyed pass* (`Headers::deferred_verifiers`), each owning the keyed digest state the drain feeds. The pass derives the arrival's one key source (`Headers::keys`) and keeps what it decrypted in the parse's plaintext cache (`Parsed::decrypted`), which the Ingress chain's reader is seeded from, so no block is decrypted twice; there is no whole-payload verification and no second key derivation.
 - Unified ingress pipeline, one metadata write — the CLA, reassembly, and restart in-feeds share `process_received_bundle`; the single `insert_metadata` at `Dispatching` carries the Ingress chain's classifier deltas (`New` is an in-memory marker that never persists), and the gate's routing decision then executes on the arriving task — a fresh arrival does not transit the dispatch queue (`DispatchPending` belongs to the re-dispatch paths), except the admin-endpoint and fragment arms, which queue for the processing pool.
-- No editing on input — the bundle is stored exactly as received; RFC 9172 §5.1.1 failure-drops and unrecognised-deletable removals are *scheduled* in `BundleMetadata::to_remove` and applied per attempt at the output doors, ahead of the Egress Rewriters and ahead of the Deliver chain. Captured payload-BCB op-sets are likewise never spent at ingress — delivery re-derives them from the stored bytes (Phase D's streamed payload decrypt makes that streaming).
-- Parse-mode collapse (§9.3) — the three `parse_{preserve,canonicalize,full}_with_provider` pipelines are gone; call sites compose the primitives (`bpa::bundle::parse`).
-- Decoded extension fields — pre-parsed at ingress into `BundleMetadata` (§2.3's open choice is resolved; the filter redesign partitions them as the **wire cache** group). The rich `bpa::Bpv7Bundle` view is replaced by structural `hardy_bpv7::Bundle` + metadata.
+- A received bundle is stored as received, less the RFC 9172 §5.1.1 failure-drops and unrecognised-deletable removals the header pass schedules, and with its per-hop blocks' accepted security operations removed (§5.5): once the gate admits it, CLA ingress rebuilds its resident headers and splices the rebuilt region into the drain (`RebuiltHeaders`), so both precede the Egress Rewriters and the Deliver chain. A bundle the raw service door originates leaves as its service built it: the removals are reception processing. At the bundle's destination the payload is stored in plaintext: the gate begins its decrypt and verify stages, the drain decrypts and checks it as it streams into the save, and the rewrite frames it without its BCB and BIB (§5.5). Elsewhere the captured payload-BCB op-sets are never spent at ingress.
+- Parse-mode collapse (§9.3) — the three `parse_{preserve,canonicalize,full}_with_provider` pipelines are gone; call sites compose the primitives (`bpa::bundle::arrival`).
+- Decoded per-hop blocks — the parse's `PerHopFields`, recorded at ingress in `BundleMetadata` (§2.3's open choice is resolved; the filter redesign partitions them as the **wire cache** group). The rich `bpa::Bpv7Bundle` view is replaced by structural `hardy_bpv7::Bundle` + metadata.
 - `RewrittenBundle` and the `Checked` / `Rewritten` / `Parsed` taxonomy removed from `bpv7`.
+- Streamed egress without cryptographic stages (§6.3) — `forward_bundle` opens the stored bundle with `Store::load_stream`, the streaming read seam, and holds it only until the bytes held reach the payload's data (`dispatcher::output::pull_headers`): every header the output stages edit or read is then resident. One editor over those bytes serves the attempt — the Egress Rewriters and the per-hop writes — and rebuilds once, and the rebuild reaches `Cla::forward` as segments (`rebuilt_headers::RebuiltHeaders` over the `dispatcher::output::LoadedBundle` stream): the rebuilt header region, then the stored payload block as it stands, the resident part and the rest of the load stream. The rebuild is `Editor::rebuild`'s chunk plan, with no block index built, and `total_len` is the rebuilt header region's length plus the stored bundle's length from its payload block on. Nothing on the egress path parses or flattens the whole bundle.
 
 **Interim (works, not yet the target shape)**
 
 - The spool's destination is still RAM: `Store::save_stream` accumulates its segment stream (bounded by `max_bundle_size`) and commits via `BundleStorage::save(Bytes)` on the final segment. The seam now lives *inside the store wrapper*, behind the target signature — one `Receiver<Segment>` in, storage name out — so the storage-spool tranche swaps `save_stream`'s body (and the backend trait) for the streamed write (§3) without touching pipeline code: every stage upstream already sees a plain `Receiver<Segment>`, and ingress already deletes a staged save whose post-stream validation fails (the discard half of the contract).
 - The drain follows the gate decisions: the door drains its decorated stream through one `Store::save_stream` call only once the chain and the route lookup have settled, and a rejected arrival spools nothing (§5.7's ordering, landed); a Classifier-set storage QoS that the spool must honour is a policy-tranche target. What remains interim is only the spool's RAM destination above.
+- The load's source is RAM too: `Store::load_stream` loads the whole buffer through `BundleStorage::load` and yields it as one `Final`, so the resident bytes are the whole stored bundle and an Egress Rewriter reads the payload. The output door already pulls only through the header region, so the storage-spool tranche swaps `load_stream`'s body without touching pipeline code.
 
 **Pending**
 
-- Streaming storage (§3 — `BundleStorage` still exposes `save(Bytes)` / `load -> Result<Option<Bytes>>`; swapping `Store::save_stream`'s RAM accumulator for the backend's streamed `store()` is the remaining prerequisite for the payload-never-in-RAM property §2.5), the egress executor (with its cryptographic stages) feeding the streamed `Cla::forward` (§6), the §10 phases.
+- Streaming storage (§3 — `BundleStorage` still exposes `save(Bytes)` / `load -> Result<Option<Bytes>>`; swapping `Store::save_stream`'s RAM accumulator for the backend's streamed `store()`, and `Store::load_stream`'s whole-buffer body for the backend's streamed load, are the remaining prerequisites for the payload-never-in-RAM property §2.5), the egress cryptographic stages (§6.1.1), delivery's streamed output, the §10 phases.
 
 Where a section below still describes the pre-implementation shape, the API names in this block are authoritative.
 
@@ -99,9 +101,9 @@ The 1GB memory ceiling (§1.2) is the most concrete demonstration of the archite
 | 2 | Parse | whole-buffer parse needs complete `&[u8]` | 1GB resident | resolved — streamed parser (§5.2) |
 | 3 | Storage write | `BundleStorage::save(Bytes)` — bundle in RAM through the write | 1GB I/O | remains — §3 / Phase A |
 | 4 | Reject timing | cannot reject until fully received and stored | wasted | resolved — pre-drain gate (§5.4) |
-| 5 | Storage read | `BundleStorage::load()` reads the whole bundle back | 1GB alloc | remains — §3 / Phase B |
-| 6 | Editor flatten | `flatten`/`flatten_inplace()` may need a second buffer | 1-2GB | remains — streamed egress edits only the resident header region (§6.1) / Phase B |
-| 7 | CLA forward | `Cla::forward` receives the loaded bundle as one whole-buffer segment, and buffering CLAs hold it while transmitting | 1GB resident | remains — streamed egress (§6.2) / Phase B |
+| 5 | Storage read | `BundleStorage::load()` reads the whole bundle back | 1GB alloc | remains in the backends — §3 / Phase B; the egress door already pulls only its header region through `Store::load_stream` |
+| 6 | Editor flatten | `flatten`/`flatten_inplace()` may need a second buffer | 1-2GB | resolved at egress — only the rebuilt header region is flattened, and the payload streams through (§6.3); delivery still flattens once |
+| 7 | CLA forward | `Cla::forward` receives the loaded bundle as one whole-buffer segment, and buffering CLAs hold it while transmitting | 1GB resident | partly resolved — the bundle arrives as segments with a plan-derived `total_len` (§6.2); buffering CLAs still hold it (`INTERIM BUFFERING`, Phase B) |
 
 #### 2.5.2. With This Design
 
@@ -129,34 +131,34 @@ trait BundleStorage {
     /// yields `Ok(Segment::Next(bytes))` for non-final payload
     /// segments and `Ok(Segment::Final(bytes))` for the final segment
     /// (which may be zero-length); on `Final`, commit the spool and
-    /// return the assigned storage name. `Err(Disconnected)` (the
-    /// producer dropped without sending `Final`) is treated as abort
-    /// and the staged data is discarded. See §3.2 for the full
-    /// Segment contract.
+    /// return the assigned storage name. A stream that ends without
+    /// `Final` (the producer dropped, or a decorator stopped it) is an
+    /// abort: the staged data is discarded and `None` returned. See
+    /// §3.2 for the full Segment contract.
     async fn store(
         &self,
         stream: &dyn Receiver<Segment>,
-    ) -> Result<Arc<str>>;
+    ) -> Option<Arc<str>>;
 
-    /// Push the stored bundle bytes for `storage_name` into `stream`
-    /// in order, returning when all bytes have been pushed or the
-    /// consumer has gone away (`SendError`). The egress direction is
-    /// a pure stream — end-of-data is unambiguous, so no `Segment` is
-    /// needed.
+    /// Open the stored bundle bytes for `storage_name` as a segment
+    /// stream, in order and ending in `Segment::Final`, or `None` if
+    /// absent. A consumer that has what it needs drops the stream, and
+    /// the backend stops reading.
     async fn load(
         &self,
         storage_name: &str,
-        stream: &dyn Sender<Bytes>,
-    ) -> Result<()>;
+    ) -> Option<Box<dyn Receiver<Segment>>>;
 
     /// Delete stored bundle data.
-    async fn delete(&self, storage_name: &str) -> Result<()>;
+    async fn delete(&self, storage_name: &str);
 }
 ```
 
+A storage call succeeds or the node stops ([storage_subsystem_design.md](storage_subsystem_design.md#storage-traits)): a backend rides out a transient failure inside the call and panics on one it cannot recover from, so no call returns a `Result`. A load's stream is held to the same contract: it yields exactly the stored bytes, ending in its `Final`, and a read the backend cannot recover panics inside `recv` rather than end the stream early. The load stream a door pulls therefore never fails. A door may still abort its own output stream to a CLA for a reason of its own; that abort is the BPA's, not the store's.
+
 Both `store` and `load` are fully sequential: every backend (local disk, SSD, NOR flash, S3, tape) handles these primitives naturally. The stream traits (§4) decouple the byte channel from the trait surface — each backend wraps whatever transport is most convenient.
 
-A **bounded head read needs no extra primitive**: the consumer calls `load` and drops its receiver once it has the bytes it wants (headers plus any declared payload peek); the backend sees `SendError` and stops streaming. Restart re-admission uses exactly this shape to re-supply filter invocation data (`filter_subsystem_design.md`), so the sequential-only model holds there too.
+A **bounded head read needs no extra primitive**: the consumer calls `load` and drops its receiver once it has the bytes it wants (headers plus any declared payload peek), and the backend stops reading. Restart re-admission uses exactly this shape to re-supply filter invocation data (`filter_subsystem_design.md`), so the sequential-only model holds there too.
 
 The `store` / `load` names match Hardy's existing storage convention and are unambiguous because the BPA is always the caller. The CLA byte-streaming surfaces keep their established verbs rather than the §4 `write` / `read` convention: egress is the streamed `Cla::forward` (§6.2), ingress the streamed `Sink::dispatch` (§5.1.3).
 
@@ -171,7 +173,7 @@ pub enum Segment {
 }
 ```
 
-A trait method that takes `&dyn Receiver<Segment>` is declaring that its producer marks the final item with `Final(bytes)` (which may carry payload data or be empty), and that a bare disconnect (the producer dropped without ever sending `Final`) is to be treated as abort. Plain `Receiver<Bytes>` is reserved for streams where end-of-data is unambiguous (e.g. `BundleStorage::load`, where the BPA is itself the producer and a consumer disconnect just means "stop streaming").
+A trait method that takes `&dyn Receiver<Segment>` is declaring that its producer marks the final item with `Final(bytes)` (which may carry payload data or be empty), and that a bare disconnect (the producer dropped without ever sending `Final`) is to be treated as abort. Every byte stream on the trait surfaces carries `Segment`, `BundleStorage::load`'s included, so a stream that ends without `Final` is never mistaken for the end of the data.
 
 The consumer pattern is uniform — *append until `Final`, then commit*:
 
@@ -235,14 +237,15 @@ The two traits are deliberately asymmetric in their receivers: `send` takes `&se
 
 Channel adapters live separately from the traits. The storage subsystem provides `ChannelSender<T>` wrapping `hardy_async::channel::Sender<T>`; the mirror `ChannelReceiver<T>` wraps `hardy_async::channel::Receiver<T>`. Tests use `Mutex<Vec<T>>`-backed collectors. None of these adapters appear in the trait surface.
 
-Byte streams use `Sender<Bytes>` and `Receiver<Bytes>` directly — no specialised aliases.
+Byte streams use `Receiver<Segment>` directly — no specialised aliases.
 
 **`Closeable` as the implementation primitive.** The `Sender<T>` / `Receiver<T>` pair is the natural abstraction over `Closeable` in `hardy-async`, which combines a channel with a cancellation token behind a single interface. Implementations that want cancellable cleanup — the registry's reconciler task (§5.1.2), per-call streaming receivers passed into `Sink::dispatch_streamed`, anywhere a `select_biased!(cancel | recv)` pattern would otherwise be hand-rolled — compose naturally on top of `Closeable` without re-exposing the cancellation primitive in their trait surface.
 
 **Direction conventions for trait method parameters:**
 
-- A method that takes `&dyn Sender<T>` *pushes items into it*; the caller holds the receiving end. Example: `BundleStorage::load(_, stream: &dyn Sender<Bytes>)` — storage pushes bytes; the caller wraps a channel receiver and reads from it.
+- A method that takes `&dyn Sender<T>` *pushes items into it*; the caller holds the receiving end. Example: `BundleStorage::recover(stream: &dyn Sender<RecoveryResponse>)` — storage pushes entries; the caller wraps a channel receiver and reads from it.
 - A method that takes `&dyn Receiver<T>` *pulls items from it*; the caller holds the producing end. Example: `BundleStorage::store(stream: &dyn Receiver<Segment>)` — storage pulls bytes; the caller wraps a channel sender and writes into it.
+- A method that returns a `Receiver<T>` hands the caller a stream to pull. Example: `BundleStorage::load(_) -> Option<Box<dyn Receiver<Segment>>>` — the caller pulls the stored bytes at its own pace and drops the stream to stop.
 
 **Method naming on symmetric trait surfaces.** When a trait surface is implemented on either side of a connection (CLA traits, filter traits), `stream_in()` / `stream_out()` are ambiguous — "in" relative to whom? These traits use `write()` for the push direction and `read()` for the pull direction, naming what the *caller of the method* is doing. A CLA that calls `sink.write(stream)` is writing bytes; the BPA that calls `cla.write(stream)` is also writing bytes. The trait surface is identical; only the direction of data flow differs by use site.
 
@@ -368,11 +371,13 @@ Splitting the structural walk (`push`) from BPSec validation (`finish`) lets the
 The parser handles BIBs and BCBs asymmetrically during the walk (zero cost for bundles with no security blocks):
 
 - **BCBs** are decoded inline during the block walk. The ASB (which describes what the BCB encrypts) is itself plaintext, so the parser parses each BCB's `OperationSet` as it sees it.
-- **BIBs** are recorded by block number in a pending list and decoded by `finish()`. The deferral is necessary because a BIB may itself be a BCB target — in which case its body is ciphertext until the BCB is decrypted. `finish()` parses every BIB whose body is plaintext; BIBs whose bodies are BCB-protected are skipped (their target blocks get `BibCoverage::Maybe`, deferred to the keyed verification step).
+- **BIBs** are recorded by block number in a pending list and decoded by `finish()`. The deferral is necessary because a BIB may itself be a BCB target — in which case its body is ciphertext until the BCB is decrypted. `finish()` parses every BIB whose body is plaintext; BIBs whose bodies are BCB-protected are skipped (their target blocks get `BibCoverage::Maybe`, deferred to the keyed verification step, except a Previous Node or Bundle Age block, which no valid encrypted BIB covers and which never reads `Maybe`; `refactor_plan.md`, "Per-hop BPSec and acceptance at ingress").
 
-`finish()` returns the `Bundle` index along with the pre-parsed BIB and BCB `OperationSet` maps, so downstream filters don't re-decode. The cross-block rules are applied here; on violation, `finish()` returns `Err` and the bundle is rejected in the header pass, before the gate and with nothing spooled. This is the earliest a structurally-malformed bundle can be rejected. The structural validators are exposed as `bpsec::{bib,bcb}::OperationSet::check` (composed by `bpv7::checks`) so offline tooling can run the same checks without standing up a filter pipeline.
+`finish()` returns the `Bundle` index along with the pre-parsed BIB and BCB `OperationSet` maps, so downstream filters don't re-decode. The cross-block rules are applied here; on violation, `finish()` returns `Err` and the bundle is rejected in the header pass, before the gate and with nothing spooled. This is the earliest a structurally-malformed bundle can be rejected. The structural validators (`bpsec::{bib,bcb}::OperationSet::check`) run inside bpv7's structural parse, so offline tooling gets the same checks by parsing, without standing up a filter pipeline.
 
-The keyed BPSec verification step (after the parser, with key access) has access to the accumulation buffer (all header blocks in memory) and the `Bundle` block index for structural navigation. Header-block BIBs are verified immediately. Payload-block BIBs require payload data — they are verified incrementally as the payload drains, the `ValidatingReceiver` feeding each chunk to the deferred verifiers (§5.7).
+The parser also classifies the blocks this node cannot process by their flags, the unrecognised blocks and the security blocks with an operation in a context it does not implement (`Parsed::classification`), so the header pass reports and deletes as RFC 9171 §5.6 Step 4 says without a key. The keyed step is bpv7's `Parsed::check`, one pass in this node's roles on each block (`bpsec::Roles`, acceptor or verifier per service): the acceptors' decryption with the §3.9 coupling, the verifiers' decryption of their own block, and the integrity checks over the plaintext just cached, each operation reported as a fact for the BPA's policy. The header pass names the per-hop blocks this node accepts and verifies every readable BIB; the gate names the roles the Ingress chain announced, the destination's acceptance of every operation and the kept Hop Count, in one pass over one map (`bundle::arrival::fate::check_announced`), and the fate the flags decide for a failure is bpa's (`bundle::arrival::fate`). The keyed step has access to the accumulation buffer (all header blocks in memory) and the `Bundle` block index for structural navigation. Header-block BIBs are verified immediately. Payload-block BIBs require payload data — they are verified incrementally as the payload drains, the `ValidatingReceiver` feeding each chunk to the deferred verifiers (§5.7).
+
+A fragment's own security operations are the reassembled bundle's to process (RFC 9172 §5.2): `Parsed::check` defers every one of them; the gate passes over every role the chain announced on a fragment and the destination's acceptance; and the fragment is stored with its own operations untouched. Reassembly restores the payload under fragment 0's security blocks (`Editor::restore_block`), and the whole re-enters this pipeline, where its destination accepts the payload's operations.
 
 The split — keyless-structural in the parser, keyed-cryptographic in the gate's verification step — is the cleanest mapping of "what changes between deployments" onto layer boundaries. The structural rules are RFC-mandated and identical for every implementation; keys, key sources, and security policy vary by deployment.
 
@@ -413,7 +418,7 @@ The byte contract keeps filters off the streaming path entirely:
 - An invocation receives its kind's context: the wire bundle, a reader over the resident prefix — the headers and whatever of the payload has arrived, at least the first min(P, payload length) payload bytes the gate holds for a declared peek (§5.4) — and `payload_peek` for those bytes. A block body not resident reads as the reader's `NotResident`.
 - No filter receives a byte stream, holds a stream open, or blocks the drain: the hook runs on the accumulation buffer at the gate, and the payload spools past untouched.
 - Classifiers return a `MetadataDelta` that the engine applies — annotation slots, plus the named fields that arrive with their tranches (the `route_table` / `route_key` routing inputs; the traffic `class`, which drives the dispatch enqueue once the policy tranche lands). Filters never mutate stored bytes — the egress Rewriter edits extension blocks per transmission attempt, in memory, so §6.4's read-only forward path holds by construction.
-- The originate-raw path (`Dispatcher::originate_raw`, bundles from services via gRPC) runs the same strict parser → gate pipeline as ingress — non-canonical service-provided bytes are rejected at parse (§5.2.2), never canonicalised.
+- The originate-raw path (`Dispatcher::originate_raw`, bundles from services via gRPC) runs the same strict parser → gate pipeline as ingress — non-canonical service-provided bytes are rejected at parse (§5.2.2), never canonicalised — with the header pass in the source role (`Pass::Source`): the bundle must carry no Previous Node block and no BIB or BCB on a per-hop block, since this node's egress rewrites those at once; it runs none of the next hop's processing; an unprocessable block is carried whatever its flags; and any failed security check refuses it to the service, as nothing is scheduled for removal.
 
 Built-in checks (validity, rfc9171 strictness) are pipeline code gated by `Config`, upstream of any registered filter; BPSec verification and the RFC 9172 §5.1.1 failure-drop are fixed machinery (§5.2.1), never filters.
 
@@ -431,10 +436,10 @@ With a registered payload peek (`filter_subsystem_design.md`: P > 0), the hook r
 
 ### 5.5. Encrypted Bundles and Durability
 
-The node acts as a BPSec **security verifier on ingress and a security acceptor on egress** (RFC 9172 §1.4); where it adds security of its own, it is a security source on egress too. Encrypted or not, a bundle is stored unmodified (§5.6): a BCB-protected payload spools as ciphertext.
+The node's BPSec roles (RFC 9172 §1.4) are settled at ingress: it is the **verifier** of every plaintext BIB it holds a key for and of the operations an Ingress Classifier names it the verifier of, and the **acceptor** of the per-hop blocks' operations, of the operations a Classifier names it the acceptor of, and, at the bundle's destination, of every operation (`MetadataDelta::roles`, per block and per service); where it adds security of its own, it is a security **source** on egress. A bundle is stored as received but for that acceptance and the scheduled removals (§5.6): a BCB-protected payload spools as ciphertext everywhere but at its destination, or where a Classifier names this node the acceptor of its confidentiality.
 
-- **Ingress and originate — verifier.** The node decrypts, in memory, the BCB-protected extension blocks it needs to process the bundle. These sit in the resident header region and are handled at the pre-drain gate by the KeyProvider-driven machinery (§5.2.1); the stored bytes keep the ciphertext and the BCB. The decoded per-hop values (`previous_node`, `age`, `hop_count`) are cached in the metadata in plaintext, deliberately: they are low-sensitivity, and the node needs them to forward the bundle (expiry, the hop limit). The payload is not decrypted here — the drain carries only the `ValidatingReceiver`'s checks into the spool.
-- **Egress and deliver — acceptor.** Where this node is the security acceptor (always for a BCB still present at the bundle's destination, RFC 9172 §5.1.1), the output door decrypts the payload as a streamed cryptographic stage (§6.1) and removes the BCB from the outgoing header region, per attempt.
+- **Ingress and originate — verifier, and the per-hop blocks' acceptor.** The node decrypts, in memory, the BCB-protected extension blocks it needs to process the bundle. These sit in the resident header region and are handled at the pre-drain gate by the KeyProvider-driven machinery (§5.2.1). It is the acceptor of every operation on a Previous Node or Bundle Age block, which it must replace (RFC 9171 §5.4), and on a Hop Count it can read and check: CLA ingress writes each in plaintext without those operations before the bundle is first stored, so a local Service reads the Previous Node (RFC 9171 §4.4.1) and the forwarder's per-hop writes meet no protection. A Hop Count under a BIB it holds no key for is not its to accept, nor one with an operation in a security context it does not support, nor one whose acceptance takes BCB operations it does not accept with it (RFC 9172 §3.9): those on an encrypted BIB it cannot read, or on one that also covers another block, unless it accepts every block that BIB covers. A block an Ingress Classifier names this node the acceptor of (`MetadataDelta::roles`) is accepted the same way at the gate, service by service, after the chain and the route, in one pass over every block the chain announced (`bundle::arrival::fate::check_announced`): its BCB operation where confidentiality is accepted, with the BCB operations coupled to it (RFC 9172 §3.9), each on a block accepted for confidentiality too or the acceptance fails, and its BIB operation where integrity is accepted, the BIB over a block accepted for confidentiality alone staying in plaintext, checked where the key is held; a block encrypted here cannot be accepted for integrity alone, its BIB being encrypted with it. So is every block an operation targets where the gate delivers the bundle here, now or once its service registers, since the destination is the acceptor of every operation (RFC 9172 §1.4); a fragment's wait for reassembly. A block a Classifier names this node the verifier of is checked and left as received: for integrity, it must carry an integrity operation this arrival checked and found good, the header pass's or the drain's for a streaming payload; for confidentiality, its ciphertext is authenticated by decrypting it, the plaintext going nowhere, at the gate for an extension block and in the drain for the payload, whose bytes pass through as received. A verification this node cannot make, for want of a key, in a security context it does not support, or of the integrity of a block encrypted here, since nothing is decrypted to reach a BIB, is a failed verification meeting the same fate as a failed acceptance, and a block that carries no operation of a service announced for it is discarded, or deletes the bundle where it is the payload or its flags say so ("Missing security operation"). The per-hop blocks are outside the announcements, and the destination's acceptance of every operation outranks any verification announced. One this node cannot accept meets the same fate, the payload deleting the bundle whatever its flags, and a BIB on the primary block is verified and removed, the primary stored as received (RFC 9171 §4.3.1). The payload's operations are its destination's, and a Classifier may announce them too, as a node that is not the destination processes a BCB where its security policy directs it (RFC 9172 §5.1.1); a fragment's are passed over, for acceptance after reassembly. The acceptor of the payload accepts them as the payload streams: the gate resolves the keys and begins the stages, a missing key deleting the bundle there (Block unsupported) before anything is stored; the drain's decrypt stage decrypts the payload, its Verify stage checks each BIB over it against the plaintext (RFC 9172 §3.9: the BCB first, the BIB second), or against the data of a payload received in plaintext, and the payload is stored in plaintext, its BCB and BIB removed, its CRC type as received and the CRC computed over the plaintext. The plaintext streams into the save as the decrypt stage produces it, and a tag or BIB that fails at the stream's end deletes the bundle (Failed security operation) and discards the staged save. A block whose encrypted BIB also covers the payload is accepted with it: its BCB operation goes with the payload's (§3.9), and its BIB operation is checked over its plaintext at the gate. An operation in a security context this node does not support is its acceptor's: where this node accepts it, its target is a failed acceptance and its security block one this node cannot process (RFC 9171 §5.6 Step 4, "Unknown security operation"), whose flags decide; elsewhere it travels untouched and unreported. Every other block keeps its ciphertext and its BCB. It treats a Previous Node or Bundle Age block it holds no key for as a failed acceptance: the block is one it cannot process (RFC 9171 §5.6 Step 4, "Block unsupported"), discarded with its operations unless its flags delete the bundle, and a clocked bundle that loses its Bundle Age so, or to a failed operation, is marked for egress to write a fresh one from the clock; an encrypted Hop Count it holds no key for travels unchanged. The decoded per-hop values (`previous_node`, `age`, `hop_count`) are cached in the metadata in plaintext, deliberately: they are low-sensitivity, and the node needs them to forward the bundle (expiry, the hop limit). A relay's drain carries only the `ValidatingReceiver`'s checks into the spool, its payload as received.
+- **Egress and deliver — acceptor.** Where this node is the security acceptor of a block it did not accept at ingress, as a security gateway whose policy decides per attempt, the output door decrypts it as a streamed cryptographic stage (§6.1) and removes the BCB from the outgoing header region, per attempt. At the bundle's destination there is none left: ingress accepted every operation, the payload's included.
 - **Egress — source.** Where this node adds a BIB or BCB by policy, it stores the bundle as received — plaintext included — and applies the operation at the BPSec-egress seam, per attempt (§6.1.1). The service begins at the source, and the source's own storage is inside its trust boundary: BPSec protects data travelling over the DTN, not the computing resources of the nodes at its ends (RFC 9172 §1). Storage outside the node's trust boundary (an object store or database on another host, removable media) needs encryption at rest for every bundle — plaintext ones this node merely forwards included — which is a property of the storage backend, not a BPSec role.
 
 **AES-GCM streaming decryption**: AES-GCM uses CTR mode internally and can decrypt chunk by chunk. Authentication tag verification is deferred until the final chunk, so the output door withholds the stream's end until the tag verifies: the receiving CLA or Service never sees a complete bundle built from unauthenticated plaintext. On failure the door cancels the stream and discards the bundle — RFC 9172 §5.1.1 requires it for a payload whose ciphertext cannot be authenticated, and the stored ciphertext would fail every later attempt the same way.
@@ -443,9 +448,11 @@ The node acts as a BPSec **security verifier on ingress and a security acceptor 
 
 ### 5.6. Stored Bundles Are Never Rewritten
 
-A bundle has one stored generation: the bytes as received, held unchanged — encrypted or not (§5.5). Every per-node change is applied per attempt at the output doors and never written back — the scheduled RFC 9172 §5.1.1 removals (`BundleMetadata::to_remove`), the per-hop blocks, a Rewriter's edits, payload decryption where this node is the security acceptor, and any BPSec this node adds at the egress seam.
+A bundle has one stored generation, written once: the bytes as received, less the scheduled RFC 9172 §5.1.1 removals and the security operations this node accepted at ingress, the per-hop blocks', those an Ingress Classifier named it the acceptor of, and every operation at the destination, which CLA ingress applies as it stores them (§5.5, §5.7), then held unchanged — encrypted or not. Every other per-node change is applied per attempt at the output doors and never written back — the per-hop blocks, a Rewriter's edits, a security gateway's decryption, and any BPSec this node adds at the egress seam.
 
-Restart is simpler for it: `storage_name` always names the one received copy, so recovery has no generation to reconcile and no interrupted rewrite to rerun.
+Restart is simpler for it: `storage_name` always names the one stored copy, so recovery has no generation to reconcile and no interrupted rewrite to rerun.
+
+**Acceptance precedes first persistence.** The security operations this node processes at ingress are processed before the bundle is first stored, so restart has none to repeat: it re-checks the stored bytes with the structural parse alone — CRCs and the per-hop blocks included, as egress parses them — and holds no keys, so a key that has since rotated away cannot cost a stored bundle.
 
 The ADU reassembly partial ([`fragment_reassembly_redesign.md`](fragment_reassembly_redesign.md), not yet built), a bundle this node is assembling rather than one it received, keeps the rule: each fragment merge writes the merged partial as a new object and retires the previous one, so nothing is rewritten in place. The completed bundle is then held unchanged like any other.
 
@@ -474,18 +481,32 @@ Ingest door (process_received_bundle)
   |     REJECT / Drop route --> reported drop; nothing spooled or stored
   |                             (Accepted: the transfer itself succeeded)
   |
+  |-- Acceptance: the accepted blocks' operations are processed; at the
+  |     destination the payload's decrypt and verify stages are begun
+  |     missing key / failed operation --> flags' fate; nothing stored
+  |
+  |-- Rewrite, when operations are accepted or removals scheduled: the
+  |     accepted blocks are written in plaintext without their operations,
+  |     then the RFC 9172 §5.1.1 failure-drops and deletable-block
+  |     removals leave the resident headers through the Editor's BPSec
+  |     cascade; RebuiltHeaders splices the rebuilt header region into the
+  |     drain (an accepted payload's header region ends at its rebuilt
+  |     block header, the trailer framing its plaintext), and the record
+  |     takes the rebuilt block map
+  |     invalid BIB the cascade decrypts --> reported drop; nothing stored
+  |
   |-- Drain (pull-through): the door wraps the arrival in a
   |     ValidatingReceiver (resident head first, then payload segments;
   |     payload CRC, block and outer breaks, trailing data; each payload
-  |     chunk fed to the deferred verifiers) and drains it through one
-  |     Store::save_stream
+  |     chunk fed to the deferred verifiers, or, for an accepted payload,
+  |     through the decrypt stage to its verifiers and the trailer) and
+  |     drains it through one Store::save_stream
   |     failing pull --> nothing saved (truncation / over-cap: Refused;
   |                      invalid content: reported drop)
   |
-  |-- Settle: ValidatingReceiver::finish() — deferred payload-BIB verdicts
+  |-- Settle: ValidatingReceiver::finish() — deferred payload-BIB verdicts,
+  |     an accepted payload's tag and BIB verdicts
   |     failure --> the door deletes the staged save; reported drop
-  |     (RFC 9172 §5.1.1 failure-drops and deletable-block removals are
-  |      scheduled in to_remove, applied at the output doors)
   |
   |-- insert_metadata: the one metadata write, at Dispatching
   |     (the authoritative duplicate check — a duplicate deletes its save)
@@ -504,7 +525,7 @@ A structural failure in the streamed bytes (payload CRC, block or outer break, t
 
 A BPA is a router and does not manipulate bundle payloads: where payload inspection or rewriting is needed, a separate CLA or Service (e.g. BIBE) is the pattern, taking the bundle off the hot path rather than adding mangle functionality to it. No registered code touches the byte stream. Egress processes bytes at two fixed points:
 
-- **Header edits** — the per-hop blocks, a Rewriter's extension-block edits, the removals scheduled in `to_remove`, and any BIB or BCB this node adds over a header target — are applied by the Editor to the resident header region before the stream starts. Header blocks are small and held in full.
+- **Header edits** — the per-hop blocks, a Rewriter's extension-block edits, and any BIB or BCB this node adds over a header target — are applied by the Editor to the resident header region before the stream starts. Header blocks are small and held in full.
 - **Cryptographic functions** — BPSec integrity and confidentiality over the payload, and payload decryption where this node is the security acceptor (§5.5) — are hard-coded and keyed through the `KeyProvider`. They process the payload incrementally as it streams (§6.1.1).
 
 The egress executor spawns `load()`, emits the edited header region, then streams the stored payload through any cryptographic stage into `Cla::write()`'s channel (§6.2). Without a payload cryptographic stage the payload bytes pass through unchanged, never buffered whole.
@@ -544,7 +565,7 @@ For local disk / NOR flash, the second read is essentially free (OS page cache).
 
 Computing the HMAC at ingress instead, while the payload streams into the spool, is not done: a security source applies its operations at egress (§5.5), and the stored bundle is never rewritten (§5.6).
 
-**Payload BCB (AES-GCM)** has the same ordering constraint but is deferred to Phase D (security gateway). Decrypting a payload BCB at the output door (§5.5) has no such constraint — removing the BCB is decided before the payload streams — but the tag verifies only at the end, so the door withholds the stream's end until it does. AES-GCM requires a streaming wrapper built on the low-level `aes` + `ghash` crates (§7.3).
+**Payload BCB (AES-GCM)** has the same ordering constraint but is deferred to Phase D (security gateway). Decrypting a payload BCB, at its acceptor's ingress drain or a gateway's output door (§5.5), has no such constraint — removing the BCB is decided before the payload streams — but the tag verifies only at the end, so the door withholds the stream's end until it does. AES-GCM requires a streaming wrapper built on the low-level `aes` + `ghash` crates (§7.3).
 
 #### 6.1.3. BPSec Low-Level API Surface
 
@@ -572,7 +593,7 @@ Each step is a `mac.update()` or AAD accumulation call. The stage provides these
 
 ### 6.2. CLA Egress: Cla::forward and Cla::write
 
-> **Landed state (2026-08).** There is no buffered/streamed pair: `Cla::forward` is the one, streamed-only method (keeping `forward`'s `bundle_id` correlation parameter, which the sketch predates), and the buffering adapter the sketch describes is the public helper `stream::buffer_stream` — it buffers the stream via `concat_stream`, enforces `total_len` exactly (with a `usize` pre-flight for 32-bit targets), and maps truncation to `StreamCancelled`, overrun to `PayloadTooLarge`, and short delivery to `PayloadUnderrun`. CLAs that need a contiguous bundle call it explicitly (marked `INTERIM BUFFERING` at each site). The dispatcher always forwards through the streamed door, passing the loaded bundle as `&mut Bytes` (a whole buffer is itself a one-segment `Receiver`) with `total_len = data.len()`. The egress executor, streamed storage `load`, and the plan-derived `total_len` below remain pending.
+> **Landed state.** There is no buffered/streamed pair: `Cla::forward` is the one, streamed-only method (keeping `forward`'s `bundle_id` correlation parameter, which the sketch predates), and the buffering adapter the sketch describes is the public helper `stream::buffer_stream` — it buffers the stream via `concat_stream`, enforces `total_len` exactly (with a `usize` pre-flight for 32-bit targets), and maps truncation to `StreamCancelled`, overrun to `PayloadTooLarge`, and short delivery to `PayloadUnderrun`. CLAs that need a contiguous bundle call it explicitly (marked `INTERIM BUFFERING` at each site). The dispatcher forwards the egress rebuild through the streamed door as segments (`rebuilt_headers::RebuiltHeaders` over `dispatcher::output::LoadedBundle`: the rebuilt header region, then the stored payload block streaming on from `Store::load_stream`), with the plan-derived `total_len` below: the rebuilt header region's length plus the stored bundle's from its payload block on. The egress cryptographic stages and the streamed storage `load` remain pending.
 
 Original sketch — a buffered `Cla::forward(Bytes)` for CLAs that expect a complete bundle in memory, beside a streaming variant that takes a `Receiver<Segment>` from which the CLA pulls chunks, mirroring the §5.1.3 sketch:
 
@@ -607,10 +628,10 @@ Internally, the BPA always uses `write()`. The egress executor reads sequentiall
 
 ### 6.3. The Common Forward Path
 
-For the hot forward path (no BPSec added at this node, no egress filter edits), no cryptographic stage runs. The Editor updates the per-hop blocks in the resident header region — it finds them by `block_type` in the `Bundle` index (§9.3 — the Bundle does not carry decoded extension-block fields) and decodes each body from the resident bytes — and the executor emits:
+For the hot forward path (no BPSec added at this node, no egress filter edits), no cryptographic stage runs. The output door pulls the stored bundle until its header region is resident, and the attempt's one editor writes the per-hop blocks over the record's block index, from the extension values cached at ingress (§9.3 — the Bundle does not carry decoded extension-block fields). The rebuild travels to the CLA as segments:
 
-1. The edited header region: the primary block, the updated previous_node (~30B), hop_count (~15B) and bundle_age (~15B) blocks, and the remaining extension blocks unchanged
-2. The stored payload, passed through unchanged
+1. The rebuilt header region, as one segment: the primary block, the updated previous_node (~30B), hop_count (~15B) and bundle_age (~15B) blocks as new bytes, and the remaining extension blocks unchanged
+2. The stored payload block, passed through unchanged: the resident part as a slice, then the rest of the load stream
 
 No crypto. No random access. Sequential read from storage to the CLA. Peak memory: the resident header region plus the read buffer.
 
@@ -773,15 +794,15 @@ The crate boundary follows a single principle: **`bpv7` owns wire-format truth; 
 
 - **Status reports are for post-parse rejections only.** The streaming parser does not try to recover information from a corrupted bundle — if it fails, the bundle is dropped from the live pipeline (§5.2.2 explains why, and notes the planned quarantine-EID encapsulation capability for post-mortem). Status reports cover bundles whose parse succeeded but were rejected by a filter, policy, or egress failure; in those cases the `PrimaryBlock` is known-valid and the BPA already has the source / report-to EIDs in hand. `bpv7` exposes no best-effort parse helper for corrupt-bundle recovery.
 
-- **Reason-code mapping is BPA policy.** The translation from a filter or policy outcome to a `status_report::ReasonCode` (`BlockUnsupported`, `BlockUnintelligible`, etc.) is a policy decision about how to interpret a rejection for reporting purposes. It lives at the BPA call site, not in `bpv7`. The `status_report::ReasonCode` enum stays in `bpv7` (it's part of the wire format for status report payloads), but the *mapping logic* is the dispatcher's.
+- **A reason code is decided where its meaning is.** The reason a `bpv7` error carries is wire-format truth — RFC 9171 §5.6 Steps 3 and 4 and RFC 9172 §7.1 fix it — so `bpv7` maps it (`ReasonCode: From<&Error>`). The reason for a filter or policy outcome is a policy decision about how to interpret a rejection for reporting purposes, so it lives at the BPA call site. The `status_report::ReasonCode` enum itself is `bpv7`'s, part of the wire format for status report payloads.
 
-- **Decoded extension-block fields live outside `Bundle`.** `Bundle` carries the decoded `PrimaryBlock` plus the structural index of extension blocks only (§7.1). `PreviousNode` / `BundleAge` / `HopCount` are pre-parsed at ingress into `BundleMetadata` (the filter redesign's wire-cache group); anything else is decoded on demand from the block's byte extent. Adding a new extension block type is not a `bpv7` change.
+- **Decoded extension-block fields live outside `Bundle`.** `Bundle` carries the decoded `PrimaryBlock` plus the structural index of extension blocks only (§7.1). The parse decodes the `PreviousNode` / `BundleAge` / `HopCount` blocks no BCB covers into `Parsed::per_hop`, beside the `Bundle`, and ingress decodes those it decrypts; it records them in `BundleMetadata` (the filter redesign's wire-cache group). Anything else is decoded on demand from the block's byte extent. Adding a new extension block type is not a `bpv7` change.
 
 - **There is no parse-mode taxonomy.** Mode variants (canonicalise? drop unsupported blocks? validate BPSec?) would encode dispatcher decisions as parser variants; those decisions belong to pipeline configuration. `bpv7`'s in-memory parse surface is a single sugar function over the streaming primitives, returning the structural `Parsed` for tools, tests, and builder round-trips; production callers compose the primitives (`bpa::bundle::parse`).
 
 - **Reusable pipeline policy lives in `bpa`, not `bpv7`.** The per-hop mutations (hop count, bundle age, previous-node) and validity checks are `bpa` pipeline code against `bpv7`'s lean `Bundle` index. They depend on `bpv7` for wire-format primitives but are not themselves `bpv7` types — which keeps `bpv7` consumable by non-Hardy callers (CLA debug tools, external utilities) without dragging dispatcher policy along.
 
-**The acceptance test** for whether something belongs in `bpv7` or `bpa`: *if BPA needs to query, route, or report by it, it's operational meaning and lives in `bpa`; if it's purely structural (byte extents, CBOR shapes, RFC-defined field decodings), it lives in `bpv7`.* The reason-code mapping policy fails this test — it's BPA's specific need, even though it consumes a `bpv7`-defined enum.
+**The acceptance test** for whether something belongs in `bpv7` or `bpa`: *if BPA needs to query, route, or report by it, it's operational meaning and lives in `bpa`; if it's purely structural (byte extents, CBOR shapes, RFC-defined field decodings), it lives in `bpv7`.* An error's reason code passes it, being RFC-defined, so `bpv7` maps it; the reason for a policy outcome fails it, being BPA's specific need, and stays in `bpa`.
 
 **`bpv7`'s public parse surface** after the refactor is roughly:
 
@@ -793,7 +814,7 @@ pub use parse::{BundleParser, ParserProgress, Parsed};
 pub fn parse(data: Bytes) -> Result<Parsed, Error>;   // bpv7::parse::parse
 ```
 
-Two entry points, each with a one-sentence purpose. `Parsed` is structural (decoded `PrimaryBlock` + extension-block index + decoded BPSec OperationSets); the rich decoded view — extension-block field values — is assembled at the call site (the wire-cache group of `BundleMetadata`, §2.3), not returned by `bpv7`. The reason-code mapping, the filter implementations, and the operational policy that wraps these primitives all live in `bpa`.
+Two entry points, each with a one-sentence purpose. `Parsed` is structural (decoded `PrimaryBlock` + extension-block index + decoded BPSec OperationSets), plus the decoded per-hop blocks no BCB covers (`Parsed::per_hop`), which the BPA records with those it decrypts in the wire-cache group of `BundleMetadata` (§2.3). The filter implementations, the reasons for policy outcomes, and the operational policy that wraps these primitives all live in `bpa`.
 
 ## 10. Implementation Phasing
 
@@ -811,10 +832,9 @@ Result: the payload-never-in-RAM property (§2.5) on ingress.
 
 ### Phase B: Streaming Egress
 
-1. Replace `BundleStorage::load -> Bytes` with the streaming `load(&str, &dyn Sender<Bytes>)` across backends
+1. Replace `BundleStorage::load -> Bytes` with the streaming `load(&str) -> Option<Box<dyn Receiver<Segment>>>` across backends, behind `Store::load_stream`: the output door already pulls only its header region and streams the rest
 2. Retire the `INTERIM BUFFERING` sites: CLAs consume `Cla::forward`'s stream segment-at-a-time rather than calling `stream::buffer_stream` (§6.2)
-3. Egress executor: spawn `load()`, emit the edited header region, stream the payload through any cryptographic stages into `Cla::write()`'s channel (§6.2)
-4. BPSec egress stages (integrity; confidentiality for header targets) as the hard-coded cryptographic stages, keyed through the `KeyProvider` (§6.1.1), reusing `Signer` / `Encryptor` for resident header targets
+3. BPSec egress stages (integrity; confidentiality for header targets) as the hard-coded cryptographic stages, keyed through the `KeyProvider` (§6.1.1), reusing `Signer` / `Encryptor` for resident header targets
 
 ### Phase C: Tee'd Ingress — dropped
 
@@ -823,7 +843,7 @@ The ingress/originate tee (streaming to the CLA from ingress data before spool c
 ### Phase D: Security Gateway
 
 1. Streaming AES-GCM wrapper for payload BCB (§7.3)
-2. Streamed payload decrypt at egress and deliver where this node is the security acceptor, the stream's end withheld until the tag verifies (§5.5)
+2. Streamed payload decrypt at egress where a security gateway's policy decides per attempt, the stream's end withheld until the tag verifies (§5.5); acceptance at ingress is built, at the ingress drain, for the destination and for a payload a Classifier announces
 
 ### Queue integration
 

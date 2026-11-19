@@ -7,8 +7,21 @@
 //! binary are expected.
 #![allow(dead_code)]
 
+use std::collections::{HashMap, HashSet};
+
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{
+    block,
+    bpsec::{
+        self, Role, Roles, SecurityService, SecurityServices,
+        checks::{self, Checked},
+        edit::BPSecEditor,
+        key::{KeySet, KeySource},
+    },
+    editor::{self, Chunk, Editor},
+    eid::Eid,
+    parse,
+};
 use hardy_cbor::{
     decode::skip_value,
     encode::{Bytes, Encoder, emit_array},
@@ -75,4 +88,90 @@ pub fn rand_k(len: usize) -> String {
     let mut buf = vec![0u8; len];
     SysRng.try_fill_bytes(&mut buf).unwrap();
     BASE64_URL_SAFE_NO_PAD.encode(buf)
+}
+
+// The bundle as its destination reads it: every block's encryption removed
+// with `keys`, as `BPSecEditor::remove_encryption` removes it (with the
+// encrypted BIB coupled to the block), and re-parsed, so every BIB is
+// plaintext. Block numbers are kept. The encrypted BIBs go first, each with
+// the targets coupled to it, since the parse reads a Previous Node or
+// Bundle Age block, which no valid bundle has under an encrypted BIB, as
+// covered by none. Fails on the first block the keys do not decrypt.
+pub fn accept_all(parsed: &parse::Parsed, keys: &KeySet) -> Result<parse::Parsed, editor::Error> {
+    let (bibs, targets): (Vec<u64>, Vec<u64>) = parsed
+        .bundle
+        .blocks
+        .iter()
+        .filter(|(_, b)| b.bcb.is_some())
+        .map(|(&n, _)| n)
+        .partition(|n| parsed.bundle.blocks[n].block_type == block::Type::BlockIntegrity);
+    let mut editor = Editor::new(&parsed.bundle, &parsed.data).with_key_source(keys);
+    for n in bibs.into_iter().chain(targets) {
+        match editor.remove_encryption(n) {
+            // Taken with an earlier block's coupled BIB.
+            Ok(()) | Err(editor::Error::NotEncrypted) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let data = Chunk::flatten_bytes(editor.rebuild()?, parsed.data.clone());
+    Ok(parse::parse(data)?)
+}
+
+// Every BIB operation in `data`, a complete bundle, checked with `keys` by
+// the keyed verification over a fresh parse: an error for a failed check,
+// as a strict caller wants, and a panic should anything be deferred.
+pub fn verify_all_bibs(data: &[u8], keys: &KeySet) -> Result<(), hardy_bpv7::Error> {
+    let facts = parse::parse(::bytes::Bytes::copy_from_slice(data))?.check(
+        keys,
+        &HashMap::new(),
+        Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+    )?;
+    if facts
+        .targets_of(SecurityService::Integrity, Checked::Failed)
+        .next()
+        .is_some()
+    {
+        return Err(bpsec::Error::IntegrityCheckFailed.into());
+    }
+    assert!(
+        !facts.any(Checked::Deferred),
+        "a complete buffer defers nothing"
+    );
+    Ok(())
+}
+
+// The per-hop blocks a receiving node accepts (RFC 9171 §5.4): every
+// Previous Node, Bundle Age and Hop Count block.
+pub fn per_hop_blocks(blocks: &HashMap<u64, block::Block>) -> HashSet<u64> {
+    blocks
+        .iter()
+        .filter(|(_, b)| {
+            matches!(
+                b.block_type,
+                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
+            )
+        })
+        .map(|(&n, _)| n)
+        .collect()
+}
+
+// The keyed pass a receiving node makes over `parsed` (`Parsed::check`): the
+// per-hop blocks and `acceptors` accepted, both services, and every other
+// readable BIB operation verified, one `Facts`.
+pub fn verify_as_receiver(
+    parsed: &mut parse::Parsed,
+    keys: &dyn KeySource,
+    acceptors: &HashSet<u64>,
+) -> Result<checks::Facts, hardy_bpv7::Error> {
+    let mut accepted = per_hop_blocks(&parsed.bundle.blocks);
+    accepted.extend(acceptors.iter().copied());
+    let roles: HashMap<u64, Roles> = accepted
+        .into_iter()
+        .map(|n| (n, Roles::each(Role::Acceptor, SecurityServices::BOTH)))
+        .collect();
+    parsed.check(
+        keys,
+        &roles,
+        Roles::each(Role::Verifier, SecurityServices::INTEGRITY),
+    )
 }

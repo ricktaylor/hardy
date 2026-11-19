@@ -377,13 +377,18 @@ impl BpaRegistration for Bpa {
 
 #[cfg(test)]
 mod tests {
-    use core::{num::NonZeroU64, time::Duration};
+    use core::{
+        num::NonZeroU64,
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
     use hardy_async::sync::spin::Once;
     use hardy_bpv7::{
         bundle::Id,
         // Aliased: the glob import below brings in `services::Service`.
         eid::{Eid, IpnNodeId, Service as ServiceId},
+        parse::parse,
         status_report::ReasonCode,
     };
     use time::OffsetDateTime;
@@ -392,14 +397,27 @@ mod tests {
     use super::*;
     use crate::{
         Bytes,
-        stream::{Receiver, Segment},
+        stream::{Receiver, Segment, buffer_stream},
     };
 
-    /// Fails every `forward` call synchronously, without pulling, recording
-    /// the bundle each attempt was for.
+    /// How a [`FailingCla`] answers `forward`.
+    enum Failure {
+        /// Every attempt fails with an internal error.
+        Always,
+        /// The first attempt is cancelled; every later one is buffered whole,
+        /// handed to `sent_tx`, and answered `Sent`.
+        CancelFirst {
+            cancelled: AtomicBool,
+            sent_tx: flume::Sender<Bytes>,
+        },
+    }
+
+    /// Answers every `forward` call as its [`Failure`] says, recording the
+    /// bundle each attempt was for.
     struct FailingCla {
         sink: Once<Box<dyn cla::Sink>>,
         attempts_tx: flume::Sender<Id>,
+        failure: Failure,
     }
 
     #[async_trait]
@@ -420,11 +438,20 @@ mod tests {
             _lane: Option<u32>,
             _cla_addr: &cla::ClaAddress,
             bundle_id: &Id,
-            _total_len: u64,
-            _stream: &mut dyn Receiver<Segment>,
+            total_len: u64,
+            stream: &mut dyn Receiver<Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {
             let _ = self.attempts_tx.send(bundle_id.clone());
-            Err(cla::Error::StreamCancelled)
+            match &self.failure {
+                Failure::Always => Err(cla::Error::Internal("the transfer failed".into())),
+                Failure::CancelFirst { cancelled, sent_tx } => {
+                    if !cancelled.swap(true, Ordering::SeqCst) {
+                        return Err(cla::Error::StreamCancelled);
+                    }
+                    let _ = sent_tx.send(buffer_stream(stream, total_len).await?);
+                    Ok(cla::ForwardBundleResult::Sent)
+                }
+            }
         }
     }
 
@@ -463,20 +490,13 @@ mod tests {
         }
     }
 
-    /// A synchronous per-transfer failure parks only that bundle, with no
-    /// inline retry: a deterministic failure must not spin dispatch →
-    /// forward → fail, so exactly one attempt occurs until the next routing
-    /// or link event.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn failed_forward_does_not_retry_inline() {
+    /// A started BPA forwarding through `cla` to its one peer, node 2, with a
+    /// send-only application on service 42. Each registration is a routing
+    /// change that wakes the Waiting poller, so the polls are let finish:
+    /// no routing event is pending when the fixture returns.
+    async fn one_peer_bpa(cla: Arc<FailingCla>) -> (Bpa, Arc<SendOnlyApp>) {
         let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false).await;
-
-        let (attempts_tx, attempts_rx) = flume::unbounded();
-        let cla = Arc::new(FailingCla {
-            sink: Once::new(),
-            attempts_tx,
-        });
         bpa.register_cla("failing".to_string(), cla.clone(), None, ClaInit::default())
             .await
             .unwrap();
@@ -492,16 +512,27 @@ mod tests {
             )
             .await
             .unwrap();
-
         let app = Arc::new(SendOnlyApp { sink: Once::new() });
         bpa.register_application(ServiceId::Ipn(42), app.clone())
             .await
             .unwrap();
-
-        // Each registration above is a routing change that wakes the Waiting
-        // poller; a poll still scanning when the failed bundle parks would
-        // re-attempt it for a change that predates it. Let them finish.
         bpa.rib.poll_waiting_idle().await;
+        (bpa, app)
+    }
+
+    /// A synchronous per-transfer failure parks only that bundle, with no
+    /// inline retry: a deterministic failure must not spin dispatch →
+    /// forward → fail, so exactly one attempt occurs until the next routing
+    /// or link event.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_forward_does_not_retry_inline() {
+        let (attempts_tx, attempts_rx) = flume::unbounded();
+        let (bpa, app) = one_peer_bpa(Arc::new(FailingCla {
+            sink: Once::new(),
+            attempts_tx,
+            failure: Failure::Always,
+        }))
+        .await;
 
         let sent = app
             .sink
@@ -532,6 +563,71 @@ mod tests {
         assert!(
             attempts_rx.is_empty(),
             "A synchronous failure must not re-attempt without a routing event"
+        );
+    }
+
+    /// A cancelled transfer is a failed acceptance the bundle can retry: it
+    /// re-enters dispatch at once, with no routing or link event, and the
+    /// second offer sends it intact.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_forward_redispatches_at_once() {
+        let (attempts_tx, attempts_rx) = flume::unbounded();
+        let (sent_tx, sent_rx) = flume::unbounded();
+        // No routing event is pending, so only the cancellation's
+        // re-dispatch can drive the second offer.
+        let (bpa, app) = one_peer_bpa(Arc::new(FailingCla {
+            sink: Once::new(),
+            attempts_tx,
+            failure: Failure::CancelFirst {
+                cancelled: AtomicBool::new(false),
+                sent_tx,
+            },
+        }))
+        .await;
+
+        let sent = app
+            .sink
+            .get()
+            .unwrap()
+            .send(
+                "ipn:0.2.99".parse().unwrap(),
+                Bytes::from_static(b"Again"),
+                Duration::from_secs(3600),
+                None,
+            )
+            .await
+            .unwrap();
+
+        for attempt in ["cancelled", "retried"] {
+            // the timeout only bounds a regression
+            let offered = timeout(Duration::from_secs(5), attempts_rx.recv_async())
+                .await
+                .unwrap_or_else(|_| panic!("Timed out waiting for the {attempt} attempt"))
+                .expect("Attempt channel closed");
+            assert_eq!(offered, sent, "the {attempt} attempt");
+        }
+
+        // The retry sends the bundle intact: the cancelled attempt handed
+        // back a record that still indexes the stored bytes.
+        // (the timeout only bounds a regression)
+        let data = timeout(Duration::from_secs(5), sent_rx.recv_async())
+            .await
+            .expect("Timed out waiting for the sent bytes")
+            .expect("Sent channel closed");
+        let parsed = parse(data).expect("the retried bundle parses");
+        assert_eq!(parsed.bundle.primary.id, sent);
+        assert_eq!(
+            parsed.bundle.blocks[&1].payload(&parsed.data),
+            Some(&b"Again"[..])
+        );
+
+        // The second attempt sent the bundle, so no third may occur.
+        // shutdown() is the barrier: it joins the pools, and the CLA records
+        // every attempt synchronously inside forward().
+        bpa.shutdown().await;
+        assert!(
+            attempts_rx.is_empty(),
+            "a sent bundle must not be offered again"
         );
     }
 }

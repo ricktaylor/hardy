@@ -7,7 +7,7 @@ This crate provides the building blocks for working with BPv7 bundles, including
 
 - [`bundle`]: Contains the structural [`Bundle`] (primary block + blocks map) and its identifying types, including [`Bundle::semantic_eq`](bundle::Bundle::semantic_eq) for RFC-tolerant equivalence.
 - [`parse`]: The streaming wire parser ([`parse`](parse::parse) / [`BundleParser`](parse::BundleParser)).
-- [`checks`] / [`rewrite`]: Composable BPSec validation and rewrite primitives.
+- [`bpsec::checks`]: the keyed BPSec check, a method on [`parse::Parsed`], whose parser classifies the blocks this node cannot process; [`rewrite`]: the application of block removals and re-emits through the editor.
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.
 - [`editor`]: Offers an [`Editor`](editor::Editor) for modifying existing bundles.
 - [`extension_editor`]: An [`ExtensionEditor`](extension_editor::ExtensionEditor) for scoped extension-block editing, without the owner privileges.
@@ -60,10 +60,10 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
 
 // Structural parse — the cheapest entry point. Returns the authoritative
 // byte buffer, the primary block + blocks map, and the decoded BPSec
-// OperationSets. Slice with `&buf[block.payload_range()]`. Layer keyed
-// BPSec validation on top by composing the primitives in
-// `hardy_bpv7::checks` (`classify_*`, `decrypt_and_validate_covered_bibs`,
-// `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
+// OperationSets, with the classification of the blocks this node cannot
+// process. Slice with `&parsed.data[block.payload_range()]`. The keyed
+// BPSec check is its method `check`, and rewrites go through
+// `hardy_bpv7::rewrite`.
 let parsed = parse::parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
 
 assert_eq!(parsed.bundle.primary.id, original_bundle.primary.id);
@@ -77,6 +77,7 @@ optional functionality:
 
 - **`std`**: Enables system clock access and propagates `std` to dependencies.
 - **`rfc9173`** (default): Enables RFC 9173 security contexts, which require random number generation.
+- **`bpsec`** (default, through `rfc9173`): BPSec processing, both sides: the keyed check, the decrypting reader, the editor's security edits, the signer and the encryptor. Every security-context feature enables it; without it the crate still parses, classifies and removes security blocks by their flags.
 - **`serde`**: Enables serialization support. Requires `std`.
 - **`critical-section`**: Enables atomic fallback via `critical-section` for targets without native CAS (e.g., Cortex-M0).
 
@@ -107,7 +108,6 @@ pub mod bpsec;
 pub mod builder;
 pub mod bundle;
 pub mod bundle_age;
-pub mod checks;
 pub mod crc;
 pub mod creation_timestamp;
 pub mod dtn_time;

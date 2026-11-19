@@ -98,7 +98,8 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let signer = hardy_bpv7::bpsec::signer::Signer::new(&raw, &data)
+        let mut signer = hardy_bpv7::bpsec::signer::Signer::new(&raw, &data);
+        signer
             .sign_block(
                 self.block,
                 hardy_bpv7::bpsec::signer::Context::HMAC_SHA2(rfc9173::ArgFlags::to_scope_flags(
@@ -107,7 +108,7 @@ impl Command {
                 self.source.unwrap_or_else(|| raw.primary.id.source.clone()),
                 &key,
             )
-            .map_err(|(_, e)| anyhow::anyhow!("Failed to sign block: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to sign block: {e}"))?;
 
         let data = signer
             .rebuild()

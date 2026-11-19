@@ -151,9 +151,6 @@ impl BpaServer {
         if let Some(enabled) = config.rfc9171_validity.primary_block_integrity {
             builder = builder.primary_block_integrity(enabled);
         }
-        if let Some(enabled) = config.rfc9171_validity.bundle_age_required {
-            builder = builder.bundle_age_required(enabled);
-        }
         if let Some(status_reports) = config.status_reports {
             builder = builder.status_reports(status_reports);
         }

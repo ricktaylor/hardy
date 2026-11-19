@@ -6,13 +6,13 @@
 use core::{iter::repeat_n, num::NonZeroU8};
 
 use bytes::Bytes;
-use hardy_bpv7::{Error, block, builder, bundle, crc, creation_timestamp, hop_info, parse};
+use hardy_bpv7::{Error, block, builder, bundle, crc, creation_timestamp, eid, hop_info, parse};
 // Aliased: collides with the bpv7 `Error` imported above.
-use hardy_cbor::decode::Error as CborError;
+use hardy_cbor::{decode::Error as CborError, encode::emit};
 use hex_literal::hex;
 
 mod common;
-use self::common::{insert_after_primary, make_block};
+use self::common::{insert_after_primary, make_block, make_unknown_context_asb};
 
 // Build a minimal valid bundle and return its serialised bytes.
 fn build_minimal_bundle() -> Box<[u8]> {
@@ -36,6 +36,7 @@ fn indefinite_length_block_data_is_rejected() {
     // + outer break.
     let definite = hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240"
+        "85070200004100" // Bundle Age block 2: no creation time (RFC 9171 §4.4.2)
         "85010100004548454c4c4f" // data = definite-length bstr "HELLO"
         "ff"
     );
@@ -43,6 +44,7 @@ fn indefinite_length_block_data_is_rejected() {
     // string of two chunks, "HEL" + "LO".
     let indefinite = hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240"
+        "85070200004100" // Bundle Age block 2: no creation time (RFC 9171 §4.4.2)
         "85010100005f4348454c424c4fff" // data = 0x5f, "HEL", "LO", break
         "ff"
     );
@@ -592,6 +594,7 @@ fn tag24_block_data_is_accepted() {
     // without recomputing a CRC), with the payload data tagged `#6.24`.
     let tagged = hex!(
         "9f88070000820282010282028202018202820201820018281a000f4240"
+        "85070200004100" // Bundle Age block 2: no creation time (RFC 9171 §4.4.2)
         "8501010000d8184548454c4c4f" // data = #6.24(bstr "HELLO")
         "ff"
     );
@@ -918,6 +921,113 @@ mod crc_rules {
             "unrecognised CRC type, got: {err:?}"
         );
     }
+}
+
+// The parse decodes the per-hop blocks, and hands over their values.
+#[test]
+fn the_parse_decodes_the_per_hop_blocks() {
+    let previous_node: eid::Eid = "ipn:3.0".parse().unwrap();
+    let hop_count = hop_info::HopInfo {
+        limit: NonZeroU8::new(30).unwrap(),
+        count: 2,
+    };
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .add_extension_block(block::Type::PreviousNode)
+        .unwrap()
+        .build(emit(&previous_node).0.into())
+        .add_extension_block(block::Type::BundleAge)
+        .unwrap()
+        .build(emit(&1_500u64).0.into())
+        .with_hop_count(&hop_count)
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    let parsed = parse::parse(Bytes::from(data)).unwrap();
+    assert_eq!(
+        parsed.per_hop,
+        parse::PerHopFields {
+            previous_node: Some(previous_node),
+            bundle_age: Some(1_500.into()),
+            hop_count: Some(hop_count),
+        }
+    );
+}
+
+// RFC 9171 §5.6 Step 3: a Previous Node, Bundle Age or Hop Count block whose
+// data does not decode as §4.4 defines it makes the bundle malformed.
+#[test]
+fn a_malformed_per_hop_block_is_rejected() {
+    let source = |block: Vec<u8>| {
+        let modified = insert_after_primary(&build_minimal_bundle(), &[&block]);
+        match parse::parse(Bytes::from(modified)) {
+            Err(Error::InvalidField {
+                field: "extension block data",
+                source,
+            }) => *source,
+            Err(other) => {
+                panic!("a malformed per-hop block is an extension block data error, got {other:?}")
+            }
+            Ok(_) => panic!("a malformed per-hop block must be rejected"),
+        }
+    };
+    // Previous Node data that is not an EID.
+    assert!(matches!(
+        source(make_block(6, 2, 0, &[0x01])),
+        Error::InvalidEid(_)
+    ));
+    // Previous Node data naming a service, ipn:2.5, not a node (§4.4.1).
+    assert!(matches!(
+        source(make_block(6, 2, 0, &[0x82, 0x02, 0x82, 0x02, 0x05])),
+        Error::InvalidEid(eid::Error::InvalidNodeId)
+    ));
+    // Bundle Age data that is not an unsigned integer.
+    assert!(matches!(
+        source(make_block(7, 2, 0, &[0x61, 0x78])),
+        Error::InvalidCBOR(_)
+    ));
+    // A hop limit of 0, outside RFC 9171 §4.4.3's 1..=255.
+    assert!(matches!(
+        source(make_block(10, 2, 0, &[0x82, 0x00, 0x00])),
+        Error::InvalidHopLimit(0)
+    ));
+}
+
+// RFC 9171 §4.4.2: a bundle whose creation time is zero MUST carry a Bundle
+// Age block. The parse checks its presence, so a BCB-covered one counts.
+#[test]
+fn a_bundle_without_a_creation_time_needs_a_bundle_age() {
+    let primary = hex!("9f88070000820282010282028202018202820201820018281a000f4240");
+    let payload = hex!("85010100004548454c4c4f"); // definite-length bstr "HELLO"
+    let bundle_with = |blocks: &[&[u8]]| {
+        let mut data = primary.to_vec();
+        blocks
+            .iter()
+            .for_each(|block| data.extend_from_slice(block));
+        data.extend_from_slice(&payload);
+        data.push(0xff);
+        parse::parse(Bytes::from(data))
+    };
+    let bundle_age = make_block(7, 3, 0, &emit(&300u64).0);
+
+    assert!(matches!(bundle_with(&[]), Err(Error::MissingBundleAge)));
+    bundle_with(&[&bundle_age]).expect("a Bundle Age block satisfies §4.4.2");
+    let bcb = make_block(12, 2, 0, &make_unknown_context_asb(3));
+    let parsed = bundle_with(&[&bcb, &bundle_age]).expect("an unreadable one does too");
+    assert_eq!(parsed.per_hop.bundle_age, None);
+}
+
+// A per-hop block a BCB covers holds ciphertext, which the parse does not
+// decode: its acceptor decodes the plaintext. The malformed Hop Count body
+// above parses when a BCB covers it, and has no value.
+#[test]
+fn a_bcb_covered_per_hop_block_is_not_decoded() {
+    let hop_count = make_block(10, 3, 0, &[0x82, 0x00, 0x00]);
+    let bcb = make_block(12, 2, 0, &make_unknown_context_asb(3));
+    let modified = insert_after_primary(&build_minimal_bundle(), &[&bcb, &hop_count]);
+    let parsed = parse::parse(Bytes::from(modified)).expect("the ciphertext is not decoded");
+    assert_eq!(parsed.bundle.blocks[&3].bcb, Some(2));
+    assert_eq!(parsed.per_hop.hop_count, None);
 }
 
 // BPSec target rules (RFC 9172 §3.8) through parse::parse.

@@ -45,9 +45,18 @@ fn parse_ranges<const D: usize>(
     })
 }
 
+/// A security operation in a security context this node does not
+/// implement, as received (RFC 9172 §3.6): its security block's context
+/// parameters and its own results, each keyed by id with its encoded value.
+/// Carried by [`bib::Operation::Unrecognised`](super::bib::Operation::Unrecognised)
+/// and [`bcb::Operation::Unrecognised`](super::bcb::Operation::Unrecognised),
+/// so the bundle travels on with the operation intact.
 #[derive(Debug)]
 pub struct UnknownOperation {
+    /// The security context parameters of the operation's security block,
+    /// shared by every operation it carries.
     pub parameters: Arc<HashMap<u64, Box<[u8]>>>,
+    /// The security results for the operation's target.
     pub results: HashMap<u64, Box<[u8]>>,
 }
 
@@ -79,7 +88,7 @@ fn slice_map(
 }
 
 impl UnknownOperation {
-    pub fn parse(
+    pub(crate) fn parse(
         asb: AbstractSyntaxBlock,
         source_data: &[u8],
     ) -> Result<(eid::Eid, HashMap<u64, Self>), Error> {
@@ -96,7 +105,7 @@ impl UnknownOperation {
         )
     }
 
-    pub fn emit_context(
+    pub(crate) fn emit_context(
         &self,
         encoder: &mut hardy_cbor::encode::Encoder,
         source: &eid::Eid,
@@ -117,7 +126,7 @@ impl UnknownOperation {
         }
     }
 
-    pub fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
+    pub(crate) fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
         array.emit_array(Some(self.results.len()), |a| {
             for (id, result) in &self.results {
                 a.emit(&(id, hardy_cbor::encode::Raw(result)));

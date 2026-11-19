@@ -149,6 +149,23 @@ impl Store {
         Ok((self.save_data(data).await, len))
     }
 
+    /// Open bundle data by storage name as a segment stream; `None` when the
+    /// data is gone.
+    ///
+    /// Callers pull the stored bundle a segment at a time and hold only what
+    /// they need. The stream never returns
+    /// `Err(`[`RecvError`](crate::stream::RecvError)`)`: it yields exactly
+    /// the bytes saved, ending in its [`Segment::Final`], because a backend
+    /// failure is fatal here as on every storage call. The body loads the
+    /// whole buffer through [`load_data`](Self::load_data) and yields it as
+    /// one `Final`.
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    pub async fn load_stream(&self, storage_name: &str) -> Option<Box<dyn Receiver<Segment>>> {
+        self.load_data(storage_name)
+            .await
+            .map(|data| Box::new(data) as Box<dyn Receiver<Segment>>)
+    }
+
     /// Load bundle data by storage name (read-through cache).
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {

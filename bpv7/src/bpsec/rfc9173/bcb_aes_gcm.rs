@@ -1,8 +1,9 @@
 use alloc::{boxed::Box, string::ToString, sync::Arc, vec::Vec};
-use core::ops::Range;
+use core::{fmt, ops::Range};
 
 use aes_gcm::{
-    KeyInit,
+    AeadCore, Aes256Gcm, KeyInit,
+    aead::array::typenum::Unsigned,
     aes::cipher::consts::{U8, U9, U10, U11, U12, U13, U14, U15, U16},
 };
 use hardy_cbor::{
@@ -198,11 +199,11 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
     if flags.include_security_header {
         let source_block = args
             .blocks
-            .block(args.source)
+            .block(args.security_block)
             .ok_or(Error::MissingSecurityTarget)?
             .0;
         encoder.emit(&source_block.block_type);
-        encoder.emit(&args.source);
+        encoder.emit(&args.security_block);
         encoder.emit(&source_block.flags);
     }
 
@@ -224,6 +225,73 @@ fn encrypt_inner<C: aes_gcm::aead::Aead>(
         .map_err(|_| Error::EncryptionFailed)
 }
 
+// The length of a BCB-AES-GCM authentication tag, whatever the variant
+// (RFC 9173 §4.3.2, §4.4.1): the 128 bits `aes-gcm` produces by default.
+const TAG_LEN: usize = <Aes256Gcm as AeadCore>::TagSize::USIZE;
+
+/// A BCB-AES-GCM decryption of a target whose data streams past.
+///
+/// AES-GCM's keyed state derives from the content-encryption key whatever
+/// its shape, so the decryptor holds that key, zeroized on drop, across the
+/// stream. It collects the ciphertext and decrypts it whole when finished,
+/// the tag checked before any plaintext is returned.
+pub struct Decryptor {
+    operation: Operation,
+    cek: zeroize::Zeroizing<Box<[u8]>>,
+    aad: Vec<u8>,
+    ciphertext: Vec<u8>,
+    target_len: u64,
+    plaintext_len: u64,
+    overrun: bool,
+}
+
+// By hand: lengths only, never the key.
+impl fmt::Debug for Decryptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Decryptor")
+            .field("target_len", &self.target_len)
+            .field("plaintext_len", &self.plaintext_len)
+            .field("received", &self.ciphertext.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Decryptor {
+    /// The plaintext's length: the target's data, less the tag when it
+    /// carries one.
+    pub(crate) fn plaintext_len(&self) -> u64 {
+        self.plaintext_len
+    }
+
+    /// Absorb the next run of the target's data. A run that would carry it
+    /// past its length is refused, and fails the decryption.
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
+        let received = (self.ciphertext.len() as u64).saturating_add(bytes.len() as u64);
+        if self.overrun || received > self.target_len {
+            self.overrun = true;
+            return;
+        }
+        self.ciphertext.extend_from_slice(bytes);
+    }
+
+    /// Decrypt the target's data, every byte of it absorbed: the
+    /// plaintext, once the tag has authenticated it (constant-time
+    /// comparison). Fails with [`Error::DecryptionFailed`] when the tag
+    /// does not authenticate or the data was not exactly its length.
+    pub(crate) fn finish(self) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
+        if self.overrun || self.ciphertext.len() as u64 != self.target_len {
+            return Err(Error::DecryptionFailed);
+        }
+        let (op, cek, aad, data) = (&self.operation, &self.cek, &self.aad, &self.ciphertext);
+        match op.parameters.variant {
+            AesVariant::A128GCM => op.decrypt_gcm::<aes_gcm::aes::Aes128>(cek, aad, data),
+            AesVariant::A256GCM => op.decrypt_gcm::<aes_gcm::aes::Aes256>(cek, aad, data),
+            // `begin_decrypt` refuses it.
+            AesVariant::Unrecognised(_) => Err(Error::UnsupportedOperation),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Operation {
     pub parameters: Arc<Parameters>,
@@ -231,13 +299,13 @@ pub struct Operation {
 }
 
 impl Operation {
-    pub fn is_unsupported(&self) -> bool {
+    pub(crate) fn is_unsupported(&self) -> bool {
         matches!(self.parameters.variant, AesVariant::Unrecognised(_))
     }
 
     // Whether the AAD scope puts the primary block in this operation's
     // additional authenticated data (RFC 9173 §4.7.2).
-    pub fn scope_includes_primary(&self) -> bool {
+    pub(crate) fn scope_includes_primary(&self) -> bool {
         self.parameters
             .flags
             .clone()
@@ -245,7 +313,7 @@ impl Operation {
             .include_primary_block
     }
 
-    pub fn encrypt(
+    pub(crate) fn encrypt(
         jwk: &key::Key,
         scope_flags: ScopeFlags,
         args: bcb::OperationArgs,
@@ -356,84 +424,109 @@ impl Operation {
         ))
     }
 
-    pub fn decrypt<K>(
+    /// Begin decrypting a target whose block-type-specific data streams
+    /// past: the key is resolved, and in key-wrap mode the CEK unwrapped,
+    /// and the additional authenticated data built from the resident
+    /// headers, so a missing or unusable key is known before the first
+    /// byte. `target_len` is the length of the target's received data, its
+    /// authentication tag included when the operation carries none.
+    pub(crate) fn begin_decrypt<K>(
         &self,
         key_source: &K,
-        args: bcb::OperationArgs,
-    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error>
+        args: &bcb::OperationArgs,
+        target_len: u64,
+    ) -> Result<Decryptor, Error>
     where
         K: key::KeySource + ?Sized,
     {
-        let data = args
-            .blocks
-            .block(args.target)
-            .ok_or(Error::MissingSecurityTarget)?
-            .1
-            .available()
-            .ok_or(Error::MissingSecurityTarget)?;
-
-        let aad = build_data(&self.parameters.flags, &args)?;
-
-        if let Some(wrapped_cek) = &self.parameters.key {
-            // Key wrapping mode - need a KEK to unwrap
-            let jwk = key_source
-                .key(
-                    args.bpsec_source,
-                    &[key::Operation::UnwrapKey, key::Operation::Decrypt],
-                )
-                .ok_or(Error::NoKey)?;
-
-            let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
-                return Err(Error::DecryptionFailed);
-            };
-
-            let cek = jwk
+        let aad = build_data(&self.parameters.flags, args)?;
+        let jwk = self.decryption_key(key_source, args.source)?;
+        // The key's algorithm must agree with the variant the operation names.
+        match (self.parameters.variant, jwk.enc_algorithm) {
+            (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM))
+            | (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {}
+            // A foreign wire variant is a legitimate RFC 9172 pass-through
+            // state; this node just cannot decrypt it.
+            (AesVariant::Unrecognised(_), _) => return Err(Error::UnsupportedOperation),
+            _ => return Err(Error::DecryptionFailed),
+        }
+        // The content-encryption key: in key-wrap mode the key is a KEK that
+        // unwraps the wrapped key parameter, in direct mode the key itself.
+        let key::Type::OctetSequence { key } = &jwk.key_type else {
+            return Err(Error::DecryptionFailed);
+        };
+        let cek = match &self.parameters.key {
+            Some(wrapped_cek) => jwk
                 .key_algorithm
                 .and_then(KeyWrap::from_bare_alg)
                 .ok_or(Error::DecryptionFailed)?
-                .unwrap_key(kek.expose_secret(), wrapped_cek)
-                .map_err(|_| Error::DecryptionFailed)?;
-
-            self.decrypt_middle(jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
-        } else {
-            // Direct mode - need a decryption key
-            let jwk = key_source
-                .key(args.bpsec_source, &[key::Operation::Decrypt])
-                .ok_or(Error::NoKey)?;
-
-            if let Some(key_algorithm) = jwk.key_algorithm
-                && !matches!(key_algorithm, key::KeyAlgorithm::Direct)
-            {
-                return Err(Error::DecryptionFailed);
+                .unwrap_key(key.expose_secret(), wrapped_cek)
+                .map_err(|_| Error::DecryptionFailed)?,
+            None => {
+                if let Some(key_algorithm) = jwk.key_algorithm
+                    && !matches!(key_algorithm, key::KeyAlgorithm::Direct)
+                {
+                    return Err(Error::DecryptionFailed);
+                }
+                zeroize::Zeroizing::new(Box::from(key.expose_secret()))
             }
-
-            let key::Type::OctetSequence { key: cek } = &jwk.key_type else {
-                return Err(Error::DecryptionFailed);
-            };
-
-            self.decrypt_middle(jwk.enc_algorithm, cek.expose_secret(), &aad, data.as_ref())
-        }
+        };
+        // RFC 9173 §4.4: a tag not carried as the security result follows
+        // the ciphertext in the target's data.
+        let plaintext_len = if self.results.0.is_some() {
+            target_len
+        } else {
+            target_len
+                .checked_sub(TAG_LEN as u64)
+                .ok_or(Error::DecryptionFailed)?
+        };
+        Ok(Decryptor {
+            operation: Operation {
+                parameters: self.parameters.clone(),
+                results: Results(self.results.0.clone()),
+            },
+            cek,
+            aad,
+            ciphertext: Vec::new(),
+            target_len,
+            plaintext_len,
+            overrun: false,
+        })
     }
 
-    fn decrypt_middle(
+    /// Whether `key_source` holds a key this operation can decrypt with,
+    /// looked up as [`decrypt`](Self::decrypt) looks it up, without
+    /// decrypting.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoKey`] when it holds none. A key that is present but wrong
+    /// for the ciphertext still fails at `decrypt`, as
+    /// [`Error::DecryptionFailed`].
+    pub(crate) fn require_key<K>(&self, key_source: &K, source: &eid::Eid) -> Result<(), Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        self.decryption_key(key_source, source).map(|_| ())
+    }
+
+    // The key decryption needs, as the security source keyed the operation:
+    // a key-encryption key in key-wrap mode, the content-encryption key in
+    // direct mode. The one lookup `begin_decrypt` and `require_key` share.
+    fn decryption_key<'k, K>(
         &self,
-        enc_algorithm: Option<key::EncAlgorithm>,
-        cek: &[u8],
-        aad: &[u8],
-        data: &[u8],
-    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-        match (self.parameters.variant, enc_algorithm) {
-            (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM)) => {
-                self.decrypt_gcm::<aes_gcm::aes::Aes128>(cek, aad, data)
-            }
-            (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                self.decrypt_gcm::<aes_gcm::aes::Aes256>(cek, aad, data)
-            }
-            // A foreign wire variant is a legitimate RFC 9172 pass-through
-            // state; this node just cannot decrypt it.
-            (AesVariant::Unrecognised(_), _) => Err(Error::UnsupportedOperation),
-            _ => Err(Error::DecryptionFailed),
-        }
+        key_source: &'k K,
+        source: &eid::Eid,
+    ) -> Result<&'k key::Key, Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        let operations: &[key::Operation] = if self.parameters.key.is_some() {
+            &[key::Operation::UnwrapKey, key::Operation::Decrypt]
+        } else {
+            &[key::Operation::Decrypt]
+        };
+        key_source.key(source, operations).ok_or(Error::NoKey)
     }
 
     // AES-GCM decryption dispatched on the IV size. RFC 9173 §4.3.1 permits
@@ -488,30 +581,30 @@ impl Operation {
         aad: &[u8],
         msg: &[u8],
     ) -> Option<zeroize::Zeroizing<Box<[u8]>>> {
-        let nonce = &nonce;
-        if let Some(tag) = self.results.0.as_ref() {
-            let tag = <&aes_gcm::aead::Tag<C>>::try_from(tag.as_ref()).ok()?;
-            let mut msg = zeroize::Zeroizing::new(Box::<[u8]>::from(msg));
-            cipher
-                .decrypt_inout_detached(nonce, aad, (&mut msg[..]).into(), tag)
-                .ok()
-                .map(|_| msg)
-        } else {
-            cipher
-                .decrypt(nonce, aes_gcm::aead::Payload { aad, msg })
-                .ok()
-                .map(|r| zeroize::Zeroizing::new(r.into()))
-        }
+        // The tag is the security result, or follows the ciphertext in the
+        // target's data (RFC 9173 §4.4). Either way the plaintext is
+        // decrypted in place into one wiped buffer of exactly its length, so
+        // no spare capacity or reallocation strands an unwiped copy.
+        let (ciphertext, tag) = match self.results.0.as_ref() {
+            Some(tag) => (msg, tag.as_ref()),
+            None => msg.split_at_checked(msg.len().checked_sub(TAG_LEN)?)?,
+        };
+        let tag = <&aes_gcm::aead::Tag<C>>::try_from(tag).ok()?;
+        let mut plaintext = zeroize::Zeroizing::new(Box::<[u8]>::from(ciphertext));
+        cipher
+            .decrypt_inout_detached(&nonce, aad, (&mut plaintext[..]).into(), tag)
+            .ok()
+            .map(|_| plaintext)
     }
 
-    pub fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
+    pub(crate) fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
         encoder.emit(&Context::BCB_AES_GCM);
         encoder.emit(&1);
         encoder.emit(source);
         encoder.emit(self.parameters.as_ref());
     }
 
-    pub fn emit_result(&self, array: &mut Array) {
+    pub(crate) fn emit_result(&self, array: &mut Array) {
         array.emit(&self.results);
     }
 }
