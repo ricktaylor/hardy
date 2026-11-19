@@ -44,9 +44,8 @@ pub trait Factory: Send {
     /// Builds the agent from its context.
     ///
     /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`.
-    /// The agent does not run until [`Agent::start`], so a constructor
-    /// that reads a routes file works at the runtime door and races
-    /// storage recovery at the build-time one.
+    /// Reading a routes file belongs in [`Agent::register`], which the
+    /// BPA calls as soon as this returns.
     ///
     /// `Err` means the node the BPA runs as is one this agent cannot
     /// route for.

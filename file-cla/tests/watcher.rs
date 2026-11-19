@@ -1,7 +1,9 @@
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
+// `Cla` here is this crate's concrete CLA, so the BPA's trait of the same
+// name is aliased: these tests drive its hooks directly, with no BPA.
 use hardy_bpa::{
-    cla::{Address, Cla as _, Context, Factory as _, Terms},
+    cla::{Address, Cla as BpaCla, Context, Factory as _, Terms},
     node_ids::NodeIds,
 };
 use hardy_bpv7::eid::NodeId;
@@ -85,7 +87,7 @@ async fn start_cla(outbox: &Path) -> (Arc<Cla>, flume::Receiver<Vec<u8>>) {
             Terms::default(),
         ))
         .expect("a file CLA builds under any terms");
-    cla.start().await.expect("the outbox watcher starts");
+    cla.register().await.expect("the outbox watcher starts");
     (cla, rx)
 }
 
@@ -123,7 +125,9 @@ async fn test_outbox_pickup_preexisting_file() {
     assert_eq!(recv_dispatch(&rx).await, b"queued-bundle");
     wait_removed(&dir.path().join("queued")).await;
 
-    cla.shutdown().await.expect("the CLA shuts down cleanly");
+    BpaCla::unregister(cla.as_ref())
+        .await
+        .expect("the CLA shuts down cleanly");
 }
 
 // A symlink queued in the outbox before the CLA starts is dispatched like
@@ -147,7 +151,9 @@ async fn test_outbox_pickup_preexisting_symlink() {
     assert_eq!(recv_dispatch(&rx).await, b"symlinked-bundle");
     wait_removed(&dir.path().join("link")).await;
 
-    cla.shutdown().await.expect("the CLA shuts down cleanly");
+    BpaCla::unregister(cla.as_ref())
+        .await
+        .expect("the CLA shuts down cleanly");
 }
 
 // A file created after the watcher starts is dispatched and removed. The
@@ -165,7 +171,9 @@ async fn test_outbox_pickup_created_file() {
     assert_eq!(recv_dispatch(&rx).await, b"created-bundle");
     wait_removed(&dir.path().join("created")).await;
 
-    cla.shutdown().await.expect("the CLA shuts down cleanly");
+    BpaCla::unregister(cla.as_ref())
+        .await
+        .expect("the CLA shuts down cleanly");
 }
 
 // shutdown stops the watcher and forwarder tasks; a hang here is a
@@ -179,7 +187,7 @@ async fn test_shutdown_stops_watcher() {
     std::fs::write(dir.path().join("live"), b"live-bundle").unwrap();
     assert_eq!(recv_dispatch(&rx).await, b"live-bundle");
 
-    tokio::time::timeout(REGRESSION_BOUND, cla.shutdown())
+    tokio::time::timeout(REGRESSION_BOUND, BpaCla::unregister(cla.as_ref()))
         .await
         .expect("shutdown did not complete within the regression bound")
         .expect("the CLA shuts down cleanly");

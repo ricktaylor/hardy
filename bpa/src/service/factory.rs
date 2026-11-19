@@ -49,10 +49,9 @@ pub trait Factory: Send {
 
     /// Builds the service at the endpoint the BPA settled.
     ///
-    /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`. The
-    /// service does not run until [`Service::start`], so a constructor
-    /// that opens a file works at the runtime door and races storage
-    /// recovery at the build-time one.
+    /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`.
+    /// Opening a file belongs in [`Service::register`], which the BPA
+    /// calls as soon as this returns.
     ///
     /// `Err` means the settled endpoint is one this service cannot work
     /// at: the service's half of the negotiation.

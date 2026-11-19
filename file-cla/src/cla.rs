@@ -11,7 +11,7 @@ use crate::Cla;
 
 #[async_trait]
 impl cla::Cla for Cla {
-    async fn start(&self) -> cla::Result<()> {
+    async fn register(&self) -> cla::Result<()> {
         // Announce every configured peer: each inbox directory is an
         // address this CLA can write to.
         for (eid, path) in &self.inboxes {
@@ -25,14 +25,14 @@ impl cla::Cla for Cla {
 
         // Watch the outbox, where configured
         if let Some(outbox) = &self.outbox {
-            self.start_watcher(self.sink.clone(), outbox.clone(), self.max_reception_size)
+            self.start_watcher(self.sink.clone(), outbox.clone(), self.max_bundle_size)
                 .await;
         }
 
         Ok(())
     }
 
-    async fn shutdown(&self) -> cla::Result<()> {
+    async fn unregister(&self) -> cla::Result<()> {
         self.tasks.shutdown().await;
         Ok(())
     }

@@ -407,8 +407,8 @@ fn node(node_number: u32) -> NodeId {
 // reports to the source alike.
 async fn setup(builder: BpaBuilder) -> (Bpa, Arc<CapturingCla>, flume::Receiver<Bytes>) {
     let node_ids = NodeIds::try_from([node(1)].as_slice()).unwrap();
-    let bpa = builder.node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = builder.node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (forwarded_tx, forwarded_rx) = flume::bounded(16);
     let cla = bpa

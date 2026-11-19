@@ -47,16 +47,16 @@ pub struct Request {
     /// The CLA's own receive limit, in bytes.
     ///
     /// The BPA folds it with its own configured cap into
-    /// [`Terms::max_reception_size`]. It bounds reception on both sides;
+    /// [`Terms::max_bundle_size`]. It bounds reception on both sides;
     /// the send-side limit is the peer's, negotiated per session, and
     /// never leaves the CLA.
-    pub max_reception_size: Option<NonZeroU64>,
+    pub max_bundle_size: Option<NonZeroU64>,
 }
 
 /// What the BPA settled against a CLA's [`Request`].
 ///
 /// Delivered in the [`Context`] and fixed for the life of the attachment:
-/// a CLA whose circumstances change detaches and attaches again,
+/// a CLA whose circumstances change unregisters and registers again,
 /// negotiating from scratch. A CLA's tests mint terms the way a CLA
 /// declares a request, to build the CLA under the terms they exercise.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +73,7 @@ pub struct Terms {
     /// offered: refusal is deterministic, and a peer that keeps offering
     /// the same bundle loops for ever. Ingress enforces the BPA's
     /// configured cap, not this folded value.
-    pub max_reception_size: Option<NonZeroU64>,
+    pub max_bundle_size: Option<NonZeroU64>,
 }
 
 impl Terms {
@@ -81,10 +81,10 @@ impl Terms {
     // value both sides declare. The smaller limit wins, and a side that
     // declared none defers to the other. Lanes are the CLA's own count,
     // so they pass through as asked.
-    pub(crate) fn negotiate(request: Request, max_reception_size: Option<NonZeroU64>) -> Self {
+    pub(crate) fn negotiate(request: Request, max_bundle_size: Option<NonZeroU64>) -> Self {
         Self {
             lane_count: request.lane_count,
-            max_reception_size: match (max_reception_size, request.max_reception_size) {
+            max_bundle_size: match (max_bundle_size, request.max_bundle_size) {
                 (Some(bpa), Some(cla)) => Some(bpa.min(cla)),
                 (bpa, cla) => bpa.or(cla),
             },
@@ -141,10 +141,9 @@ pub trait Factory: Send {
 
     /// Builds the CLA against the terms the BPA settled.
     ///
-    /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`. The
-    /// CLA does not run until [`Cla::start`], so a constructor that opens
-    /// a listener works at the runtime door and races storage recovery at
-    /// the build-time one.
+    /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`.
+    /// Opening a listener belongs in [`Cla::register`], which the BPA
+    /// calls as soon as this returns.
     ///
     /// `Err` means the settled terms are ones this CLA cannot work under:
     /// the CLA's half of the negotiation.

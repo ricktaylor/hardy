@@ -80,7 +80,7 @@ impl NullCla {
 
 #[async_trait]
 impl cla::Cla for NullCla {
-    async fn start(&self) -> cla::Result<()> {
+    async fn register(&self) -> cla::Result<()> {
         self.sink
             .add_peer(
                 Self::peer_addr(),

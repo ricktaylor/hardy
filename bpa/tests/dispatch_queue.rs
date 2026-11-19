@@ -295,10 +295,8 @@ async fn stale_poller_duplicate_never_redelivers() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .metadata_storage(metadata_store)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Both originate and fresh CLA arrivals now route at their doors and
     // execute directly, so the dispatch queue (and the DispatchPending
@@ -560,10 +558,8 @@ async fn slow_claim_does_not_serialize_dispatch() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .metadata_storage(metadata_store.clone())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Originate and CLA arrivals route at their doors, so the dispatch
     // queue belongs to the re-dispatch paths: originate to not-yet-

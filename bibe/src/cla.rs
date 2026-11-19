@@ -30,7 +30,7 @@ pub struct BibeCla {
     // The settled receive limit, if any: an encapsulated outer bundle
     // over the limit would be refused deterministically, so it is never
     // dispatched.
-    max_reception_size: Option<NonZeroU64>,
+    max_bundle_size: Option<NonZeroU64>,
 }
 
 impl BibeCla {
@@ -49,12 +49,12 @@ impl BibeCla {
             Ok(Arc::new(Self {
                 tunnel_source,
                 sink: cx.sink,
-                max_reception_size: cx.terms.max_reception_size,
+                max_bundle_size: cx.terms.max_bundle_size,
             }))
         })
     }
 
-    /// Unregister this CLA from the BPA.
+    /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
         self.sink.unregister().await;
     }
@@ -132,7 +132,7 @@ impl Cla for BibeCla {
         // `NoNeighbour`: the link-scoped signal would sweep the whole peer
         // queue back to Waiting on every routing event for this bundle's
         // lifetime.
-        if let Some(cap) = self.max_reception_size
+        if let Some(cap) = self.max_bundle_size
             && outer.len() as u64 > cap.get()
         {
             return Err(ClaError::PayloadTooLarge {
@@ -229,7 +229,7 @@ mod tests {
     ) -> (Arc<BibeCla>, Arc<AtomicUsize>) {
         let dispatched = Arc::new(AtomicUsize::new(0));
         let terms = Terms {
-            max_reception_size: cap,
+            max_bundle_size: cap,
             ..Default::default()
         };
 

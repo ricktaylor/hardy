@@ -43,11 +43,10 @@ use hardy_bpa::node_ids::NodeIds;
 let bpa = Bpa::builder()
     .node_ids(node_ids)
     .status_reports(true)
-    .build()
-    .await?;
+    .build();
 
-// Start processing
-bpa.start(false).await;
+// Start processing, registering every declared component
+bpa.start(false).await?;
 
 // Register components via the BpaRegistration trait
 bpa.register_cla(name, cla, policy).await?;

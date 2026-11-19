@@ -4,7 +4,7 @@
 //! An embedder implements [`Agent`] and hands the BPA a [`Factory`] for
 //! it. The BPA builds the agent from a [`Context`] carrying the [`Sink`]
 //! it pushes routes through, and `table::Table` owns it from there, until
-//! the agent detaches or the BPA shuts down.
+//! the agent unregisters or the BPA shuts down.
 
 use crate::async_trait;
 
@@ -31,25 +31,30 @@ pub use self::static_agent::StaticAgent;
 /// work, unlike a [`Cla`](crate::cla::Cla), which is asked to forward, so
 /// the trait carries nothing but the lifecycle the BPA drives: the BPA
 /// builds the agent from a [`Factory`], owns it, brings it up with
-/// [`start`](Self::start) and takes it down with
-/// [`shutdown`](Self::shutdown), withdrawing every route the agent added.
+/// [`register`](Self::register) and takes it down with
+/// [`unregister`](Self::unregister), withdrawing every route the
+/// agent added.
 #[async_trait]
 pub trait Agent: Send + Sync {
     /// Brings the agent up: spawns tasks, installs its initial routes,
     /// opens the sources it learns routes from.
     ///
-    /// Called once, after the BPA's storage recovery. An `Err` means the
-    /// agent cannot run at all: the BPA detaches it and carries on.
+    /// Called once, as the registration opens: at
+    /// [`Bpa::start`](crate::bpa::Bpa::start) for a declared agent,
+    /// after storage recovery, and at the registration call for any
+    /// other. An `Err` means the agent cannot run at all: the
+    /// registration is undone, and the error reaches whoever asked for
+    /// it.
     ///
     /// The default implementation does nothing, for an agent that is live
     /// from the moment it is built.
-    async fn start(&self) -> Result<()> {
+    async fn register(&self) -> Result<()> {
         Ok(())
     }
 
     /// Takes the agent down: stops background tasks, releases resources.
     ///
-    /// Called once, when the agent detaches or the BPA shuts down. The
+    /// Called once, when the agent unregisters or the BPA shuts down. The
     /// sink answers [`Error::Disconnected`] to everything by then, and the
     /// agent's routes are withdrawn once this returns; an `Err` is logged
     /// and teardown continues regardless.
@@ -57,7 +62,7 @@ pub trait Agent: Send + Sync {
     /// The default implementation does nothing.
     ///
     /// [`Error::Disconnected`]: crate::routing::Error::Disconnected
-    async fn shutdown(&self) -> Result<()> {
+    async fn unregister(&self) -> Result<()> {
         Ok(())
     }
 }

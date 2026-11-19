@@ -68,7 +68,7 @@ async fn registered_cla(inbox: &Path) -> (Arc<Cla>, Address) {
             Terms::default(),
         ))
         .expect("a file CLA builds under any terms");
-    cla.start().await.expect("the peer inbox is announced");
+    cla.register().await.expect("the peer inbox is announced");
 
     let addr = peers
         .lock()

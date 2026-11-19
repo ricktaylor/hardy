@@ -61,8 +61,8 @@ impl Service for TestService {
 // built: the second factory never runs.
 #[tokio::test]
 async fn a_taken_service_id_is_not_built() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     let first = Arc::new(AtomicBool::new(false));
     bpa.register_service(
@@ -96,8 +96,8 @@ async fn a_taken_service_id_is_not_built() {
 // free for the next attempt.
 #[tokio::test]
 async fn a_failed_build_releases_the_service_id() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     let Err(err) = bpa
         .register_service(

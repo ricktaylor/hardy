@@ -31,12 +31,12 @@ impl Cla {
         // receive limit (0 = unbounded, declared as no limit).
         let request = Request {
             address_type: Some(AddressType::Tcp),
-            max_reception_size: NonZeroU64::new(config.max_bundle_size),
+            max_bundle_size: NonZeroU64::new(config.max_bundle_size),
             ..Default::default()
         };
 
         factory_fn(request, move |cx: Context| {
-            let max_bundle_size = match (config.max_bundle_size, cx.terms.max_reception_size) {
+            let max_bundle_size = match (config.max_bundle_size, cx.terms.max_bundle_size) {
                 (0, Some(cap)) => cap.get(),
                 (configured, Some(cap)) => configured.min(cap.get()),
                 (configured, None) => configured,
@@ -60,7 +60,7 @@ impl Cla {
 
 #[async_trait]
 impl cla::Cla for Cla {
-    async fn start(&self) -> ClaResult<()> {
+    async fn register(&self) -> ClaResult<()> {
         info!("CLA starting, node IDs: {:?}", self.node_ids);
 
         // Register static peer if configured
@@ -98,7 +98,7 @@ impl cla::Cla for Cla {
         Ok(())
     }
 
-    async fn shutdown(&self) -> ClaResult<()> {
+    async fn unregister(&self) -> ClaResult<()> {
         self.tasks.shutdown().await;
         Ok(())
     }

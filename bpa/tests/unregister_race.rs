@@ -333,10 +333,8 @@ async fn racing_forward_is_not_stranded_by_unregister() {
         .node_ids(node_ids)
         .metadata_storage(metadata_store.clone())
         .poll_channel_depth(NonZeroUsize::new(1).unwrap())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (cla, forward_entered_rx, forward_release_tx) = StallCla::factory();
     let cla = bpa.register_cla("stall", cla).await.unwrap();

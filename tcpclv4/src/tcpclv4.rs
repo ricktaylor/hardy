@@ -47,9 +47,9 @@ use crate::{
 fn advertised_mrus(
     transfer_mru: NonZeroU64,
     segment_mru: NonZeroU64,
-    max_reception_size: Option<NonZeroU64>,
+    max_bundle_size: Option<NonZeroU64>,
 ) -> (NonZeroU64, NonZeroU64) {
-    let folded = max_reception_size.map_or(transfer_mru, |cap| transfer_mru.min(cap));
+    let folded = max_bundle_size.map_or(transfer_mru, |cap| transfer_mru.min(cap));
     if folded < transfer_mru {
         info!("Transfer MRU clamped from {transfer_mru} to the BPA's receive limit {folded}");
     }
@@ -120,7 +120,7 @@ impl Tcpclv4 {
         let (transfer_mru, segment_mru) = advertised_mrus(
             settings.transfer_mru,
             settings.segment_mru,
-            cx.terms.max_reception_size,
+            cx.terms.max_bundle_size,
         );
 
         // A bound socket always has a local address; one it cannot report
@@ -170,7 +170,7 @@ impl Tcpclv4 {
         Tcpclv4Builder::from(config).build()
     }
 
-    /// Detaches this CLA from the BPA.
+    /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
         self.sink.unregister().await;
     }
@@ -259,13 +259,13 @@ impl Debug for Tcpclv4 {
 #[async_trait]
 impl Cla for Tcpclv4 {
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn start(&self) -> cla::Result<()> {
+    async fn register(&self) -> cla::Result<()> {
         self.start_listeners();
         Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn shutdown(&self) -> cla::Result<()> {
+    async fn unregister(&self) -> cla::Result<()> {
         // Cancel sessions first so they exit promptly when channels close
         self.session_cancel_token.cancel();
 
@@ -465,10 +465,10 @@ mod tests {
     // CLA table does.
     fn build(
         factory: impl cla::Factory<Component = Tcpclv4>,
-        max_reception_size: Option<NonZeroU64>,
+        max_bundle_size: Option<NonZeroU64>,
     ) -> Arc<Tcpclv4> {
         let terms = Terms {
-            max_reception_size,
+            max_bundle_size,
             ..Default::default()
         };
         factory
@@ -539,7 +539,7 @@ mod tests {
             .unwrap()
             .request();
         assert_eq!(request.address_type, Some(cla::AddressType::Tcp));
-        assert_eq!(request.max_reception_size, Some(configured));
+        assert_eq!(request.max_bundle_size, Some(configured));
     }
 
     // RFC 9174 Section 2.1: an entity may support zero or more passive

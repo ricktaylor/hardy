@@ -20,14 +20,14 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Errors that can occur during routing agent operations.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// Another agent is already attached under this name.
-    #[error("A routing agent named {0} is already attached")]
+    /// Another agent is already registered under this name.
+    #[error("A routing agent named {0} is already registered")]
     DuplicateName(String),
 
-    /// An agent of this name is being torn down. The name is released once
-    /// the teardown completes, so the attachment may be retried.
-    #[error("The routing agent named {0} is detaching")]
-    Detaching(String),
+    /// An agent of this name is still unregistering. The name is released
+    /// once that completes, so the registration may be retried.
+    #[error("The routing agent named {0} is unregistering")]
+    Unregistering(String),
 
     /// The connection to the BPA has been lost.
     #[error("The sink is disconnected")]

@@ -12,7 +12,8 @@ fn routing_error_to_status(e: hardy_bpa::routing::Error) -> tonic::Status {
         hardy_bpa::routing::Error::NullNextHop | hardy_bpa::routing::Error::ViaOwnNode(_) => {
             tonic::Status::invalid_argument(e.to_string())
         }
-        hardy_bpa::routing::Error::DuplicateName(_) | hardy_bpa::routing::Error::Detaching(_) => {
+        hardy_bpa::routing::Error::DuplicateName(_)
+        | hardy_bpa::routing::Error::Unregistering(_) => {
             tonic::Status::already_exists(e.to_string())
         }
         hardy_bpa::routing::Error::Disconnected => tonic::Status::unavailable(e.to_string()),
@@ -30,7 +31,7 @@ struct Agent {
 
 #[async_trait]
 impl hardy_bpa::routing::Agent for Agent {
-    async fn shutdown(&self) -> hardy_bpa::routing::Result<()> {
+    async fn unregister(&self) -> hardy_bpa::routing::Result<()> {
         self.proxy.shutdown().await;
         Ok(())
     }
@@ -117,8 +118,8 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        // The far agent is gone: detach, which withdraws its routes and
-        // takes the agent down with the session.
+        // The far agent is gone: unregister, which withdraws its routes
+        // and takes the agent down with the session.
         self.sink.unregister().await;
     }
 }

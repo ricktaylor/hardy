@@ -31,7 +31,7 @@ use std::sync::Arc;
 pub struct MockBpa {
     node_ids: Arc<NodeIds>,
     /// This BPA's own receive limit, folded into the terms it settles.
-    max_reception_size: Option<NonZeroU64>,
+    max_bundle_size: Option<NonZeroU64>,
     /// What the last `register_cla_boxed` asked for.
     pub declared_request: Mutex<Option<cla::Request>>,
     /// The terms the last `register_cla_boxed` settled on.
@@ -54,7 +54,7 @@ impl MockBpa {
             .expect("ipn:1.0 is a valid node identifier");
         Self {
             node_ids: Arc::new(node_ids),
-            max_reception_size: None,
+            max_bundle_size: None,
             declared_request: Mutex::new(None),
             settled_terms: Mutex::new(None),
             routing_names: Mutex::new(HashSet::new()),
@@ -69,9 +69,9 @@ impl MockBpa {
 
     /// A mock whose own receive limit is `octets`, so a CLA declaring a
     /// larger one is settled down to it.
-    pub fn with_max_reception_size(octets: NonZeroU64) -> Self {
+    pub fn with_max_bundle_size(octets: NonZeroU64) -> Self {
         Self {
-            max_reception_size: Some(octets),
+            max_bundle_size: Some(octets),
             ..Self::new()
         }
     }
@@ -82,7 +82,7 @@ impl MockBpa {
     fn negotiate(&self, request: &cla::Request) -> cla::Terms {
         cla::Terms {
             lane_count: request.lane_count,
-            max_reception_size: match (self.max_reception_size, request.max_reception_size) {
+            max_bundle_size: match (self.max_bundle_size, request.max_bundle_size) {
                 (Some(bpa), Some(cla)) => Some(bpa.min(cla)),
                 (bpa, cla) => bpa.or(cla),
             },
@@ -95,13 +95,13 @@ impl MockBpa {
         let agent = self.last_routing_agent.lock().take();
         if let Some(agent) = agent {
             agent
-                .shutdown()
+                .unregister()
                 .await
-                .expect("the agent shuts down cleanly");
+                .expect("the agent unregisters cleanly");
         }
         let cla = self.last_cla.lock().take();
         if let Some(cla) = cla {
-            cla.shutdown().await.expect("the CLA shuts down cleanly");
+            cla.unregister().await.expect("the CLA unregisters cleanly");
         }
     }
 }
@@ -122,7 +122,7 @@ impl cla::Registrar for MockBpa {
         *self.last_cla_sink.lock() = Some(sink.clone());
 
         let cla = factory.build(cla::Context::new(sink, self.node_ids.clone(), terms))?;
-        cla.start().await?;
+        cla.register().await?;
         *self.last_cla.lock() = Some(cla);
         Ok(())
     }
@@ -139,7 +139,7 @@ impl service::Registrar for MockBpa {
         let sink = Arc::new(MockRawServiceSink::new());
 
         let service = factory.build(raw::Context::new(sink, endpoint))?;
-        service.start().await?;
+        service.register().await?;
         *self.last_raw_service.lock() = Some(service);
         Ok(())
     }
@@ -153,7 +153,7 @@ impl service::Registrar for MockBpa {
         let sink = Arc::new(MockServiceSink::new());
 
         let service = factory.build(service::Context::new(sink, endpoint))?;
-        service.start().await?;
+        service.register().await?;
         *self.last_service.lock() = Some(service);
         Ok(())
     }
@@ -174,7 +174,7 @@ impl routing::Registrar for MockBpa {
         *self.last_routing_sink.lock() = Some(sink.clone());
 
         let agent = factory.build(routing::Context::new(sink, self.node_ids.clone()))?;
-        agent.start().await?;
+        agent.register().await?;
         *self.last_routing_agent.lock() = Some(agent);
         Ok(())
     }

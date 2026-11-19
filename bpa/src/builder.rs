@@ -8,7 +8,7 @@ use hardy_eid_patterns::EidPattern;
 
 use crate::{
     Arc, HashMap,
-    bpa::Bpa,
+    bpa::{Bpa, Factories},
     cla::{self, BoxFactory, Factory},
     dispatcher::{Config as DispatcherConfig, Dispatcher},
     filter::pack::{FilterPack, chains::FilterChains},
@@ -162,15 +162,14 @@ impl BpaBuilder {
         self
     }
 
-    /// Declares a CLA, built when the BPA is built.
+    /// Declares a CLA, registered at
+    /// [`Bpa::start`](crate::bpa::Bpa::start).
     ///
-    /// The BPA settles the factory's
-    /// [`Request`](crate::cla::Request) against its own configuration and
-    /// builds the CLA from the [`Terms`](crate::cla::Terms); the CLA is
-    /// inert until [`Bpa::start`](crate::bpa::Bpa::start) starts it, after
-    /// storage recovery. A name already declared fails
-    /// [`build`](Self::build), not this call, so declaration stays
-    /// chainable.
+    /// The BPA settles the factory's [`Request`](crate::cla::Request)
+    /// against its own configuration and builds the CLA from the
+    /// [`Terms`](crate::cla::Terms). A name already declared, or a CLA
+    /// that cannot run, fails `start` rather than this call, so
+    /// declaration stays chainable.
     pub fn cla<F: Factory + 'static>(self, name: impl Into<String>, factory: F) -> Self {
         self.cla_boxed(name, BoxFactory::new(factory))
     }
@@ -229,13 +228,12 @@ impl BpaBuilder {
         self
     }
 
-    /// Declares a routing agent, built when the BPA is built.
+    /// Declares a routing agent, registered at
+    /// [`Bpa::start`](crate::bpa::Bpa::start), after storage recovery,
+    /// so the routes it installs cannot race the consistency check.
     ///
-    /// The agent is inert until [`Bpa::start`](crate::bpa::Bpa::start)
-    /// starts it, after storage recovery, so the routes it installs
-    /// cannot race the consistency check. A name already declared fails
-    /// [`build`](Self::build), not this call, so declaration stays
-    /// chainable.
+    /// A name already declared, or an agent that cannot run, fails
+    /// `start` rather than this call, so declaration stays chainable.
     pub fn routing_agent<F: routing::Factory + 'static>(
         self,
         name: impl Into<String>,
@@ -305,9 +303,12 @@ impl BpaBuilder {
         self
     }
 
-    /// Consumes the builder and constructs the BPA with every registered
-    /// component.
-    pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
+    /// Consumes the builder and constructs the BPA, whose declared
+    /// components register at [`Bpa::start`](crate::bpa::Bpa::start).
+    ///
+    /// The BPA that comes back is inert: no component exists yet and no
+    /// task runs until it starts.
+    pub fn build(self) -> Bpa {
         // Freeze the filter packs first: the per-hook chains splice in call
         // order, and each input hook's P = the max peek its registrations
         // declare.
@@ -357,15 +358,11 @@ impl BpaBuilder {
             filter_chains,
         );
 
-        // Each declared service is built here, and its delivery queue
-        // left undrained until Bpa::start: one running now would race
-        // storage recovery.
-        let services =
-            service::table::Table::new(node_ids.clone(), &dispatcher, rib.clone(), self.services)?;
-
-        // Each declared CLA is built here, and left inert until
-        // Bpa::start: a CLA that opened its transport now would race
-        // storage recovery.
+        // The tables start empty: a declared component is no different
+        // from one that registers while the BPA runs, so it waits for
+        // the same door, which `Bpa::start` opens once the store is
+        // quiescent.
+        let services = service::table::Table::new(node_ids.clone(), &dispatcher, rib.clone());
         let clas = cla::table::Table::new(
             node_ids.clone(),
             &dispatcher,
@@ -373,16 +370,8 @@ impl BpaBuilder {
             store.clone(),
             self.poll_channel_depth.into(),
             self.cla_policies,
-            self.clas,
-        )?;
-
-        // Each declared routing agent is built here, and installs no
-        // route until Bpa::start starts it, after storage recovery.
-        //
-        // A table that cannot be built takes the tables already built
-        // down with it: nothing is started yet, so dropping them is the
-        // whole teardown.
-        let agents = routing::agent::table::Table::new(node_ids, rib.clone(), self.routing_agents)?;
+        );
+        let agents = routing::agent::table::Table::new(node_ids, rib.clone());
 
         // TODO: Dispatcher and the CLA table still reference each other:
         // the table holds the dispatcher, and the dispatcher late-binds the
@@ -392,8 +381,18 @@ impl BpaBuilder {
         // itself remains to be dissolved.
         start_dispatcher(clas.clone());
 
-        Ok(Bpa::from_parts(
-            store, rib, clas, services, agents, dispatcher,
-        ))
+        Bpa::from_parts(
+            store,
+            rib,
+            clas,
+            services,
+            agents,
+            dispatcher,
+            Factories {
+                clas: self.clas,
+                services: self.services,
+                agents: self.routing_agents,
+            },
+        )
     }
 }

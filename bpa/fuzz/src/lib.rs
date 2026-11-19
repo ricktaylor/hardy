@@ -108,7 +108,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         }
     }
 
-    let bpa = builder.build().await.expect("Failed to build BPA");
+    let bpa = builder.build();
 
     bpa.start(cfg_select! {
         all(feature = "localdisk-storage", feature = "sqlite-storage") => true,

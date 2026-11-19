@@ -44,9 +44,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
             .node_ids(node_ids)
             .primary_block_integrity(!args.lax_rfc9171)
             .bundle_age_required(!args.lax_rfc9171)
-            .build()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to build BPA: {e}"))?,
+            .build(),
     );
 
     // Add a default 'drop' route, we don't want to cache locally
@@ -63,10 +61,9 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     .await
     .map_err(|e| anyhow::anyhow!("Failed to register default routes: {e}"))?;
 
-    // ping declares no CLAs at build time, so the start report is always
-    // empty; the CLA it uses is registered below and reports its own
-    // failure there.
-    bpa.start(false).await;
+    bpa.start(false)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start BPA: {e}"))?;
 
     if is_external_cla(&args.cla) {
         exec_external_cla(args, &bpa).await

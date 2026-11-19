@@ -86,8 +86,8 @@ fn get_state() -> &'static BenchState {
             )
             .unwrap();
 
-            let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-            assert!(bpa.start(false).await.is_empty());
+            let bpa = Bpa::builder().node_ids(node_ids).build();
+            bpa.start(false).await.unwrap();
 
             let (factory, arrival_rx) = BenchCla::factory();
             let cla = bpa.register_cla("bench", factory).await.unwrap();

@@ -52,7 +52,7 @@ impl Bibe {
     /// with `bpa`, and adds every tunnel destination it lists.
     ///
     /// The BPA owns both components from here on; the handle returned is
-    /// for adding further tunnels and for detaching.
+    /// for adding further tunnels and for unregistering.
     ///
     /// # Example
     /// ```ignore
@@ -95,7 +95,7 @@ impl Bibe {
         Ok(Self { cla, decap_service })
     }
 
-    /// Unregister this BIBE instance from the BPA.
+    /// Unregisters this BIBE instance from the BPA.
     pub async fn unregister(&self) {
         self.cla.unregister().await;
         self.decap_service.unregister().await;

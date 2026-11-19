@@ -135,7 +135,7 @@ impl Handler {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn shutdown(&self) -> hardy_bpa::cla::Result<()> {
+    async fn unregister(&self) -> hardy_bpa::cla::Result<()> {
         self.proxy.shutdown().await;
         Ok(())
     }
@@ -212,8 +212,8 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        // The far CLA is gone: detach, which takes the CLA down with the
-        // session.
+        // The far CLA is gone: unregister, which takes the CLA down with
+        // the session.
         self.sink.unregister().await;
     }
 }
@@ -269,7 +269,7 @@ async fn run_cla_session(
                     .map(|node_id| node_id.to_string())
                     .collect(),
                 // Absent on the wire = no negotiated cap.
-                max_bundle_size: cla.terms.max_reception_size.map(NonZeroU64::get),
+                max_bundle_size: cla.terms.max_bundle_size.map(NonZeroU64::get),
             };
             let handler = Handler {
                 sink: cla.sink.clone(),
@@ -310,7 +310,7 @@ async fn register(
 
     // Absent = no CLA-side limit declared; an explicit 0 is invalid (omit
     // the field to declare no limit).
-    let max_reception_size = match request.max_bundle_size {
+    let max_bundle_size = match request.max_bundle_size {
         Some(0) => {
             return Err(tonic::Status::invalid_argument(
                 "max_bundle_size 0 is invalid; omit the field to declare no limit",
@@ -332,7 +332,7 @@ async fn register(
     let cla_request = Request {
         address_type,
         lane_count,
-        max_reception_size,
+        max_bundle_size,
     };
 
     bpa.register_cla(

@@ -209,7 +209,7 @@ impl Tcpclv4Builder {
         // BPA folds it with its own and settles the effective cap.
         let request = Request {
             address_type: Some(AddressType::Tcp),
-            max_reception_size: Some(self.transfer_mru),
+            max_bundle_size: Some(self.transfer_mru),
             ..Default::default()
         };
 

@@ -12,10 +12,10 @@ use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// A mock routing agent that counts the shutdowns the session drives.
+// A mock routing agent that counts the unregistrations the session drives.
 struct MockRoutingAgent {
     sink: Arc<dyn Sink>,
-    shutdowns: AtomicUsize,
+    unregisters: AtomicUsize,
 }
 
 impl MockRoutingAgent {
@@ -23,24 +23,24 @@ impl MockRoutingAgent {
         factory_fn(|cx: Context| {
             Ok(Arc::new(Self {
                 sink: cx.sink,
-                shutdowns: AtomicUsize::new(0),
+                unregisters: AtomicUsize::new(0),
             }))
         })
     }
 
-    fn is_shutdown(&self) -> bool {
-        self.shutdown_count() > 0
+    fn is_unregistered(&self) -> bool {
+        self.unregister_count() > 0
     }
 
-    fn shutdown_count(&self) -> usize {
-        self.shutdowns.load(Ordering::Relaxed)
+    fn unregister_count(&self) -> usize {
+        self.unregisters.load(Ordering::Relaxed)
     }
 }
 
 #[async_trait]
 impl Agent for MockRoutingAgent {
-    async fn shutdown(&self) -> hardy_bpa::routing::Result<()> {
-        self.shutdowns.fetch_add(1, Ordering::Relaxed);
+    async fn unregister(&self) -> hardy_bpa::routing::Result<()> {
+        self.unregisters.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -49,7 +49,7 @@ impl Agent for MockRoutingAgent {
 //
 // The client calls `Sink::unregister()` which shuts down the proxy,
 // closing the stream. The server detects the close via `on_close`,
-// detaches the agent from the mock BPA, and cancels the proxy. The
+// unregisters the agent from the mock BPA, and cancels the proxy. The
 // client shuts its own agent down.
 #[tokio::test]
 async fn life_01_client_initiated_unregister() {
@@ -61,7 +61,10 @@ async fn life_01_client_initiated_unregister() {
         .await
         .expect("registration should succeed");
 
-    assert!(!agent.is_shutdown(), "agent should not be shut down yet");
+    assert!(
+        !agent.is_unregistered(),
+        "agent should not be unregistered yet"
+    );
 
     // The mock BPA should have received the registration
     let bpa_sink = bpa
@@ -78,8 +81,8 @@ async fn life_01_client_initiated_unregister() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     assert!(
-        agent.is_shutdown(),
-        "agent should have been shut down via on_close"
+        agent.is_unregistered(),
+        "agent should have been unregistered via on_close"
     );
     assert!(
         bpa_sink.is_unregistered(),
@@ -92,7 +95,7 @@ async fn life_01_client_initiated_unregister() {
 
 // LIFE-02: BPA-initiated unregister.
 //
-// The BPA shuts down the server-side agent (simulating BPA shutdown).
+// The BPA unregisters the server-side agent (simulating BPA shutdown).
 // The server shuts down the proxy, closing the stream, and the client
 // shuts its own agent down via `on_close`.
 #[tokio::test]
@@ -105,7 +108,7 @@ async fn life_02_bpa_initiated_unregister() {
         .await
         .expect("registration should succeed");
 
-    assert!(!agent.is_shutdown());
+    assert!(!agent.is_unregistered());
 
     // BPA-initiated: shut down the server-side agent
     let server_agent = bpa
@@ -114,16 +117,16 @@ async fn life_02_bpa_initiated_unregister() {
         .clone()
         .expect("BPA should have the server-side agent");
     server_agent
-        .shutdown()
+        .unregister()
         .await
-        .expect("the agent shuts down cleanly");
+        .expect("the agent unregisters cleanly");
 
     // Give the client a moment to detect the stream close
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     assert!(
-        agent.is_shutdown(),
-        "agent should have been shut down via on_close"
+        agent.is_unregistered(),
+        "agent should have been unregistered via on_close"
     );
 
     // Clean up server
@@ -145,17 +148,17 @@ async fn life_04_server_crash() {
         .await
         .expect("registration should succeed");
 
-    assert!(!agent.is_shutdown());
+    assert!(!agent.is_unregistered());
 
-    // Simulate crash: force-shutdown every registered component
+    // Simulate crash: force-unregister every registered component
     bpa.crash().await;
 
     // Give the client a moment to detect the stream close
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     assert!(
-        agent.is_shutdown(),
-        "agent should have been shut down via on_close"
+        agent.is_unregistered(),
+        "agent should have been unregistered via on_close"
     );
 
     // Clean up server
@@ -165,7 +168,7 @@ async fn life_04_server_crash() {
 // LIFE-05: Client and BPA unregister simultaneously.
 //
 // Both ends tear the session down at once. Each end takes its agent out
-// of the session exactly once, so neither a double shutdown nor a
+// of the session exactly once, so neither a double unregistration nor a
 // deadlock can follow.
 #[tokio::test]
 async fn life_05_simultaneous_unregister() {
@@ -185,19 +188,19 @@ async fn life_05_simultaneous_unregister() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     assert_eq!(
-        agent.shutdown_count(),
+        agent.unregister_count(),
         1,
-        "agent should have been shut down exactly once"
+        "agent should have been unregistered exactly once"
     );
 
     // No panic, no deadlock — test completing is the assertion
     server_tasks.shutdown().await;
 }
 
-// LIFE-06: Client shuts its agent down exactly once.
+// LIFE-06: Client unregisters its agent exactly once.
 //
 // After BPA-initiated unregister (which closes the stream), the client
-// must shut its agent down exactly once — not zero times, not twice.
+// must unregister its agent exactly once — not zero times, not twice.
 #[tokio::test]
 async fn life_06_exactly_once_unregister() {
     let bpa = Arc::new(MockBpa::new());
@@ -208,7 +211,7 @@ async fn life_06_exactly_once_unregister() {
         .await
         .expect("registration should succeed");
 
-    assert_eq!(agent.shutdown_count(), 0);
+    assert_eq!(agent.unregister_count(), 0);
 
     // BPA-initiated unregister
     bpa.crash().await;
@@ -216,11 +219,11 @@ async fn life_06_exactly_once_unregister() {
     // Give the client time to process
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // Exactly one shutdown — not zero (missed), not two (duplicate)
+    // Exactly one unregistration — not zero (missed), not two (duplicate)
     assert_eq!(
-        agent.shutdown_count(),
+        agent.unregister_count(),
         1,
-        "the agent should be shut down exactly once"
+        "the agent should be unregistered exactly once"
     );
 
     server_tasks.shutdown().await;

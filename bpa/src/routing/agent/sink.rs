@@ -10,12 +10,12 @@ use crate::{
 /// The sink stamps the agent's registered name on every route as its
 /// source, so an agent only ever adds or removes routes attributed to
 /// itself. It arrives in the agent's [`Context`](super::Context) and
-/// stays usable until the agent detaches or the BPA shuts down, after
+/// stays usable until the agent unregisters or the BPA shuts down, after
 /// which every operation here returns
 /// [`Error::Disconnected`](crate::routing::Error::Disconnected).
 #[async_trait]
 pub trait Sink: Send + Sync {
-    /// Detaches the agent from the BPA, withdrawing the routes it added.
+    /// Unregisters the agent from the BPA, withdrawing the routes it added.
     async fn unregister(&self);
 
     /// Adds a route to the RIB.

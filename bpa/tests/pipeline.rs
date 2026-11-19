@@ -342,8 +342,8 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 /// to the correct CLA peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_to_cla_routing() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::factory();
@@ -411,8 +411,8 @@ async fn deferred_removal_applied_at_egress() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -543,8 +543,8 @@ async fn deferred_removal_applied_at_delivery() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, delivered_rx) = CapturingService::factory();
     let endpoint = bpa
@@ -694,13 +694,8 @@ async fn deferred_removal_precedes_the_egress_rewriters() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder()
-        .node_ids(node_ids)
-        .add_filters(pack)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -767,13 +762,8 @@ async fn deferred_removal_precedes_the_deliver_chain() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder()
-        .node_ids(node_ids)
-        .add_filters(pack)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, delivered_rx) = CapturingService::factory();
     let endpoint = bpa
@@ -830,8 +820,8 @@ async fn echo_round_trip() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     // Register echo service on service number 7
     bpa.register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
@@ -910,8 +900,8 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     // The service only captures its sink here; the test drives the sink itself.
     let svc = bpa
@@ -1184,8 +1174,8 @@ async fn local_delivery() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     // Register a service on service number 42
     let (factory, service_rx) = TestService::factory();
@@ -1285,10 +1275,8 @@ async fn reception_report_carries_unknown_security_operation() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Register CLA with a peer for the remote node (ipn:0.2) — the route for
     // both the forwarded bundle and the reception report (report-to defaults
@@ -1395,8 +1383,8 @@ async fn cla_streamed_ingress_delivers() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, service_rx) = TestService::factory();
     bpa.register_service(Some(ServiceId::Ipn(42)), factory)
@@ -1456,8 +1444,8 @@ async fn cla_unregister_cancels_parked_stream() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -1511,8 +1499,8 @@ async fn cla_streamed_ingress_truncation_is_refused() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, service_rx) = TestService::factory();
     bpa.register_service(Some(ServiceId::Ipn(42)), factory)
@@ -1564,8 +1552,8 @@ async fn abandoned_transfer_setup() -> (
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, service_rx) = TestService::factory();
     let service = bpa
@@ -1738,8 +1726,8 @@ async fn segmented_payload_local_delivery() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, service_rx) = TestService::factory();
     bpa.register_service(Some(ServiceId::Ipn(42)), factory)
@@ -1789,8 +1777,8 @@ async fn duplicate_arrival_never_awaits_the_payload() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, service_rx) = TestService::factory();
     bpa.register_service(Some(ServiceId::Ipn(42)), factory)
@@ -1881,8 +1869,8 @@ async fn segmented_gate_drops_before_draining_payload() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, service_rx) = TestService::factory();
     bpa.register_service(Some(ServiceId::Ipn(42)), factory)
@@ -1969,10 +1957,8 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // A CLA with a peer for the remote node — the route for the reports
     // (report-to defaults to the source).
@@ -2089,10 +2075,8 @@ async fn drain_failure_reports_reception_then_deletion() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // A CLA with a peer for the remote node — the route for the reports
     // (report-to defaults to the source).
@@ -2196,10 +2180,8 @@ async fn header_failure_reports_reception_then_deletion() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // A CLA with a peer for the remote node — the route for the reports
     // (report-to defaults to the source).
@@ -2312,10 +2294,8 @@ async fn step4_block_flag_report_survives_delete_bundle() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -2414,10 +2394,8 @@ async fn reception_only_reject_carries_step4_reason() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -2528,10 +2506,8 @@ async fn step4_block_flag_alone_forces_reception_report() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -2641,10 +2617,8 @@ async fn step4_forced_report_suppressed_for_null_report_to() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -2808,10 +2782,8 @@ async fn short_final_setup() -> (
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
     let (factory, service_rx) = TestService::factory();
     let service = bpa
         .register_service(Some(ServiceId::Ipn(42)), factory)
@@ -2946,10 +2918,8 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
             .max_bundle_size(NonZeroU64::new(256).unwrap())
-            .build()
-            .await
-            .unwrap();
-        assert!(bpa.start(false).await.is_empty());
+            .build();
+        bpa.start(false).await.unwrap();
         let (cla, _fwd) = PipelineCla::factory();
         let cla = bpa.register_cla("test", cla).await.unwrap();
         let mut stream = SegmentReceiver::new(&inbound, 1000);
@@ -2969,10 +2939,8 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
             .max_bundle_size(NonZeroU64::new(10_000).unwrap())
-            .build()
-            .await
-            .unwrap();
-        assert!(bpa.start(false).await.is_empty());
+            .build();
+        bpa.start(false).await.unwrap();
         let (cla, _fwd) = PipelineCla::factory();
         let cla = bpa.register_cla("test", cla).await.unwrap();
         let mut stream = ParkedReceiver::new(&inbound, 1000, 3);
@@ -3005,8 +2973,8 @@ async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
     let (cla, _fwd) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
@@ -3063,8 +3031,8 @@ async fn throughput() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (cla, arrival_rx) = TimedCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -3151,8 +3119,8 @@ async fn forwarding_latency() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (cla, arrival_rx) = TimedCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -3282,8 +3250,8 @@ async fn egress_filter_sees_consistent_extents() {
             mismatch: mismatch.clone(),
         },
     );
-    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::factory();
@@ -3391,8 +3359,8 @@ impl Classifier for KeyingClassifier {
 async fn classifier_route_key_drives_the_lookup() {
     let mut pack = FilterPack::new("test");
     pack.originate_classifier("keyer", KeyingClassifier);
-    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
     // A peer exists for ipn:0.2 only; ipn:0.3 has no route.
     let (cla, forwarded_rx) = PipelineCla::factory();
@@ -3467,13 +3435,8 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
     .unwrap();
     let mut pack = FilterPack::new("test");
     pack.ingress_classifier("keyer", LocalKeyingClassifier);
-    let bpa = Bpa::builder()
-        .node_ids(node_ids)
-        .add_filters(pack)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -3588,8 +3551,8 @@ impl Service for FailingService {
 /// out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatcher_handles_deliver_err() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     let (factory, _sender_rx) = TestService::factory();
     let sender = bpa
@@ -3715,8 +3678,8 @@ async fn deferring_setup(
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (cla, offers_rx) = DeferringCla::factory(accepts);
     let cla = bpa
@@ -4042,8 +4005,8 @@ impl cla::Cla for BlockingCla {
 /// second offer, since no further route events occur.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_park_recheck_redispatches() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     let (cla, offered_rx, release_tx) = BlockingCla::factory();
     let cla = bpa.register_cla("blocking", cla).await.unwrap();
@@ -4115,10 +4078,8 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     let metadata_store = Arc::new(MetadataMemStorage::new(None));
     let bpa = Bpa::builder()
         .metadata_storage(metadata_store.clone())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (cla, offered_rx, release_tx) = BlockingCla::factory();
     let cla = bpa.register_cla("blocking", cla).await.unwrap();
@@ -4213,11 +4174,8 @@ async fn gate_fixture(
         .as_slice(),
     )
     .unwrap();
-    let bpa = configure(Bpa::builder().node_ids(node_ids))
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = configure(Bpa::builder().node_ids(node_ids)).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, service_rx) = TestService::factory();
     bpa.register_service(Some(ServiceId::Ipn(42)), factory)
@@ -4386,10 +4344,8 @@ async fn peer_removed_mid_construction_is_withdrawn() {
                 release_rx,
             }),
         )
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
@@ -4457,10 +4413,8 @@ async fn early_route_drop_never_awaits_the_payload() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // A peer for the report route (report-to defaults to the source), plus
     // Drop routes: reasoned for one destination, silent for another.
@@ -4595,8 +4549,8 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     // Two CLAs with one peer each: ipn:0.2 behind the first, ipn:0.4 behind
     // the second.
@@ -4752,8 +4706,8 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (entered_tx, entered_rx) = flume::bounded(1);
     let (release_tx, release_rx) = flume::bounded(1);
@@ -5140,10 +5094,8 @@ async fn restart_setup(
         .node_ids(node_ids)
         .metadata_storage(metadata)
         .bundle_storage(bundles)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
     let svc = bpa
         .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
@@ -5255,10 +5207,8 @@ async fn oversized_originate_refuses_before_the_payload() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .max_bundle_size(NonZeroU64::new(2048).unwrap())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let svc = bpa
         .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
@@ -5337,10 +5287,8 @@ async fn adu_originate_refuses_headers_over_the_cap() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .max_bundle_size(NonZeroU64::new(2048).unwrap())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (factory, _service_rx) = TestService::factory();
     let service = bpa
@@ -5407,7 +5355,7 @@ async fn configured_endpoints_activate_at_start() {
 
     #[async_trait]
     impl cla::Cla for ProbeCla {
-        async fn start(&self) -> cla::Result<()> {
+        async fn register(&self) -> cla::Result<()> {
             let _ = self.started_tx.send(());
             Ok(())
         }
@@ -5432,15 +5380,13 @@ async fn configured_endpoints_activate_at_start() {
                 Ok(Arc::new(ProbeCla { started_tx }))
             }),
         )
-        .build()
-        .await
-        .unwrap();
+        .build();
     assert!(
         started_rx.is_empty(),
         "a configured CLA must not go live before start"
     );
 
-    assert!(bpa.start(false).await.is_empty());
+    bpa.start(false).await.unwrap();
     assert!(
         started_rx.try_recv().is_ok(),
         "start activates the configured CLA"
@@ -5468,8 +5414,8 @@ async fn app_send_streamed_matches_whole_buffer_send() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, _service_rx) = TestService::factory();
     let service = bpa
@@ -5578,8 +5524,8 @@ async fn app_send_streamed_producer_drop_cancels() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, _service_rx) = TestService::factory();
     let service = bpa
@@ -5638,8 +5584,8 @@ async fn app_send_streamed_enforces_the_declared_length() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (factory, _service_rx) = TestService::factory();
     let service = bpa

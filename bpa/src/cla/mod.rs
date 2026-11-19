@@ -25,14 +25,14 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Errors that can occur during CLA operations.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// Another CLA is already attached under this name.
-    #[error("A CLA named {0} is already attached")]
+    /// Another CLA is already registered under this name.
+    #[error("A CLA named {0} is already registered")]
     DuplicateName(String),
 
-    /// A CLA of this name is being torn down. The name is released once
-    /// the teardown completes, so the attachment may be retried.
-    #[error("The CLA named {0} is detaching")]
-    Detaching(String),
+    /// A CLA of this name is still unregistering. The name is released
+    /// once that completes, so the registration may be retried.
+    #[error("The CLA named {0} is unregistering")]
+    Unregistering(String),
 
     /// The connection to the BPA has been lost.
     #[error("The sink is disconnected")]
@@ -166,10 +166,11 @@ pub enum Acceptance {
 ///
 /// A CLA transmits and receives bundles over its own medium. The BPA
 /// builds it from a [`Factory`], owns it, and drives its lifecycle:
-/// [`start`](Self::start) opens the transport, [`forward`](Self::forward)
-/// carries bundles out, and [`shutdown`](Self::shutdown) closes everything
-/// again. Traffic in the other direction goes through the [`Sink`] the
-/// [`Context`] carries, which the CLA keeps for as long as it is attached.
+/// [`register`](Self::register) opens the transport,
+/// [`forward`](Self::forward) carries bundles out, and
+/// [`unregister`](Self::unregister) closes everything again. Traffic
+/// in the other direction goes through the [`Sink`] the [`Context`]
+/// carries, which the CLA keeps for as long as it is attached.
 ///
 /// A CLA is commonly paired with a
 /// [`FlowControllerFactory`](crate::policy::FlowControllerFactory), which
@@ -179,27 +180,29 @@ pub trait Cla: Send + Sync {
     /// Brings the transport up: binds sockets, dials peers, spawns
     /// listener tasks.
     ///
-    /// Called once, after the BPA's storage recovery, so a listener never
-    /// races the consistency check. An `Err` means the CLA cannot run at
-    /// all: the BPA detaches it and carries on degraded, reporting the
-    /// failure from [`Bpa::start`](crate::bpa::Bpa::start). A CLA that is
-    /// merely unreachable for now returns `Ok` and retries on its own.
+    /// Called once, as the registration opens: at
+    /// [`Bpa::start`](crate::bpa::Bpa::start) for a declared CLA, after
+    /// storage recovery, so a listener never races the consistency
+    /// check, and at the registration call for any other. An `Err`
+    /// means the CLA cannot run at all: the registration is undone, and
+    /// the error reaches whoever asked for it. A CLA that is merely
+    /// unreachable for now returns `Ok` and retries on its own.
     ///
     /// The default implementation does nothing, for a CLA that is live
     /// from the moment it is built.
-    async fn start(&self) -> Result<()> {
+    async fn register(&self) -> Result<()> {
         Ok(())
     }
 
     /// Takes the transport down: closes connections, stops background
     /// tasks, releases resources.
     ///
-    /// Called once, when the CLA detaches or the BPA shuts down. The sink
+    /// Called once, when the CLA unregisters or the BPA shuts down. The sink
     /// is already dead by then, so nothing can be received or reported
     /// from here; an `Err` is logged and teardown continues regardless.
     ///
     /// The default implementation does nothing.
-    async fn shutdown(&self) -> Result<()> {
+    async fn unregister(&self) -> Result<()> {
         Ok(())
     }
 
@@ -273,8 +276,10 @@ pub trait RegistrarExt: Registrar {
     ///
     /// The returned handle is for the embedder's own use: reconfiguring
     /// the CLA, reading its statistics. Holding it does not keep the CLA
-    /// attached, and dropping it does not detach it: the registrar owns
-    /// the CLA until something detaches it by name.
+    /// registered, and dropping it does not unregister it: the registrar
+    /// owns the CLA until it leaves through
+    /// [`Sink::unregister`] or the BPA
+    /// shuts down.
     async fn register_cla<F: Factory>(&self, name: &str, factory: F) -> Result<Arc<F::Component>>;
 }
 

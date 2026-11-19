@@ -339,10 +339,8 @@ mod tests {
             .node_ids(node_ids)
             .metadata_storage(metadata_store.clone())
             .bundle_storage(data_store)
-            .build()
-            .await
-            .unwrap();
-        assert!(bpa.start(true).await.is_empty());
+            .build();
+        bpa.start(true).await.unwrap();
 
         // start(true) awaits recovery to completion, so the reset is
         // visible the moment it returns — no wait is involved.
@@ -427,10 +425,8 @@ mod tests {
             .node_ids(node_ids)
             .metadata_storage(metadata_store.clone())
             .bundle_storage(data_store)
-            .build()
-            .await
-            .unwrap();
-        assert!(bpa.start(true).await.is_empty());
+            .build();
+        bpa.start(true).await.unwrap();
 
         // A route to the destination: the recovered bundle is dispatched to
         // it, whether recovery raced ahead of the peer (parked Waiting, then
@@ -561,10 +557,8 @@ mod tests {
             .node_ids(node_ids)
             .metadata_storage(metadata_store.clone())
             .bundle_storage(data_store)
-            .build()
-            .await
-            .unwrap();
-        assert!(bpa.start(true).await.is_empty());
+            .build();
+        bpa.start(true).await.unwrap();
 
         // start(true) awaits recovery to completion, so both re-parks are
         // visible the moment it returns — no wait is involved.

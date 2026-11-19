@@ -156,10 +156,8 @@ async fn unregister_sweeps_queued_deliveries() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .metadata_storage(metadata_store.clone())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
     let (factory, delivered_a_rx, started_rx, release_tx) = HoldService::factory();
@@ -393,10 +391,8 @@ async fn registration_does_not_await_the_post_registration_poll() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .metadata_storage(store.clone())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Park a bundle as WaitingForService: destined to a local service that
     // is not yet registered.

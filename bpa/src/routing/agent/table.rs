@@ -2,9 +2,9 @@ use hardy_async::sync::spin::Mutex;
 use hardy_eid_patterns::EidPattern;
 use tracing::{error, info};
 
-// `routing::Agent` and `routing::Sink` are the traits this module's slots
-// and `Sink` are built around, so both names are taken here; the two
-// traits stay module-qualified at their few use sites.
+// `routing::Agent` and `routing::Sink` are the traits this module's
+// table and `Sink` are built around, so both names are taken here; the
+// two traits stay module-qualified at their few use sites.
 use super::{BoxFactory, Context};
 use crate::{
     Arc, HashMap, Weak, async_trait,
@@ -13,23 +13,37 @@ use crate::{
     routing::{self, Error, Result, RouteAction, rib::Rib},
 };
 
-// The agent map is behind a spin lock. Every critical section is an O(1)
+// The agents are behind a spin lock. Every critical section is an O(1)
 // lookup or insert with nothing awaited, blocked or iterated inside it,
 // so the lock is never held long enough to repay an OS mutex's park. In
 // particular the embedder's factory runs outside it, against a
 // reservation.
 
-// Where an agent stands.
-//
-// `Building` holds the name while the factory runs, before there is an
-// agent to hold; `Attached` is usable; `Detaching` marks the window
-// between `detach` taking the agent and the teardown it awaits
-// completing. Only `Attached` is usable, and all three hold the name
-// against reuse.
-enum Slot {
+// Why a name is claimed while no agent stands under it: a registration
+// whose factory is still running, or the teardown of an agent already
+// taken out of the table.
+enum Claim {
     Building,
-    Attached(Arc<dyn routing::Agent>),
     Detaching,
+}
+
+// What holds a name. Either an agent stands there or a claim does,
+// never both and never neither, so the name's state is the slot's
+// variant.
+enum Slot {
+    Claimed(Claim),
+    Attached(Arc<dyn routing::Agent>),
+}
+
+impl Slot {
+    // The agent standing under the name, if the name is not merely
+    // claimed: only an attached agent is usable.
+    fn attached(&self) -> Option<&Arc<dyn routing::Agent>> {
+        match self {
+            Slot::Attached(agent) => Some(agent),
+            Slot::Claimed(_) => None,
+        }
+    }
 }
 
 /// The routing agents of one BPA: the only place an agent is built, and
@@ -41,156 +55,78 @@ pub struct Table {
 }
 
 impl Table {
-    /// The table of one BPA, holding the `agents` declared for it, each
-    /// built and filed inert.
+    /// The empty table of one BPA.
     ///
-    /// The map is complete before it reaches the table, so there is no
-    /// moment at which the table is live but incomplete, and an agent
-    /// that cannot be built takes the ones before it down with it,
-    /// leaving nothing behind.
-    pub fn new(
-        node_ids: Arc<NodeIds>,
-        rib: Arc<Rib>,
-        agents: Vec<(String, BoxFactory<'static>)>,
-    ) -> Result<Arc<Self>> {
-        let table = Arc::new(Self {
+    /// Every agent it ever holds arrives through
+    /// [`register`](Self::register), the agents the embedder declared
+    /// no differently from the ones that register while the BPA runs.
+    pub fn new(node_ids: Arc<NodeIds>, rib: Arc<Rib>) -> Arc<Self> {
+        Arc::new(Self {
             node_ids,
             rib,
             agents: Mutex::new(HashMap::new()),
-        });
-
-        let mut built = HashMap::with_capacity(agents.len());
-        for (name, factory) in agents {
-            if built.contains_key(&name) {
-                return Err(Error::DuplicateName(name));
-            }
-
-            let sink = Arc::new(Sink {
-                table: Arc::downgrade(&table),
-                name: Arc::from(name.as_str()),
-            });
-            let agent = factory.build(Context::new(sink, table.node_ids.clone()))?;
-            info!("Attached routing agent: {name}");
-            built.insert(name, Slot::Attached(agent));
-        }
-
-        metrics::gauge!("bpa.routing.agents").increment(built.len() as f64);
-        *table.agents.lock() = built;
-        Ok(table)
+        })
     }
 
-    /// Attaches the agent and starts it: the runtime door, where the two
-    /// halves are one call. An agent that cannot run is detached again,
-    /// so a failure leaves nothing behind.
+    /// Attaches the agent and starts it, the two halves of one call. An
+    /// agent that cannot run is detached again, so a failure leaves
+    /// nothing behind.
     ///
     /// The factory is the embedder's code and may do anything, so it
-    /// runs outside the lock: the name is reserved first, and the
-    /// reservation is resolved into an agent or released again
-    /// afterwards. No one else can claim the name in between, and no
-    /// one can reach an agent that is still being built.
+    /// runs outside the lock, against a reservation of the name. No one
+    /// else can claim the name while the factory runs, and no one can
+    /// reach an agent that is still being built.
     pub async fn register(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<()> {
-        match self.agents.lock().entry(name.to_owned()) {
-            Entry::Vacant(slot) => {
-                slot.insert(Slot::Building);
-            }
-            Entry::Occupied(slot) => {
-                return Err(match slot.get() {
-                    Slot::Building | Slot::Attached(_) => Error::DuplicateName(name.to_owned()),
-                    Slot::Detaching => Error::Detaching(name.to_owned()),
-                });
-            }
-        }
+        let reservation = self.reserve(name)?;
 
-        let built = factory.build(Context::new(
+        // A build that fails drops the reservation, which releases the
+        // name: the claim existed only for this build.
+        let agent = factory.build(Context::new(
             Arc::new(Sink {
                 table: Arc::downgrade(self),
                 name: Arc::from(name),
             }),
             self.node_ids.clone(),
-        ));
-
-        let agent = match built {
-            Ok(agent) => agent,
-            Err(e) => {
-                // The reservation existed only for this build.
-                self.agents.lock().remove(name);
-                return Err(e);
-            }
-        };
-
-        {
-            let mut agents = self.agents.lock();
-            if !matches!(agents.get(name), Some(Slot::Building)) {
-                // A `detach` arrived while the factory ran and left
-                // `Detaching` in the reservation. Nothing reached the
-                // agent and it was never started, so releasing the name
-                // and dropping it is the whole teardown.
-                agents.remove(name);
-                return Err(Error::Detaching(name.to_owned()));
-            }
-            agents.insert(name.to_owned(), Slot::Attached(agent.clone()));
-        }
+        ))?;
+        reservation.publish(agent.clone())?;
 
         metrics::gauge!("bpa.routing.agents").increment(1.0);
         info!("Attached routing agent: {name}");
 
-        if let Err(e) = agent.start().await {
-            self.detach(name).await;
+        if let Err(e) = agent.register().await {
+            self.unregister(name).await;
             return Err(e);
         }
         Ok(())
     }
 
-    /// Starts every attached agent; each one that cannot run at all is
-    /// detached, so the table holds only working agents when this
-    /// returns.
-    ///
-    /// Called by `Bpa::start` once storage recovery has completed: an
-    /// agent installing routes earlier would race the consistency check.
-    pub async fn start(&self) {
-        let attached = self
-            .agents
-            .lock()
-            .iter()
-            .filter_map(|(name, slot)| match slot {
-                Slot::Attached(agent) => Some((name.clone(), agent.clone())),
-                Slot::Building | Slot::Detaching => None,
-            })
-            .collect::<Vec<_>>();
-
-        for (name, agent) in attached {
-            if let Err(e) = agent.start().await {
-                error!("Routing agent {name} failed to start: {e}");
-                self.detach(&name).await;
-            }
-        }
-    }
-
-    /// Tears the named agent down and withdraws every route it added.
+    /// Unregisters the named agent and withdraws every route it added.
     ///
     /// Returns whether this call did the detaching: a name that is
     /// absent, already being detached by another caller, or still being
     /// built, answers `false`. In the last case the build itself
     /// completes the detachment.
-    pub async fn detach(&self, name: &str) -> bool {
+    pub async fn unregister(&self, name: &str) -> bool {
         let agent = {
             let mut agents = self.agents.lock();
             let Some(slot) = agents.get_mut(name) else {
                 return false;
             };
-            match core::mem::replace(slot, Slot::Detaching) {
+
+            // The name is claimed for the teardown that follows, so
+            // nothing re-registers over routes still being withdrawn.
+            match core::mem::replace(slot, Slot::Claimed(Claim::Detaching)) {
                 Slot::Attached(agent) => agent,
-                // The factory is still running. Leaving `Detaching`
-                // behind is enough: `attach` reads it and takes the
-                // agent straight back down instead of filing it.
-                Slot::Building => return false,
-                // Another caller is already taking this one down, and
-                // the replace put back what it found.
-                Slot::Detaching => return false,
+                // A registration still holds the name, and the replace
+                // turned its claim into a teardown: it reads that once
+                // its factory returns and takes the agent straight back
+                // down instead of filing it. A teardown already holding
+                // the name reads back what it put there.
+                Slot::Claimed(_) => return false,
             }
         };
 
-        if let Err(e) = agent.shutdown().await {
+        if let Err(e) = agent.unregister().await {
             error!("Routing agent {name} failed to shut down cleanly: {e}");
         }
 
@@ -206,9 +142,46 @@ impl Table {
     }
 
     pub async fn shutdown(&self) {
-        let names = self.agents.lock().keys().cloned().collect::<Vec<_>>();
+        // Every claim becomes a teardown as well, so a registration
+        // still running its factory gives its name up instead of filing
+        // an agent into a table that is going away.
+        let names = {
+            let mut agents = self.agents.lock();
+            agents
+                .iter_mut()
+                .filter_map(|(name, slot)| match slot {
+                    Slot::Attached(_) => Some(name.clone()),
+                    Slot::Claimed(claim) => {
+                        *claim = Claim::Detaching;
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+
         for name in names {
-            self.detach(&name).await;
+            self.unregister(&name).await;
+        }
+    }
+
+    // Claims `name` for a registration, failing if an agent or another
+    // claim already holds it.
+    fn reserve<'a>(&'a self, name: &'a str) -> Result<Reservation<'a>> {
+        match self.agents.lock().entry(name.to_owned()) {
+            Entry::Vacant(slot) => {
+                slot.insert(Slot::Claimed(Claim::Building));
+                Ok(Reservation {
+                    table: self,
+                    name,
+                    claimed: true,
+                })
+            }
+            Entry::Occupied(slot) => Err(match slot.get() {
+                Slot::Attached(_) | Slot::Claimed(Claim::Building) => {
+                    Error::DuplicateName(name.to_owned())
+                }
+                Slot::Claimed(Claim::Detaching) => Error::Unregistering(name.to_owned()),
+            }),
         }
     }
 
@@ -219,20 +192,60 @@ impl Table {
         self.agents
             .lock()
             .get(name)
-            .is_some_and(|slot| matches!(slot, Slot::Attached(_)))
+            .is_some_and(|slot| slot.attached().is_some())
     }
 }
 
-// The gauge counts what the map holds: `detach` takes agents out one
-// at a time, and dropping the table takes whatever is left. A table
-// dropped before it is ever started, which is how a failed `Bpa::build`
-// unwinds, is accounted for here and needs nothing else: an agent that
-// never ran holds nothing but itself.
+// The gauge counts what the table holds: `unregister` takes agents out
+// one at a time, and dropping the table takes whatever is left, which
+// is how a BPA dropped without a shutdown is accounted for.
 impl Drop for Table {
     fn drop(&mut self) {
-        let attached = self.agents.get_mut().len();
+        let attached = self
+            .agents
+            .get_mut()
+            .values()
+            .filter_map(Slot::attached)
+            .count();
         if attached > 0 {
             metrics::gauge!("bpa.routing.agents").decrement(attached as f64);
+        }
+    }
+}
+
+// A name claimed for a registration, held while the embedder's factory
+// runs and given up when the registration ends, whichever way it ends.
+#[must_use = "an unused reservation releases its name immediately"]
+struct Reservation<'a> {
+    table: &'a Table,
+    name: &'a str,
+    claimed: bool,
+}
+
+impl Reservation<'_> {
+    // Files the built agent under the reserved name, the only way an
+    // agent becomes reachable.
+    //
+    // An `unregister` that arrived while the factory ran turned the claim
+    // into a teardown, and the agent is refused: nothing reached it and
+    // it was never started, so dropping it is the whole teardown.
+    fn publish(mut self, agent: Arc<dyn routing::Agent>) -> Result<()> {
+        let mut agents = self.table.agents.lock();
+        self.claimed = false;
+        if let Some(slot @ Slot::Claimed(Claim::Building)) = agents.get_mut(self.name) {
+            *slot = Slot::Attached(agent);
+            return Ok(());
+        }
+
+        agents.remove(self.name);
+        Err(Error::Unregistering(self.name.to_owned()))
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if self.claimed {
+            self.table.agents.lock().remove(self.name);
         }
     }
 }
@@ -262,7 +275,7 @@ impl Sink {
 impl routing::Sink for Sink {
     async fn unregister(&self) {
         if let Some(table) = self.table.upgrade() {
-            table.detach(&self.name).await;
+            table.unregister(&self.name).await;
         }
     }
 
@@ -339,7 +352,7 @@ mod tests {
             Arc::new(BundleMemStorage::new(None, None)),
         ));
         let rib = Arc::new(Rib::new(node_ids.clone(), store, 1));
-        let table = Table::new(node_ids, rib.clone(), Vec::new()).unwrap();
+        let table = Table::new(node_ids, rib.clone());
         (rib, table)
     }
 

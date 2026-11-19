@@ -9,7 +9,7 @@ use crate::{
 
 /// An [`Agent`] that installs a fixed set of routes when it starts.
 ///
-/// The BPA removes the routes when the agent detaches. Tools and tests
+/// The BPA removes the routes when the agent unregisters. Tools and tests
 /// that need a handful of static routes use this instead of implementing
 /// [`Agent`].
 ///
@@ -47,7 +47,7 @@ impl StaticAgent {
 
 #[async_trait]
 impl Agent for StaticAgent {
-    async fn start(&self) -> Result<()> {
+    async fn register(&self) -> Result<()> {
         // A route the RIB rejects is one route lost, not a reason to
         // strand the rest: each is reported and the agent runs on.
         for (pattern, action, priority) in &self.routes {

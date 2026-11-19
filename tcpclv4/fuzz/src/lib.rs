@@ -92,7 +92,7 @@ async fn start(factory: impl Factory<Component = Tcpclv4>) -> Arc<Tcpclv4> {
             Terms::default(),
         ))
         .expect("a TCPCLv4 entity builds under the default terms");
-    cla.start().await.expect("the fuzz CLA starts");
+    cla.register().await.expect("the fuzz CLA registers");
     cla
 }
 

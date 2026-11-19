@@ -41,9 +41,9 @@ pub struct SendOptions {
 ///
 /// [`unregister`](Self::unregister) is how a service takes itself out of
 /// service: the BPA withdraws the registration and calls
-/// [`Service::shutdown`](super::Service::shutdown). When the BPA shuts
-/// down instead, it calls `shutdown` first, after which every operation
-/// here returns [`Error::Disconnected`](super::Error::Disconnected).
+/// [`Service::unregister`](super::Service::unregister). When the BPA
+/// shuts down instead, it calls that hook itself, after which every
+/// operation here returns [`Error::Disconnected`](super::Error::Disconnected).
 #[async_trait]
 pub trait Sink: Send + Sync {
     /// Unregisters the associated service from the BPA.

@@ -97,9 +97,9 @@ impl ProxyHandler for Handler {
     async fn on_close(&self) {
         let agent = self.agent.lock().take();
         if let Some(agent) = agent
-            && let Err(e) = agent.shutdown().await
+            && let Err(e) = agent.unregister().await
         {
-            warn!("Routing agent shutdown failed: {e}");
+            warn!("Routing agent unregister failed: {e}");
         }
     }
 }
@@ -184,19 +184,19 @@ pub async fn register_routing_agent(
     );
     let sink = Arc::new(Sink { proxy });
 
-    // The agent runs against the proxy from here, so a build or start
-    // failure takes the session down with it.
-    let started = async {
+    // The agent runs against the proxy from here, so a build or
+    // registration failure takes the session down with it.
+    let registered = async {
         let agent = factory.build(Context::new(sink.clone(), Arc::new(node_ids)))?;
-        agent.start().await?;
+        agent.register().await?;
         Ok(agent)
     }
     .await;
 
-    match started {
+    match registered {
         Ok(agent) => {
             *session.lock() = Some(agent);
-            info!("Proxy routing agent {name} started");
+            info!("Proxy routing agent {name} registered");
             Ok(())
         }
         Err(e) => {
@@ -219,24 +219,24 @@ mod tests {
     // agent the factory builds.
     #[derive(Default)]
     struct Lifecycle {
-        started: AtomicBool,
-        shutdowns: AtomicUsize,
-        shut_down: tokio::sync::Notify,
+        registered: AtomicBool,
+        unregisters: AtomicUsize,
+        unregistered: tokio::sync::Notify,
     }
 
     impl Lifecycle {
-        fn is_started(&self) -> bool {
-            self.started.load(Ordering::Relaxed)
+        fn is_registered(&self) -> bool {
+            self.registered.load(Ordering::Relaxed)
         }
 
-        fn is_shutdown(&self) -> bool {
-            self.shutdowns.load(Ordering::Relaxed) > 0
+        fn is_unregistered(&self) -> bool {
+            self.unregisters.load(Ordering::Relaxed) > 0
         }
 
-        // Resolves once the agent has been shut down at least once.
-        async fn shut_down(&self) {
-            let notified = self.shut_down.notified();
-            if self.is_shutdown() {
+        // Resolves once the agent has been unregistered at least once.
+        async fn unregistered(&self) {
+            let notified = self.unregistered.notified();
+            if self.is_unregistered() {
                 return;
             }
             notified.await;
@@ -266,14 +266,14 @@ mod tests {
 
     #[async_trait]
     impl Agent for MockRoutingAgent {
-        async fn start(&self) -> hardy_bpa::routing::Result<()> {
-            self.lifecycle.started.store(true, Ordering::Relaxed);
+        async fn register(&self) -> hardy_bpa::routing::Result<()> {
+            self.lifecycle.registered.store(true, Ordering::Relaxed);
             Ok(())
         }
 
-        async fn shutdown(&self) -> hardy_bpa::routing::Result<()> {
-            self.lifecycle.shutdowns.fetch_add(1, Ordering::Relaxed);
-            self.lifecycle.shut_down.notify_waiters();
+        async fn unregister(&self) -> hardy_bpa::routing::Result<()> {
+            self.lifecycle.unregisters.fetch_add(1, Ordering::Relaxed);
+            self.lifecycle.unregistered.notify_waiters();
             Ok(())
         }
     }
@@ -458,12 +458,12 @@ mod tests {
 
         // Registration should succeed (the response was valid)
         assert!(result.is_ok(), "registration should succeed");
-        assert!(lifecycle.is_started());
+        assert!(lifecycle.is_registered());
 
         // The timeout only bounds a regression
-        tokio::time::timeout(std::time::Duration::from_secs(5), lifecycle.shut_down())
+        tokio::time::timeout(std::time::Duration::from_secs(5), lifecycle.unregistered())
             .await
-            .expect("agent should have been shut down after the stream closed");
+            .expect("agent should have been unregistered after the stream closed");
 
         server_handle.abort();
     }
@@ -490,16 +490,16 @@ mod tests {
 
         // Registration should succeed (first response is valid)
         assert!(result.is_ok(), "registration should succeed");
-        assert!(lifecycle.is_started());
+        assert!(lifecycle.is_registered());
 
         // Wait for the duplicate to arrive and be processed
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // No panic — test completing is the primary assertion.
-        // After the server's stream closes, the client shuts its agent down.
+        // After the server's stream closes, the client unregisters its agent.
         assert!(
-            lifecycle.is_shutdown(),
-            "agent should have been shut down after the server stream closed"
+            lifecycle.is_unregistered(),
+            "agent should have been unregistered after the server stream closed"
         );
 
         server_handle.abort();
@@ -530,8 +530,8 @@ mod tests {
             "registration should fail with out-of-sequence response"
         );
         assert!(
-            !lifecycle.is_started(),
-            "agent should not have been built or started"
+            !lifecycle.is_registered(),
+            "agent should not have been built or registered"
         );
 
         server_handle.abort();

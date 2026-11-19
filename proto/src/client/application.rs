@@ -223,9 +223,9 @@ impl ProxyHandler for Handler {
     async fn on_close(&self) {
         let service = self.service.lock().take();
         if let Some(service) = service
-            && let Err(e) = service.shutdown().await
+            && let Err(e) = service.unregister().await
         {
-            warn!("Application shutdown failed: {e}");
+            warn!("Application unregister failed: {e}");
         }
     }
 }
@@ -307,18 +307,18 @@ pub async fn register_service(
     let sink = Arc::new(Sink { proxy });
 
     // The application runs against the proxy from here, so a build or
-    // start failure takes the session down with it.
-    let started = async {
+    // registration failure takes the session down with it.
+    let registered = async {
         let service = factory.build(Context::new(sink.clone(), eid.clone()))?;
-        service.start().await?;
+        service.register().await?;
         Ok(service)
     }
     .await;
 
-    match started {
+    match registered {
         Ok(service) => {
             *session.lock() = Some(service);
-            info!("Proxy Application service {eid} started");
+            info!("Proxy Application service {eid} registered");
             Ok(())
         }
         Err(e) => {

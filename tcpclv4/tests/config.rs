@@ -50,7 +50,7 @@ fn transfer_mru_is_the_declared_receive_limit() {
         ..dial_only()
     })
     .expect("a dial-only plaintext build cannot fail");
-    assert_eq!(factory.request().max_reception_size, Some(mru));
+    assert_eq!(factory.request().max_bundle_size, Some(mru));
 }
 
 #[test]

@@ -143,7 +143,7 @@ async fn reload_routes(
 
 #[hardy_async::async_trait]
 impl Agent for StaticRoutesAgent {
-    async fn start(&self) -> routing::Result<()> {
+    async fn register(&self) -> routing::Result<()> {
         info!(
             "Loading static routes from '{}'",
             self.routes_file.display()
@@ -164,7 +164,7 @@ impl Agent for StaticRoutesAgent {
         Ok(())
     }
 
-    async fn shutdown(&self) -> routing::Result<()> {
+    async fn unregister(&self) -> routing::Result<()> {
         self.tasks.shutdown().await;
         Ok(())
     }

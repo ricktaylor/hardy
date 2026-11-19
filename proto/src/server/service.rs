@@ -56,7 +56,7 @@ impl Handler {
 
 #[async_trait]
 impl hardy_bpa::service::raw::Service for LowLevelService {
-    async fn shutdown(&self) -> hardy_bpa::service::Result<()> {
+    async fn unregister(&self) -> hardy_bpa::service::Result<()> {
         self.proxy.shutdown().await;
         Ok(())
     }

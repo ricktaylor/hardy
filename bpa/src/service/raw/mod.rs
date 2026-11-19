@@ -26,23 +26,27 @@ pub use sink::Sink;
 /// if it has key access.
 ///
 /// The BPA builds the service from a [`Factory`], owns it, and drives its
-/// lifecycle: [`start`](Self::start) brings it up,
+/// lifecycle: [`register`](Self::register) brings it up,
 /// [`deliver`](Self::deliver) hands it bundles addressed to its endpoint,
-/// and [`shutdown`](Self::shutdown) takes it down again. Traffic in the
-/// other direction goes through the [`Sink`] the [`Context`] carries,
-/// which the service keeps for as long as it is registered.
+/// and [`unregister`](Self::unregister) takes it down again.
+/// Traffic in the other direction goes through the [`Sink`] the
+/// [`Context`] carries, which the service keeps for as long as it is
+/// registered.
 #[async_trait]
 pub trait Service: Send + Sync {
     /// Brings the service up: spawns tasks, opens the resources it serves
     /// from.
     ///
-    /// Called once, after the BPA's storage recovery, so a service never
-    /// races the consistency check. An `Err` means the service cannot run
-    /// at all: the BPA unregisters it and carries on.
+    /// Called once, as the registration opens: at
+    /// [`Bpa::start`](crate::bpa::Bpa::start) for a declared service,
+    /// after storage recovery, so a delivery never races the
+    /// consistency check, and at the registration call for any other.
+    /// An `Err` means the service cannot run at all: the registration
+    /// is undone, and the error reaches whoever asked for it.
     ///
     /// The default implementation does nothing, for a service that is
     /// live from the moment it is built.
-    async fn start(&self) -> Result<()> {
+    async fn register(&self) -> Result<()> {
         Ok(())
     }
 
@@ -55,7 +59,7 @@ pub trait Service: Send + Sync {
     /// is logged and teardown continues regardless.
     ///
     /// The default implementation does nothing.
-    async fn shutdown(&self) -> Result<()> {
+    async fn unregister(&self) -> Result<()> {
         Ok(())
     }
 

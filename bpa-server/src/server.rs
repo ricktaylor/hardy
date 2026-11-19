@@ -301,7 +301,7 @@ impl BpaServer {
             builder = builder.cla_boxed(name, factory);
         }
 
-        let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
+        let bpa = Arc::new(builder.build());
 
         Ok(Self {
             bpa,
@@ -316,11 +316,15 @@ impl BpaServer {
     // the store), serve the gRPC front end if configured, then wait for
     // the pool's cancellation token (the composition root wires signals to
     // it) and shut down gracefully.
+    //
+    // Every CLA, service and routing agent the configuration declares
+    // registers in that start, and one that cannot run takes the server
+    // down rather than leaving a transport silently missing.
     pub async fn run(self) -> anyhow::Result<()> {
-        // A CLA that cannot start leaves the BPA running on the
-        // transports that did. The BPA logs each failure as it happens,
-        // and this server has no stronger line to take than carrying on.
-        self.bpa.start(self.recover_storage).await;
+        self.bpa
+            .start(self.recover_storage)
+            .await
+            .map_err(anyhow::Error::from_boxed)?;
 
         #[cfg(feature = "grpc")]
         if let Some(grpc_config) = &self.grpc_config {

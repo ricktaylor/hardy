@@ -304,7 +304,7 @@ async fn cla_cli_07_declarations_round_trip() {
     let declared = NonZeroU64::new(1024 * 1024).unwrap();
     let settled = NonZeroU64::new(512 * 1024).unwrap();
 
-    let bpa = Arc::new(MockBpa::with_max_reception_size(settled));
+    let bpa = Arc::new(MockBpa::with_max_bundle_size(settled));
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
 
     let cla = RemoteBpa::new(grpc_addr)
@@ -313,7 +313,7 @@ async fn cla_cli_07_declarations_round_trip() {
             MockCla::declaring(Request {
                 address_type: Some(cla::AddressType::Tcp),
                 lane_count: Some(lanes),
-                max_reception_size: Some(declared),
+                max_bundle_size: Some(declared),
             }),
         )
         .await
@@ -322,13 +322,13 @@ async fn cla_cli_07_declarations_round_trip() {
     let request = (*bpa.declared_request.lock()).expect("The BPA should have seen a request");
     assert_eq!(request.address_type, Some(cla::AddressType::Tcp));
     assert_eq!(request.lane_count, Some(lanes));
-    assert_eq!(request.max_reception_size, Some(declared));
+    assert_eq!(request.max_bundle_size, Some(declared));
 
     assert_eq!(
         cla.terms,
         Terms {
             lane_count: Some(lanes),
-            max_reception_size: Some(settled),
+            max_bundle_size: Some(settled),
         },
         "The CLA should receive the terms the BPA settled"
     );
@@ -355,7 +355,7 @@ async fn cla_cli_08_absent_declarations_round_trip_as_none() {
     let request = (*bpa.declared_request.lock()).expect("The BPA should have seen a request");
     assert_eq!(request.address_type, None);
     assert_eq!(request.lane_count, None);
-    assert_eq!(request.max_reception_size, None);
+    assert_eq!(request.max_bundle_size, None);
 
     assert_eq!(
         cla.terms,

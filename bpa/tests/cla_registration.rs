@@ -22,7 +22,7 @@ struct CapCla {
 impl CapCla {
     fn factory(declared: Option<NonZeroU64>) -> impl Factory<Component = Self> {
         let request = Request {
-            max_reception_size: declared,
+            max_bundle_size: declared,
             ..Default::default()
         };
         factory_fn(request, |cx: Context| {
@@ -48,14 +48,14 @@ impl Cla for CapCla {
 // The terms are settled before the CLA is built, so the limit it holds is
 // the negotiated one.
 async fn negotiate(builder: BpaBuilder, declared: Option<NonZeroU64>) -> (Bpa, Option<NonZeroU64>) {
-    let bpa = builder.build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = builder.build();
+    bpa.start(false).await.unwrap();
 
     let cla = bpa
         .register_cla("cap", CapCla::factory(declared))
         .await
         .unwrap();
-    let effective = cla.terms.max_reception_size;
+    let effective = cla.terms.max_bundle_size;
     (bpa, effective)
 }
 

@@ -220,9 +220,9 @@ impl ProxyHandler for Handler {
     async fn on_close(&self) {
         let cla = self.cla.lock().take();
         if let Some(cla) = cla
-            && let Err(e) = cla.shutdown().await
+            && let Err(e) = cla.unregister().await
         {
-            warn!("CLA shutdown failed: {e}");
+            warn!("CLA unregister failed: {e}");
         }
     }
 }
@@ -269,7 +269,7 @@ pub async fn register_cla(
                 }
                 .into()
             }),
-            max_bundle_size: request.max_reception_size.map(NonZeroU64::get),
+            max_bundle_size: request.max_bundle_size.map(NonZeroU64::get),
             lane_count: request.lane_count.map(NonZeroU32::get),
         }),
     )
@@ -312,7 +312,7 @@ pub async fn register_cla(
     // Lanes are the CLA's own count, which the BPA takes as asked.
     let terms = Terms {
         lane_count: request.lane_count,
-        max_reception_size: response.max_bundle_size.and_then(NonZeroU64::new),
+        max_bundle_size: response.max_bundle_size.and_then(NonZeroU64::new),
     };
 
     let session: SessionCla = Arc::new(Mutex::new(None));
@@ -326,19 +326,19 @@ pub async fn register_cla(
     );
     let sink = Arc::new(Sink { proxy });
 
-    // The CLA runs against the proxy from here, so a build or start
-    // failure takes the session down with it.
-    let started = async {
+    // The CLA runs against the proxy from here, so a build or
+    // registration failure takes the session down with it.
+    let registered = async {
         let cla = factory.build(Context::new(sink.clone(), Arc::new(node_ids), terms))?;
-        cla.start().await?;
+        cla.register().await?;
         Ok(cla)
     }
     .await;
 
-    match started {
+    match registered {
         Ok(cla) => {
             *session.lock() = Some(cla);
-            info!("Proxy CLA {name} started");
+            info!("Proxy CLA {name} registered");
             Ok(())
         }
         Err(e) => {

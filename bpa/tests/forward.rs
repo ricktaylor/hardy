@@ -276,8 +276,8 @@ async fn originate(service: &SendOnlyService, payload: &'static [u8]) -> Eid {
 /// with an exact `total_len`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_cla_receives_single_final_segment() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     let (cla, events_rx) = StreamingCla::factory(false);
     let cla = bpa.register_cla("stream", cla).await.unwrap();
@@ -320,8 +320,8 @@ async fn streaming_cla_receives_single_final_segment() {
 /// bundle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_cla_receives_whole_bundle() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     let (cla, events_rx) = BufferedCla::factory();
     let cla = bpa.register_cla("buffered", cla).await.unwrap();
@@ -353,8 +353,8 @@ async fn buffered_cla_receives_whole_bundle() {
 /// returns to Waiting and a routing change re-dispatches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_forward_is_requeued_and_retried() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     let (cla, events_rx) = StreamingCla::factory(true);
     let cla = bpa.register_cla("flaky", cla).await.unwrap();
@@ -579,10 +579,8 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyService>, flume:
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .ipn_legacy_peers(patterns.iter().map(|p| p.parse().unwrap()).collect())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (cla, events_rx) = BufferedCla::factory();
     let cla = bpa.register_cla("buffer", cla).await.unwrap();
@@ -678,10 +676,8 @@ async fn legacy_relay() -> (Bpa, Arc<BufferedCla>, flume::Receiver<Event>) {
         .node_ids(NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice()).unwrap())
         .ipn_legacy_peers(vec!["ipn:1.2.*".parse().unwrap()])
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
     let (cla, events_rx) = BufferedCla::factory();
     let cla = bpa.register_cla("cla", cla).await.unwrap();
     cla.sink
@@ -1147,10 +1143,8 @@ async fn relay(received: &Bytes, keys: Vec<Key>) -> Parsed {
     let bpa = Bpa::builder()
         .node_ids(NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice()).unwrap())
         .key_provider(Arc::new(FixedKeys(keys)))
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
     let (ingress, _) = BufferedCla::factory();
     let ingress = bpa.register_cla("ingress", ingress).await.unwrap();
     let (egress, events_rx) = BufferedCla::factory();

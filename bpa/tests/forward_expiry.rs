@@ -216,10 +216,8 @@ async fn expiry_mid_transfer_rig() -> (
         .node_ids(node_ids)
         .status_reports(true)
         .metadata_storage(metadata_store.clone())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = CaptureService::factory();
@@ -406,10 +404,8 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .node_ids(node_ids)
         .status_reports(true)
         .poll_channel_depth(NonZeroUsize::new(2).unwrap())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     let (reports, reports_rx) = CaptureService::factory();
     bpa.register_raw_service(Some(Service::Ipn(9)), reports)

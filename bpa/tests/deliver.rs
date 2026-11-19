@@ -319,8 +319,8 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let inbound = build_bundle(
         &"ipn:0.2.1".parse().unwrap(),
@@ -357,8 +357,8 @@ async fn streaming_service_receives_single_final_segment() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    assert!(bpa.start(false).await.is_empty());
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (service, events_rx) = StreamingService::factory(false);
     bpa.register_raw_service(Some(Service::Ipn(7)), service)
@@ -521,10 +521,8 @@ async fn expiry_mid_delivery_rig(
         .node_ids(node_ids)
         .status_reports(true)
         .metadata_storage(metadata_store.clone())
-        .build()
-        .await
-        .unwrap();
-    assert!(bpa.start(false).await.is_empty());
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = StreamingService::factory(false);

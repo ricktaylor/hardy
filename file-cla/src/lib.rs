@@ -113,7 +113,7 @@ pub struct Cla {
     inboxes: HashMap<NodeId, String>,
     outbox: Option<String>,
     sink: Arc<dyn Sink>,
-    max_reception_size: Option<NonZeroU64>,
+    max_bundle_size: Option<NonZeroU64>,
     tasks: TaskPool,
 }
 
@@ -151,13 +151,13 @@ impl Cla {
                 inboxes,
                 outbox,
                 sink: cx.sink,
-                max_reception_size: cx.terms.max_reception_size,
+                max_bundle_size: cx.terms.max_bundle_size,
                 tasks: TaskPool::new(),
             }))
         }))
     }
 
-    /// Detaches this CLA from the BPA.
+    /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
         self.sink.unregister().await;
     }

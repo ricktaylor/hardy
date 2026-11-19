@@ -31,7 +31,7 @@ impl Cla {
     /// quarantined under `outbox/refused/`, and one whose dispatch failed is
     /// left in place for the next startup sweep to re-offer.
     ///
-    /// Files larger than `max_reception_size` are skipped rather than offered to
+    /// Files larger than `max_bundle_size` are skipped rather than offered to
     /// a certain rejection.
     ///
     /// Both tasks run until the CLA's task pool is cancelled.
@@ -39,7 +39,7 @@ impl Cla {
         &self,
         sink: Arc<dyn cla::Sink>,
         outbox: String,
-        max_reception_size: Option<NonZeroU64>,
+        max_bundle_size: Option<NonZeroU64>,
     ) {
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
 
@@ -50,7 +50,7 @@ impl Cla {
 
         let cancel_token = self.tasks.cancel_token().clone();
         hardy_async::spawn!(self.tasks, "forwarder_task", async move {
-            forwarder_task(sink, path_rx, max_reception_size, cancel_token).await
+            forwarder_task(sink, path_rx, max_bundle_size, cancel_token).await
         });
     }
 }
@@ -185,7 +185,7 @@ async fn quarantine(path: &Path) {
 async fn forwarder_task(
     sink: Arc<dyn cla::Sink>,
     rx: Receiver<PathBuf>,
-    max_reception_size: Option<NonZeroU64>,
+    max_bundle_size: Option<NonZeroU64>,
     cancel_token: CancellationToken,
 ) {
     loop {
@@ -197,7 +197,7 @@ async fn forwarder_task(
                     // over-cap file would be rejected deterministically, so
                     // don't even read it. Skipped (not deleted) — the
                     // operator's file, the operator's cleanup.
-                    if let Some(cap) = max_reception_size
+                    if let Some(cap) = max_bundle_size
                         && let Ok(meta) = fs::metadata(&path).await
                         && meta.len() > cap.get()
                     {

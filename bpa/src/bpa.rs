@@ -1,4 +1,4 @@
-use hardy_async::async_trait;
+use hardy_async::{async_trait, sync::spin::Mutex};
 // `eid::Service` is the service number inside an EID, not the service
 // trait registered here; it is aliased to the word the code already uses
 // for it.
@@ -15,7 +15,10 @@ use crate::{
     dispatcher::Dispatcher,
     otel_metrics,
     routing::{self, Rib, agent::table::Table as AgentTable},
-    service::{self, table::Table as ServiceTable},
+    service::{
+        self,
+        table::{FactoryKind, Table as ServiceTable},
+    },
     storage::store::Store,
 };
 
@@ -27,6 +30,15 @@ use crate::{
 ///
 /// After construction, call [`start()`](Bpa::start) to begin processing and
 /// [`shutdown()`](Bpa::shutdown) for ordered teardown.
+/// The component factories an embedder handed to the [`BpaBuilder`],
+/// each waiting for [`Bpa::start`] to register what it builds.
+#[derive(Default)]
+pub(crate) struct Factories {
+    pub clas: Vec<(String, cla::BoxFactory<'static>)>,
+    pub services: Vec<(Option<ServiceId>, FactoryKind<'static>)>,
+    pub agents: Vec<(String, routing::BoxFactory<'static>)>,
+}
+
 pub struct Bpa {
     store: Arc<Store>,
     rib: Arc<Rib>,
@@ -34,6 +46,9 @@ pub struct Bpa {
     services: Arc<ServiceTable>,
     agents: Arc<AgentTable>,
     dispatcher: Arc<Dispatcher>,
+    // Emptied by `start`, which hands each factory to the table that
+    // will hold what it builds.
+    factories: Mutex<Factories>,
 }
 
 impl Bpa {
@@ -44,6 +59,7 @@ impl Bpa {
         services: Arc<ServiceTable>,
         agents: Arc<AgentTable>,
         dispatcher: Arc<Dispatcher>,
+        factories: Factories,
     ) -> Self {
         Self {
             store,
@@ -52,6 +68,7 @@ impl Bpa {
             services,
             agents,
             dispatcher,
+            factories: Mutex::new(factories),
         }
     }
 
@@ -66,44 +83,50 @@ impl Bpa {
         BpaBuilder::new()
     }
 
-    /// Starts the BPA's background machinery, reporting the CLAs that
-    /// could not be started.
+    /// Starts the BPA's background machinery and registers every
+    /// declared component.
     ///
     /// When `recover_storage` is set, storage crash recovery runs to
-    /// completion before this returns: recovery's checkpoint resets assume
-    /// a quiescent store, so CLAs and services are only registered after
-    /// `start` resolves.
+    /// completion before anything registers: recovery's checkpoint
+    /// resets assume a quiescent store.
     ///
-    /// A declared CLA whose [`start`](cla::Cla::start) fails is detached
-    /// and named in the report; the BPA runs on degraded rather than
-    /// refusing to come up, since one dead transport is no reason to
-    /// strand the bundles the others carry. An empty report means every
-    /// declared CLA is live.
-    ///
-    /// Every failure is logged as it happens, so the report is for an
-    /// embedder that takes a stronger line than running on degraded.
+    /// The first declaration the BPA cannot honour ends the start and
+    /// is returned. The components registered before it are running, so
+    /// an embedder that answers a dead transport with anything other
+    /// than exiting takes the BPA down through
+    /// [`shutdown`](Self::shutdown).
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    pub async fn start(&self, recover_storage: bool) -> Vec<(String, cla::Error)> {
+    pub async fn start(
+        &self,
+        recover_storage: bool,
+    ) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
         otel_metrics::init();
 
-        // Start the store, awaiting recovery so registrations that follow
-        // cannot race the consistency check
+        // Start the store, awaiting recovery so the registrations that
+        // follow cannot race the consistency check
         self.store
             .start(self.dispatcher.clone(), recover_storage)
             .await;
 
-        // Only now start the declared components: the quiescent-store
-        // precondition above covers the configuration path exactly as it
-        // covers dynamic registrations. Start-up is teardown's mirror, so
-        // the routing agents come up last of the three and go down first.
-        let failures = self.clas.start().await;
-        self.services.start().await;
-        self.agents.start().await;
+        // Each declaration takes the door every other component takes:
+        // a declaration settles when a component registers, not how.
+        // Start-up is teardown's mirror, so the routing agents come up
+        // last of the three and go down first.
+        let factories = core::mem::take(&mut *self.factories.lock());
+        for (name, factory) in factories.clas {
+            self.clas.register(&name, factory).await?;
+        }
+        for (id, factory) in factories.services {
+            self.services.register(id, factory).await?;
+        }
+        for (name, factory) in factories.agents {
+            self.agents.register(&name, factory).await?;
+        }
 
         // Start the RIB
         self.rib.start(self.dispatcher.clone());
 
-        failures
+        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
@@ -274,8 +297,8 @@ mod tests {
     /// or link event.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_forward_does_not_retry_inline() {
-        let bpa = Bpa::builder().build().await.unwrap();
-        assert!(bpa.start(false).await.is_empty());
+        let bpa = Bpa::builder().build();
+        bpa.start(false).await.unwrap();
 
         let (attempts_tx, attempts_rx) = flume::unbounded();
         let cla = bpa

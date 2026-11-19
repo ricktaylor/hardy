@@ -12,16 +12,17 @@ use crate::{async_trait, stream::Receiver};
 /// # Lifecycle
 ///
 /// The sink arrives in the [`Context`](super::Context) a CLA is built
-/// from, and stays usable until the CLA detaches, by calling
+/// from, and stays usable until the CLA unregisters, by calling
 /// [`unregister`](Self::unregister) or because the BPA is shutting down.
 /// After that every operation here returns
 /// [`Error::Disconnected`](super::Error::Disconnected).
 #[async_trait]
 pub trait Sink: Send + Sync {
-    /// Detaches the CLA from the BPA.
+    /// Unregisters the CLA from the BPA.
     ///
-    /// The BPA calls [`Cla::shutdown`](super::Cla::shutdown) and withdraws
-    /// every peer the CLA published; this sink is dead from then on.
+    /// The BPA calls [`Cla::unregister`](super::Cla::unregister) and
+    /// withdraws every peer the CLA published; this sink is dead from then
+    /// on.
     /// Typically called when the CLA hits a fault it cannot recover from.
     async fn unregister(&self);
 
@@ -31,7 +32,7 @@ pub trait Sink: Send + Sync {
     /// carrier: [`Accepted`](Acceptance::Accepted) means the CLA may
     /// acknowledge the transfer to its peer, [`Refused`](Acceptance::Refused)
     /// means it must not. `Err(_)` is reserved for faults that make the sink
-    /// unusable (the CLA has detached, or the BPA has gone away), never for
+    /// unusable (the CLA has unregistered, or the BPA has gone away), never
     /// a verdict.
     ///
     /// The stream itself carries no verdict. The BPA may stop pulling, and
@@ -84,7 +85,7 @@ pub trait Sink: Send + Sync {
     /// [`ForwardOutcome::Accepted`](super::ForwardOutcome::Accepted).
     ///
     /// Every accepted transfer resolves exactly once: `Completed`, `Failed`,
-    /// or implicitly outcome-unknown when the CLA detaches or the peer is
+    /// or implicitly outcome-unknown when the CLA unregisters or the peer is
     /// removed. An outcome is honoured only while the named bundle is still
     /// awaiting one via a peer of the reporting CLA. Anything else (already
     /// resolved, expired, another CLA's transfer) is logged and dropped.
