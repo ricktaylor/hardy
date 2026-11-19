@@ -8,7 +8,7 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.1.x](../../docs/requirements.md#local-disk-storage-71) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-LD-01 |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 
 ## 1. Introduction
 
@@ -49,6 +49,9 @@ This backend is registered in the storage harness with `storage_blob_tests!(loca
 | **LD-10** | **Concurrent name claim** | `storage.rs` | 1. Start 16 saves from one placement behind a barrier, into a bucket that does not exist, with `fsync` on and off. | Each save gets a distinct name holding its own bytes; the names are the 16 consecutive ids; nothing else is in the store. |
 | **LD-11** | **Unsynced save opens its name once** | `storage.rs` | 1. With `fsync=false`, put another file under the name between the save's claim and its write. | The other file's contents are unchanged: the save wrote through the handle that claimed the name. |
 | **LD-12** | **Failed rename removes the temporary file** | `storage.rs` | 1. Put a directory under the claimed name, so the rename fails.<br>2. Save atomically. | The save fails with the filesystem's refusal; the store holds no file afterwards. |
+| **LD-13** | **Claim reports a created bucket** | `storage.rs` | 1. Claim a name in a bucket that does not exist.<br>2. Claim again in the same bucket. | The first claim reports that it created the bucket; the second reports that it did not. |
+| **LD-14** | **Bucket removed under a claim** | `storage.rs` | 1. Remove the bucket once, straight after the claim creates it. | The claim creates the bucket again and succeeds, reporting that it created it. |
+| **LD-15** | **Bucket that keeps disappearing** | `storage.rs` | 1. Remove the bucket every time the claim creates it, up to the claim's limit. | The claim fails with the filesystem's `NotFound` after that many creations; no file is created. |
 
 ## 5. Execution
 

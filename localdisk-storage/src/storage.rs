@@ -23,6 +23,14 @@ use tracing::{error, info, warn};
 // Whether to use fsync for crash-safe atomic writes.
 const DEFAULT_FSYNC: bool = true;
 
+// How many times one claim creates its bucket before the save fails. The
+// first creation is the ordinary one, for a bucket that does not exist yet.
+// Only the recovery walk removes directories, and it visits each once, so it
+// can take a bucket from under a claim once: the limit allows that and one
+// more. A bucket still missing after that is not the walk's doing, and the
+// claim reports it instead of creating the bucket without end.
+const BUCKET_CREATIONS: u32 = 3;
+
 // Directory where bundle files are stored: a platform-specific cache
 // directory resolved via the `directories` crate (e.g.
 // `~/.cache/hardy-localdisk-storage` on Linux), falling back to
@@ -87,6 +95,11 @@ impl LocalDiskStorage {
     }
 }
 
+// A test's hook on a bucket's creation: called with the bucket's path. It
+// counts the creations, so it is a shared closure, not a plain function.
+#[cfg(test)]
+type BucketHook = Arc<dyn Fn(&Path) + Send + Sync>;
+
 // A bundle's location under the store root: a random bucket in the
 // two-level directory layout, and the file id the name search starts from.
 struct Placement {
@@ -96,6 +109,10 @@ struct Placement {
     // between the claim and the write that follows it.
     #[cfg(test)]
     after_claim: Option<fn(&Path)>,
+    // Called with the bucket each time a claim creates it, so a test can
+    // remove it again, as the recovery walk removes an empty directory.
+    #[cfg(test)]
+    after_bucket_created: Option<BucketHook>,
 }
 
 // A name claimed for one bundle: the new, empty file open for writing, its
@@ -117,6 +134,8 @@ impl Placement {
             file_id: rng.random::<u32>() as u64,
             #[cfg(test)]
             after_claim: None,
+            #[cfg(test)]
+            after_bucket_created: None,
         }
     }
 
@@ -127,10 +146,12 @@ impl Placement {
     // The bucket is created only when the create finds it missing, so a save
     // into an existing bucket makes no directory call. `NotFound` again
     // after creating it means the recovery walk removed the empty bucket in
-    // between, and the claim creates it again.
+    // between, and the claim creates it again, up to `BUCKET_CREATIONS`
+    // times: past that the `NotFound` is returned, so both retries end. The
+    // name search ends at the first free id, the bucket retry at its limit.
     fn claim(&self) -> io::Result<Claim> {
         let mut file_id = self.file_id;
-        let mut created_bucket = false;
+        let mut bucket_creations = 0;
         loop {
             let path = self.dir.join(format!("{file_id:x}"));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -142,15 +163,21 @@ impl Placement {
                     return Ok(Claim {
                         file,
                         path,
-                        created_bucket,
+                        created_bucket: bucket_creations > 0,
                     });
                 }
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                     file_id = file_id.wrapping_add(1);
                 }
-                Err(e) if e.kind() == ErrorKind::NotFound => {
+                Err(e)
+                    if e.kind() == ErrorKind::NotFound && bucket_creations < BUCKET_CREATIONS =>
+                {
                     create_dir_all(&self.dir)?;
-                    created_bucket = true;
+                    bucket_creations += 1;
+                    #[cfg(test)]
+                    if let Some(after_bucket_created) = &self.after_bucket_created {
+                        after_bucket_created(&self.dir);
+                    }
                 }
                 Err(e) => return Err(e),
             }
@@ -530,7 +557,10 @@ mod tests {
     use std::{
         fs::{read, set_permissions, write},
         path::MAIN_SEPARATOR,
-        sync::{Barrier, Mutex},
+        sync::{
+            Barrier, Mutex,
+            atomic::{AtomicU32, Ordering},
+        },
         thread,
     };
 
@@ -579,7 +609,25 @@ mod tests {
             dir: bucket(root),
             file_id: 0x1234,
             after_claim: None,
+            after_bucket_created: None,
         }
+    }
+
+    // A placement whose bucket is removed the first `removals` times a claim
+    // creates it, as the recovery walk removes an empty directory, with the
+    // count of creations.
+    fn placement_losing_its_bucket(root: &Path, removals: u32) -> (Placement, Arc<AtomicU32>) {
+        let creations = Arc::new(AtomicU32::new(0));
+        let counted = creations.clone();
+        let placement = Placement {
+            after_bucket_created: Some(Arc::new(move |bucket: &Path| {
+                if counted.fetch_add(1, Ordering::Relaxed) < removals {
+                    remove_dir(bucket).unwrap();
+                }
+            })),
+            ..placement(root)
+        };
+        (placement, creations)
     }
 
     // Every file under `dir`, sorted. A directory that cannot be read fails
@@ -885,6 +933,57 @@ mod tests {
             assert_eq!(claimed, names, "fsync={fsync}");
             assert_eq!(walkdir(root), names, "fsync={fsync}");
         }
+    }
+
+    // LD-13: A claim reports whether it created its bucket, which is what
+    // tells an atomic save to sync the directories above a new one.
+    #[test]
+    fn test_claim_reports_whether_it_created_the_bucket() {
+        let dir = tempdir().unwrap();
+
+        let first = placement(dir.path()).claim().unwrap();
+        assert!(first.created_bucket, "the bucket did not exist");
+
+        let second = placement(dir.path()).claim().unwrap();
+        assert!(!second.created_bucket, "the bucket was already there");
+    }
+
+    // LD-14: A bucket removed from under a claim, between its creation and
+    // the create of the file in it, is created again and the claim succeeds.
+    #[test]
+    fn test_claim_recreates_a_bucket_removed_under_it() {
+        let dir = tempdir().unwrap();
+        let (placement, creations) = placement_losing_its_bucket(dir.path(), 1);
+
+        let claim = placement.claim().unwrap();
+
+        assert_eq!(claim.path, bucket(dir.path()).join("1234"));
+        assert!(claim.created_bucket);
+        assert_eq!(creations.load(Ordering::Relaxed), 2);
+    }
+
+    // LD-15: A bucket that is gone every time the claim creates it fails the
+    // save with the filesystem's `NotFound`, after `BUCKET_CREATIONS`
+    // creations. The bucket is removed exactly that many times, so a claim
+    // with no limit would succeed on the next creation and fail this test,
+    // not run without end.
+    #[test]
+    fn test_claim_gives_up_on_a_bucket_that_keeps_disappearing() {
+        let dir = tempdir().unwrap();
+        let (placement, creations) = placement_losing_its_bucket(dir.path(), BUCKET_CREATIONS);
+
+        let error = placement
+            .claim()
+            .err()
+            .expect("the bucket is missing after every creation the claim may make");
+
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(creations.load(Ordering::Relaxed), BUCKET_CREATIONS);
+        assert_eq!(
+            walkdir(dir.path()),
+            Vec::<PathBuf>::new(),
+            "no file was created"
+        );
     }
 
     // Puts a directory under a name just claimed, so the rename that would
