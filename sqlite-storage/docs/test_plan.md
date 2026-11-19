@@ -8,7 +8,7 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#sqlite-storage-72) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 
 ## 1. Introduction
 
@@ -55,6 +55,9 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-14** | **No writer checkpoint below the restart bound** | `checkpoint.rs` | 1. As SQL-13, with the restart bound out of reach. | The writer copies nothing; the remainder waits for the next cycle. |
 | **SQL-15** | **WAL size limit** | `checkpoint.rs` | 1. Write past the limit.<br>2. Let the writer request a cycle and call it again. | The writer waits for the cycle and returns with the whole WAL copied. |
 | **SQL-16** | **Database file sync** | `checkpoint.rs` | 1. Sync the database file through SQLite's own file handle. | Succeeds. |
+| **SQL-17** | **Tombstones leave the indexes** | `storage.rs` | 1. Insert two bundles.<br>2. Tombstone one.<br>3. Count each secondary index's entries, and re-insert the tombstoned bundle. | Each index drops from two entries to one; the row stays and refuses the replay. |
+| **SQL-18** | **Expiry poll plan** | `storage.rs` | 1. `EXPLAIN QUERY PLAN` the expiry poll's SQL. | A search of `idx_bundles_expiry`, with no table scan and no sort. |
+| **SQL-19** | **Secondary index set** | `storage.rs` | 1. List the indexes on `bundles`. | Exactly the two live-row indexes, both partial. |
 
 ## 5. Execution
 

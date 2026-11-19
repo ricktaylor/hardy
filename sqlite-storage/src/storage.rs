@@ -227,6 +227,14 @@ fn to_status(
     }
 }
 
+// The poll_expiry page, hoisted so the plan pin test below EXPLAINs the
+// exact production SQL. Its `bundle IS NOT NULL` term is what lets the
+// planner use idx_bundles_expiry, which holds live rows only.
+const POLL_EXPIRY_SQL: &str = "SELECT rowid, expiry, bundle, status_code, status_param1, status_param2, status_param3 FROM bundles
+    WHERE bundle IS NOT NULL AND status_code != ?4 AND (expiry, rowid) > (?1, ?2)
+    ORDER BY expiry ASC, rowid ASC
+    LIMIT ?3";
+
 // The poll_pending page shapes, hoisted so the plan pin test below EXPLAINs
 // the exact production SQL.
 const POLL_PENDING_SQL: &str = "SELECT bundle FROM bundles
@@ -586,27 +594,21 @@ impl MetadataStorage for SqliteStorage {
             let page_cursor = cursor.clone();
             let bundles = self
                 .read(move |conn| {
-                    let (expiry, rowid) = page_cursor
-                        .unwrap_or_else(|| (String::new(), 0));
-                    conn.prepare_cached(
-                        "SELECT rowid, expiry, bundle, status_code, status_param1, status_param2, status_param3 FROM bundles
-                            WHERE bundle IS NOT NULL AND status_code != ?4 AND (expiry, rowid) > (?1, ?2)
-                            ORDER BY expiry ASC, rowid ASC
-                            LIMIT ?3",
-                    )?
-                    .query_map((expiry, rowid, PAGE_SIZE as isize, new_code), |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, Vec<u8>>(2)?,
-                            row.get::<_, i64>(3)?,
-                            row.get::<_, Option<i64>>(4)?,
-                            row.get::<_, Option<i64>>(5)?,
-                            row.get::<_, Option<String>>(6)?,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(Into::into)
+                    let (expiry, rowid) = page_cursor.unwrap_or_else(|| (String::new(), 0));
+                    conn.prepare_cached(POLL_EXPIRY_SQL)?
+                        .query_map((expiry, rowid, PAGE_SIZE as isize, new_code), |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Vec<u8>>(2)?,
+                                row.get::<_, i64>(3)?,
+                                row.get::<_, Option<i64>>(4)?,
+                                row.get::<_, Option<i64>>(5)?,
+                                row.get::<_, Option<String>>(6)?,
+                            ))
+                        })?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(Into::into)
                 })
                 .await?;
 
@@ -863,7 +865,8 @@ mod tests {
     };
 
     use super::{
-        POLL_FORWARD_PENDING_SQL, POLL_PENDING_SQL, SqliteStorage, from_status, to_status,
+        POLL_EXPIRY_SQL, POLL_FORWARD_PENDING_SQL, POLL_PENDING_SQL, SqliteStorage, from_status,
+        to_status,
     };
 
     /// Test sink that collects items into a `Vec` for assertions.
@@ -1432,5 +1435,101 @@ mod tests {
                 "the codec must round-trip its own encoding"
             );
         }
+    }
+
+    // The entries `index` holds, counted from the index's own pages.
+    fn index_entries(conn: &rusqlite::Connection, index: &str) -> i64 {
+        conn.query_row(
+            "SELECT sum(ncell) FROM dbstat WHERE name = ?1 AND pagetype = 'leaf'",
+            [index],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    // A tombstone keeps its row, so that its id still refuses a replay,
+    // but leaves both secondary indexes: neither the expiry poll nor a
+    // status-keyed query ever walks past it.
+    #[tokio::test]
+    async fn test_tombstones_leave_the_secondary_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
+
+        let mut live = make_bundle(1);
+        live.status = BundleStatus::Waiting;
+        assert!(storage.insert(&live).await.unwrap());
+        let mut dead = make_bundle(2);
+        dead.status = BundleStatus::Waiting;
+        assert!(storage.insert(&dead).await.unwrap());
+
+        let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
+        assert_eq!(index_entries(&conn, "idx_bundles_expiry"), 2);
+        assert_eq!(index_entries(&conn, "idx_bundles_status_received"), 2);
+
+        storage.tombstone(dead.id()).await.unwrap();
+        assert_eq!(index_entries(&conn, "idx_bundles_expiry"), 1);
+        assert_eq!(index_entries(&conn, "idx_bundles_status_received"), 1);
+
+        // The row itself stays, and refuses the bundle's replay.
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM bundles", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+        assert!(!storage.insert(&dead).await.unwrap());
+    }
+
+    // The expiry poll's own SQL is served by the live-row expiry index, in
+    // index order: were the planner unable to prove the index's predicate
+    // from the query, it would scan the table and sort instead.
+    #[test]
+    fn poll_expiry_plan_uses_the_live_row_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let _storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
+
+        let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {POLL_EXPIRY_SQL}"))
+            .unwrap()
+            .query_map(rusqlite::params!["", 0i64, 64isize, 0i64], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            plan,
+            ["SEARCH bundles USING INDEX idx_bundles_expiry (expiry>?)"]
+        );
+    }
+
+    // The secondary indexes on `bundles` are exactly the two live-row
+    // indexes: every other one is a cost on each write that no query
+    // repays.
+    #[test]
+    fn bundles_has_only_the_live_row_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let _storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
+
+        let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
+        let indexes: Vec<(String, bool)> = conn
+            .prepare(
+                "SELECT name, partial FROM pragma_index_list('bundles')
+                    WHERE origin = 'c' ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            indexes,
+            [
+                ("idx_bundles_expiry".to_string(), true),
+                ("idx_bundles_status_received".to_string(), true),
+            ]
+        );
     }
 }
