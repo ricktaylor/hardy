@@ -8,7 +8,7 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#sqlite-storage-72) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 
 ## 1. Introduction
 
@@ -58,6 +58,7 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-17** | **Tombstones leave the indexes** | `storage.rs` | 1. Insert two bundles.<br>2. Tombstone one.<br>3. Count each secondary index's entries, and re-insert the tombstoned bundle. | Each index drops from two entries to one; the row stays and refuses the replay. |
 | **SQL-18** | **Expiry poll plan** | `storage.rs` | 1. `EXPLAIN QUERY PLAN` the expiry poll's SQL. | A search of `idx_bundles_expiry`, with no table scan and no sort. |
 | **SQL-19** | **Secondary index set** | `storage.rs` | 1. List the indexes on `bundles`. | Exactly the two live-row indexes, both partial. |
+| **SQL-20** | **Batch loses its transaction** | `writer.rs` | 1. Cap the database's size.<br>2. Queue a small write, a write that fills the database, and another small write.<br>3. Release the writer. | All three report the batch's failure with `SQLITE_FULL`; no row is written; the writer's next write succeeds. |
 
 ## 5. Execution
 
