@@ -1951,7 +1951,7 @@ dependencies = [
  "hardy-sqlite-storage",
  "hardy-tcpclv4",
  "hex-literal",
- "humantime",
+ "jiff",
  "rand 0.10.3",
  "serde",
  "serde_json",
@@ -2013,9 +2013,10 @@ dependencies = [
  "hardy-bpv7",
  "hardy-cbor",
  "hex-literal",
- "humantime",
+ "jiff",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -2308,9 +2309,10 @@ dependencies = [
  "hardy-cbor",
  "hardy-proto",
  "hardy-tcpclv4",
- "humantime",
+ "jiff",
  "libc",
  "rand 0.10.3",
+ "thiserror",
  "time",
  "tokio",
  "tokio-util",
@@ -2334,13 +2336,14 @@ dependencies = [
  "hardy-eid-patterns",
  "hardy-otel",
  "hardy-proto",
- "humantime",
+ "jiff",
  "metrics",
  "prost",
  "prost-types",
  "serde",
  "serial_test",
  "tempfile",
+ "thiserror",
  "time",
  "tokio",
  "tokio-stream",
@@ -2490,12 +2493,6 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
-
-[[package]]
-name = "humantime"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
 
 [[package]]
 name = "hybrid-array"
@@ -2761,6 +2758,41 @@ name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
+
+[[package]]
+name = "jiff"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5d126d72eb017f10b302e73bdeca446bea405ee449af4d9e7866d6b082d83e"
+dependencies = [
+ "jiff-core",
+ "jiff-static",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0127e9bde3c6130d6169e7d8d68676e4be69c4bf7573c308b6f960a5089c428"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
 
 [[package]]
 name = "jobserver"
@@ -3444,6 +3476,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 dependencies = [
  "critical-section",
+]
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
+dependencies = [
+ "portable-atomic",
 ]
 
 [[package]]

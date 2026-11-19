@@ -180,7 +180,7 @@ See the [Test Strategy](test_strategy.md) for the full verification approach, te
 | rustls | TLS implementation |
 | chumsky | Parser combinators (static routes, TVR, `cbor` CLI) |
 | winnow | Parser combinators (EIDs, EID patterns) |
-| humantime | Duration parsing |
+| jiff | Duration parsing and formatting |
 | criterion | Performance benchmarking |
 
 ### 6.3. Platform Support

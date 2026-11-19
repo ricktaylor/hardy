@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- `bp ping`'s duration arguments (`--interval`, `--timeout`, `--wait`, `--lifetime`) are parsed with `jiff`, replacing the unmaintained `humantime`. Days and weeks count as 24-hour multiples; months and years, which have no fixed length, are refused. Printed durations (RTTs, the wait notice) are whole days plus the rest balanced up to hours.
 - `bp ping`'s built-in TCPCLv4 CLA declares its transfer MRU to the BPA at registration, folding it into the negotiated size cap.
 - `bp ping --tls-insecure` and `--tls-ca` now conflict at argument parsing (previously both were accepted and rejected later at CLA startup), and problems with the CA directory are reported through the TCPCLv4 TLS loader's messages.
 

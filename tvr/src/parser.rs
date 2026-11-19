@@ -1,5 +1,8 @@
-use crate::contacts::{Contact, Schedule};
-use crate::cron::CronExpr;
+use crate::{
+    contacts::{Contact, Schedule},
+    cron::CronExpr,
+    duration::parse_duration,
+};
 use chumsky::prelude::*;
 use hardy_bpa::routing::RouteAction;
 use hardy_eid_patterns as eid_patterns;
@@ -170,7 +173,7 @@ fn cron_field<'a>() -> impl Parser<'a, &'a str, CronExpr, Extra<'a>> {
 fn duration_value<'a>() -> impl Parser<'a, &'a str, std::time::Duration, Extra<'a>> {
     non_ws_token()
         .try_map(|s: &str, span| {
-            let d = humantime::parse_duration(s)
+            let d = parse_duration(s)
                 .map_err(|e| Rich::custom(span, format!("invalid duration: {e}")))?;
             if d.is_zero() {
                 return Err(Rich::custom(span, "duration must be greater than zero"));
@@ -207,7 +210,7 @@ fn delay_field<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
         .ignore_then(
             non_ws_token()
                 .try_map(|s: &str, span| {
-                    let d = humantime::parse_duration(s)
+                    let d = parse_duration(s)
                         .map_err(|e| Rich::custom(span, format!("invalid delay: {e}")))?;
                     let us = d.as_micros();
                     u32::try_from(us).map_err(|_| {
@@ -826,7 +829,7 @@ mod test {
     }
 
     #[test]
-    fn delay_humantime() {
+    fn delay_duration_units() {
         let c = parse_ok("ipn:2.*.* via ipn:2.1.0 delay 500ms");
         assert_eq!(c[0].delay_us, Some(500_000));
 

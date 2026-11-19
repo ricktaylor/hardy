@@ -1,5 +1,6 @@
-use super::*;
 use hardy_bpa::bpa::BpaRegistration;
+
+use super::{duration::format_duration, *};
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,7 +273,7 @@ async fn run_ping(
         let cancel = tasks.cancel_token().clone();
         let timed_out = timed_out.clone();
         hardy_async::spawn!(tasks, "ping_deadline", async move {
-            if tokio::time::timeout(*t, cancel.cancelled()).await.is_err() {
+            if tokio::time::timeout(t, cancel.cancelled()).await.is_err() {
                 timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
                 cancel.cancel();
             }
@@ -316,7 +317,7 @@ async fn exec_inner(
     for seq_no in 0..args.count.unwrap_or(u32::MAX) {
         service.send(args, seq_no).await?;
 
-        if tokio::time::timeout(*args.interval, cancel_token.cancelled())
+        if tokio::time::timeout(args.interval, cancel_token.cancelled())
             .await
             .is_ok()
         {
@@ -328,12 +329,12 @@ async fn exec_inner(
     // Wait for responses after sending all pings
     // Default wait time is one interval if not explicitly specified
     if !cancel_token.is_cancelled() && args.count.is_some() {
-        let wait_time = args.wait.map(|w| *w).unwrap_or_else(|| *args.interval);
+        let wait_time = args.wait.unwrap_or(args.interval);
 
         if !args.quiet {
             eprintln!(
                 "Waiting up to {} for responses...",
-                humantime::format_duration(wait_time)
+                format_duration(wait_time)
             );
         }
         if tokio::time::timeout(wait_time, service.wait_for_responses(cancel_token))

@@ -92,8 +92,8 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | `duration_without_cron` | 3.11 | Orphaned duration |
 | `mixed_oneshot_and_recurring` | 3.11 | Conflicting schedule types |
 | `until_without_cron` | 3.11 | Orphaned until |
-| `duration_minutes` | 3.12 | Humantime minutes |
-| `duration_hours` | 3.12 | Humantime hours |
+| `duration_minutes` | 3.12 | Plain minutes |
+| `duration_hours` | 3.12 | Plain hours |
 | `duration_compound` | 3.12 | Compound `1h30m` |
 | `duration_hms` | 3.12 | Full `2h30m15s` |
 | `duration_invalid_no_unit` | 3.12 | Bare number rejection |
@@ -102,7 +102,7 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | `bandwidth_si_suffixes` | 3.13 | K, M, G, T suffixes |
 | `bandwidth_long_suffixes` | 3.13 | Kbps, Gbps suffixes |
 | `bandwidth_case_insensitive` | 3.13 | Mixed case |
-| `delay_humantime` | 3.13 | Delay in ms, s, us |
+| `delay_duration_units` | 3.13 | Delay in ms, s, us |
 | `all_link_properties` | 3.13 | Combined bandwidth + delay |
 | `fields_any_order` | 3.14 | Field ordering independence |
 | `comments` | 3.14 | Comment lines |
