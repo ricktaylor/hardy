@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use hardy_async::async_trait;
 use hardy_bpv7::eid::Eid;
 use portable_atomic::{AtomicU32, Ordering};
@@ -190,7 +192,7 @@ impl services::ApplicationSink for Sink {
         &self,
         destination: Eid,
         data: Bytes,
-        lifetime: core::time::Duration,
+        lifetime: Duration,
         options: Option<services::SendOptions>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
         self.service
@@ -207,7 +209,7 @@ impl services::ApplicationSink for Sink {
         destination: Eid,
         total_len: u64,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-        lifetime: core::time::Duration,
+        lifetime: Duration,
         options: Option<services::SendOptions>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
         let service = self
@@ -556,6 +558,7 @@ mod tests {
             &self,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _expiry: time::OffsetDateTime,
+            _age: Duration,
             _ack_requested: bool,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -651,6 +654,7 @@ mod tests {
             &self,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _expiry: time::OffsetDateTime,
+            _age: Duration,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
         ) -> services::Result<()> {

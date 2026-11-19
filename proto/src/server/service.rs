@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use super::*;
 use proto::service::*;
 
@@ -87,6 +89,7 @@ impl hardy_bpa::services::Service for LowLevelService {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         expiry: time::OffsetDateTime,
+        age: Duration,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
@@ -96,6 +99,7 @@ impl hardy_bpa::services::Service for LowLevelService {
                 data,
                 expiry: Some(to_timestamp(expiry)),
                 bundle_id: bundle_id.to_key(),
+                age: Some(to_millis(age)),
             }))
             .await?
         {

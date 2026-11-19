@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- Adapted to the `hardy-bpa` `Service::on_deliver` signature, which gains the delivered bundle's age (unused: the echo response is a fresh bundle).
+
 ## [0.2.0]
 
 ### Changed

@@ -13,11 +13,13 @@ use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
 // A mock Service that records lifecycle callbacks and incoming bundles.
 struct MockService {
     registered: AtomicBool,
     received: AtomicBool,
+    received_age: hardy_async::sync::spin::Mutex<Option<Duration>>,
     status_notified: AtomicBool,
     sink: hardy_async::sync::spin::Mutex<Option<Box<dyn ServiceSink>>>,
 }
@@ -27,6 +29,7 @@ impl MockService {
         Self {
             registered: AtomicBool::new(false),
             received: AtomicBool::new(false),
+            received_age: hardy_async::sync::spin::Mutex::new(None),
             status_notified: AtomicBool::new(false),
             sink: hardy_async::sync::spin::Mutex::new(None),
         }
@@ -50,9 +53,11 @@ impl Service for MockService {
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
+        age: Duration,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        *self.received_age.lock() = Some(age);
         self.received.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -147,14 +152,21 @@ async fn svc_cli_03_receive_bundle() {
     let total_len = data.len() as u64;
     let bundle_id = hardy_bpv7::bundle::Id::default();
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    // Whole milliseconds: the wire's resolution.
+    let age = Duration::from_millis(90_061);
     server_svc
-        .on_deliver(&bundle_id, expiry, total_len, &mut data)
+        .on_deliver(&bundle_id, expiry, age, total_len, &mut data)
         .await
         .expect("Delivery should succeed");
 
     assert!(
         svc.received.load(Ordering::Relaxed),
         "MockService should have received the bundle"
+    );
+    assert_eq!(
+        *svc.received_age.lock(),
+        Some(age),
+        "age must round-trip the wire"
     );
 
     // Clean up
@@ -232,6 +244,7 @@ impl Service for ReplyingService {
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
@@ -297,6 +310,7 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
                 .on_deliver(
                     &hardy_bpv7::bundle::Id::default(),
                     expiry,
+                    Duration::ZERO,
                     total_len,
                     &mut data,
                 )

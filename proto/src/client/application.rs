@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use super::*;
 use proto::service::*;
 
@@ -14,6 +16,11 @@ async fn receive(
     let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
+    let age = request
+        .age
+        .map(Duration::from_millis)
+        .ok_or(tonic::Status::invalid_argument("Missing age"))?;
+
     // The unary wire message already delivered the whole payload, so it
     // reaches the application as a one-segment stream.
     let total_len = request.payload.len() as u64;
@@ -21,6 +28,7 @@ async fn receive(
         .on_deliver(
             &bundle_id,
             expiry,
+            age,
             request.ack_requested,
             total_len,
             &mut request.payload,
@@ -95,7 +103,7 @@ impl hardy_bpa::services::ApplicationSink for Sink {
         &self,
         destination: eid::Eid,
         data: hardy_bpa::Bytes,
-        lifetime: std::time::Duration,
+        lifetime: Duration,
         options: Option<hardy_bpa::services::SendOptions>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
         // Pre-check size so an oversized payload returns a typed error

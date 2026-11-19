@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use super::*;
 use proto::service::*;
 
@@ -13,11 +15,16 @@ async fn receive(
     let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
+    let age = request
+        .age
+        .map(Duration::from_millis)
+        .ok_or(tonic::Status::invalid_argument("Missing age"))?;
+
     // The unary wire message already delivered the whole bundle, so it
     // reaches the service as a one-segment stream.
     let total_len = request.data.len() as u64;
     service
-        .on_deliver(&bundle_id, expiry, total_len, &mut request.data)
+        .on_deliver(&bundle_id, expiry, age, total_len, &mut request.data)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 

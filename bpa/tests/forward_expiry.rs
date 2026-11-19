@@ -69,6 +69,7 @@ impl services::Service for CaptureService {
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {

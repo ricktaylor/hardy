@@ -445,6 +445,7 @@ mod tests {
             &self,
             _bundle_id: &Id,
             _expiry: OffsetDateTime,
+            _age: Duration,
             _ack_requested: bool,
             _total_len: u64,
             _stream: &mut dyn Receiver<Segment>,

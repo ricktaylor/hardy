@@ -80,6 +80,7 @@ impl services::Service for StreamingService {
         &self,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
@@ -152,6 +153,7 @@ impl services::Service for BufferedService {
         &self,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
@@ -212,6 +214,7 @@ impl services::Service for HoldingService {
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
+        _age: Duration,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
@@ -767,6 +770,7 @@ async fn buffering_service_concats_multi_segment_stream() {
         &*svc,
         &bundle_id_of(&data),
         expiry(),
+        Duration::ZERO,
         data.len() as u64,
         &mut rx,
     )
@@ -795,6 +799,7 @@ async fn buffering_service_is_zero_copy_for_single_final() {
         &*svc,
         &bundle_id_of(&data),
         expiry(),
+        Duration::ZERO,
         data.len() as u64,
         &mut rx,
     )
@@ -824,6 +829,7 @@ async fn buffering_service_truncated_stream_is_cancelled() {
         &*svc,
         &bundle_id_of(&data),
         expiry(),
+        Duration::ZERO,
         data.len() as u64,
         &mut rx,
     )
@@ -852,6 +858,7 @@ async fn buffering_service_rejects_under_delivering_stream() {
         &*svc,
         &bundle_id_of(&data),
         expiry(),
+        Duration::ZERO,
         data.len() as u64,
         &mut rx,
     )
@@ -878,8 +885,15 @@ async fn buffering_service_rejects_stream_exceeding_total_len() {
     );
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    let Err(err) =
-        services::Service::on_deliver(&*svc, &bundle_id_of(&data), expiry(), 4, &mut rx).await
+    let Err(err) = services::Service::on_deliver(
+        &*svc,
+        &bundle_id_of(&data),
+        expiry(),
+        Duration::ZERO,
+        4,
+        &mut rx,
+    )
+    .await
     else {
         panic!("Expected an oversize stream to fail");
     };

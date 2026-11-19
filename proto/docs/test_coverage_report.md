@@ -30,7 +30,7 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | `app_cli_01_registration_ipn` | APP-CLI-01 | Register application (IPN), verify endpoint and on_register |
 | `app_cli_02_registration_dtn` | APP-CLI-02 | Register application (DTN service name) |
 | `app_cli_03_send_payload` | APP-CLI-03 | Send payload via sink, verify round-trip (mock returns error) |
-| `app_cli_04_receive_payload` | APP-CLI-04 | Receive payload (BPA→App) via server-side push |
+| `app_cli_04_receive_payload` | APP-CLI-04 | Receive payload (BPA→App) via server-side push; bundle id and age round-trip |
 | `app_cli_05_status_notify` | APP-CLI-05 | Status notification (BPA→App) via server-side push |
 
 ### Suite 2: CLA Client (`tests/cla_tests.rs`)
@@ -49,7 +49,7 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | :--- | :--- | :--- |
 | `svc_cli_01_registration` | SVC-CLI-01 | Register service with IPN service ID, verify endpoint and on_register |
 | `svc_cli_02_send_bundle` | SVC-CLI-02 | Send raw bundle via sink, verify error from mock BPA |
-| `svc_cli_03_receive_bundle` | SVC-CLI-03 | Receive bundle (BPA→Service) via server-side push to client |
+| `svc_cli_03_receive_bundle` | SVC-CLI-03 | Receive bundle (BPA→Service) via server-side push to client; age round-trips |
 | `svc_cli_04_status_notify` | SVC-CLI-04 | Status notification (BPA→Service) via server-side push to client |
 
 ### Suite 4: Routing Agent Client (`tests/routing_agent_tests.rs`)

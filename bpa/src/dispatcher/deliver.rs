@@ -7,6 +7,7 @@ use hardy_bpv7::{
     parse::{self, Parsed},
     status_report::ReasonCode,
 };
+use time::OffsetDateTime;
 
 use super::*;
 use crate::services::registry::{Service, ServiceImpl};
@@ -93,12 +94,14 @@ impl Dispatcher {
             }
         };
 
+        // At the offer, so the age includes this BPA's residency.
+        let age = bundle.age_at(OffsetDateTime::now_utc());
         let delivery_result = match &service.service {
             ServiceImpl::LowLevel(svc) => {
                 // Pass raw bundle bytes to low-level services: the whole
                 // bundle is in hand, so it travels as a single Final segment.
                 let total_len = data.len() as u64;
-                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
+                svc.on_deliver(bundle.id(), bundle.expiry(), age, total_len, &mut data)
                     .await
             }
             ServiceImpl::Application(app) => {
@@ -171,6 +174,7 @@ impl Dispatcher {
                 app.on_deliver(
                     bundle.id(),
                     bundle.expiry(),
+                    age,
                     bundle.primary().flags.app_ack_requested,
                     total_len,
                     &mut payload,
