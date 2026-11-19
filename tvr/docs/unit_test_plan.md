@@ -178,7 +178,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 ### 3.12 Contact Plan Parser — Duration Formats (REQ-6.2)
 
-*Objective: Verify humantime duration parsing.*
+*Objective: Verify duration-string parsing.*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
@@ -191,7 +191,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 ### 3.13 Contact Plan Parser — Link Properties (REQ-6.3)
 
-*Objective: Verify bandwidth and delay parsing with SI/humantime units.*
+*Objective: Verify bandwidth and delay parsing with SI and duration units.*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
@@ -199,7 +199,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | **Bandwidth SI Suffixes** | K, M, G, T. | `src/parser.rs` | `256K`, `1M`, `10G`, `1T` | Correct bps values. |
 | **Bandwidth Long Suffixes** | Kbps, Mbps, etc. | `src/parser.rs` | `256Kbps`, `10Gbps` | Same as short form. |
 | **Bandwidth Case Insensitive** | Mixed case. | `src/parser.rs` | `256k`, `10g`, `1GBPS` | Correct bps values. |
-| **Delay Humantime** | Various delay units. | `src/parser.rs` | `500ms`, `1s`, `250us`, `4m` | Correct microsecond values. |
+| **Delay Duration Units** | Various delay units. | `src/parser.rs` | `500ms`, `1s`, `250us`, `4m` | Correct microsecond values. |
 | **All Link Properties** | Combined bandwidth + delay. | `src/parser.rs` | `... bandwidth 10G delay 500ms` | Both fields set. |
 
 ### 3.14 Contact Plan Parser — File Format

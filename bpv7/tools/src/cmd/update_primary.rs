@@ -1,10 +1,15 @@
-use super::*;
+use core::time::Duration;
+
 use hardy_bpv7::{
     bpsec::key::KeySet,
     creation_timestamp::CreationTimestamp,
     editor::{Chunk, Editor},
     eid::Eid,
 };
+
+use super::*;
+use crate::duration::parse_duration;
+
 #[derive(Parser, Debug)]
 #[command(
     about = "Update the primary block of a bundle",
@@ -19,9 +24,9 @@ pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,
 
-    /// New lifetime duration (e.g., "1year", "30days", "24h")
-    #[arg(short, long)]
-    lifetime: Option<humantime::Duration>,
+    /// New lifetime duration (e.g., "365d", "30days", "24h")
+    #[arg(short, long, value_parser = parse_duration)]
+    lifetime: Option<Duration>,
 
     /// Reset creation timestamp to now (updates both time and sequence number)
     #[arg(short = 't', long = "reset-timestamp")]
@@ -86,7 +91,7 @@ impl Command {
         // Update lifetime if provided
         if let Some(lifetime) = self.lifetime {
             editor = editor
-                .with_lifetime(lifetime.into())
+                .with_lifetime(lifetime)
                 .map_err(|(_, e)| anyhow::anyhow!("Failed to update lifetime: {e}"))?;
         }
 
