@@ -133,7 +133,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Address Parsing** | Verify `ClaAddress` conversion logic. | `src/cla/mod.rs` | Input: `(Tcp, "127.0.0.1:80")` | Result: `Ok(SocketAddr)`. |
+| **Address Parsing** | Verify `cla::Address` conversion logic. | `src/cla/mod.rs` | Input: `(Tcp, "127.0.0.1:80")` | Result: `Ok(SocketAddr)`. |
 | **Duplicate Registration** | Register CLA with existing name. | `src/cla/registry.rs` | 1. Reg "tcp" (Ok)<br>2. Reg "tcp" | Result: `Error(AlreadyExists)` |
 | **Peer Lifecycle** | Verify RIB updates on peer add/remove. | `src/cla/registry.rs` | 1. `add_peer(NodeA)`<br>2. `remove_peer(NodeA)` | 1. RIB contains NodeA.<br>2. RIB does not contain NodeA. |
 | **Cascading Cleanup** | Verify unregistering CLA removes peers. | `src/cla/registry.rs` | 1. Reg CLA -> Add Peer A.<br>2. Unregister CLA. | Result: Peer A removed from RIB. |

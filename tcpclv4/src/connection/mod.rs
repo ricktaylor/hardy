@@ -46,7 +46,7 @@ struct ConnectionPool {
     inner: Mutex<ConnectionPoolInner>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     max_idle: usize,
-    remote_addr: hardy_bpa::cla::ClaAddress,
+    remote_addr: hardy_bpa::cla::Address,
 }
 
 impl ConnectionPool {
@@ -65,7 +65,7 @@ impl ConnectionPool {
             }),
             sink,
             max_idle,
-            remote_addr: hardy_bpa::cla::ClaAddress::Tcp(remote_addr),
+            remote_addr: hardy_bpa::cla::Address::Tcp(remote_addr),
         }
     }
 
@@ -439,7 +439,7 @@ mod tests {
         async fn dispatch(
             &self,
             _peer_node: Option<&NodeId>,
-            _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+            _peer_addr: Option<&hardy_bpa::cla::Address>,
             _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
         ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
             Ok(hardy_bpa::cla::Acceptance::Accepted)
@@ -447,7 +447,7 @@ mod tests {
 
         async fn add_peer(
             &self,
-            _cla_addr: hardy_bpa::cla::ClaAddress,
+            _cla_addr: hardy_bpa::cla::Address,
             _node_ids: &[NodeId],
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
@@ -455,12 +455,12 @@ mod tests {
 
         async fn remove_peer(
             &self,
-            _cla_addr: &hardy_bpa::cla::ClaAddress,
+            _cla_addr: &hardy_bpa::cla::Address,
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }
 
-        async fn transfer_outcome(
+        async fn report_transfer(
             &self,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _outcome: hardy_bpa::cla::TransferOutcome,

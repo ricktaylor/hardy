@@ -109,46 +109,50 @@ impl Dispatcher {
                 }
 
                 // Find a live service to notify
-                if let Some(service) = self.rib.find_service(&report.bundle_id.source) {
+                if let Some(record) = self.rib.find_service(&report.bundle_id.source) {
                     if let Some(assertion) = report.received {
-                        service
-                            .on_status_notify(
+                        record
+                            .kind
+                            .report_status(
                                 &report.bundle_id,
                                 &bundle.id().source,
-                                services::StatusNotify::Received,
+                                service::StatusNotify::Received,
                                 report.reason,
                                 assertion.0,
                             )
                             .await;
                     }
                     if let Some(assertion) = report.forwarded {
-                        service
-                            .on_status_notify(
+                        record
+                            .kind
+                            .report_status(
                                 &report.bundle_id,
                                 &bundle.id().source,
-                                services::StatusNotify::Forwarded,
+                                service::StatusNotify::Forwarded,
                                 report.reason,
                                 assertion.0,
                             )
                             .await;
                     }
                     if let Some(assertion) = report.delivered {
-                        service
-                            .on_status_notify(
+                        record
+                            .kind
+                            .report_status(
                                 &report.bundle_id,
                                 &bundle.id().source,
-                                services::StatusNotify::Delivered,
+                                service::StatusNotify::Delivered,
                                 report.reason,
                                 assertion.0,
                             )
                             .await;
                     }
                     if let Some(assertion) = report.deleted {
-                        service
-                            .on_status_notify(
+                        record
+                            .kind
+                            .report_status(
                                 &report.bundle_id,
                                 &bundle.id().source,
-                                services::StatusNotify::Deleted,
+                                service::StatusNotify::Deleted,
                                 report.reason,
                                 assertion.0,
                             )

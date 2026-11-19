@@ -90,7 +90,7 @@ Parse errors in the routes file don't crash the server. When `watch` is enabled:
 
 ## Future Work
 
-- **Standalone package**: Static routes implement the BPA's `RoutingAgent` trait (`StaticRoutesAgent`) but are embedded in bpa-server; moving them into a standalone package would give cleaner separation.
+- **Standalone package**: Static routes implement the BPA's `routing::Agent` trait (`StaticRoutesAgent`) but are embedded in bpa-server; moving them into a standalone package would give cleaner separation.
 
 - **Include directive**: Support `include /path/to/other/routes` for modular configuration.
 
@@ -100,7 +100,7 @@ Parse errors in the routes file don't crash the server. When `watch` is enabled:
 
 ### With hardy-bpa
 
-The agent registers with the BPA as a `RoutingAgent` under its `protocol_id` and adds and removes routes through the `RoutingSink` it receives on registration. The BPA's RIB combines these with routes from other sources (CLA peer discovery, other routing agents such as hardy-tvr).
+The agent registers with the BPA as a `routing::Agent` under its `protocol_id` and adds and removes routes through the `routing::Sink` it receives on registration. The BPA's RIB combines these with routes from other sources (CLA peer discovery, other routing agents such as hardy-tvr).
 
 ### With hardy-bpa-server
 

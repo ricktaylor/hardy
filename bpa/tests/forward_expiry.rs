@@ -4,18 +4,15 @@
 //! arrives — a completed transfer reports completion, and a failed one is
 //! dropped as `LifetimeExpired` at the dispatch expiry checkpoint.
 
-use core::{
-    num::{NonZeroU64, NonZeroUsize},
-    time::Duration,
-};
+use core::{num::NonZeroUsize, time::Duration};
 use std::{borrow::Cow, sync::Arc};
 
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
-    cla,
+    bpa::Bpa,
+    cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     node_ids::NodeIds,
-    services,
+    service::{self, RegistrarExt as _, StatusNotify, raw},
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -40,38 +37,28 @@ enum Event {
 // ---------------------------------------------------------------------------
 
 struct CaptureService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     events_tx: flume::Sender<Event>,
 }
 
 impl CaptureService {
-    fn new() -> (Arc<Self>, flume::Receiver<Event>) {
+    fn factory() -> (impl raw::Factory<Component = Self>, flume::Receiver<Event>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                events_tx: tx,
-            }),
+            raw::factory_fn(|_| Ok(Arc::new(Self { events_tx: tx }))),
             rx,
         )
     }
 }
 
 #[async_trait]
-impl services::Service for CaptureService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl raw::Service for CaptureService {
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let mut segments = Vec::new();
         loop {
             match stream.recv().await {
@@ -80,18 +67,18 @@ impl services::Service for CaptureService {
                     segments.push(segment);
                     break;
                 }
-                Err(_) => return Err(services::Error::StreamCancelled),
+                Err(_) => return Err(service::Error::StreamCancelled),
             }
         }
         let _ = self.events_tx.send(Event::Streamed { segments });
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -106,17 +93,19 @@ impl services::Service for CaptureService {
 /// transfer stays owned by the CLA until the test injects the outcome via
 /// `Sink::transfer_outcome`.
 struct AcceptingCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     accepted_tx: flume::Sender<Id>,
 }
 
 impl AcceptingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>) {
+    fn factory() -> (impl Factory<Component = Self>, flume::Receiver<Id>) {
         let (tx, rx) = flume::bounded(1);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                accepted_tx: tx,
+            factory_fn(Request::default(), |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    accepted_tx: tx,
+                }))
             }),
             rx,
         )
@@ -125,66 +114,44 @@ impl AcceptingCla {
 
 #[async_trait]
 impl cla::Cla for AcceptingCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         bundle_id: &Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         buffer_stream(stream, total_len).await?;
         let _ = self.accepted_tx.send_async(bundle_id.clone()).await;
-        Ok(cla::ForwardBundleResult::Accepted)
+        Ok(cla::ForwardOutcome::Accepted)
     }
 }
 
 /// Minimal CLA to inject inbound bundles.
 struct IngressCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
 }
 
 impl IngressCla {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
+    fn factory() -> impl Factory<Component = Self> {
+        factory_fn(Request::default(), |cx: Context| {
+            Ok(Arc::new(Self { sink: cx.sink }))
         })
     }
 }
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        Ok(cla::ForwardBundleResult::Sent)
+    ) -> cla::Result<cla::ForwardOutcome> {
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -249,32 +216,21 @@ async fn expiry_mid_transfer_rig() -> (
         .node_ids(node_ids)
         .status_reports(true)
         .metadata_storage(metadata_store.clone())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
-    let (reports, reports_rx) = CaptureService::new();
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    let (reports, reports_rx) = CaptureService::factory();
+    bpa.register_raw_service(Some(Service::Ipn(9)), reports)
         .await
         .unwrap();
 
     // The egress CLA owns transfers to node ipn:0.3 without resolving them.
-    let (cla, accepted_rx) = AcceptingCla::new();
-    bpa.register_cla(
-        "accepting".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, accepted_rx) = AcceptingCla::factory();
+    let cla = bpa.register_cla("accepting", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 3,
@@ -283,15 +239,8 @@ async fn expiry_mid_transfer_rig() -> (
         .await
         .unwrap();
 
-    let ingress = IngressCla::new();
-    bpa.register_cla(
-        "ingress".to_string(),
-        ingress.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let ingress = IngressCla::factory();
+    let ingress = bpa.register_cla("ingress", ingress).await.unwrap();
 
     let (bundle_a, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.1".parse().unwrap())
         .with_report_to("ipn:0.1.9".parse().unwrap())
@@ -307,8 +256,6 @@ async fn expiry_mid_transfer_rig() -> (
     assert_eq!(
         ingress
             .sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut Bytes::from(data))
             .await
             .unwrap(),
@@ -341,8 +288,6 @@ async fn expiry_mid_transfer_rig() -> (
     assert_eq!(
         ingress
             .sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut Bytes::from(data))
             .await
             .unwrap(),
@@ -402,9 +347,7 @@ async fn expiry_mid_transfer_resolves_once() {
 
     // The CLA reports completion: the outcome claims the resolution.
     cla.sink
-        .get()
-        .unwrap()
-        .transfer_outcome(&a_id, cla::TransferOutcome::Completed)
+        .report_transfer(&a_id, cla::TransferOutcome::Completed)
         .await
         .unwrap();
     let Event::Streamed { segments } = recv_event(&reports_rx, 10).await;
@@ -429,9 +372,7 @@ async fn failed_transfer_expires_at_dispatch() {
     let (bpa, metadata_store, reports_rx, cla, a_id) = expiry_mid_transfer_rig().await;
 
     cla.sink
-        .get()
-        .unwrap()
-        .transfer_outcome(&a_id, cla::TransferOutcome::Failed)
+        .report_transfer(&a_id, cla::TransferOutcome::Failed)
         .await
         .unwrap();
     let Event::Streamed { segments } = recv_event(&reports_rx, 10).await;
@@ -463,30 +404,19 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .node_ids(node_ids)
         .status_reports(true)
         .poll_channel_depth(NonZeroUsize::new(2).unwrap())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (reports, reports_rx) = CaptureService::new();
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    let (reports, reports_rx) = CaptureService::factory();
+    bpa.register_raw_service(Some(Service::Ipn(9)), reports)
         .await
         .unwrap();
 
-    let (cla, accepted_rx) = AcceptingCla::new();
-    bpa.register_cla(
-        "accepting".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, accepted_rx) = AcceptingCla::factory();
+    let cla = bpa.register_cla("accepting", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 3,
@@ -495,15 +425,8 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .await
         .unwrap();
 
-    let ingress = IngressCla::new();
-    bpa.register_cla(
-        "ingress".to_string(),
-        ingress.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let ingress = IngressCla::factory();
+    let ingress = bpa.register_cla("ingress", ingress).await.unwrap();
 
     // Two transfers with the earliest expiries, accepted by the CLA and
     // never resolved: expired-but-deferred hand-offs filling the cache.
@@ -516,8 +439,6 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         assert_eq!(
             ingress
                 .sink
-                .get()
-                .unwrap()
                 .dispatch(None, None, &mut Bytes::from(data))
                 .await
                 .unwrap(),
@@ -548,8 +469,6 @@ async fn deferred_handoffs_do_not_starve_expiry() {
     assert_eq!(
         ingress
             .sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut Bytes::from(data))
             .await
             .unwrap(),

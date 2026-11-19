@@ -1,12 +1,9 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 
-use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     async_trait,
     cla::Acceptance,
-    services::{
-        Error as ServiceError, Result as ServiceResult, Service, ServiceSink, StatusNotify,
-    },
+    service::{self, StatusNotify, raw},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -21,49 +18,39 @@ use crate::{cla::BibeCla, pdu};
 /// and re-injects it into the BPA via the CLA's dispatch method.
 pub struct DecapService {
     cla: Arc<BibeCla>,
-    sink: Once<Box<dyn ServiceSink>>,
+
+    /// Communication channel back to the BPA, for the service's whole
+    /// active lifetime.
+    sink: Arc<dyn raw::Sink>,
 }
 
 impl DecapService {
-    /// Create a new DecapService using the given CLA for dispatch.
-    pub fn new(cla: Arc<BibeCla>) -> Self {
-        Self {
-            cla,
-            sink: Once::new(),
-        }
+    /// A factory for a decapsulation service that re-injects the inner
+    /// bundles it extracts through `cla`.
+    pub fn factory(cla: Arc<BibeCla>) -> impl raw::Factory<Component = Self> {
+        raw::factory_fn(move |cx: raw::Context| Ok(Arc::new(Self { cla, sink: cx.sink })))
     }
 
-    /// Unregister this service from the BPA.
+    /// Unregisters the service from the BPA.
     pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
+        self.sink.unregister().await;
     }
 }
 
 #[async_trait]
-impl Service for DecapService {
-    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>) {
-        self.sink.call_once(|| sink);
-        debug!("BIBE DecapService registered at {endpoint}");
-    }
-
-    async fn on_unregister(&self) {
-        debug!("BIBE DecapService unregistered");
-    }
-
+impl raw::Service for DecapService {
     // INTERIM BUFFERING: decapsulation parses the whole outer bundle with a
     // whole-buffer codec, so the stream is assembled in memory via
     // `stream::buffer_stream` first. This is a deliberate stepping stone
     // toward the full streaming pipeline; see
     // bpa/docs/streaming_pipeline_design.md.
-    async fn on_deliver(
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> ServiceResult<()> {
+    ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
 
         // A malformed outer bundle is a permanent failure: log and accept it,
@@ -91,12 +78,13 @@ impl Service for DecapService {
             // bundle is parked and retried rather than dropped.
             Err(e) => {
                 warn!("Failed to dispatch decapsulated bundle: {e}");
-                Err(ServiceError::Internal(e.into()))
+                Err(service::Error::Internal(e.into()))
             }
         }
     }
 
-    async fn on_status_notify(
+    /// No-op; the decapsulation service sends no bundles of its own.
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -104,6 +92,6 @@ impl Service for DecapService {
         _reason: ReasonCode,
         _timestamp: Option<OffsetDateTime>,
     ) {
-        // DecapService doesn't send bundles, so no status reports expected
+        // Do nothing
     }
 }

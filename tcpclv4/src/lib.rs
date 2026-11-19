@@ -8,16 +8,18 @@ over TCP connections, with optional TLS encryption.
 
 # Key types
 
-- [`Tcpclv4`] — the convergence layer adapter, created via
-  [`Tcpclv4::builder`] and registered with a BPA instance through
-  `hardy_bpa`'s CLA registration.
+- [`Tcpclv4`] — the convergence layer adapter. A BPA builds it from the
+  factory the embedder hands over, and owns it from then on.
 - [`builder::Tcpclv4Builder`] — the fluent constructor; every setting has a
-  default documented on its method.
+  default documented on its method. [`build`](builder::Tcpclv4Builder::build)
+  loads the TLS material and binds the listener sockets, yielding the
+  factory.
 - [`tls::Tls`] — TLS material (trust anchor, node identity, mutual-TLS
   policy), chained from [`tls::Tls::builder`] and loaded by
   [`builder::Tcpclv4Builder::build`].
 - [`config::Config`] — the builder inputs as plain data, for
-  configuration files; converts with `Tcpclv4::try_from`.
+  configuration files; [`Tcpclv4::factory`] is the shorthand that maps one
+  onto the builder and builds it.
 - [`enum@Error`] — the generic error for everything TCPCLv4: assembling
   and registering the entity, with each sub-concept's error wrapped as a
   variant (`Tls`, `Session`).
@@ -48,10 +50,7 @@ pub mod tls;
 pub use self::error::Error;
 pub use self::tcpclv4::Tcpclv4;
 
-use core::num::NonZeroU64;
-use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::NodeId;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use trace_err::*;
 use tracing::{debug, error, info, warn};

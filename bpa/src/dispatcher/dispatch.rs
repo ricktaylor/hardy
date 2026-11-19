@@ -43,9 +43,7 @@ impl Dispatcher {
                     return;
                 }
 
-                dispatcher
-                    .process_bundle(bundle, dispatcher.cla_registry())
-                    .await;
+                dispatcher.process_bundle(bundle, dispatcher.clas()).await;
             })
             .await;
         }
@@ -78,18 +76,13 @@ impl Dispatcher {
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub(super) async fn process_bundle(
-        &self,
-        bundle: bundle::Bundle,
-        cla_registry: &cla::registry::ClaRegistry,
-    ) {
+    pub(super) async fn process_bundle(&self, bundle: bundle::Bundle, clas: &Table) {
         // The decision carries the table it was made against: the parks
         // re-check it to close the park-vs-poll window (see park_bundle). A
         // Forward result names the peer, whose egress queue carries the
         // adjacency.
         let decision = self.rib.decide(&bundle);
-        self.execute_dispatch_action(bundle, decision, cla_registry)
-            .await
+        self.execute_dispatch_action(bundle, decision, clas).await
     }
 
     // Execute an input door's routing decision of record, after the
@@ -120,7 +113,7 @@ impl Dispatcher {
                 self.dispatch_bundle(bundle).await
             }
             _ => {
-                self.execute_dispatch_action(bundle, decision, self.cla_registry())
+                self.execute_dispatch_action(bundle, decision, self.clas())
                     .await
             }
         }
@@ -137,7 +130,7 @@ impl Dispatcher {
         &self,
         bundle: bundle::Bundle,
         decision: routing::Decision,
-        cla_registry: &cla::registry::ClaRegistry,
+        clas: &Table,
     ) {
         let routing::Decision { action, seen } = decision;
 
@@ -190,7 +183,7 @@ impl Dispatcher {
             }
             Some(routing::DispatchAction::Forward { peer, next_hop }) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                if let Err(bundle) = cla_registry.forward(peer, next_hop, bundle).await {
+                if let Err(bundle) = clas.forward(peer, next_hop, bundle).await {
                     // The peer vanished between the RIB lookup and the
                     // forward: return the bundle to Waiting so the next route
                     // event re-dispatches it, rather than leaving it stranded
@@ -254,7 +247,7 @@ impl Dispatcher {
 
                             let dispatcher = dispatcher.clone();
                             hardy_async::spawn!(self.processing_pool, "poll_waiting_dispatcher", async move {
-                                dispatcher.process_bundle(bundle, dispatcher.cla_registry()).await
+                                dispatcher.process_bundle(bundle, dispatcher.clas()).await
                             }).await;
                         }
                         _ = cancel_token.cancelled().fuse() => {

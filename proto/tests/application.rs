@@ -7,61 +7,52 @@ mod common;
 
 use common::MockBpa;
 use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::services::{Application, ApplicationSink, StatusNotify};
+use hardy_bpa::service::{Context, Factory, RegistrarExt, Service, Sink, StatusNotify, factory_fn};
 use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// A mock Application that records lifecycle callbacks and incoming payloads.
-struct MockApplication {
-    registered: AtomicBool,
+// A mock service that records the context it was built from and the
+// payloads the BPA pushes at it.
+struct MockService {
+    sink: Arc<dyn Sink>,
+    endpoint: Eid,
     received: AtomicBool,
     received_id: hardy_async::sync::spin::Mutex<Option<hardy_bpv7::bundle::Id>>,
     status_notified: AtomicBool,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn ApplicationSink>>>,
 }
 
-impl MockApplication {
-    fn new() -> Self {
-        Self {
-            registered: AtomicBool::new(false),
-            received: AtomicBool::new(false),
-            received_id: hardy_async::sync::spin::Mutex::new(None),
-            status_notified: AtomicBool::new(false),
-            sink: hardy_async::sync::spin::Mutex::new(None),
-        }
-    }
-
-    fn take_sink(&self) -> Option<Box<dyn ApplicationSink>> {
-        self.sink.lock().take()
+impl MockService {
+    fn factory() -> impl Factory<Component = Self> {
+        factory_fn(|cx: Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                endpoint: cx.endpoint,
+                received: AtomicBool::new(false),
+                received_id: hardy_async::sync::spin::Mutex::new(None),
+                status_notified: AtomicBool::new(false),
+            }))
+        })
     }
 }
 
 #[async_trait]
-impl Application for MockApplication {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
-        *self.sink.lock() = Some(sink);
-        self.registered.store(true, Ordering::Relaxed);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl Service for MockService {
+    async fn deliver(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<()> {
+    ) -> hardy_bpa::service::Result<()> {
         *self.received_id.lock() = Some(bundle_id.clone());
         self.received.store(true, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _from: &Eid,
@@ -79,21 +70,18 @@ async fn app_cli_01_registration_ipn() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["application"]).await;
 
-    let app = Arc::new(MockApplication::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = RemoteBpa::new(grpc_addr)
+        .register_service(
+            Some(hardy_bpv7::eid::Service::Ipn(42)),
+            MockService::factory(),
+        )
         .await
         .expect("registration should succeed");
 
-    assert_eq!(endpoint.to_string(), "ipn:1.42");
-    assert!(app.registered.load(Ordering::Relaxed));
-    assert!(app.sink.lock().is_some());
+    assert_eq!(service.endpoint.to_string(), "ipn:1.42");
 
     // Clean up
-    drop(app.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -103,21 +91,19 @@ async fn app_cli_02_registration_dtn() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["application"]).await;
 
-    let app = Arc::new(MockApplication::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
     // MockBpa always returns ipn:1.42 regardless of service_id
-    let endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Dtn("sensor".into()), app.clone())
+    let service = RemoteBpa::new(grpc_addr)
+        .register_service(
+            Some(hardy_bpv7::eid::Service::Dtn("sensor".into())),
+            MockService::factory(),
+        )
         .await
         .expect("registration should succeed");
 
-    assert!(app.registered.load(Ordering::Relaxed));
-    assert!(!endpoint.to_string().is_empty());
+    assert!(!service.endpoint.to_string().is_empty());
 
     // Clean up
-    drop(app.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -127,18 +113,17 @@ async fn app_cli_03_send_payload() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["application"]).await;
 
-    let app = Arc::new(MockApplication::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = RemoteBpa::new(grpc_addr)
+        .register_service(
+            Some(hardy_bpv7::eid::Service::Ipn(42)),
+            MockService::factory(),
+        )
         .await
         .expect("registration should succeed");
 
-    let sink = app.take_sink().expect("app should have a sink");
-
     // send() calls the mock BPA sink which returns an error
-    let result = sink
+    let result = service
+        .sink
         .send(
             "ipn:2.1".parse().unwrap(),
             hardy_bpa::Bytes::from_static(b"hello"),
@@ -149,7 +134,7 @@ async fn app_cli_03_send_payload() {
     assert!(result.is_err(), "mock sink send returns error");
 
     // Clean up
-    sink.unregister().await;
+    service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -159,18 +144,18 @@ async fn app_cli_04_receive_payload() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["application"]).await;
 
-    let app = Arc::new(MockApplication::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = RemoteBpa::new(grpc_addr)
+        .register_service(
+            Some(hardy_bpv7::eid::Service::Ipn(42)),
+            MockService::factory(),
+        )
         .await
         .expect("registration should succeed");
 
-    assert!(!app.received.load(Ordering::Relaxed));
+    assert!(!service.received.load(Ordering::Relaxed));
 
-    let server_app = bpa
-        .last_application
+    let server_service = bpa
+        .last_service
         .lock()
         .clone()
         .expect("BPA should have the server-side application");
@@ -183,26 +168,25 @@ async fn app_cli_04_receive_payload() {
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     let mut payload = hardy_bpa::Bytes::from_static(b"hello");
     let total_len = payload.len() as u64;
-    server_app
-        .on_deliver(&bundle_id, expiry, false, total_len, &mut payload)
+    server_service
+        .deliver(&bundle_id, expiry, false, total_len, &mut payload)
         .await
         .expect("Delivery should succeed");
 
     assert!(
-        app.received.load(Ordering::Relaxed),
-        "MockApplication should have received the payload"
+        service.received.load(Ordering::Relaxed),
+        "MockService should have received the payload"
     );
-    let received_id = app
+    let received_id = service
         .received_id
         .lock()
         .clone()
-        .expect("MockApplication should have recorded the bundle id");
+        .expect("MockService should have recorded the bundle id");
     assert_eq!(received_id, bundle_id, "bundle id must round-trip the wire");
     assert_eq!(received_id.source, source);
 
     // Clean up
-    drop(app.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
 
@@ -212,18 +196,18 @@ async fn app_cli_05_status_notify() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["application"]).await;
 
-    let app = Arc::new(MockApplication::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = RemoteBpa::new(grpc_addr)
+        .register_service(
+            Some(hardy_bpv7::eid::Service::Ipn(42)),
+            MockService::factory(),
+        )
         .await
         .expect("registration should succeed");
 
-    assert!(!app.status_notified.load(Ordering::Relaxed));
+    assert!(!service.status_notified.load(Ordering::Relaxed));
 
-    let server_app = bpa
-        .last_application
+    let server_service = bpa
+        .last_service
         .lock()
         .clone()
         .expect("BPA should have the server-side application");
@@ -235,8 +219,8 @@ async fn app_cli_05_status_notify() {
     };
     let from: Eid = "ipn:2.0".parse().unwrap();
 
-    server_app
-        .on_status_notify(
+    server_service
+        .report_status(
             &bundle_id,
             &from,
             StatusNotify::Delivered,
@@ -246,12 +230,11 @@ async fn app_cli_05_status_notify() {
         .await;
 
     assert!(
-        app.status_notified.load(Ordering::Relaxed),
-        "MockApplication should have received the status notification"
+        service.status_notified.load(Ordering::Relaxed),
+        "MockService should have received the status notification"
     );
 
     // Clean up
-    drop(app.take_sink());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    service.sink.unregister().await;
     server_tasks.shutdown().await;
 }

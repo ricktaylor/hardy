@@ -1,5 +1,12 @@
 use core::num::{NonZeroU32, NonZeroU64};
 
+// `Sink` is this module's own proxy sink, so the BPA's trait of that
+// name is imported anonymously, for its methods alone.
+use hardy_bpa::{
+    cla::{BoxFactory, Cla, Context, Sink as _, Terms},
+    node_ids::NodeIds,
+};
+
 use super::*;
 use proto::cla::*;
 
@@ -29,11 +36,9 @@ async fn forward(
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?
     {
-        hardy_bpa::cla::ForwardBundleResult::Sent => forward_bundle_response::Result::Sent(()),
-        hardy_bpa::cla::ForwardBundleResult::Accepted => {
-            forward_bundle_response::Result::Accepted(())
-        }
-        hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
+        hardy_bpa::cla::ForwardOutcome::Sent => forward_bundle_response::Result::Sent(()),
+        hardy_bpa::cla::ForwardOutcome::Accepted => forward_bundle_response::Result::Accepted(()),
+        hardy_bpa::cla::ForwardOutcome::NoNeighbour => {
             forward_bundle_response::Result::NoNeighbour(())
         }
     };
@@ -67,7 +72,7 @@ impl hardy_bpa::cla::Sink for Sink {
     async fn dispatch(
         &self,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+        peer_addr: Option<&hardy_bpa::cla::Address>,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         // The transport cap doubles as the pre-check from
@@ -106,7 +111,7 @@ impl hardy_bpa::cla::Sink for Sink {
 
     async fn add_peer(
         &self,
-        cla_addr: hardy_bpa::cla::ClaAddress,
+        cla_addr: hardy_bpa::cla::Address,
         node_ids: &[hardy_bpv7::eid::NodeId],
     ) -> hardy_bpa::cla::Result<bool> {
         match self
@@ -125,7 +130,7 @@ impl hardy_bpa::cla::Sink for Sink {
 
     async fn remove_peer(
         &self,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        cla_addr: &hardy_bpa::cla::Address,
     ) -> hardy_bpa::cla::Result<bool> {
         match self
             .call(cla_to_bpa::Msg::RemovePeer(RemovePeerRequest {
@@ -140,7 +145,7 @@ impl hardy_bpa::cla::Sink for Sink {
         }
     }
 
-    async fn transfer_outcome(
+    async fn report_transfer(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: hardy_bpa::cla::TransferOutcome,
@@ -173,8 +178,16 @@ impl hardy_bpa::cla::Sink for Sink {
     }
 }
 
+// The CLA the session owns, shared with the proxy's handler.
+//
+// The CLA is built from a context carrying the sink the proxy stands
+// behind, so the proxy exists first and learns the CLA it serves here.
+// The handler holds the only strong reference: the session owns the CLA
+// it registered, and drops it on close.
+type SessionCla = Arc<Mutex<Option<Arc<dyn Cla>>>>;
+
 struct Handler {
-    cla: Weak<dyn hardy_bpa::cla::Cla>,
+    cla: SessionCla,
 }
 
 #[async_trait]
@@ -185,7 +198,8 @@ impl ProxyHandler for Handler {
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         match msg {
             bpa_to_cla::Msg::Forward(request) => {
-                if let Some(cla) = self.cla.upgrade() {
+                let cla = self.cla.lock().clone();
+                if let Some(cla) = cla {
                     match forward(cla.as_ref(), request).await {
                         Ok(msg) => Some(cla_to_bpa::Msg::Forward(msg)),
                         Err(e) => Some(cla_to_bpa::Msg::Status(e.into())),
@@ -204,18 +218,20 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        if let Some(cla) = self.cla.upgrade() {
-            cla.on_unregister().await;
+        let cla = self.cla.lock().take();
+        if let Some(cla) = cla
+            && let Err(e) = cla.unregister().await
+        {
+            warn!("CLA unregister failed: {e}");
         }
     }
 }
 
 pub async fn register_cla(
     grpc_addr: String,
-    name: String,
-    cla: Arc<dyn hardy_bpa::cla::Cla>,
-    init: hardy_bpa::cla::ClaInit,
-) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
+    name: &str,
+    factory: BoxFactory<'_>,
+) -> hardy_bpa::cla::Result<()> {
     let mut cla_client = cla_client::ClaClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
@@ -238,21 +254,23 @@ pub async fn register_cla(
         })?
         .into_inner();
 
-    // Send the initial registration message.
+    // Send the initial registration message, carrying what the CLA asks
+    // of the BPA.
+    let request = factory.request();
     let response = match RpcProxy::send(
         &mut channel_sender,
         &mut channel_receiver,
         cla_to_bpa::Msg::Register(RegisterClaRequest {
-            name: name.clone(),
-            address_type: init.address_type.map(|a| {
+            name: name.to_string(),
+            address_type: request.address_type.map(|a| {
                 match a {
-                    hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp,
-                    hardy_bpa::cla::ClaAddressType::Private => ClaAddressType::Private,
+                    hardy_bpa::cla::AddressType::Tcp => ClaAddressType::Tcp,
+                    hardy_bpa::cla::AddressType::Private => ClaAddressType::Private,
                 }
                 .into()
             }),
-            max_bundle_size: init.max_bundle_size.map(NonZeroU64::get),
-            lane_count: init.lane_count.map(NonZeroU32::get),
+            max_bundle_size: request.max_bundle_size.map(NonZeroU64::get),
+            lane_count: request.lane_count.map(NonZeroU32::get),
         }),
     )
     .await
@@ -282,27 +300,52 @@ pub async fn register_cla(
             error!("Failed to parse node IDs in response: {e}");
             hardy_bpa::cla::Error::Internal(e.into())
         })?;
+    let node_ids = NodeIds::try_from(node_ids.as_slice()).map_err(|e| {
+        error!("Far BPA reported unusable node IDs: {e}");
+        hardy_bpa::cla::Error::Internal(e.into())
+    })?;
 
-    let handler = Box::new(Handler {
-        cla: Arc::downgrade(&cla),
-    });
+    // The terms the far BPA settled. An absent cap means none was
+    // negotiated: a far BPA that predates the field (its cap is
+    // unknowable) or one with no size policy, so the CLA keeps its own
+    // declared limit. A nonsensical explicit 0 is tolerated as absent.
+    // Lanes are the CLA's own count, which the BPA takes as asked.
+    let terms = Terms {
+        lane_count: request.lane_count,
+        max_bundle_size: response.max_bundle_size.and_then(NonZeroU64::new),
+    };
 
-    // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
+    let session: SessionCla = Arc::new(Mutex::new(None));
+    let proxy = RpcProxy::run(
+        channel_sender,
+        channel_receiver,
+        Box::new(Handler {
+            cla: session.clone(),
+        }),
+        Side::Client,
+    );
+    let sink = Arc::new(Sink { proxy });
 
-    // Call on_register(). An absent cap means none was negotiated — a far
-    // BPA that predates the field (its cap is unknowable) or one with no
-    // size policy — so the CLA falls back to its own configured limits.
-    // A nonsensical explicit 0 is tolerated as absent.
-    cla.on_register(
-        Box::new(Sink { proxy }),
-        node_ids.as_slice(),
-        response.max_bundle_size.and_then(NonZeroU64::new),
-    )
+    // The CLA runs against the proxy from here, so a build or
+    // registration failure takes the session down with it.
+    let registered = async {
+        let cla = factory.build(Context::new(sink.clone(), Arc::new(node_ids), terms))?;
+        cla.register().await?;
+        Ok(cla)
+    }
     .await;
 
-    info!("Proxy CLA {name} started");
-    Ok(node_ids)
+    match registered {
+        Ok(cla) => {
+            *session.lock() = Some(cla);
+            info!("Proxy CLA {name} registered");
+            Ok(())
+        }
+        Err(e) => {
+            sink.unregister().await;
+            Err(e)
+        }
+    }
 }
 
 // Matched on the raw field, not the prost getter: the getter collapses

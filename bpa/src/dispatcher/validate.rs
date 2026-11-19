@@ -11,7 +11,7 @@
 //! surfacing only as a pull that fails when the bytes are bad, with the
 //! categorised verdict settled by `finish` once the drain returns and mapped
 //! by each door to its own surface (status reports at ingress, a
-//! `services::Error` at originate).
+//! `service::Error` at originate).
 
 use hardy_async::async_trait;
 use hardy_bpv7::{bpsec::bib, parse::PayloadTail, status_report::ReasonCode};

@@ -1,50 +1,40 @@
-use core::num::NonZeroU64;
-use std::{path::PathBuf, slice, sync::Arc};
+use std::{path::PathBuf, slice};
 
 use hardy_bpa::{
-    async_trait,
+    Bytes, async_trait, cla,
     stream::{Receiver, buffer_stream},
 };
-use hardy_bpv7::{bundle::Id, eid::NodeId};
-use tracing::{error, warn};
+use hardy_bpv7::bundle::Id;
+use tracing::error;
 
 use crate::Cla;
+
 #[async_trait]
-impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[NodeId],
-        max_bundle_size: Option<NonZeroU64>,
-    ) {
-        // Register all peers with the BPA
+impl cla::Cla for Cla {
+    async fn register(&self) -> cla::Result<()> {
+        // Announce every configured peer: each inbox directory is an
+        // address this CLA can write to.
         for (eid, path) in &self.inboxes {
-            if let Err(e) = sink
+            self.sink
                 .add_peer(
-                    hardy_bpa::cla::ClaAddress::Private(hardy_bpa::Bytes::copy_from_slice(
-                        path.as_bytes(),
-                    )),
+                    cla::Address::Private(Bytes::copy_from_slice(path.as_bytes())),
                     slice::from_ref(eid),
                 )
-                .await
-            {
-                warn!("add_peer() failed: {e}");
-                return;
-            }
+                .await?;
         }
 
-        let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
-        let sink = self.sink.call_once(|| sink);
-
-        // Start the file watcher if outbox is configured
+        // Watch the outbox, where configured
         if let Some(outbox) = &self.outbox {
-            self.start_watcher(sink.clone(), outbox.clone(), max_bundle_size)
+            self.start_watcher(self.sink.clone(), outbox.clone(), self.max_bundle_size)
                 .await;
         }
+
+        Ok(())
     }
 
-    async fn on_unregister(&self) {
+    async fn unregister(&self) -> cla::Result<()> {
         self.tasks.shutdown().await;
+        Ok(())
     }
 
     // INTERIM BUFFERING: the bundle is written to the inbox file in one go,
@@ -55,19 +45,14 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        cla_addr: &cla::Address,
         bundle_id: &Id,
         total_len: u64,
-        stream: &mut dyn Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        let _sink = self.sink.get().ok_or_else(|| {
-            error!("forward called before on_register!");
-            hardy_bpa::cla::Error::Disconnected
-        })?;
-
+        stream: &mut dyn Receiver<cla::Segment>,
+    ) -> cla::Result<cla::ForwardOutcome> {
         let bundle = buffer_stream(stream, total_len).await?;
 
-        if let hardy_bpa::cla::ClaAddress::Private(remote_addr) = cla_addr
+        if let cla::Address::Private(remote_addr) = cla_addr
             && let Ok(addr_str) = str::from_utf8(remote_addr.as_ref())
             && self.inboxes.values().any(|p| p == addr_str)
         {
@@ -81,13 +66,13 @@ impl hardy_bpa::cla::Cla for Cla {
 
             return tokio::fs::write(&path, bundle)
                 .await
-                .map(|_| hardy_bpa::cla::ForwardBundleResult::Sent)
+                .map(|_| cla::ForwardOutcome::Sent)
                 .map_err(|e| {
                     error!("Failed to write to '{}': {e}", path.display());
-                    hardy_bpa::cla::Error::Internal(e.into())
+                    cla::Error::Internal(e.into())
                 });
         }
 
-        Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
+        Ok(cla::ForwardOutcome::NoNeighbour)
     }
 }

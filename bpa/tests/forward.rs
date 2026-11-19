@@ -4,7 +4,6 @@
 
 #[cfg(feature = "rfc9173")]
 use core::num::NonZeroU8;
-use core::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -14,12 +13,16 @@ use std::sync::{
 use hardy_bpa::keys::KeyProvider;
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
-    cla::{self, Cla, ClaInit},
-    services,
+    bpa::Bpa,
+    cla::{self, Cla, Context, Factory, RegistrarExt, Request, Terms, factory_fn},
+    node_ids::NodeIds,
+    service::{self, RegistrarExt as _, Service, Sink, StatusNotify},
     stream::{Receiver, Segment},
 };
-use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
+// `eid::Service` is the service number inside an EID, not the service
+// trait registered here; it is aliased to the word the code already uses
+// for it.
+use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId, Service as ServiceId};
 #[cfg(feature = "rfc9173")]
 use hardy_bpv7::{
     block,
@@ -63,20 +66,22 @@ enum Event {
 
 /// Consumes the stream segment by segment, recording every segment it pulls.
 struct StreamingCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     events_tx: flume::Sender<Event>,
     /// When set, the first `forward` call fails without pulling.
     flaky: AtomicBool,
 }
 
 impl StreamingCla {
-    fn new(flaky: bool) -> (Arc<Self>, flume::Receiver<Event>) {
+    fn factory(flaky: bool) -> (impl Factory<Component = Self>, flume::Receiver<Event>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                events_tx: tx,
-                flaky: AtomicBool::new(flaky),
+            factory_fn(Request::default(), move |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    events_tx: tx,
+                    flaky: AtomicBool::new(flaky),
+                }))
             }),
             rx,
         )
@@ -85,25 +90,14 @@ impl StreamingCla {
 
 #[async_trait]
 impl cla::Cla for StreamingCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         if self.flaky.swap(false, Ordering::SeqCst) {
             let _ = self.events_tx.send(Event::Failed);
             return Err(cla::Error::StreamCancelled);
@@ -126,24 +120,26 @@ impl cla::Cla for StreamingCla {
             segments,
             total_len,
         });
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
 /// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
 /// — the shape every whole-buffer CLA takes on the streamed-only door.
 struct BufferedCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     events_tx: flume::Sender<Event>,
 }
 
 impl BufferedCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Event>) {
+    fn factory() -> (impl Factory<Component = Self>, flume::Receiver<Event>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                events_tx: tx,
+            factory_fn(Request::default(), |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    events_tx: tx,
+                }))
             }),
             rx,
         )
@@ -152,71 +148,62 @@ impl BufferedCla {
 
 #[async_trait]
 impl cla::Cla for BufferedCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let _ = self.events_tx.send(Event::Forward(bundle));
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Minimal application to originate bundles
+// Minimal service to originate bundles
 // ---------------------------------------------------------------------------
 
-struct SendOnlyApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+struct SendOnlyService {
+    sink: Arc<dyn Sink>,
+    /// The endpoint the BPA settled on, and the source of every bundle
+    /// this service originates.
+    endpoint: Eid,
 }
 
-impl SendOnlyApp {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
+impl SendOnlyService {
+    // `Context`, `Factory` and `factory_fn` name the CLA's here, so the
+    // service's namesakes are qualified.
+    fn factory() -> impl service::Factory<Component = Self> {
+        service::factory_fn(|cx: service::Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                endpoint: cx.endpoint,
+            }))
         })
     }
 }
 
 #[async_trait]
-impl services::Application for SendOnlyApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl Service for SendOnlyService {
+    async fn deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -265,12 +252,11 @@ async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
         .expect("CLA event channel closed")
 }
 
-/// Sends `payload` to ipn:0.2.99 via `app`, returning the destination EID.
-async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
+/// Sends `payload` to ipn:0.2.99 via `service`, returning the destination EID.
+async fn originate(service: &SendOnlyService, payload: &'static [u8]) -> Eid {
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
-    app.sink
-        .get()
-        .unwrap()
+    service
+        .sink
         .send(
             dest.clone(),
             Bytes::from_static(payload),
@@ -290,29 +276,24 @@ async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
 /// with an exact `total_len`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_cla_receives_single_final_segment() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, events_rx) = StreamingCla::new(false);
-    bpa.register_cla("stream".to_string(), cla.clone(), None, ClaInit::default())
-        .await
-        .unwrap();
+    let (cla, events_rx) = StreamingCla::factory(false);
+    let cla = bpa.register_cla("stream", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
         .unwrap();
 
-    let app = SendOnlyApp::new();
-    let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
         .await
         .unwrap();
-    let dest = originate(&app, b"Hello remote").await;
+    let dest = originate(&service, b"Hello remote").await;
 
     let Event::Streamed {
         segments,
@@ -328,7 +309,7 @@ async fn streaming_cla_receives_single_final_segment() {
     assert_eq!(total_len, data.len() as u64);
 
     let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse forwarded bundle");
-    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.id.source, service.endpoint);
     assert_eq!(parsed.bundle.primary.destination, dest);
 
     assert!(events_rx.is_empty());
@@ -339,40 +320,30 @@ async fn streaming_cla_receives_single_final_segment() {
 /// bundle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_cla_receives_whole_bundle() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, events_rx) = BufferedCla::new();
-    bpa.register_cla(
-        "buffered".to_string(),
-        cla.clone(),
-        None,
-        ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, events_rx) = BufferedCla::factory();
+    let cla = bpa.register_cla("buffered", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
         .unwrap();
 
-    let app = SendOnlyApp::new();
-    let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
         .await
         .unwrap();
-    let dest = originate(&app, b"Hello adapter").await;
+    let dest = originate(&service, b"Hello adapter").await;
 
     let Event::Forward(data) = recv_event(&events_rx, 5).await else {
         panic!("Expected the buffering CLA to assemble the bundle");
     };
     let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse forwarded bundle");
-    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.id.source, service.endpoint);
     assert_eq!(parsed.bundle.primary.destination, dest);
 
     bpa.shutdown().await;
@@ -382,28 +353,24 @@ async fn buffered_cla_receives_whole_bundle() {
 /// returns to Waiting and a routing change re-dispatches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_forward_is_requeued_and_retried() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, events_rx) = StreamingCla::new(true);
-    bpa.register_cla("flaky".to_string(), cla.clone(), None, ClaInit::default())
-        .await
-        .unwrap();
+    let (cla, events_rx) = StreamingCla::factory(true);
+    let cla = bpa.register_cla("flaky", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            cla::Address::Private("peer-a".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
         .unwrap();
 
-    let app = SendOnlyApp::new();
-    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
         .await
         .unwrap();
-    originate(&app, b"Try again").await;
+    originate(&service, b"Try again").await;
 
     assert!(matches!(recv_event(&events_rx, 5).await, Event::Failed));
 
@@ -413,10 +380,8 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
     let mut retry = None;
     for i in 0.. {
         cla.sink
-            .get()
-            .unwrap()
             .add_peer(
-                cla::ClaAddress::Private(format!("peer-{i}").into_bytes().into()),
+                cla::Address::Private(format!("peer-{i}").into_bytes().into()),
                 &[remote_node(2)],
             )
             .await
@@ -444,20 +409,61 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
 // Direct-call tests: a buffering CLA over `stream::buffer_stream`
 // ---------------------------------------------------------------------------
 
+/// Stands in for the BPA in the direct-call tests, which drive `forward`
+/// with no BPA behind the CLA.
+struct MockSink;
+
+#[async_trait]
+impl cla::Sink for MockSink {
+    async fn unregister(&self) {}
+
+    async fn dispatch(
+        &self,
+        _peer_node: Option<&NodeId>,
+        _peer_addr: Option<&cla::Address>,
+        _stream: &mut dyn Receiver<Segment>,
+    ) -> cla::Result<cla::Acceptance> {
+        unimplemented!("the direct-call tests receive nothing")
+    }
+
+    async fn add_peer(&self, _cla_addr: cla::Address, _node_ids: &[NodeId]) -> cla::Result<bool> {
+        unimplemented!("the direct-call tests announce no peer")
+    }
+
+    async fn remove_peer(&self, _cla_addr: &cla::Address) -> cla::Result<bool> {
+        unimplemented!("the direct-call tests announce no peer")
+    }
+
+    async fn report_transfer(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _outcome: cla::TransferOutcome,
+    ) -> cla::Result<()> {
+        unimplemented!("the direct-call tests defer no transfer")
+    }
+}
+
 fn direct_call_fixture() -> (
     Arc<BufferedCla>,
     flume::Receiver<Event>,
     hardy_bpv7::bundle::Bundle,
     Bytes,
-    cla::ClaAddress,
+    cla::Address,
 ) {
-    let (cla, events_rx) = BufferedCla::new();
+    let (factory, events_rx) = BufferedCla::factory();
+    let cla = factory
+        .build(Context::new(
+            Arc::new(MockSink),
+            Arc::new(NodeIds::default()),
+            Terms::default(),
+        ))
+        .expect("a buffering CLA builds under any terms");
     let (bundle, data) = build_bundle(
         &"ipn:0.1.1".parse().unwrap(),
         &"ipn:0.2.99".parse().unwrap(),
         b"payload",
     );
-    let addr = cla::ClaAddress::Private("x".as_bytes().into());
+    let addr = cla::Address::Private("x".as_bytes().into());
     (cla, events_rx, bundle, data, addr)
 }
 
@@ -472,7 +478,7 @@ async fn buffering_cla_concats_multi_segment_stream() {
         .forward(None, &addr, &bundle.primary.id, data.len() as u64, &mut rx)
         .await
         .unwrap();
-    assert!(matches!(result, cla::ForwardBundleResult::Sent));
+    assert!(matches!(result, cla::ForwardOutcome::Sent));
 
     let Ok(Event::Forward(received)) = events_rx.try_recv() else {
         panic!("Expected forward to receive the reassembled bundle");
@@ -560,9 +566,9 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
 
 /// Builds a BPA on an allocator-1 node — its 3-element IPN EIDs change bytes
 /// under the legacy re-encode — with the given legacy-peer patterns, wired
-/// to a buffering CLA and a send-only application.
-async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Receiver<Event>, Eid) {
-    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+/// to a buffering CLA and a send-only service.
+async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyService>, flume::Receiver<Event>) {
+    let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 1,
             node_number: 1,
@@ -573,25 +579,14 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Rec
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .ipn_legacy_peers(patterns.iter().map(|p| p.parse().unwrap()).collect())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, events_rx) = BufferedCla::new();
-    bpa.register_cla(
-        "buffer".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, events_rx) = BufferedCla::factory();
+    let cla = bpa.register_cla("buffer", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 1,
                 node_number: 2,
@@ -600,24 +595,22 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Rec
         .await
         .unwrap();
 
-    let app = SendOnlyApp::new();
-    let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendOnlyService::factory())
         .await
         .unwrap();
-    (bpa, app, events_rx, source_eid)
+    (bpa, service, events_rx)
 }
 
 /// A next hop matching a configured legacy-peer pattern receives the bundle
 /// with `Ipn` source and destination re-encoded as `LegacyIpn` on the wire.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_receives_two_element_encoding() {
-    let (bpa, app, events_rx, _) = legacy_fixture(&["ipn:1.2.*"]).await;
+    let (bpa, service, events_rx) = legacy_fixture(&["ipn:1.2.*"]).await;
 
     let dest: Eid = "ipn:1.2.99".parse().unwrap();
-    app.sink
-        .get()
-        .unwrap()
+    service
+        .sink
         .send(
             dest,
             Bytes::from_static(b"legacy"),
@@ -650,12 +643,11 @@ async fn legacy_peer_receives_two_element_encoding() {
 /// 3-element encoding untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_legacy_peer_keeps_canonical_encoding() {
-    let (bpa, app, events_rx, source_eid) = legacy_fixture(&["ipn:9.9.*"]).await;
+    let (bpa, service, events_rx) = legacy_fixture(&["ipn:9.9.*"]).await;
 
     let dest: Eid = "ipn:1.2.99".parse().unwrap();
-    app.sink
-        .get()
-        .unwrap()
+    service
+        .sink
         .send(
             dest.clone(),
             Bytes::from_static(b"canonical"),
@@ -669,7 +661,7 @@ async fn non_legacy_peer_keeps_canonical_encoding() {
         panic!("Expected a forwarded bundle");
     };
     let parsed = hardy_bpv7::parse::parse(data).expect("Failed to parse forwarded bundle");
-    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.id.source, service.endpoint);
     assert_eq!(parsed.bundle.primary.destination, dest);
 
     assert!(events_rx.is_empty());
@@ -681,25 +673,16 @@ async fn non_legacy_peer_keeps_canonical_encoding() {
 #[cfg(feature = "rfc9173")]
 async fn legacy_relay() -> (Bpa, Arc<BufferedCla>, flume::Receiver<Event>) {
     let bpa = Bpa::builder()
-        .node_ids(
-            hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice())
-                .unwrap(),
-        )
+        .node_ids(NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice()).unwrap())
         .ipn_legacy_peers(vec!["ipn:1.2.*".parse().unwrap()])
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
-    let (cla, events_rx) = BufferedCla::new();
-    bpa.register_cla("cla".to_string(), cla.clone(), None, ClaInit::default())
-        .await
-        .unwrap();
+        .build();
+    bpa.start(false).await.unwrap();
+    let (cla, events_rx) = BufferedCla::factory();
+    let cla = bpa.register_cla("cla", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(relay_node(2))],
         )
         .await
@@ -740,8 +723,6 @@ fn legacy_bound_bundle() -> (Parsed, u64) {
 async fn receive(cla: &BufferedCla, received: &Parsed) {
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut received.data.clone())
             .await
             .unwrap(),
@@ -1160,39 +1141,18 @@ impl KeyProvider for FixedKeys {
 #[cfg(feature = "rfc9173")]
 async fn relay(received: &Bytes, keys: Vec<Key>) -> Parsed {
     let bpa = Bpa::builder()
-        .node_ids(
-            hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice())
-                .unwrap(),
-        )
+        .node_ids(NodeIds::try_from([NodeId::Ipn(relay_node(1))].as_slice()).unwrap())
         .key_provider(Arc::new(FixedKeys(keys)))
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
-    let (ingress, _) = BufferedCla::new();
-    bpa.register_cla(
-        "ingress".to_string(),
-        ingress.clone(),
-        None,
-        ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let (egress, events_rx) = BufferedCla::new();
-    bpa.register_cla(
-        "egress".to_string(),
-        egress.clone(),
-        None,
-        ClaInit::default(),
-    )
-    .await
-    .unwrap();
+        .build();
+    bpa.start(false).await.unwrap();
+    let (ingress, _) = BufferedCla::factory();
+    let ingress = bpa.register_cla("ingress", ingress).await.unwrap();
+    let (egress, events_rx) = BufferedCla::factory();
+    let egress = bpa.register_cla("egress", egress).await.unwrap();
     egress
         .sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(relay_node(2))],
         )
         .await
@@ -1201,8 +1161,6 @@ async fn relay(received: &Bytes, keys: Vec<Key>) -> Parsed {
     assert_eq!(
         ingress
             .sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut received.clone())
             .await
             .unwrap(),

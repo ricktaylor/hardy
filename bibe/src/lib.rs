@@ -6,7 +6,7 @@ enabling bundles to be tunneled through intermediate DTN networks by wrapping an
 inner bundle inside the payload of an outer bundle. It uses a hybrid CLA/Service
 architecture: encapsulation is performed by a [`Cla`](hardy_bpa::cla::Cla)
 implementation that intercepts `forward()` calls, while decapsulation is handled by
-a [`Service`](hardy_bpa::services::Service) that receives outer bundles, extracts
+a [`raw::Service`](hardy_bpa::service::raw::Service) that receives outer bundles, extracts
 the inner bundle, and re-injects it into the BPA. Tunnel destinations are registered
 as virtual peers, making them routable via standard BPA forwarding.
 */
@@ -15,10 +15,15 @@ as virtual peers, making them routable via standard BPA forwarding.
 
 extern crate alloc;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 
-use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit};
-use hardy_bpv7::eid::{Eid, NodeId, Service};
+// Both subsystems name their typed door `Registrar`, so each is
+// aliased to the subsystem it belongs to.
+use hardy_bpa::{
+    cla::{Registrar as ClaRegistrar, RegistrarExt as _},
+    service::{Registrar as ServiceRegistrar, RegistrarExt as _},
+};
+use hardy_bpv7::eid::{Eid, NodeId};
 use thiserror::Error as ThisError;
 use tracing::debug;
 
@@ -36,39 +41,18 @@ pub use config::{Config, Tunnel};
 /// Provides Bundle-in-Bundle Encapsulation for tunneling bundles
 /// through intermediate networks. Uses a hybrid architecture:
 /// - CLA for encapsulation (via `forward()`)
-/// - Service for decapsulation (via `on_deliver()`)
+/// - Service for decapsulation (via `deliver()`)
 pub struct Bibe {
-    // Config values needed for registration
-    decap_service_id: Option<Service>,
-    tunnels: Vec<Tunnel>,
-
-    // Internal components
     cla: Arc<BibeCla>,
     decap_service: Arc<DecapService>,
 }
 
 impl Bibe {
-    /// Create a new BIBE instance from configuration.
+    /// Registers the CLA and the decapsulation service `config` describes
+    /// with `bpa`, and adds every tunnel destination it lists.
     ///
-    /// # Arguments
-    ///
-    /// * `config` - The configuration for this BIBE instance.
-    pub fn new(config: &Config) -> Self {
-        let cla = Arc::new(BibeCla::new(config.tunnel_source.clone()));
-        let decap_service = Arc::new(DecapService::new(cla.clone()));
-
-        Self {
-            decap_service_id: config.decap_service_id.clone(),
-            tunnels: config.tunnels.clone(),
-            cla,
-            decap_service,
-        }
-    }
-
-    /// Register this BIBE instance with the BPA.
-    ///
-    /// This registers the CLA and decapsulation service with the BPA,
-    /// and adds all configured tunnel destinations.
+    /// The BPA owns both components from here on; the handle returned is
+    /// for adding further tunnels and for unregistering.
     ///
     /// # Example
     /// ```ignore
@@ -76,38 +60,42 @@ impl Bibe {
     ///     .with_decap_service_id(Service::Ipn(12))
     ///     .with_tunnel(NodeId::new("dtn://tunnel1"), Eid::new("ipn:100.12"));
     ///
-    /// let bibe = Arc::new(bibe::Bibe::new(&config));
-    /// bibe.register(&bpa).await?;
+    /// let bibe = bibe::Bibe::register(&config, &bpa).await?;
     /// ```
-    pub async fn register(self: &Arc<Self>, bpa: &dyn BpaRegistration) -> Result<(), Error> {
-        // Register CLA (uses Private address type). No declared size limit:
-        // the encapsulation overhead is per-bundle, so the outer-vs-cap
-        // check happens per forward instead.
-        bpa.register_cla("bibe".into(), self.cla.clone(), None, ClaInit::default())
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either registration is refused, or if a
+    /// configured tunnel destination cannot be added as a peer.
+    pub async fn register<B>(config: &Config, bpa: &B) -> Result<Self, Error>
+    where
+        B: ClaRegistrar + ServiceRegistrar + ?Sized,
+    {
+        // The CLA carries `Address::Private` peers and declares no receive
+        // limit: the encapsulation overhead is per bundle, so the
+        // outer-vs-limit check happens per forward instead.
+        let cla = bpa
+            .register_cla("bibe", BibeCla::factory(config.tunnel_source.clone()))
             .await?;
 
-        // Register decapsulation service
-        if let Some(service_id) = self.decap_service_id.clone() {
-            bpa.register_service(service_id, self.decap_service.clone())
-                .await?;
-        } else {
-            bpa.register_dynamic_service(self.decap_service.clone())
+        let decap_service = bpa
+            .register_raw_service(
+                config.decap_service_id.clone(),
+                DecapService::factory(cla.clone()),
+            )
+            .await?;
+
+        for tunnel in &config.tunnels {
+            cla.add_tunnel(tunnel.tunnel.clone(), tunnel.decap_endpoint.clone())
                 .await?;
         }
 
-        // Register configured tunnel destinations
-        let tunnel_count = self.tunnels.len();
-        for tunnel in &self.tunnels {
-            self.cla
-                .add_tunnel(tunnel.tunnel.clone(), tunnel.decap_endpoint.clone())
-                .await?;
-        }
+        debug!("BIBE initialized with {} tunnels", config.tunnels.len());
 
-        debug!("BIBE initialized with {tunnel_count} tunnels");
-        Ok(())
+        Ok(Self { cla, decap_service })
     }
 
-    /// Unregister this BIBE instance from the BPA.
+    /// Unregisters this BIBE instance from the BPA.
     pub async fn unregister(&self) {
         self.cla.unregister().await;
         self.decap_service.unregister().await;
@@ -131,6 +119,10 @@ impl Bibe {
     ///
     /// // Now routes can use: ipn:200.* via dtn://tunnel1
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the BPA refuses the virtual peer.
     pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<(), Error> {
         self.cla.add_tunnel(tunnel_id, decap_endpoint).await
     }
@@ -143,9 +135,6 @@ impl Bibe {
 /// enum.
 #[derive(Debug, ThisError)]
 pub enum Error {
-    /// CLA not registered with BPA yet.
-    #[error("CLA not registered with BPA")]
-    NotRegistered,
     /// Invalid CLA address format.
     #[error("Invalid CLA address format")]
     InvalidAddress,
@@ -169,5 +158,5 @@ pub enum Error {
     Dispatch(#[from] hardy_bpa::cla::Error),
     /// Failed to register service with BPA.
     #[error(transparent)]
-    ServiceRegistration(#[from] hardy_bpa::services::Error),
+    ServiceRegistration(#[from] hardy_bpa::service::Error),
 }

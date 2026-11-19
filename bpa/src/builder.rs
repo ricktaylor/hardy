@@ -1,18 +1,22 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
+// `eid::Service` is the service number inside an EID, not the service
+// trait registered here; it is aliased to the word the code already uses
+// for it.
+use hardy_bpv7::eid::Service as ServiceId;
 use hardy_eid_patterns::EidPattern;
 
 use crate::{
-    Arc,
-    bpa::Bpa,
-    cla::{Cla, ClaInit, registry::ClaRegistryBuilder},
+    Arc, HashMap,
+    bpa::{Bpa, Factories},
+    cla::{self, BoxFactory, Factory},
     dispatcher::{Config as DispatcherConfig, Dispatcher},
     filter::pack::{FilterPack, chains::FilterChains},
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
-    routing::{RibBuilder, RoutingAgent},
-    services::{self, Service, registry::ServiceRegistryBuilder},
+    routing::{self, Rib},
+    service::{self, table::FactoryKind},
     storage::{
         BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
         store::Store,
@@ -42,9 +46,11 @@ pub struct BpaBuilder {
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
     bundle_storage: Option<Arc<dyn BundleStorage>>,
     key_provider: Arc<dyn KeyProvider>,
-    service_registry_builder: ServiceRegistryBuilder,
-    cla_registry_builder: ClaRegistryBuilder,
-    rib_builder: RibBuilder,
+    services: Vec<(Option<ServiceId>, FactoryKind<'static>)>,
+    clas: Vec<(String, BoxFactory<'static>)>,
+    cla_policies: HashMap<String, Arc<dyn FlowControllerFactory>>,
+    routing_agents: Vec<(String, routing::BoxFactory<'static>)>,
+    service_priority: u32,
     filter_packs: Vec<FilterPack>,
     primary_block_integrity: bool,
     bundle_age_required: bool,
@@ -70,9 +76,11 @@ impl BpaBuilder {
             node_ids: NodeIds::default(),
             metadata_storage: None,
             bundle_storage: None,
-            service_registry_builder: ServiceRegistryBuilder::new(),
-            cla_registry_builder: ClaRegistryBuilder::new(),
-            rib_builder: RibBuilder::new(),
+            services: Vec::new(),
+            clas: Vec::new(),
+            cla_policies: HashMap::new(),
+            routing_agents: Vec::new(),
+            service_priority: 1,
             filter_packs: Vec::new(),
             primary_block_integrity: true,
             bundle_age_required: true,
@@ -150,52 +158,105 @@ impl BpaBuilder {
     }
 
     pub fn service_priority(mut self, priority: u32) -> Self {
-        self.rib_builder.service_priority(priority);
+        self.service_priority = priority;
         self
     }
 
-    /// Register a CLA to be initialized when the BPA is built.
+    /// Declares a CLA, registered at
+    /// [`Bpa::start`](crate::bpa::Bpa::start).
     ///
-    /// `init` carries the CLA's set-once declarations
-    /// ([`ClaInit`](crate::cla::ClaInit)), snapshotted at registration;
-    /// its `max_bundle_size` is the CLA's declared receive limit, folded
-    /// with the BPA's configured cap into the effective value delivered to
-    /// [`Cla::on_register`](crate::cla::Cla).
-    pub fn cla(
+    /// The BPA settles the factory's [`Request`](crate::cla::Request)
+    /// against its own configuration and builds the CLA from the
+    /// [`Terms`](crate::cla::Terms). A name already declared, or a CLA
+    /// that cannot run, fails `start` rather than this call, so
+    /// declaration stays chainable.
+    pub fn cla<F: Factory + 'static>(self, name: impl Into<String>, factory: F) -> Self {
+        self.cla_boxed(name, BoxFactory::new(factory))
+    }
+
+    /// Declares a CLA from an erased factory, for an embedder choosing
+    /// among factory types of its own.
+    ///
+    /// [`cla`](Self::cla) is the typed door, and erases for the caller.
+    pub fn cla_boxed(mut self, name: impl Into<String>, factory: BoxFactory<'static>) -> Self {
+        self.clas.push((name.into(), factory));
+        self
+    }
+
+    /// Shapes the egress queues feeding the CLA named `name`.
+    ///
+    /// The policy is the BPA's own half of the attachment, chosen by the
+    /// embedder rather than by the CLA, so it applies to a CLA registered
+    /// at runtime exactly as it does to one declared here. A name no CLA
+    /// ever attaches under shapes nothing, and a CLA not named here runs
+    /// unshaped.
+    pub fn egress_policy(
         mut self,
         name: impl Into<String>,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn FlowControllerFactory>>,
-        init: ClaInit,
+        policy: Arc<dyn FlowControllerFactory>,
     ) -> Self {
-        self.cla_registry_builder
-            .insert(name.into(), cla, policy, init)
-            .expect("Failed to insert CLA");
+        self.cla_policies.insert(name.into(), policy);
         self
     }
 
-    /// Register a service to be initialized when the BPA is built.
-    pub fn service(
+    /// Declares a payload-only service, built when the BPA is built and
+    /// started when the BPA starts.
+    ///
+    /// `id` names the endpoint's service number, and `None` asks the BPA
+    /// to allocate one. The key comes first because the embedder owns the
+    /// namespace: two instances of the same service crate are told apart
+    /// here, without the crate's cooperation.
+    pub fn service<F: service::Factory + 'static>(
         mut self,
-        service: Arc<dyn Service>,
-        service_id: hardy_bpv7::eid::Service,
+        id: Option<ServiceId>,
+        factory: F,
     ) -> Self {
-        self.service_registry_builder
-            .insert(
-                service_id,
-                services::registry::ServiceImpl::LowLevel(service),
-            )
-            .expect("Failed to register service");
+        self.services
+            .push((id, FactoryKind::Payload(service::BoxFactory::new(factory))));
         self
     }
 
-    /// Register a routing agent to be initialized when the BPA is built.
-    pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn RoutingAgent>) -> Self {
-        self.rib_builder.insert(name.into(), agent);
+    /// Declares a whole-bundle service, as [`service`](Self::service)
+    /// does.
+    pub fn raw_service<F: service::raw::Factory + 'static>(
+        mut self,
+        id: Option<ServiceId>,
+        factory: F,
+    ) -> Self {
+        self.services
+            .push((id, FactoryKind::Raw(service::raw::BoxFactory::new(factory))));
         self
     }
 
-    /// Set the key provider for BPSec operations.
+    /// Declares a routing agent, registered at
+    /// [`Bpa::start`](crate::bpa::Bpa::start), after storage recovery,
+    /// so the routes it installs cannot race the consistency check.
+    ///
+    /// A name already declared, or an agent that cannot run, fails
+    /// `start` rather than this call, so declaration stays chainable.
+    pub fn routing_agent<F: routing::Factory + 'static>(
+        self,
+        name: impl Into<String>,
+        factory: F,
+    ) -> Self {
+        self.routing_agent_boxed(name, routing::BoxFactory::new(factory))
+    }
+
+    /// Declares a routing agent from an erased factory, for an embedder
+    /// choosing among factory types of its own.
+    ///
+    /// [`routing_agent`](Self::routing_agent) is the typed door, and
+    /// erases for the caller.
+    pub fn routing_agent_boxed(
+        mut self,
+        name: impl Into<String>,
+        factory: routing::BoxFactory<'static>,
+    ) -> Self {
+        self.routing_agents.push((name.into(), factory));
+        self
+    }
+
+    /// Sets the key provider for BPSec operations.
     pub fn key_provider(mut self, provider: Arc<dyn KeyProvider>) -> Self {
         self.key_provider = provider;
         self
@@ -242,8 +303,12 @@ impl BpaBuilder {
         self
     }
 
-    /// Consume the builder and construct the BPA with all registered components.
-    pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
+    /// Consumes the builder and constructs the BPA, whose declared
+    /// components register at [`Bpa::start`](crate::bpa::Bpa::start).
+    ///
+    /// The BPA that comes back is inert: no component exists yet and no
+    /// task runs until it starts.
+    pub fn build(self) -> Bpa {
         // Freeze the filter packs first: the per-hook chains splice in call
         // order, and each input hook's P = the max peek its registrations
         // declare.
@@ -254,12 +319,12 @@ impl BpaBuilder {
             .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(None)));
 
         let bundle_storage: Arc<dyn BundleStorage> = match self.bundle_storage {
-            Some(raw) if !self.cache_disabled => Arc::new(CachedBundleStorage::new(
-                raw,
+            Some(backend) if !self.cache_disabled => Arc::new(CachedBundleStorage::new(
+                backend,
                 self.lru_capacity,
                 self.max_cached_bundle_size,
             )),
-            Some(raw) => raw,
+            Some(backend) => backend,
             None => Arc::new(BundleMemStorage::new(None, None)),
         };
 
@@ -270,10 +335,11 @@ impl BpaBuilder {
         ));
 
         let node_ids = Arc::new(self.node_ids);
-        let rib = self
-            .rib_builder
-            .build(node_ids.clone(), store.clone())
-            .await?;
+        let rib = Arc::new(Rib::new(
+            node_ids.clone(),
+            store.clone(),
+            self.service_priority,
+        ));
 
         let (dispatcher, start_dispatcher) = Dispatcher::new(
             DispatcherConfig {
@@ -292,31 +358,41 @@ impl BpaBuilder {
             filter_chains,
         );
 
-        // Both registries park their configured registrations: activation
-        // happens in Bpa::start, after storage recovery.
-        let service_registry = self.service_registry_builder.build(&node_ids)?;
-        let cla_registry = self.cla_registry_builder.build(
-            &node_ids,
+        // The tables start empty: a declared component is no different
+        // from one that registers while the BPA runs, so it waits for
+        // the same door, which `Bpa::start` opens once the store is
+        // quiescent.
+        let services = service::table::Table::new(node_ids.clone(), &dispatcher, rib.clone());
+        let clas = cla::table::Table::new(
+            node_ids.clone(),
+            &dispatcher,
+            rib.clone(),
+            store.clone(),
             self.poll_channel_depth.into(),
-            &rib,
-            &store,
+            self.cla_policies,
         );
+        let agents = routing::agent::table::Table::new(node_ids, rib.clone());
 
-        // TODO: Dispatcher and ClaRegistry still reference each other: the
-        // registry holds the dispatcher, and the dispatcher late-binds the
-        // registry through its Once cell — readers driven from Rib::start
+        // TODO: Dispatcher and the CLA table still reference each other:
+        // the table holds the dispatcher, and the dispatcher late-binds the
+        // table through its Once cell, so readers driven from Rib::start
         // (poll_waiting) rest on a runtime expect rather than the type
         // system. The start closure fixes the wiring order; the cycle
         // itself remains to be dissolved.
-        start_dispatcher(cla_registry.clone());
+        start_dispatcher(clas.clone());
 
-        Ok(Bpa::from_parts(
-            node_ids,
+        Bpa::from_parts(
             store,
             rib,
-            cla_registry,
-            service_registry,
+            clas,
+            services,
+            agents,
             dispatcher,
-        ))
+            Factories {
+                clas: self.clas,
+                services: self.services,
+                agents: self.routing_agents,
+            },
+        )
     }
 }

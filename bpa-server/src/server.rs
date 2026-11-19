@@ -12,9 +12,8 @@ use anyhow::Context;
 use hardy_async::TaskPool;
 use hardy_bpa::{
     bpa::Bpa,
-    cla::{Cla, ClaInit},
+    cla::BoxFactory,
     policy::FlowControllerFactory,
-    routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
 #[cfg(feature = "echo")]
@@ -36,7 +35,11 @@ use hardy_tcpclv4::Tcpclv4;
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
-use crate::config::{Config, FlowControllerFactoryConfig, cla::ClaType, storage};
+use crate::config::{
+    Config, FlowControllerFactoryConfig,
+    cla::{ClaConfig, ClaType},
+    storage,
+};
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -210,16 +213,11 @@ impl BpaServer {
                     }
                 })
                 .transpose()?;
-            let agent: Arc<dyn RoutingAgent> = Arc::new(StaticRoutesAgent::new(
-                routes_file,
-                sr_config.priority,
-                sr_config.watch.into(),
-            ));
             builder = builder.routing_agent(
                 sr_config
                     .protocol_id
                     .unwrap_or_else(|| StaticRoutesAgent::DEFAULT_PROTOCOL_ID.to_string()),
-                agent,
+                StaticRoutesAgent::factory(routes_file, sr_config.priority, sr_config.watch.into()),
             );
         }
 
@@ -231,7 +229,7 @@ impl BpaServer {
                     } else {
                         for service_id in services {
                             builder = builder
-                                .service(Arc::new(EchoService::new()), service_id);
+                                .raw_service(Some(service_id), EchoService::factory());
                         }
                     }
                 }
@@ -265,51 +263,45 @@ impl BpaServer {
             )
             .collect();
 
-        for cla_config in config.clas {
-            let cla: Option<(Arc<dyn Cla>, ClaInit)> = match cla_config.cla_type {
+        for ClaConfig {
+            name,
+            cla_type,
+            policy: policy_name,
+        } in config.clas
+        {
+            // The factories have nothing in common but the trait, so the
+            // match yields an erased one and the declaration is written
+            // once. An unknown type is ignored whole, policy and all.
+            let factory = match cla_type {
                 #[cfg(feature = "tcpclv4")]
-                ClaType::TcpClv4(tcpcl) => {
-                    let cla = Tcpclv4::try_from(tcpcl)
-                        .with_context(|| format!("Failed to create CLA '{}'", cla_config.name))?;
-                    let init = cla.cla_init();
-                    Some((Arc::new(cla) as Arc<dyn Cla>, init))
-                }
+                ClaType::TcpClv4(tcpcl) => BoxFactory::new(
+                    Tcpclv4::factory(tcpcl)
+                        .with_context(|| format!("Failed to create CLA '{name}'"))?,
+                ),
                 #[cfg(feature = "file-cla")]
-                ClaType::File(file) => Some((
-                    Arc::new(FileCla::new(&file).map_err(|e| {
-                        anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
-                    })?) as Arc<dyn Cla>,
-                    ClaInit::default(),
-                )),
+                ClaType::File(file) => BoxFactory::new(
+                    FileCla::factory(&file)
+                        .with_context(|| format!("Failed to create CLA '{name}'"))?,
+                ),
                 ClaType::Other { cla_type, .. } => {
-                    warn!(
-                        "Ignoring CLA '{}' with unknown type '{cla_type}'",
-                        cla_config.name
-                    );
-                    None
+                    warn!("Ignoring CLA '{name}' with unknown type '{cla_type}'");
+                    continue;
                 }
             };
-            let Some((cla, init)) = cla else {
-                continue;
-            };
 
-            let egress_policy = cla_config
-                .policy
-                .as_ref()
-                .map(|name| {
-                    policies.get(name).cloned().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "CLA '{}' references unknown policy '{name}'",
-                            cla_config.name
-                        )
-                    })
-                })
-                .transpose()?;
+            // The CLA names the egress policy shaping its queues; the
+            // policies themselves are configured against the BPA.
+            if let Some(policy_name) = policy_name {
+                let policy = policies.get(&policy_name).cloned().ok_or_else(|| {
+                    anyhow::anyhow!("CLA '{name}' references unknown policy '{policy_name}'")
+                })?;
+                builder = builder.egress_policy(&name, policy);
+            }
 
-            builder = builder.cla(cla_config.name, cla, egress_policy, init);
+            builder = builder.cla_boxed(name, factory);
         }
 
-        let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
+        let bpa = Arc::new(builder.build());
 
         Ok(Self {
             bpa,
@@ -324,8 +316,15 @@ impl BpaServer {
     // the store), serve the gRPC front end if configured, then wait for
     // the pool's cancellation token (the composition root wires signals to
     // it) and shut down gracefully.
+    //
+    // Every CLA, service and routing agent the configuration declares
+    // registers in that start, and one that cannot run takes the server
+    // down rather than leaving a transport silently missing.
     pub async fn run(self) -> anyhow::Result<()> {
-        self.bpa.start(self.recover_storage).await;
+        self.bpa
+            .start(self.recover_storage)
+            .await
+            .map_err(anyhow::Error::from_boxed)?;
 
         #[cfg(feature = "grpc")]
         if let Some(grpc_config) = &self.grpc_config {

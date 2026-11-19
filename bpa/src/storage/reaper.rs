@@ -170,7 +170,7 @@ impl Reaper {
                     .await
                     .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
                 {
-                    // Hand-off commits at its claim: a bundle mid-`on_deliver`
+                    // Hand-off commits at its claim: a bundle mid-delivery
                     // cannot be recalled from the service, and a transfer a
                     // CLA has accepted cannot be recalled from the wire, so
                     // expiring either here would report a deletion that did

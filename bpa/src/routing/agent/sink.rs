@@ -1,71 +1,43 @@
 use hardy_eid_patterns::EidPattern;
 
-use super::{Error, Result, RoutingSink};
 use crate::{
-    Arc, async_trait,
-    routing::{action::RouteAction, rib::Rib},
+    async_trait,
+    routing::{Result, RouteAction},
 };
 
-pub struct Sink {
-    name: String,
-    rib: Arc<Rib>,
-}
-
-impl Sink {
-    pub fn new(name: String, rib: Arc<Rib>) -> Self {
-        Self { name, rib }
-    }
-
-    fn check_connected(&self) -> Result<()> {
-        if self.rib.has_agent(&self.name) {
-            Ok(())
-        } else {
-            Err(Error::Disconnected)
-        }
-    }
-}
-
+/// The channel an [`Agent`](super::Agent) pushes routes through.
+///
+/// The sink stamps the agent's registered name on every route as its
+/// source, so an agent only ever adds or removes routes attributed to
+/// itself. It arrives in the agent's [`Context`](super::Context) and
+/// stays usable until the agent unregisters or the BPA shuts down, after
+/// which every operation here returns
+/// [`Error::Disconnected`](crate::routing::Error::Disconnected).
 #[async_trait]
-impl RoutingSink for Sink {
-    async fn unregister(&self) {
-        self.rib.unregister_agent(&self.name).await;
-    }
+pub trait Sink: Send + Sync {
+    /// Unregisters the agent from the BPA, withdrawing the routes it added.
+    async fn unregister(&self);
 
+    /// Adds a route to the RIB.
+    ///
+    /// Returns whether the route was newly inserted; an identical route
+    /// already in the RIB returns `false`.
     async fn add_route(
         &self,
         pattern: EidPattern,
         action: RouteAction,
         priority: u32,
-    ) -> Result<bool> {
-        self.check_connected()?;
-        self.rib
-            .add(pattern, self.name.clone(), action.into(), priority)
-            .await
-    }
+    ) -> Result<bool>;
 
+    /// Removes a route from the RIB.
+    ///
+    /// Only a route matching the pattern, the action and the priority,
+    /// and carrying this agent's source name, is removed. Returns whether
+    /// one was found.
     async fn remove_route(
         &self,
         pattern: &EidPattern,
         action: &RouteAction,
         priority: u32,
-    ) -> Result<bool> {
-        self.check_connected()?;
-        Ok(self
-            .rib
-            .remove(pattern, &self.name, action.clone().into(), priority)
-            .await)
-    }
-}
-
-impl Drop for Sink {
-    fn drop(&mut self) {
-        if self.rib.tasks.is_cancelled() || !self.rib.has_agent(&self.name) {
-            return;
-        }
-        let name = self.name.clone();
-        let rib = self.rib.clone();
-        hardy_async::spawn!(self.rib.tasks, "routing_agent_drop_cleanup", async move {
-            rib.unregister_agent(&name).await;
-        });
-    }
+    ) -> Result<bool>;
 }

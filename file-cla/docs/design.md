@@ -48,9 +48,9 @@ The naming follows email client conventions from the external system's perspecti
 
 ### Directory-Based Peer Addressing
 
-Rather than network addresses, peers are identified by their Node ID mapped to a filesystem path. During registration, the CLA calls `sink.add_peer()` with a `ClaAddress::Private` containing the directory path as bytes.
+Rather than network addresses, peers are identified by their Node ID mapped to a filesystem path. During registration, the CLA calls `sink.add_peer()` with a `cla::Address::Private` containing the directory path as bytes.
 
-When the BPA routes a bundle to a peer, it provides the `ClaAddress::Private` back to the CLA, which extracts the path and writes the bundle file there.
+When the BPA routes a bundle to a peer, it provides the `cla::Address::Private` back to the CLA, which extracts the path and writes the bundle file there.
 
 ### Debounced Filesystem Watching
 

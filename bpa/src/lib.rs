@@ -53,7 +53,7 @@ pub mod keys;
 pub mod node_ids;
 pub mod policy;
 pub mod routing;
-pub mod services;
+pub mod service;
 pub mod storage;
 pub mod stream;
 
@@ -63,7 +63,7 @@ pub type Error = Box<dyn core::error::Error + Send + Sync>;
 use alloc::sync::{Arc, Weak};
 
 use trace_err::*;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, warn};
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
