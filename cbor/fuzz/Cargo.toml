@@ -24,3 +24,8 @@ name = "test"
 path = "test.rs"
 test = true
 doc = false
+
+# `libfuzzer-sys` and `hardy-cbor` belong to the fuzz target, which
+# `cargo test` does not build.
+[lints.cargo]
+unused_dependencies = "allow"

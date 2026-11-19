@@ -48,3 +48,8 @@ path = "fuzz_targets/streaming.rs"
 test = false
 bench = false
 doc = false
+
+# `libfuzzer-sys` belongs to the fuzz targets, which `cargo test` does not
+# build.
+[lints.cargo]
+unused_dependencies = "allow"
