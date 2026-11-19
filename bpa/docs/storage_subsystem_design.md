@@ -319,6 +319,28 @@ flowchart TD
     Phase2 --> Phase3["Phase 3: metadata_storage_recovery()\nFor each still-unconfirmed metadata entry:\nReport deletion (data was lost)"]
 ```
 
+### Recovery on Demand (Proposal)
+
+Recovery runs only when the operator starts the server with `--recover-store`. A start without the flag runs none of the three phases, whatever state the last run left the stores in, so a node that crashes and is restarted by its supervisor carries on unchecked. This proposal makes recovery something the stores ask for.
+
+**Each store says, when it opens, whether its last run closed it in order.** Both storage traits gain the same pair: an answer returned when the store is opened, and a shutdown call. A backend records "closed in order" durably when the BPA calls its shutdown, and withdraws the record when it next opens, so the record is written twice a run and its absence at open means the last run ended some other way: a kill, a panic, a power loss. The absence asks for recovery whether or not anything was in flight. A run that ended without closing its stores has given no account of what it was doing, and checking is cheap beside being wrong. The opposite sense, a record made at open and withdrawn at close, is rejected: a store that has never held the record would read as closed in order and skip the recovery it most needs.
+
+**The BPA runs recovery when either store asks.** The three phases cross-check the two stores, so they run in full or not at all: bundle data with no metadata, and metadata with no data, are each found only by walking one store against the other. Recovery is skipped only when both stores answer that they closed in order. `--recover-store` becomes the way to force recovery whatever the stores answer, for a store restored from a backup or edited by hand, which no record made by the store can detect.
+
+**The BPA calls shutdown once it has stopped saving.** The call is the last step of the BPA's own shutdown, metadata store first, then bundle store. It is a trait method because the record must not be written by a run that is dying: writing it when the backend is dropped is rejected, since a drop runs while a panic unwinds. A backend whose shutdown is never called never has the record, and asks for recovery at every start, which costs time and is safe.
+
+**The record is each backend's own.** The traits fix what the answer means, not how it is kept:
+
+| Backend | How "closed in order" is kept |
+| --- | --- |
+| Local disk | An empty `.clean` file in the store directory (see the [localdisk-storage design](../../localdisk-storage/docs/design.md#recovery-independent-of-the-clock)) |
+| SQLite | A row in a one-row table, written in the shutdown transaction and deleted, in its own committed transaction, before the first write of the next run |
+| PostgreSQL | The same row. A database shared by several BPA instances needs one row per instance, keyed by an identity the instance keeps across restarts, which nothing provides today |
+| S3 | An object under the store's key prefix |
+| In-memory | Nothing to keep: the store is empty at every start, and answers that no recovery is needed |
+
+The SQLite and PostgreSQL row belongs with the node-state ledger of [`storage_consistency_updates.md`](storage_consistency_updates.md), which gives the metadata store a home for node-scoped facts and leaves open whether a clean-shutdown record ever crosses the trait. This proposal answers that: it does, as the answer at open.
+
 ## Crash Safety Properties
 
 1. **Atomic store**: Bundle data saved before metadata; cleanup on failure
