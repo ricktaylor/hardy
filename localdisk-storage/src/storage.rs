@@ -1,7 +1,3 @@
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-#[cfg(windows)]
-use std::os::windows::fs::OpenOptionsExt;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -52,9 +48,9 @@ pub struct LocalDiskStorage {
 impl LocalDiskStorage {
     /// Creates the store, ensuring the store directory exists (creating it
     /// if necessary). `None` applies the backend's own default: the
-    /// platform cache directory, and fsync enabled (each save writes to a
-    /// `.tmp` file with `O_SYNC` / `FILE_FLAG_WRITE_THROUGH`, syncs data,
-    /// renames to the final name, and syncs the parent directory;
+    /// platform cache directory, and fsync enabled (each save writes a
+    /// `.tmp` file, syncs its data once the whole bundle is written,
+    /// renames it to the final name, and syncs the parent directory;
     /// `Some(false)` uses plain `tokio::fs::write` instead).
     pub fn new(store_dir: Option<PathBuf>, fsync: Option<bool>, _upgrade: bool) -> Self {
         let store_root = store_dir.unwrap_or_else(default_store_dir);
@@ -322,17 +318,13 @@ impl BundleStorage for LocalDiskStorage {
                 // Use a temporary extension
                 storage_name.set_extension("tmp");
 
-                // Open the file as direct as possible
-                let mut options = std::fs::OpenOptions::new();
-                options.write(true).create_new(true);
-
-                #[cfg(unix)]
-                options.custom_flags(libc::O_SYNC);
-
-                #[cfg(windows)]
-                options.custom_flags(winapi::um::winbase::FILE_FLAG_WRITE_THROUGH);
-
-                let mut file = options.open(&storage_name)?;
+                // Buffered writes: the single `sync_data` below makes the
+                // whole bundle durable at once, where a write-through open
+                // would flush the device on every write call as well.
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&storage_name)?;
 
                 // Write all data to file
                 file.write_all(&data).inspect_err(|e| {
@@ -340,7 +332,8 @@ impl BundleStorage for LocalDiskStorage {
                     _ = std::fs::remove_file(&storage_name);
                 })?;
 
-                // Sync the data (we sync the directory after the rename)
+                // Sync the data before the rename publishes it (the
+                // directory is synced after the rename)
                 file.sync_data().inspect_err(|e| {
                     error!("Failed to sync bundle file data: {e}");
                     _ = std::fs::remove_file(&storage_name);

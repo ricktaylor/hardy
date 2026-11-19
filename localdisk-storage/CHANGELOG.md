@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - **BREAKING:** the serde `Config` struct (and the `serde` feature that gated it) and the free `new()` function are replaced by `LocalDiskStorage::new(store_dir, fsync, upgrade)` taking `Option` knobs, with the defaults owned privately by the backend; config-file schemas belong to the server crates.
 
+### Fixed
+- With `fsync` enabled, a save synced the bundle's data twice: the temporary file was opened write-through (`O_SYNC` on Unix, `FILE_FLAG_WRITE_THROUGH` on Windows), which flushed the device on every write, and was then synced again with `sync_data`. The file is now written buffered and synced once, before the rename; the crash-safety guarantee is unchanged. The `libc` and `winapi` dependencies go with the flags.
+
 ## [0.6.0]
 
 ### Added
