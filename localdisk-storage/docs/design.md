@@ -160,6 +160,8 @@ The answer is about this backend's files only. The metadata store gives its own,
 
 A node that is stopped and started in order skips the walk. On a large store that is worth having: a walk costs about ten microseconds a file on ext4 with a warm cache, some two seconds for 200,000 bundles, and the BPA's re-read of each bundle costs several times that.
 
+**The walk can report without removing.** The walk changes the store as it goes: it deletes placeholders and `.tmp` files and removes empty directories, and it tells its caller about none of them. For a check that repairs nothing ([storage subsystem design](../../bpa/docs/storage_subsystem_design.md#recovery-on-demand-proposal)) the walk takes a flag that turns the deletions off, and in either mode it reports each leftover file it meets alongside the bundles, so the BPA can count them and name them in its summary. A check-only walk leaves the `.clean` mark as it found it.
+
 **The clock is not checked here.** With the walk deciding by name, nothing in this backend depends on the clock, so it keeps no time baseline and takes no action when the clock moves. A clock that has gone backwards still matters to bundle lifetimes, and that is the BPA's to detect and to answer, with the clock baseline the storage consistency design gives the metadata store; the answer there is to warn and carry on, since a node whose clock may be wrong at every power-up loses more by refusing to store bundles than a stale clock costs it.
 
 ## Testing
