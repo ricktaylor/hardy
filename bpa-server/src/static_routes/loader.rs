@@ -1,10 +1,9 @@
-use std::io::ErrorKind;
-use std::path::Path;
+use std::{io::ErrorKind, path::Path};
 
 use chumsky::prelude::*;
 use hardy_bpa::routing::RouteAction;
 use hardy_eid_patterns::EidPattern;
-use tracing::{debug, error};
+use tracing::warn;
 
 use super::agent::StaticRoute;
 
@@ -181,20 +180,15 @@ fn format_error(input: &str, error: &Rich<'_, char, Span>) -> String {
     format!("line {line_num}: {error}\n  {source_line}\n  {caret}")
 }
 
-pub async fn load_routes(
-    routes_file: &Path,
-    ignore_errors: bool,
-    watching: bool,
-) -> anyhow::Result<Vec<StaticRoute>> {
+// Reads and parses the routes file. A missing file is an empty route set, so
+// deleting a watched file withdraws its routes. Any other read error, and any
+// parse error, is returned, so the caller keeps the routes it has installed.
+pub async fn load_routes(routes_file: &Path) -> anyhow::Result<Vec<StaticRoute>> {
     match tokio::fs::read_to_string(routes_file).await {
-        Err(e) if e.kind() == ErrorKind::NotFound && ignore_errors && watching => {
-            debug!("Static routes file: '{}' not found", routes_file.display());
-            Ok(Vec::new())
-        }
-        Err(e) if ignore_errors => {
-            error!(
-                "Failed to read from static routes file '{}': {e}",
-                routes_file.display(),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            warn!(
+                "Static routes file '{}' not found, so it provides no routes",
+                routes_file.display()
             );
             Ok(Vec::new())
         }
@@ -203,17 +197,6 @@ pub async fn load_routes(
             routes_file.display()
         )),
         Ok(input) => match routes().parse(&input).into_result() {
-            Err(errors) if ignore_errors => {
-                for e in &errors {
-                    error!(
-                        "{}:{}\n{}",
-                        routes_file.display(),
-                        format_error(&input, e),
-                        ""
-                    );
-                }
-                Ok(Vec::new())
-            }
             Err(errors) => {
                 let msg = errors
                     .iter()

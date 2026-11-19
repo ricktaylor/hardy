@@ -1,10 +1,14 @@
-use crate::contacts::{Contact, Schedule};
-use crate::cron::CronExpr;
+use std::path::Path;
+
 use chumsky::prelude::*;
 use hardy_bpa::routing::RouteAction;
 use hardy_eid_patterns as eid_patterns;
-use std::path::PathBuf;
-use tracing::{debug, error, warn};
+use tracing::warn;
+
+use crate::{
+    contacts::{Contact, Schedule},
+    cron::CronExpr,
+};
 
 type Span = SimpleSpan<usize>;
 type Extra<'a> = extra::Err<Rich<'a, char, Span>>;
@@ -496,42 +500,19 @@ pub fn parse_contacts(input: &str) -> Result<Vec<Contact>, Vec<String>> {
         .map_err(|errors| errors.iter().map(|e| format_error(input, e)).collect())
 }
 
-// Load and parse a contact plan file.
-pub async fn load_contacts(
-    path: &PathBuf,
-    ignore_errors: bool,
-    watching: bool,
-) -> anyhow::Result<Vec<Contact>> {
-    match tokio::fs::read_to_string(path).await {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
-            debug!("Contact plan file: '{}' not found", path.display());
-            Ok(Vec::new())
-        }
-        Err(e) if ignore_errors => {
-            error!("Failed to read contact plan file '{}': {e}", path.display(),);
-            Ok(Vec::new())
-        }
-        Err(e) => Err(anyhow::anyhow!(
-            "Failed to read contact plan file '{}': {e}",
-            path.display()
-        )),
-        Ok(input) => match parse_contacts(&input) {
-            Err(errors) if ignore_errors => {
-                for e in &errors {
-                    error!("{}:{e}", path.display());
-                }
-                Ok(Vec::new())
-            }
-            Err(errors) => {
-                let msg = errors.join("\n");
-                Err(anyhow::anyhow!(
-                    "Failed to parse '{}':\n{msg}",
-                    path.display()
-                ))
-            }
-            Ok(v) => Ok(v),
-        },
-    }
+// Load and parse a contact plan file. A read or parse error is returned, so
+// the caller keeps the contacts it has.
+pub async fn load_contacts(path: &Path) -> anyhow::Result<Vec<Contact>> {
+    let input = tokio::fs::read_to_string(path).await.map_err(|e| {
+        anyhow::anyhow!("Failed to read contact plan file '{}': {e}", path.display())
+    })?;
+    parse_contacts(&input).map_err(|errors| {
+        anyhow::anyhow!(
+            "Failed to parse '{}':\n{}",
+            path.display(),
+            errors.join("\n")
+        )
+    })
 }
 
 #[cfg(test)]

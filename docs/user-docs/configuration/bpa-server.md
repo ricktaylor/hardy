@@ -170,6 +170,8 @@ service.
 | `priority` | Non-negative integer | `100` | Default priority for routes from this file. Lower values are preferred; `10` takes precedence over `100`. |
 | `protocol-id` | String | `static_routes` | Protocol identifier used when registering routes with the RIB. |
 
+A missing routes file installs no routes. While the file is watched, a change that leaves it unreadable or unparseable is logged and the installed routes are kept, and deleting the file withdraws every route it installed.
+
 ### Route File Format
 
 The routes file is line-oriented, one route per line. Lines starting

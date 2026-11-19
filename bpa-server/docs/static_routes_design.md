@@ -82,11 +82,10 @@ All static routes are registered under a single `protocol_id`. This allows:
 
 ### Graceful Error Handling
 
-Parse errors in the routes file don't crash the server. When `watch` is enabled:
+Errors in the routes file don't crash the server:
 
-- Missing file at startup: warn and continue (file may be created later)
-- Parse error during reload: log error, keep existing routes
-- File deleted: remove all routes from this protocol
+- Missing file: warn and install no routes. With `watch` enabled the file may be created later; deleting it withdraws every route this protocol installed.
+- Read or parse error: log the error and keep the routes already installed, at startup (none yet) and on every reload.
 
 ## Future Work
 

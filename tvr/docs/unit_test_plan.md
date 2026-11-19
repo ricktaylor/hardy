@@ -343,6 +343,16 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 Additional validation tests cover: missing config file → error, invalid log level, malformed YAML/TOML, unknown fields ignored, contact plan path, watch disabled, and priority zero.
 
+### 3.26 Contact Plan Reload (REQ-6.4)
+
+*Objective: Verify that a watched reload never withdraws contacts on a bad file, and that deleting the file withdraws them.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Parse Error Keeps Contacts** | Reload a plan that fails to parse. | `src/contact_plan.rs` | Installed contact, then `via Broken` | No route withdrawn. |
+| **Read Error Keeps Contacts** | Reload a plan that cannot be read. | `src/contact_plan.rs` | Installed contact, then non-UTF-8 bytes | No route withdrawn. |
+| **Deleted Plan Withdraws** | Reload after the file is deleted. | `src/contact_plan.rs` | Installed contact, then file removed | Route withdrawn; restoring the file re-installs it. |
+
 ## 4. Execution & Pass Criteria
 
 * **Command:** `cargo test -p hardy-tvr`

@@ -73,7 +73,7 @@ impl StaticRoutesAgent {
                 let routes = routes.clone();
                 async move {
                     info!("Reloading static routes from '{}'", routes_file.display());
-                    reload_routes(&routes_file, priority, &*sink, &routes, true).await;
+                    reload_routes(&routes_file, priority, &*sink, &routes).await;
                 }
             })
             .await;
@@ -81,17 +81,18 @@ impl StaticRoutesAgent {
     }
 }
 
+// Brings the installed routes in line with the file. A file that cannot be
+// read or parsed leaves the installed routes as they are.
 async fn reload_routes(
     routes_file: &Path,
     priority: u32,
     sink: &dyn RoutingSink,
     routes: &Mutex<Vec<StaticRoute>>,
-    ignore_errors: bool,
 ) {
-    let new_routes = match loader::load_routes(routes_file, ignore_errors, true).await {
+    let new_routes = match loader::load_routes(routes_file).await {
         Ok(routes) => routes,
         Err(e) => {
-            error!("Failed to load static routes: {e}");
+            error!("Failed to load static routes, keeping the installed routes: {e}");
             return;
         }
     };
@@ -157,7 +158,6 @@ impl RoutingAgent for StaticRoutesAgent {
             self.priority,
             &**self.sink.get().unwrap(),
             &self.routes,
-            false,
         )
         .await;
 
@@ -168,5 +168,145 @@ impl RoutingAgent for StaticRoutesAgent {
 
     async fn on_unregister(&self) {
         self.tasks.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use hardy_bpa::routing::Result;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    const PRIORITY: u32 = 100;
+    const ROUTES: &str = "ipn:2.*.* via ipn:2.1.0\n";
+
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Add(EidPattern, RouteAction, u32),
+        Remove(EidPattern, RouteAction, u32),
+    }
+
+    // Records every route change the agent makes, in order.
+    #[derive(Default)]
+    struct RecordingSink {
+        calls: Mutex<Vec<Call>>,
+    }
+
+    #[hardy_async::async_trait]
+    impl RoutingSink for RecordingSink {
+        async fn unregister(&self) {}
+
+        async fn add_route(
+            &self,
+            pattern: EidPattern,
+            action: RouteAction,
+            priority: u32,
+        ) -> Result<bool> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::Add(pattern, action, priority));
+            Ok(true)
+        }
+
+        async fn remove_route(
+            &self,
+            pattern: &EidPattern,
+            action: &RouteAction,
+            priority: u32,
+        ) -> Result<bool> {
+            self.calls.lock().unwrap().push(Call::Remove(
+                pattern.clone(),
+                action.clone(),
+                priority,
+            ));
+            Ok(true)
+        }
+    }
+
+    fn add() -> Call {
+        Call::Add(
+            "ipn:2.*.*".parse().unwrap(),
+            RouteAction::Via("ipn:2.1.0".parse().unwrap()),
+            PRIORITY,
+        )
+    }
+
+    fn remove() -> Call {
+        Call::Remove(
+            "ipn:2.*.*".parse().unwrap(),
+            RouteAction::Via("ipn:2.1.0".parse().unwrap()),
+            PRIORITY,
+        )
+    }
+
+    // A routes file whose route is already installed through a recording sink.
+    struct Fixture {
+        _dir: TempDir,
+        path: PathBuf,
+        sink: RecordingSink,
+        routes: Mutex<Vec<StaticRoute>>,
+    }
+
+    impl Fixture {
+        async fn installed() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("static_routes");
+            fs::write(&path, ROUTES).unwrap();
+            let fixture = Self {
+                _dir: dir,
+                path,
+                sink: RecordingSink::default(),
+                routes: Mutex::new(Vec::new()),
+            };
+            fixture.reload().await;
+            fixture
+        }
+
+        async fn reload(&self) {
+            reload_routes(&self.path, PRIORITY, &self.sink, &self.routes).await;
+        }
+
+        // Restores the original file and reloads it: a route still tracked as
+        // installed is not added again.
+        async fn restore(self) -> Vec<Call> {
+            fs::write(&self.path, ROUTES).unwrap();
+            self.reload().await;
+            self.sink.calls.into_inner().unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_fails_to_parse_keeps_the_routes() {
+        let fixture = Fixture::installed().await;
+
+        fs::write(&fixture.path, "ipn:2.*.* via Broken\n").unwrap();
+        fixture.reload().await;
+
+        assert_eq!(fixture.restore().await, vec![add()]);
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_fails_to_read_keeps_the_routes() {
+        let fixture = Fixture::installed().await;
+
+        // Not UTF-8, so the read itself fails.
+        fs::write(&fixture.path, [0xff, 0xfe]).unwrap();
+        fixture.reload().await;
+
+        assert_eq!(fixture.restore().await, vec![add()]);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_routes_file_withdraws_its_routes() {
+        let fixture = Fixture::installed().await;
+
+        fs::remove_file(&fixture.path).unwrap();
+        fixture.reload().await;
+
+        assert_eq!(fixture.restore().await, vec![add(), remove(), add()]);
     }
 }

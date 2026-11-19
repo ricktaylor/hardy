@@ -121,7 +121,7 @@ debounce window.
   scheduled, removed contacts are withdrawn, unchanged contacts are
   unaffected.
 - **File deleted**: all contacts from the file source are withdrawn.
-- **Parse errors on reload**: logged, existing contacts kept.
+- **Read or parse errors on reload**: logged, existing contacts kept.
 
 ## Metrics
 
