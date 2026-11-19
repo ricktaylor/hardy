@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 - With `fsync` enabled, a save synced the bundle's data twice: the temporary file was opened write-through (`O_SYNC` on Unix, `FILE_FLAG_WRITE_THROUGH` on Windows), which flushed the device on every write, and was then synced again with `sync_data`. The file is now written buffered and synced once, before the rename; the crash-safety guarantee is unchanged. The `libc` and `winapi` dependencies go with the flags.
+- With `fsync` disabled, a save created a zero-length file to claim its name, closed it, then reopened it with truncation to write the bundle. The second open made large saves several times slower than a plain write, the rewrite of a truncated file being flushed on close by filesystems such as ext4. The exclusive create that claims the name is now the file the bundle is written through, in one step; the name is protected as before, and a crash leaves what it left before, an empty or partial unreferenced file that recovery discards. With `fsync` enabled the placeholder stays: it is what stops the rename replacing a stored bundle.
 
 ## [0.6.0]
 

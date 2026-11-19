@@ -43,14 +43,17 @@ File names are random 32-bit hex values. On collision, the value is incremented 
 
 Writes follow a careful protocol to ensure crash safety:
 
-1. Write bundle data to a temporary file (`.tmp` extension) in the target directory
-2. `fsync` the temporary file to ensure data reaches disk
-3. Atomic rename from temporary to final path
-4. `fsync` the parent directory to ensure the rename is durable
+1. Claim the final name with an exclusive create, which leaves a zero-length placeholder under it
+2. Write bundle data to a temporary file (`.tmp` extension) beside the placeholder
+3. `fsync` the temporary file to ensure data reaches disk
+4. Atomic rename from temporary to final path, replacing the placeholder
+5. `fsync` the parent directory to ensure the rename is durable
 
-This protocol means bundles are either fully present or fully absent. A crash during step 1 leaves a `.tmp` file that recovery will clean up. A crash after step 3 leaves a complete bundle.
+This protocol means bundles are either fully present or fully absent. A crash before step 4 leaves a `.tmp` file and a zero-length placeholder, both of which recovery cleans up. A crash after step 4 leaves a complete bundle.
 
-The `fsync` operations have performance cost. Configuration allows disabling them for deployments where the underlying storage provides its own durability guarantees (e.g., battery-backed RAID controllers, ZFS with synchronous writes). With `fsync` disabled, `save` currently skips the temporary file too and writes the final path directly, so a crash can leave a partial file under its final name. Nothing references it, because metadata is inserted only after `save` returns, and recovery discards it as unparseable. The storage leg's streamed write keeps the temporary-file protocol in both modes.
+The placeholder is what makes the rename safe. A rename replaces whatever holds the destination name, so the name must already be this save's own: the exclusive create fails where a stored bundle or a concurrent save holds it, and the save moves to the next name. Renaming without the claim was rejected, since a name collision, however rare, would silently replace a stored bundle. Publishing with a hard link, which does refuse to replace, would avoid the placeholder but is unavailable on FAT, exFAT and some network filesystems.
+
+The `fsync` operations have performance cost. Configuration allows disabling them for deployments where the underlying storage provides its own durability guarantees (e.g., battery-backed RAID controllers, ZFS with synchronous writes). With `fsync` disabled, `save` skips the temporary file too: the exclusive create that claims the final name is also the file the bundle is written through, in one step, so the name is protected as in the atomic protocol and no file is opened twice. A crash can leave an empty or partial file under its final name. Nothing references it, because metadata is inserted only after `save` returns, and recovery discards it, the empty file as a placeholder and the partial one as unparseable. The storage leg's streamed write keeps the temporary-file protocol in both modes.
 
 ### Memory-Mapped Loading
 

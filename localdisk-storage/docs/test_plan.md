@@ -8,7 +8,7 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.1.x](../../docs/requirements.md#local-disk-storage-71) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-LD-01 |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 
 ## 1. Introduction
 
@@ -42,6 +42,8 @@ This backend is registered in the storage harness with `storage_blob_tests!(loca
 | **LD-03** | **Filesystem structure** | `storage.rs` | 1. Save multiple bundles.<br>2. Inspect directory tree. | Files distributed in `xx/yy/` two-level subdirectories; filename collisions resolved without error. |
 | **LD-04** | **Atomic save** | `storage.rs` | 1. Call `save(data)` with `fsync=true`.<br>2. Verify file written to `.tmp` then renamed. | No partial files visible; rename is atomic. |
 | **LD-05** | **Write failure handling** | `storage.rs` | 1. Make store directory read-only.<br>2. Call `save(data)`. | Graceful error returned, not panic. |
+| **LD-06** | **Name claim** | `storage.rs` | 1. Save a bundle at a fixed bucket and file id, with `fsync` on and off.<br>2. Save a second bundle at the same placement. | The second save takes the next file id; the first bundle's bytes are unchanged; no placeholder or `.tmp` file remains. |
+| **LD-07** | **Direct save** | `storage.rs` | 1. Call `save(data)` with `fsync=false`.<br>2. Inspect the store directory. | The bundle's file is the only file in the store; the data round-trips. |
 
 ## 5. Execution
 

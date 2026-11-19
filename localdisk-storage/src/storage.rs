@@ -1,5 +1,6 @@
 use std::{
-    io::Write,
+    fs::{File, OpenOptions, create_dir_all, remove_file, rename},
+    io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -51,7 +52,8 @@ impl LocalDiskStorage {
     /// platform cache directory, and fsync enabled (each save writes a
     /// `.tmp` file, syncs its data once the whole bundle is written,
     /// renames it to the final name, and syncs the parent directory;
-    /// `Some(false)` uses plain `tokio::fs::write` instead).
+    /// `Some(false)` writes the bundle straight to its final name, with no
+    /// temporary file and no sync).
     pub fn new(store_dir: Option<PathBuf>, fsync: Option<bool>, _upgrade: bool) -> Self {
         let store_root = store_dir.unwrap_or_else(default_store_dir);
         info!("Using bundle store directory: {}", store_root.display());
@@ -68,37 +70,113 @@ impl LocalDiskStorage {
     }
 }
 
-#[cfg_attr(feature = "instrument", instrument(skip_all))]
-fn random_file_path(root: &Path) -> Result<PathBuf, std::io::Error> {
-    let mut rng = rand::rng();
+// A bundle's location under the store root: a random bucket in the
+// two-level directory layout, and the file id the name search starts from.
+struct Placement {
+    dir: PathBuf,
+    file_id: u64,
+}
 
-    // Random subdirectory
-    let dir1 = format!("{:02x}", rng.random::<u8>());
-    let dir2 = format!("{:02x}", rng.random::<u8>());
-    let dir_path = root.join(dir1).join(dir2);
-
-    // Ensure directory exists
-    std::fs::create_dir_all(&dir_path)?;
-
-    let mut file_id = rng.random::<u32>() as u64;
-
-    loop {
-        // Add a random filename
-        let file_path = dir_path.join(format!("{:x}", file_id));
-
-        // Stop races between threads by creating a 0-length file
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&file_path)
-        {
-            Ok(_) => return Ok(file_path),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                file_id = file_id.wrapping_add(1);
-            }
-            Err(e) => return Err(e),
+impl Placement {
+    // Not a security value: the names only spread files across the buckets.
+    fn random(root: &Path) -> Self {
+        let mut rng = rand::rng();
+        let dir1 = format!("{:02x}", rng.random::<u8>());
+        let dir2 = format!("{:02x}", rng.random::<u8>());
+        Self {
+            dir: root.join(dir1).join(dir2),
+            file_id: rng.random::<u32>() as u64,
         }
     }
+
+    // Claims a file name no other bundle holds, creating the bucket if
+    // necessary, and returns the new, empty file open for writing with its
+    // path. The exclusive create is the claim: it fails where the name is
+    // taken, by a stored bundle or by a save racing this one, and the search
+    // moves on to the next id.
+    fn create(mut self) -> io::Result<(File, PathBuf)> {
+        create_dir_all(&self.dir)?;
+        loop {
+            let file_path = self.dir.join(format!("{:x}", self.file_id));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&file_path)
+            {
+                Ok(file) => return Ok((file, file_path)),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    self.file_id = self.file_id.wrapping_add(1);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+// The fsync-enabled save: write a temporary file beside a placeholder that
+// holds the final name, sync it, rename it over the placeholder, and sync
+// the directory.
+#[cfg_attr(feature = "instrument", instrument(skip_all))]
+fn save_atomic(placement: Placement, data: &[u8]) -> io::Result<PathBuf> {
+    // The zero-length placeholder holds the name until the rename replaces
+    // it: a rename cannot refuse to overwrite, so the name must be this
+    // save's own before the bundle is published under it.
+    let (_, mut storage_name) = placement.create()?;
+
+    // Use a temporary extension
+    storage_name.set_extension("tmp");
+
+    // Buffered writes: the single `sync_data` below makes the whole bundle
+    // durable at once, where a write-through open would flush the device on
+    // every write call as well.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&storage_name)?;
+
+    // Write all data to file
+    file.write_all(data).inspect_err(|e| {
+        error!("Failed to write bundle data: {e}");
+        _ = remove_file(&storage_name);
+    })?;
+
+    // Sync the data before the rename publishes it (the directory is synced
+    // after the rename)
+    file.sync_data().inspect_err(|e| {
+        error!("Failed to sync bundle file data: {e}");
+        _ = remove_file(&storage_name);
+    })?;
+
+    // Rename the file
+    let old_path = storage_name.clone();
+    storage_name.set_extension("");
+    rename(&old_path, &storage_name).inspect_err(|e| {
+        error!("Failed to rename temporary bundle data file to final name: {e}");
+        _ = remove_file(&old_path);
+    })?;
+
+    // And now sync the parent directory, i.e. metadata
+    if let Some(parent_dir) = storage_name.parent()
+        && let Err(e) = File::open(parent_dir).and_then(|f| f.sync_all())
+    {
+        warn!("Failed to sync parent directory: {e}");
+    }
+
+    Ok(storage_name)
+}
+
+// The save without fsync: claim the final name and write the bundle through
+// the handle that claimed it, in one step. A crash can leave the file empty
+// or partial under its final name; no metadata references it yet, and
+// recovery discards it.
+#[cfg_attr(feature = "instrument", instrument(skip_all))]
+fn save_direct(placement: Placement, data: &[u8]) -> io::Result<PathBuf> {
+    let (mut file, storage_name) = placement.create()?;
+    file.write_all(data).inspect_err(|e| {
+        error!("Failed to write bundle data: {e}");
+        _ = remove_file(&storage_name);
+    })?;
+    Ok(storage_name)
 }
 
 #[cfg_attr(feature = "instrument", instrument(skip(tx)))]
@@ -301,76 +379,17 @@ impl BundleStorage for LocalDiskStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
-        let storage_name = if self.fsync {
-            let root = self.store_root.clone();
-            tokio::task::spawn_blocking(move || {
-                // Create random filename
-                let mut storage_name = random_file_path(&root)?;
-
-                /*
-                create a new temp file (alongside the original)
-                write data to the temp file
-                fsync() the temp file
-                rename the temp file to the original name
-                fsync() the containing directory
-                */
-
-                // Use a temporary extension
-                storage_name.set_extension("tmp");
-
-                // Buffered writes: the single `sync_data` below makes the
-                // whole bundle durable at once, where a write-through open
-                // would flush the device on every write call as well.
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&storage_name)?;
-
-                // Write all data to file
-                file.write_all(&data).inspect_err(|e| {
-                    error!("Failed to write bundle data: {e}");
-                    _ = std::fs::remove_file(&storage_name);
-                })?;
-
-                // Sync the data before the rename publishes it (the
-                // directory is synced after the rename)
-                file.sync_data().inspect_err(|e| {
-                    error!("Failed to sync bundle file data: {e}");
-                    _ = std::fs::remove_file(&storage_name);
-                })?;
-
-                // Rename the file
-                let old_path = storage_name.clone();
-                storage_name.set_extension("");
-                std::fs::rename(&old_path, &storage_name).inspect_err(|e| {
-                    error!("Failed to rename temporary bundle data file to final name: {e}");
-                    _ = std::fs::remove_file(&old_path);
-                })?;
-
-                // And now sync the parent directory, i.e. metadata
-                if let Some(parent_dir) = storage_name.parent()
-                    && let Err(e) = std::fs::File::open(parent_dir).and_then(|f| f.sync_all())
-                {
-                    warn!("Failed to sync parent directory: {e}");
-                }
-
-                storage::Result::Ok(storage_name)
-            })
-            .await
-            .trace_expect("Failed to spawn write_atomic thread")?
-        } else {
-            let storage_name = random_file_path(&self.store_root)?;
-
-            // Just use tokio write and hope for the best
-            tokio::fs::write(&storage_name, &data)
-                .await
-                .inspect_err(|e| {
-                    error!("Failed to write bundle data: {e}");
-                    _ = std::fs::remove_file(&storage_name);
-                })?;
-
-            storage_name
-        };
+        let placement = Placement::random(&self.store_root);
+        let fsync = self.fsync;
+        let storage_name = tokio::task::spawn_blocking(move || {
+            if fsync {
+                save_atomic(placement, &data)
+            } else {
+                save_direct(placement, &data)
+            }
+        })
+        .await
+        .trace_expect("Failed to spawn bundle save thread")?;
 
         Ok(storage_name
             .strip_prefix(&self.store_root)?
@@ -402,7 +421,7 @@ mod tests {
         stream::{SendError, Sender},
     };
 
-    use super::LocalDiskStorage;
+    use super::{LocalDiskStorage, Placement, save_atomic, save_direct};
 
     /// Test sink that collects items into a `Vec` for assertions.
     struct VecSink<T>(std::sync::Mutex<Vec<T>>);
@@ -578,6 +597,58 @@ mod tests {
                 std::fs::set_permissions(dir.path(), perms).unwrap();
             }
         }
+    }
+
+    // LD-06: A save whose first-choice name is taken, by a stored bundle or
+    // by a save still in progress, moves to the next name: the existing file
+    // is never overwritten. Both modes claim their name the same way.
+    #[test]
+    fn test_save_never_overwrites_an_existing_name() {
+        for fsync in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let bucket = dir.path().join("ab").join("cd");
+            let placement = || Placement {
+                dir: bucket.clone(),
+                file_id: 0x1234,
+            };
+            let save = |data: &[u8]| {
+                if fsync {
+                    save_atomic(placement(), data)
+                } else {
+                    save_direct(placement(), data)
+                }
+            };
+
+            let first = save(b"first").unwrap();
+            assert_eq!(first, bucket.join("1234"), "fsync={fsync}");
+
+            // The same placement again: the name is taken.
+            let second = save(b"second").unwrap();
+            assert_eq!(second, bucket.join("1235"), "fsync={fsync}");
+            assert_eq!(std::fs::read(&first).unwrap(), b"first", "fsync={fsync}");
+            assert_eq!(std::fs::read(&second).unwrap(), b"second", "fsync={fsync}");
+
+            // No placeholder or temporary file is left beside the two bundles.
+            assert_eq!(walkdir(dir.path()).len(), 2, "fsync={fsync}");
+        }
+    }
+
+    // LD-07: With fsync=false, save writes the bundle under its final name
+    // in one step: no `.tmp` file is created, and the data round-trips.
+    #[tokio::test]
+    async fn test_direct_save_writes_final_name_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalDiskStorage::new(Some(dir.path().to_path_buf()), Some(false), false);
+
+        let name = store.save(Bytes::from_static(b"direct")).await.unwrap();
+
+        assert_eq!(
+            walkdir(dir.path()),
+            [dir.path().join(&*name)],
+            "the bundle's file is the only file in the store"
+        );
+        let loaded = store.load(&name).await.unwrap().unwrap();
+        assert_eq!(&*loaded, b"direct");
     }
 
     // Recursively collect all file paths under a directory.

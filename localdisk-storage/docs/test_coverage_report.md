@@ -28,7 +28,7 @@ All 4 pass. No failures or skips.
 
 ### Backend-specific tests (`storage.rs`)
 
-5 unit tests covering all 5 planned scenarios (LD-01..05).
+7 unit tests covering all 7 planned scenarios (LD-01..07).
 
 | Test Function | Plan Ref | Scope |
 | :--- | :--- | :--- |
@@ -37,6 +37,8 @@ All 4 pass. No failures or skips.
 | `test_filesystem_structure` | LD-03 | Files distributed in xx/yy/ two-level hex directories |
 | `test_atomic_save_no_tmp_residue` | LD-04 | fsync=true save leaves no .tmp files; data round-trips correctly |
 | `test_save_to_readonly_dir_returns_error` | LD-05 | Save to read-only directory returns Err, not panic |
+| `test_save_never_overwrites_an_existing_name` | LD-06 | A save whose name is taken moves to the next id, in both fsync modes; the existing bundle is untouched |
+| `test_direct_save_writes_final_name_only` | LD-07 | fsync=false save creates only the bundle's file; data round-trips correctly |
 
 ## 3. Coverage vs Plan
 
@@ -45,8 +47,8 @@ Coverage is measured against [`PLAN-LD-01`](test_plan.md) (backend-specific) and
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | `PLAN-STORE-01` Suite D (BLOB-01..04) | BundleStorage trait contract | 4 | 4 | Complete |
-| `PLAN-LD-01` §4 (LD-01..05) | Backend-specific | 5 | 5 | Complete |
-| **Total** | | **9** | **9** | **100%** |
+| `PLAN-LD-01` §4 (LD-01..07) | Backend-specific | 7 | 7 | Complete |
+| **Total** | | **11** | **11** | **100%** |
 
 ## 4. Line Coverage
 
@@ -62,8 +64,8 @@ lcov --summary lcov.info
   functions..: 35.0% (28 of 80 functions)
 ```
 
-Unit tests (5) exercise configuration, recovery cleanup, filesystem structure, atomic save, and write failure handling. The uncovered lines are primarily in the `recover()` parallel directory walker and mmap load path. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`. The crate has since grown (`StreamIn`-based result adoption added lines that the unit tests do not yet exercise), so the headline percentage is lower than the previous report despite the larger covered-line count.
+Unit tests (7) exercise configuration, recovery cleanup, filesystem structure, atomic save, write failure handling, the name claim, and the direct save. The uncovered lines are primarily in the `recover()` parallel directory walker and mmap load path. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`. The crate has since grown (`StreamIn`-based result adoption added lines that the unit tests do not yet exercise), so the headline percentage is lower than the previous report despite the larger covered-line count.
 
 ## 5. Conclusion
 
-9 tests (4 integration + 5 unit) verify both the `BundleStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). Trait-level operations (save, load, delete, recovery scan) pass via the shared harness. Backend-specific tests cover configuration, recovery cleanup, filesystem layout, atomic save with fsync, and error handling on write failure.
+11 tests (4 integration + 7 unit) verify both the `BundleStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). Trait-level operations (save, load, delete, recovery scan) pass via the shared harness. Backend-specific tests cover configuration, recovery cleanup, filesystem layout, atomic save with fsync, error handling on write failure, the name claim in both modes, and the direct save without fsync.
