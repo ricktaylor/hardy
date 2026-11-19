@@ -487,6 +487,8 @@ pub trait Sink: Send + Sync {
     ///   known under several EIDs (an `ipn` and a `dtn` one, say) lists them all at its CL address.
     ///
     /// The BPA will update its routing information accordingly.
+    ///
+    /// Returns `Ok(true)` when the adjacency was added, and `Ok(false)` when it was not. An address carries one adjacency per CLA, so a second `add_peer` at an address this CLA already holds is refused, and the node IDs of the existing adjacency are left as they were: a CLA that wants to replace it removes it first. An adjacency removed while it was being added, by `remove_peer` or by the CLA unregistering, also reports `false`.
     async fn add_peer(
         &self,
         cla_addr: ClaAddress,

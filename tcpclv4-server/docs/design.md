@@ -43,6 +43,14 @@ The server uses gRPC to communicate with the BPA rather than a custom protocol. 
 
 The gRPC client implements the `Sink` trait, providing the same interface that in-process CLAs use. This means hardy-tcpclv4 doesn't need to know whether it's running in-process or as a separate server - the integration code is identical.
 
+### Static Peers Are Kept Connected
+
+Each entry in `peers` is resolved and dialled at startup, then dialled again whenever the entity holds no session to the dialled address: a peer that restarts, or a link that goes away and comes back, is reconnected without restarting this server. The server waits on `Tcpclv4::disconnected` rather than polling, and starts dials of one peer at least 5 seconds apart, so a peer that refuses or drops every session is retried at that pace. Dialling stops when the server is cancelled, a dial in progress included, or when the entity unregisters from the BPA.
+
+Both ends may list each other. Each then forwards over the pool it dialled, which grows to `max-idle-connections` sessions, rather than over the session the other end dialled in (see the library's [Peer identity](../../tcpclv4/docs/design.md#peer-identity)), and keeping its own dial up after a peer restart keeps it that way.
+
+This is the minimal keep-up target. The BPA's planned dial subsystem ([`dial_on_demand_plan.md`](../../bpa/docs/dial_on_demand_plan.md)) is meant to own keep-up targets, with backoff, for every CLA that can dial.
+
 ### Horizontal Scaling Model
 
 Multiple server instances can run independently:
