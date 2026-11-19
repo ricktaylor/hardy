@@ -28,7 +28,7 @@ All 16 pass. No failures or skips.
 
 ### Backend-specific tests (`migrate.rs`, `storage.rs`, `writer.rs`, `readers.rs`, `checkpoint.rs`)
 
-20 unit tests covering all 16 planned scenarios (SQL-01..16).
+23 unit tests covering all 19 planned scenarios (SQL-01..19).
 
 | Test Function | Plan Ref | Scope |
 | :--- | :--- | :--- |
@@ -52,6 +52,9 @@ All 16 pass. No failures or skips.
 | `the_writer_leaves_the_remainder_below_the_restart_bound` | SQL-14 | No writer checkpoint below the restart bound |
 | `the_writer_waits_for_the_cycle_at_the_limit` | SQL-15 | The writer waits at the WAL size limit |
 | `the_database_file_syncs_through_its_own_handle` | SQL-16 | The database file syncs through SQLite's handle |
+| `test_tombstones_leave_the_secondary_indexes` | SQL-17 | A tombstone leaves both secondary indexes |
+| `poll_expiry_plan_uses_the_live_row_index` | SQL-18 | The expiry poll is served by the live-row index |
+| `bundles_has_only_the_live_row_indexes` | SQL-19 | No other secondary index exists |
 
 ## 3. Coverage vs Plan
 
@@ -62,8 +65,8 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 | `PLAN-STORE-01` Suite A (META-01..04, 15, 17) | CRUD & tombstone semantics | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite B (META-06..10, 14) | Polling & ordering | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite C (META-05, 11..13, 16) | State transitions & bulk ops | 5 | 5 | Complete |
-| `PLAN-SQLITE-01` §4 (SQL-01..16) | Backend-specific | 16 | 16 | Complete (20 tests) |
-| **Total** | | **33** | **33** | **100%** |
+| `PLAN-SQLITE-01` §4 (SQL-01..19) | Backend-specific | 19 | 19 | Complete (23 tests) |
+| **Total** | | **36** | **36** | **100%** |
 
 ## 4. Line Coverage
 
@@ -83,4 +86,4 @@ Unit tests (10) exercise migration logic, configuration, concurrency, corrupt da
 
 ## 5. Conclusion
 
-37 tests (17 integration + 20 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic and tamper detection, concurrent writer safety, batched-write isolation and commit-failure reporting, query-only readers, background checkpoints and the WAL's restart and size limit, corrupt data resilience, configuration, and waiting queue cache correctness.
+40 tests (17 integration + 23 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic and tamper detection, concurrent writer safety, batched-write isolation and commit-failure reporting, query-only readers, background checkpoints and the WAL's restart and size limit, the live-row indexes, corrupt data resilience, configuration, and waiting queue cache correctness.
