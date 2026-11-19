@@ -19,7 +19,9 @@ use std::{
     sync::mpsc::{Receiver, Sender, TryRecvError, channel},
 };
 
-use rusqlite::{Connection, ErrorCode, MAIN_DB, OpenFlags, Result, wal::CheckpointMode};
+use rusqlite::{
+    Connection, ErrorCode, MAIN_DB, OpenFlags, Result as SqliteResult, wal::CheckpointMode,
+};
 use trace_err::*;
 use tracing::debug;
 
@@ -79,17 +81,20 @@ pub struct Checkpointer {
     wake: Sender<()>,
     cycled: Receiver<()>,
     _thread: Worker,
+    // How many times the writer has blocked on a cycle.
+    #[cfg(test)]
+    waits: u32,
 }
 
 impl Checkpointer {
     // Takes over checkpointing of the database at `path`, which `writer`
     // has open: turns off SQLite's own checkpoints at its commits, and
     // starts the checkpoint thread.
-    pub fn start(writer: &Connection, path: &Path) -> Result<Self> {
+    pub fn start(writer: &Connection, path: &Path) -> SqliteResult<Self> {
         Self::start_with(writer, path, THRESHOLDS)
     }
 
-    fn start_with(writer: &Connection, path: &Path, thresholds: Thresholds) -> Result<Self> {
+    fn start_with(writer: &Connection, path: &Path, thresholds: Thresholds) -> SqliteResult<Self> {
         writer.execute_batch("PRAGMA wal_autocheckpoint = 0;")?;
 
         let conn = open(path)?;
@@ -106,6 +111,8 @@ impl Checkpointer {
             wake,
             cycled,
             _thread: thread,
+            #[cfg(test)]
+            waits: 0,
         })
     }
 
@@ -138,8 +145,12 @@ impl Checkpointer {
 
     // Where the running cycle has got to, waiting for it to complete if
     // `wait`.
-    fn poll_cycle(&self, wait: bool) -> Cycle {
+    fn poll_cycle(&mut self, wait: bool) -> Cycle {
         let cycled = if wait {
+            #[cfg(test)]
+            {
+                self.waits += 1;
+            }
             self.cycled.recv().map_err(Into::into)
         } else {
             self.cycled.try_recv()
@@ -167,7 +178,7 @@ fn finish(writer: &Connection) {
 // on a checkpoint to be handed the error, and a sync that failed cannot be
 // retried safely, because the kernel may have dropped the pages it could
 // not write. So the failure is fatal here: the panic aborts the process.
-fn settled<T>(step: Result<T>, failure: &str) -> Option<T> {
+fn settled<T>(step: SqliteResult<T>, failure: &str) -> Option<T> {
     match step {
         Ok(value) => Some(value),
         Err(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) => {
@@ -179,7 +190,7 @@ fn settled<T>(step: Result<T>, failure: &str) -> Option<T> {
 }
 
 // Opens the checkpoint thread's own connection to the writer's database.
-fn open(path: &Path) -> Result<Connection> {
+fn open(path: &Path) -> SqliteResult<Connection> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -209,7 +220,7 @@ fn run(conn: Connection, woken: Receiver<()>, done: Sender<()>, restart: u32) {
 // writer is about to copy the remainder itself, the cycle repeats for as
 // long as that shrinks the remainder: a writer that outruns the passes is
 // not chased.
-fn cycle(conn: &Connection, restart: u32) -> Result<()> {
+fn cycle(conn: &Connection, restart: u32) -> SqliteResult<()> {
     let mut remainder = u32::MAX;
     for _ in 0..MAX_PASSES {
         pass(conn)?;
@@ -229,14 +240,14 @@ fn cycle(conn: &Connection, restart: u32) -> Result<()> {
 
 // One passive pass: copies what it can without waiting for the writer or
 // for any reader.
-fn pass(conn: &Connection) -> Result<()> {
+fn pass(conn: &Connection) -> SqliteResult<()> {
     conn.wal_checkpoint_v2(Some(MAIN_DB), CheckpointMode::PASSIVE)?;
     Ok(())
 }
 
 // The frames in the WAL, and how many of them have been copied into the
 // database file. Reads the WAL's own counters, and copies nothing.
-fn wal(conn: &Connection) -> Result<(u32, u32)> {
+fn wal(conn: &Connection) -> SqliteResult<(u32, u32)> {
     let (frames, copied) = conn.wal_checkpoint_v2(Some(MAIN_DB), CheckpointMode::NOOP)?;
     // Both are -1 unless the database is in WAL mode.
     let frames = frames.try_into().unwrap_or(0);
@@ -252,24 +263,24 @@ mod os {
     use std::{ffi::c_void, ptr::null_mut};
 
     use rusqlite::{
-        Connection, Error, MAIN_DB, Result,
+        Connection, Error as SqliteError, MAIN_DB, Result as SqliteResult,
         ffi::{
-            self, SQLITE_FCNTL_FILE_POINTER, SQLITE_MISUSE, SQLITE_OK, SQLITE_SYNC_NORMAL,
-            sqlite3_file, sqlite3_file_control,
+            Error as SqliteCode, SQLITE_FCNTL_FILE_POINTER, SQLITE_MISUSE, SQLITE_OK,
+            SQLITE_SYNC_NORMAL, sqlite3_file, sqlite3_file_control,
         },
     };
 
-    fn check(code: i32) -> Result<()> {
+    fn check(code: i32) -> SqliteResult<()> {
         if code == SQLITE_OK {
             Ok(())
         } else {
-            Err(Error::SqliteFailure(ffi::Error::new(code), None))
+            Err(SqliteError::SqliteFailure(SqliteCode::new(code), None))
         }
     }
 
     // Syncs `conn`'s main database file, as SQLite does at the end of a
     // checkpoint that copied the whole WAL.
-    pub fn sync(conn: &Connection) -> Result<()> {
+    pub fn sync(conn: &Connection) -> SqliteResult<()> {
         let mut file: *mut sqlite3_file = null_mut();
         // SAFETY: `conn` is open for the whole call and, not being `Sync`,
         // is used by this thread alone. FILE_POINTER stores the main
@@ -288,7 +299,7 @@ mod os {
         // set.
         let sync = unsafe { file.as_ref().and_then(|file| file.pMethods.as_ref()) }
             .and_then(|methods| methods.xSync)
-            .ok_or_else(|| Error::SqliteFailure(ffi::Error::new(SQLITE_MISUSE), None))?;
+            .ok_or_else(|| SqliteError::SqliteFailure(SqliteCode::new(SQLITE_MISUSE), None))?;
         // SAFETY: `sync` is that file object's own sync method, called on
         // it as SQLite calls it.
         check(unsafe { sync(file, SQLITE_SYNC_NORMAL) })
@@ -297,16 +308,16 @@ mod os {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, time::Duration};
 
     use rusqlite::{
         Error as SqliteError,
-        ffi::{self, SQLITE_BUSY},
+        ffi::{Error as SqliteCode, SQLITE_BUSY},
     };
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::thread::tests::assert_aborts;
+    use crate::thread::tests::{assert_aborts, await_abort};
 
     // Thresholds no test's writes reach, for a test to lower the ones it
     // is about.
@@ -317,10 +328,15 @@ mod tests {
     };
 
     impl Checkpointer {
-        // Blocks until the cycle in flight, if any, has completed.
+        // Blocks until the cycle in flight, if any, has completed. A
+        // checkpoint thread that never completes one would hang the suite,
+        // so the wait fails instead: the timeout only bounds a regression.
         fn settle(&mut self) {
             if matches!(self.cycle, Cycle::Running) {
-                self.cycle = self.poll_cycle(true);
+                self.cycled
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("the checkpoint thread never completed its cycle");
+                self.cycle = Cycle::Completed;
             }
         }
     }
@@ -447,8 +463,8 @@ mod tests {
         assert_eq!(wal(&conn).unwrap(), (frames, copied));
     }
 
-    // At the limit the writer waits for the cycle in flight and finishes
-    // it, where short of the limit it would have carried on writing.
+    // At the limit the writer waits for the cycle in flight, and returns
+    // with it complete and finished.
     #[test]
     fn the_writer_waits_for_the_cycle_at_the_limit() {
         let (_dir, path, conn) = database();
@@ -461,12 +477,29 @@ mod tests {
 
         write(&conn, 16);
         let (frames, _) = wal(&conn).unwrap();
-        // Requests the cycle; the next call finds it running or complete,
-        // and in either case returns with the whole WAL copied.
+        // Requests the cycle.
         checkpointer.after_commit(&conn);
+        assert_eq!(checkpointer.waits, 0);
+
+        // Finds the cycle requested, and waits for it.
         checkpointer.after_commit(&conn);
-        assert_eq!(wal(&conn).unwrap(), (frames, frames));
+        assert_eq!(checkpointer.waits, 1);
         assert!(matches!(checkpointer.cycle, Cycle::Idle));
+        assert_eq!(wal(&conn).unwrap(), (frames, frames));
+    }
+
+    // Short of the limit the writer never waits for a cycle: it carries on
+    // with its next batch while the cycle runs.
+    #[test]
+    fn the_writer_carries_on_below_the_limit() {
+        let (_dir, path, conn) = database();
+        let thresholds = Thresholds { cycle: 8, ..NEVER };
+        let mut checkpointer = Checkpointer::start_with(&conn, &path, thresholds).unwrap();
+
+        write(&conn, 16);
+        checkpointer.after_commit(&conn);
+        checkpointer.after_commit(&conn);
+        assert_eq!(checkpointer.waits, 0);
     }
 
     #[test]
@@ -478,7 +511,7 @@ mod tests {
     // A step that only lost a race for one of the WAL's locks is deferred.
     #[test]
     fn a_busy_checkpoint_step_is_deferred() {
-        let busy = SqliteError::SqliteFailure(ffi::Error::new(SQLITE_BUSY), None);
+        let busy = SqliteError::SqliteFailure(SqliteCode::new(SQLITE_BUSY), None);
         assert_eq!(settled::<()>(Err(busy), "a checkpoint step"), None);
     }
 
@@ -497,9 +530,7 @@ mod tests {
 
                 write(&conn, 16);
                 checkpointer.after_commit(&conn);
-                // Waits on a cycle that never completes: the abort ends
-                // the process first.
-                checkpointer.settle();
+                await_abort();
             },
         );
     }

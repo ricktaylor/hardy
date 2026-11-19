@@ -10,7 +10,7 @@ use std::{
 };
 
 use hardy_bpa::storage::Result as StorageResult;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, vtab::array::load_module};
 use tokio::{sync::Semaphore, task::spawn_blocking};
 use trace_err::*;
 
@@ -84,6 +84,10 @@ impl Readers {
         // would. Journal mode persists in the database file, and the other
         // connection pragmas govern writes, so the writer alone sets them.
         conn.execute_batch("PRAGMA query_only = ON;")?;
+        // Modules load per connection. No read uses `rarray` yet, but a
+        // query moved here from the writer would otherwise fail only at
+        // run time, with "no such table".
+        load_module(&conn)?;
         Ok(conn)
     }
 }

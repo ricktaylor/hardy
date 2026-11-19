@@ -60,6 +60,7 @@ pub mod tests {
         env::{current_exe, var_os},
         process::{Command, ExitStatus},
         sync::mpsc::channel,
+        time::Duration,
     };
 
     use super::*;
@@ -92,6 +93,14 @@ pub mod tests {
             child.status,
             String::from_utf8_lossy(&child.stderr)
         );
+    }
+
+    // Blocks until the process is aborted, for a scenario whose abort comes
+    // from another thread. Returns only if nothing aborts the process: the
+    // timeout only bounds a regression.
+    pub fn await_abort() {
+        let (_never, forever) = channel::<()>();
+        _ = forever.recv_timeout(Duration::from_secs(30));
     }
 
     #[cfg(unix)]

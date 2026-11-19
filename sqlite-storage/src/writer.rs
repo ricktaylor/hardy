@@ -34,8 +34,9 @@ use trace_err::*;
 use super::{checkpoint::Checkpointer, thread::Worker};
 
 // The most writes one transaction commits. Every caller in a batch waits
-// for the batch's commit, so the cap bounds how long the first waits on
-// the rest.
+// for the batch's commit, so the cap bounds how many writes the first
+// waits on. It bounds their number, not their cost: a write that sweeps
+// many rows, such as a peer queue's reset, holds up the rest of its batch.
 const MAX_BATCH: usize = 64;
 
 /// Why a write has no result of its own to report.
@@ -46,7 +47,7 @@ pub enum Error {
     /// SQLite rolled it back when one of the writes failed. Shared, because
     /// every caller in the batch is answered with the same failure.
     #[error("Metadata write transaction failed: {0}")]
-    Transaction(Arc<SqliteError>),
+    Transaction(#[source] Arc<SqliteError>),
 
     /// The writer thread has stopped: the store is shutting down. A panic
     /// on the writer thread never gets this far, because it aborts the
@@ -242,14 +243,14 @@ mod tests {
         task::{Context, Waker},
     };
 
-    use std::path::PathBuf;
+    use std::{path::PathBuf, time::Duration};
 
     use rusqlite::ErrorCode;
     use tempfile::{TempDir, tempdir};
-    use tokio::runtime::Builder;
+    use tokio::time::timeout;
 
     use super::*;
-    use crate::thread::tests::assert_aborts;
+    use crate::thread::tests::{assert_aborts, await_abort};
 
     // A writer over a scratch database: `rows` takes plain inserts, and
     // `refs` holds a deferred foreign key, checked only at commit.
@@ -277,15 +278,23 @@ mod tests {
     }
 
     async fn ids(writer: &Writer) -> Vec<i64> {
-        writer
-            .write(|conn| {
-                conn.prepare("SELECT id FROM rows ORDER BY id")?
-                    .query_map([], |row| row.get(0))?
-                    .collect::<Result<_, _>>()
-                    .map_err(Into::into)
-            })
+        answered(writer.write(|conn| {
+            conn.prepare("SELECT id FROM rows ORDER BY id")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()
+                .map_err(Into::into)
+        }))
+        .await
+        .unwrap()
+    }
+
+    // Awaits something the writer thread answers. A writer that never
+    // answers would hang the suite, so the wait fails instead: the timeout
+    // only bounds a regression.
+    async fn answered<F: Future>(waiting: F) -> F::Output {
+        timeout(Duration::from_secs(30), waiting)
             .await
-            .unwrap()
+            .expect("the writer thread never answered")
     }
 
     // Polls `write` once, which queues its job, and leaves it pending.
@@ -311,7 +320,7 @@ mod tests {
             Ok(())
         }));
         enqueue(held.as_mut());
-        running.await.unwrap();
+        answered(running).await.unwrap();
         (held, release)
     }
 
@@ -333,11 +342,11 @@ mod tests {
         enqueue(last.as_mut());
 
         release.send(()).unwrap();
-        held.await.unwrap();
-        first.await.unwrap();
-        last.await.unwrap();
+        answered(held).await.unwrap();
+        answered(first).await.unwrap();
+        answered(last).await.unwrap();
         // The write's own failure, not its batch's.
-        let error = failing.await.unwrap_err();
+        let error = answered(failing).await.unwrap_err();
         assert_eq!(
             error
                 .downcast_ref::<SqliteError>()
@@ -364,8 +373,8 @@ mod tests {
         enqueue(dangling.as_mut());
 
         release.send(()).unwrap();
-        held.await.unwrap();
-        for result in [inserted.await, dangling.await] {
+        answered(held).await.unwrap();
+        for result in [answered(inserted).await, answered(dangling).await] {
             let error = result.unwrap_err();
             let Some(Error::Transaction(e)) = error.downcast_ref::<Error>() else {
                 panic!("expected the batch's failure, got {error:?}");
@@ -386,7 +395,7 @@ mod tests {
         drop(abandoned);
 
         release.send(()).unwrap();
-        held.await.unwrap();
+        answered(held).await.unwrap();
         assert_eq!(ids(&writer).await, Vec::<i64>::new());
     }
 
@@ -425,8 +434,12 @@ mod tests {
         enqueue(after.as_mut());
 
         release.send(()).unwrap();
-        held.await.unwrap();
-        for result in [before.await, filling.await, after.await] {
+        answered(held).await.unwrap();
+        for result in [
+            answered(before).await,
+            answered(filling).await,
+            answered(after).await,
+        ] {
             let error = result.unwrap_err();
             let Some(Error::Transaction(e)) = error.downcast_ref::<Error>() else {
                 panic!("expected the batch's failure, got {error:?}");
@@ -436,7 +449,9 @@ mod tests {
         assert_eq!(ids(&writer).await, Vec::<i64>::new());
 
         // The writer carries on, in a transaction of its own.
-        writer.write(|conn| insert(conn, 4)).await.unwrap();
+        answered(writer.write(|conn| insert(conn, 4)))
+            .await
+            .unwrap();
         assert_eq!(ids(&writer).await, [4]);
     }
 
@@ -448,14 +463,12 @@ mod tests {
             "writer::tests::a_panicking_write_aborts_the_process",
             || {
                 let (_dir, writer) = open();
-                let write = writer
-                    .write(|_| -> StorageResult<()> { panic!("the write failed an invariant") });
-                // Waits on a reply that never comes: the abort ends the
-                // process first.
-                _ = Builder::new_current_thread()
-                    .build()
-                    .unwrap()
-                    .block_on(write);
+                let mut write =
+                    pin!(writer.write(|_| -> StorageResult<()> {
+                        panic!("the write failed an invariant")
+                    }));
+                enqueue(write.as_mut());
+                await_abort();
             },
         );
     }
