@@ -184,6 +184,16 @@ jobs:
           -p hardy-eid-patterns
           --target thumbv7em-none-eabihf
 
+      # BPSec processing without a security context: the `bpsec` feature
+      # alone, no_std and 32-bit, so the keyed check, the decrypting reader
+      # and the editor's security edits build where no context does.
+      - name: Build bpv7 (no_std, 32-bit, bpsec without a context)
+        run: >
+          cargo build --locked --no-default-features
+          --features hardy-bpv7/critical-section,hardy-bpv7/bpsec
+          -p hardy-bpv7
+          --target thumbv7em-none-eabihf
+
       # thumbv6m-none-eabi (Cortex-M0) has no atomic compare-and-swap at all,
       # so alloc::sync::Arc does not exist there and `bytes` needs
       # portable-atomic, which btpu's `critical-section` feature enables.

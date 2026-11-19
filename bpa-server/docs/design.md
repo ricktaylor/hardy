@@ -113,12 +113,11 @@ These config sections map onto the BPA's own configuration-gated pipeline checks
 
 ### RFC 9171 Validity Checks
 
-The server maps the `rfc9171-validity` section onto the BPA's builder toggles, enforced at the ingress gate before anything is stored:
+The server maps the `rfc9171-validity` section onto the BPA's builder toggle, enforced at the ingress gate before anything is stored:
 
 ```yaml
 rfc9171-validity:
   primary-block-integrity: true  # Require CRC or BIB on primary block
-  bundle-age-required: true      # Require Bundle Age when timestamp is zero
 ```
 
 Both options default to `true`, enforcing RFC 9171 recommendations. Disable `primary-block-integrity` for interoperability with implementations that omit primary block CRCs (e.g., dtn7-rs).

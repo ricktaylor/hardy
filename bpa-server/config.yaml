@@ -39,7 +39,6 @@ bpsec:
 
 rfc9171-validity:
   primary-block-integrity: true
-  bundle-age-required: true
 
 built-in-services:
   echo:

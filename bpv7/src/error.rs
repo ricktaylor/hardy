@@ -37,6 +37,12 @@ pub enum Error {
     #[error("Bundle has no payload block")]
     MissingPayload,
 
+    /// Indicates that a bundle whose creation time is zero, its source
+    /// having no accurate clock, carries no Bundle Age block, which RFC 9171
+    /// §4.4.2 requires of it.
+    #[error("Bundle has no creation time and no Bundle Age block")]
+    MissingBundleAge,
+
     /// Indicates that a bundle has more than one block with the same block number.
     #[error("Bundle has more than one block with block number {0}")]
     DuplicateBlockNumber(u64),

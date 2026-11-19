@@ -14,7 +14,7 @@ use hardy_cbor::{
 use thiserror::Error;
 
 use crate::{
-    bundle, dtn_time,
+    bpsec, bundle, dtn_time,
     error::{CaptureFieldErr, HasInvalidField, require_canonical},
 };
 /// Errors that can occur when working with status reports.
@@ -175,6 +175,46 @@ impl TryFrom<u64> for ReasonCode {
             16 => Ok(ReasonCode::ConflictingSecurityOperation),
             255 => Err(Error::ReservedStatusReportReason),
             v => Ok(ReasonCode::Unassigned(v)),
+        }
+    }
+}
+
+/// The reason a bundle deleted for `error` is reported with.
+///
+/// A block this node cannot process (RFC 9171 §5.6 Step 4) is
+/// [`BlockUnsupported`](ReasonCode::BlockUnsupported): an unsupported block
+/// type, or a security operation it holds no key for, since RFC 9172's
+/// [`FailedSecurityOperation`](ReasonCode::FailedSecurityOperation) excludes
+/// misconfiguration, which a missing key is. The other RFC 9172 codes an
+/// error can carry are those detectable without security policy:
+/// [`UnknownSecurityOperation`](ReasonCode::UnknownSecurityOperation) for an
+/// unknown security context or parameter,
+/// [`FailedSecurityOperation`](ReasonCode::FailedSecurityOperation) for an
+/// operation that failed to decrypt or verify, and
+/// [`ConflictingSecurityOperation`](ReasonCode::ConflictingSecurityOperation)
+/// for an encrypted BIB over a Previous Node or Bundle Age block.
+/// [`MissingSecurityOperation`](ReasonCode::MissingSecurityOperation) and
+/// [`UnexpectedSecurityOperation`](ReasonCode::UnexpectedSecurityOperation)
+/// follow from security policy, never from an error. Every other error is a
+/// malformed block, [`BlockUnintelligible`](ReasonCode::BlockUnintelligible)
+/// (Step 3). Whether a security reason code is sent at all is security
+/// policy's to decide (RFC 9172 §7.1).
+impl From<&crate::Error> for ReasonCode {
+    fn from(error: &crate::Error) -> Self {
+        match error {
+            crate::Error::Unsupported(_) | crate::Error::InvalidBPSec(bpsec::Error::NoKey) => {
+                Self::BlockUnsupported
+            }
+            crate::Error::InvalidBPSec(
+                bpsec::Error::UnrecognisedContext(_) | bpsec::Error::UnsupportedOperation,
+            ) => Self::UnknownSecurityOperation,
+            crate::Error::InvalidBPSec(
+                bpsec::Error::DecryptionFailed | bpsec::Error::IntegrityCheckFailed,
+            ) => Self::FailedSecurityOperation,
+            crate::Error::InvalidBPSec(bpsec::Error::EncryptedBibCoversPerHopBlock(_)) => {
+                Self::ConflictingSecurityOperation
+            }
+            _ => Self::BlockUnintelligible,
         }
     }
 }

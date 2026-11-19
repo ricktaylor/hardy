@@ -42,9 +42,10 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
         use hardy_bpv7::bpsec::edit::BPSecEditor;
-        let editor = Editor::new(&raw, &data)
+        let mut editor = Editor::new(&raw, &data).with_key_source(&key_store);
+        editor
             .remove_integrity(self.block)
-            .map_err(|(_, e)| anyhow::anyhow!("Failed to remove integrity check: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to remove integrity check: {e}"))?;
 
         let chunks = editor
             .rebuild()

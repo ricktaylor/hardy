@@ -410,14 +410,13 @@ pub trait Classifier: Send + Sync {
 ///   raw-bundle [`Service`](crate::services::Service), so the application
 ///   receives only content. The chain runs for every local delivery, but
 ///   only the raw-`Service` path observes the rewritten blocks: the
-///   payload-only `Application` path receives the decrypted payload alone,
-///   so a Rewriter's edits are invisible there.
+///   payload-only `Application` path receives the payload alone, so a
+///   Rewriter's edits are invisible there.
 ///
-/// Its edits are confined to *extension* blocks — never the payload — so it
-/// runs before the payload's BPSec decrypt at Deliver; the reader decrypts
-/// any block it needs to inspect. Each Rewriter sees its predecessors'
-/// edits: the engine materialises every invocation's edits into the wire
-/// form before the next invocation reads it.
+/// Its edits are confined to *extension* blocks — never the payload — and
+/// the reader decrypts any block it needs to inspect. Each Rewriter sees
+/// its predecessors' edits: the engine materialises every invocation's
+/// edits into the wire form before the next invocation reads it.
 ///
 /// At Egress the Rewriters run before the BPA's per-hop writes (RFC 9171
 /// §5.4), which supersede their edits to the blocks those writes cover: the

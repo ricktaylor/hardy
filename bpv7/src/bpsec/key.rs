@@ -6,7 +6,10 @@ use zeroize::Zeroizing;
 use crate::{HashSet, eid};
 
 /// Resolves cryptographic keys for BPSec operations by source EID and required operations.
-pub trait KeySource {
+///
+/// A key source is `Send + Sync`, so one source can serve every stage that
+/// processes a bundle, across `await` points and threads.
+pub trait KeySource: Send + Sync {
     /// Get the key suitable for the specified operations from the given source.
     /// Returns None if no key is available for this source/operations.
     /// If a key is returned, it is expected to be valid for the operation;
