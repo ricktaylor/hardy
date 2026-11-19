@@ -8,11 +8,11 @@
 //! so no caller acts on a write that did not commit. An idle store commits
 //! each write on its own, with no batching delay; under load the batches
 //! grow by themselves.
+//!
+//! The writer does not checkpoint the write-ahead log as it commits: between
+//! batches it hands that to the [`Checkpointer`].
 
-use std::{
-    sync::Arc,
-    thread::{Builder, JoinHandle},
-};
+use std::{path::Path, sync::Arc, thread::Builder};
 
 use hardy_bpa::storage::Result as StorageResult;
 use rusqlite::{Connection, Error as SqliteError, Transaction, TransactionBehavior};
@@ -22,6 +22,8 @@ use tokio::sync::{
     oneshot::{Sender, channel},
 };
 use trace_err::*;
+
+use super::{checkpoint::Checkpointer, joined::Joined};
 
 // The most writes one transaction commits. Every caller in a batch waits
 // for the batch's commit, so the cap bounds how long the first waits on
@@ -50,16 +52,19 @@ pub struct Writer {
 }
 
 impl Writer {
-    // Starts the writer thread on `conn`, the store's writing connection.
-    pub fn new(conn: Connection) -> Self {
+    // Starts the writer thread on `conn`, the store's writing connection
+    // to the database at `path`.
+    pub fn new(conn: Connection, path: &Path) -> Self {
+        let checkpointer = Checkpointer::start(&conn, path)
+            .trace_expect("Failed to start the metadata checkpoint thread");
         let (queue, jobs) = unbounded_channel();
         let thread = Builder::new()
             .name("sqlite-writer".into())
-            .spawn(move || serve(conn, jobs))
+            .spawn(move || serve(conn, jobs, checkpointer))
             .trace_expect("Failed to spawn the metadata writer thread");
         Self {
             queue,
-            _thread: Joined(Some(thread)),
+            _thread: thread.into(),
         }
     }
 
@@ -80,20 +85,6 @@ impl Writer {
             }))
             .map_err(|_| Error::Stopped)?;
         result.await.map_err(|_| Error::Stopped)?
-    }
-}
-
-// Joins the writer thread on drop, so the store's writing connection has
-// closed by the time the store has.
-struct Joined(Option<JoinHandle<()>>);
-
-impl Drop for Joined {
-    fn drop(&mut self) {
-        if let Some(thread) = self.0.take() {
-            // A thread that panicked has already failed its callers with
-            // `Stopped`; there is nothing left to answer.
-            _ = thread.join();
-        }
     }
 }
 
@@ -146,13 +137,20 @@ where
 
 // The writer thread: commits whatever has queued as one batch, until the
 // store drops and the queue closes.
-fn serve(mut conn: Connection, mut jobs: UnboundedReceiver<Box<dyn Job>>) {
+fn serve(
+    mut conn: Connection,
+    mut jobs: UnboundedReceiver<Box<dyn Job>>,
+    mut checkpointer: Checkpointer,
+) {
     let mut batch = Vec::with_capacity(MAX_BATCH);
     while jobs.blocking_recv_many(&mut batch, MAX_BATCH) > 0 {
         let committed = run_batch(&mut conn, &mut batch);
         for job in batch.drain(..) {
             job.answer(&committed);
         }
+        // Once the batch's callers are answered: a checkpoint here holds up
+        // only the writes still queued.
+        checkpointer.after_commit(&conn);
     }
 }
 
@@ -194,14 +192,15 @@ mod tests {
     // `refs` holds a deferred foreign key, checked only at commit.
     fn open() -> (TempDir, Writer) {
         let dir = tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("test.db")).unwrap();
+        let path = dir.path().join("test.db");
+        let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
             CREATE TABLE rows (id INTEGER PRIMARY KEY);
             CREATE TABLE refs (row INTEGER REFERENCES rows(id) DEFERRABLE INITIALLY DEFERRED);",
         )
         .unwrap();
-        (dir, Writer::new(conn))
+        (dir, Writer::new(conn, &path))
     }
 
     fn insert(conn: &Connection, id: i64) -> StorageResult<()> {

@@ -24,10 +24,11 @@ flowchart LR
     BPA --> reads["Reads: get(), the other poll_*()"]
     writes --> writer["Writer thread (one connection, batched transactions)"]
     reads --> readers["Reader pool (query-only connections, blocking thread pool)"]
-    writer & readers --> sqlite["SQLite (WAL mode)"]
+    writer -. "WAL size" .-> checkpoint["Checkpoint thread (own connection)"]
+    writer & readers & checkpoint --> sqlite["SQLite (WAL mode)"]
 ```
 
-Bundle metadata is serialised as JSON and stored alongside indexed columns that enable efficient querying without deserialising every row. Every write runs on a single dedicated writer thread that owns the only writing connection; reads run on a bounded pool of query-only connections on Tokio's blocking thread pool. No SQLite call runs on an async worker thread.
+Bundle metadata is serialised as JSON and stored alongside indexed columns that enable efficient querying without deserialising every row. Every write runs on a single dedicated writer thread that owns the only writing connection; reads run on a bounded pool of query-only connections on Tokio's blocking thread pool; and a checkpoint thread copies the write-ahead log into the database file. No SQLite call runs on an async worker thread.
 
 ## Key Design Decisions
 
@@ -69,17 +70,37 @@ The trade-off is a small amount of extra work on every read (extracting and mapp
 
 SQLite allows one writer at a time, so writes must be serialised somewhere. They are serialised on a dedicated OS thread that owns the store's only writing connection. Each trait method submits its write to the thread as a closure over a queue and awaits the reply. The thread runs in arrival order, so writers never race for SQLite's write lock or retry on `SQLITE_BUSY`.
 
-Running the writes on their own thread keeps them off Tokio's async workers. A SQLite write is blocking I/O, and under `synchronous = NORMAL` the occasional write that crosses the WAL auto-checkpoint threshold performs the checkpoint's fsync inline. On a worker thread that would stall every task scheduled there.
+Running the writes on their own thread keeps them off Tokio's async workers. A SQLite write is blocking I/O, and on a worker thread it would stall every task scheduled there.
 
 The writer batches without a timer. It blocks until a write arrives, then takes whatever else has queued meanwhile (up to 64 writes) and runs the batch in one transaction, with each write in its own savepoint. An idle store therefore commits each write on its own with no added latency, while under load the batches grow by themselves and the per-transaction cost is shared. The savepoints keep each write atomic and independent: a write that fails rolls back alone and the rest of the batch commits. Every caller is answered only after its batch's commit has resolved, so no caller acts on a write that did not commit, and if the commit itself fails, every write in the batch reports the failure. A write whose caller has already gone by the time its turn comes is skipped.
 
-The trade-off is one cross-thread hand-off per operation, which adds roughly a tenth of a millisecond of latency. A strictly sequential caller is therefore slower than running SQLite inline: in a local benchmark of the forwarding lifecycle's metadata traffic, a little over half the throughput. The two break even at between one and four concurrent callers, and with dozens in flight the batching roughly doubles throughput. The BPA's workload is concurrent, and a bundle's metadata writes sit beside bundle-data I/O that costs far more, so the design favours throughput under load and an unblocked runtime.
+The trade-off is one cross-thread hand-off per operation, which adds roughly a tenth of a millisecond of latency. A strictly sequential caller is therefore slower than running SQLite inline: in a local benchmark of the forwarding lifecycle's metadata traffic, about 60% of the throughput. The two break even at between one and four concurrent callers, and with dozens in flight the store sustains about three times the throughput. The BPA's workload is concurrent, and a bundle's metadata writes sit beside bundle-data I/O that costs far more, so the design favours throughput under load and an unblocked runtime.
 
 Rejected alternatives:
 
 - **A Tokio mutex around a pooled connection.** It serialises writes but runs them, and their checkpoints, on async workers, and every write pays its own transaction.
 - **A batching window.** Waiting a few milliseconds to collect writes adds that delay to every write on a lightly loaded node, where nothing would have joined the batch anyway.
 - **Batching only inserts.** After ingress, a bundle's writes are mostly conditional status swaps and tombstones, so insert-only batching would leave most of the traffic unbatched.
+
+### Checkpoints on Their Own Thread
+
+Under `synchronous = NORMAL` a commit only appends to the WAL; the fsyncs happen at a checkpoint, which copies the WAL's pages into the database file and syncs it. SQLite's default runs the checkpoint inside whichever commit takes the WAL past 1000 pages, so the writer stops for it, and every write queued behind it waits: on the order of 20 ms, several times a second under load.
+
+The store turns that default off. Between batches the writer reads how much of the WAL has not been copied, and once that passes 1000 pages (4 MiB) it wakes a checkpoint thread. That thread has its own connection. It copies the WAL in passive checkpoints, which never wait for the writer or for a reader, and then syncs the database file. The writer carries on committing throughout.
+
+Two things a background checkpoint cannot do are left to the writer, at thresholds chosen so that they are rare:
+
+- **Restarting the WAL.** SQLite reuses the WAL file from its beginning only once every page in it has been copied, and a checkpoint racing the writer never quite gets there. So once the WAL passes 8000 pages (32 MiB), the writer copies the remainder itself, between two batches. By then the checkpoint thread has copied and synced nearly all of it, so the writer's share is the few pages written since: under 10 ms, an eighth as often as the default's checkpoints. Below the threshold the WAL is left to grow and the writer never stops for a checkpoint.
+- **Bounding the WAL.** A writer faster than the checkpoint thread would grow the WAL without limit. At 16000 pages (64 MiB) the writer waits for the checkpoint in flight before taking its next batch, which holds the write rate to the checkpoint rate. This is reached only at sustained saturation, where the wait is on the order of 100 ms: longer than any single pause under SQLite's default, but with far fewer writes delayed overall.
+
+The database file is synced through the file handle SQLite already holds, reached with `sqlite3_file_control`. Opening a second handle to sync is not an option on POSIX systems: closing any descriptor of a file releases every lock the process holds on that file, including the ones SQLite relies on. That call is the crate's one use of `unsafe`.
+
+The trade-off is disk space and recovery time: the WAL holds up to about 64 MiB instead of about 4 MiB, and the next open after a crash replays whatever it holds. A failed checkpoint is logged and asked for again after the writer's next batch; it is not fatal, because the WAL remains the durable record of every commit. The checkpoint thread itself stopping is: the writer panics rather than carry on without it.
+
+Rejected alternatives:
+
+- **Raising SQLite's automatic checkpoint threshold.** The checkpoint still runs on the writer. It runs less often, but each one copies more and stalls the writer for longer.
+- **Checkpointing from a reader connection.** Readers are query-only and pooled on Tokio's blocking pool, which is the wrong place for a periodic sync of the whole database file.
 
 ### Pooled Readers off the Async Runtime
 
