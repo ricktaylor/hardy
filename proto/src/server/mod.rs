@@ -1,10 +1,7 @@
-//! gRPC server implementations for BPA services.
-//!
-//! This module provides gRPC server implementations that allow remote CLAs,
-//! services, and applications to connect to a BPA instance.
+//! gRPC endpoints through which remote CLAs, services, applications and
+//! routing agents register with a local BPA.
 
 use super::*;
-use hardy_async::sync::spin::Once;
 use proxy::*;
 
 mod application;
@@ -26,7 +23,7 @@ fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
 pub struct Config {
     /// Address to bind the gRPC server to.
     pub address: std::net::SocketAddr,
-    /// List of services to enable: "cla", "service", "application", "routing"
+    /// The endpoints to enable: `cla`, `service`, `application`, `routing`.
     pub services: Vec<String>,
 }
 
@@ -44,11 +41,12 @@ impl Default for Config {
 
 /// A gRPC server that exposes BPA registration services to remote clients.
 ///
-/// The listening socket is bound by [`new()`](GrpcServer::new), so a bind
-/// failure surfaces at construction and a config address with port 0 gets a
-/// kernel-assigned port, readable via [`local_addr()`](GrpcServer::local_addr).
-/// The server does not spawn any tasks itself — call [`serve()`](GrpcServer::serve)
-/// to get a future, and spawn it in your own runtime.
+/// [`new`](GrpcServer::new) binds the listening socket, so a bind failure
+/// surfaces at construction and a config address with port 0 gets a
+/// kernel-assigned port, readable through
+/// [`local_addr`](GrpcServer::local_addr). The server spawns no task of its
+/// own: [`serve`](GrpcServer::serve) returns a future for the caller to
+/// spawn.
 pub struct GrpcServer {
     routes: tonic::service::Routes,
     listener: std::net::TcpListener,
@@ -57,12 +55,22 @@ pub struct GrpcServer {
 }
 
 impl GrpcServer {
-    /// Build a gRPC server with the configured services, bound to
+    /// Builds a gRPC server with the configured endpoints, bound to
     /// `config.address`.
-    pub fn new(
+    ///
+    /// `bpa` is whatever the configured endpoints register against: a local
+    /// [`Bpa`](hardy_bpa::bpa::Bpa), or anything else implementing the
+    /// three registrar traits.
+    pub fn new<B>(
         config: &Config,
-        bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        bpa: Arc<B>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
+    where
+        B: hardy_bpa::cla::Registrar
+            + hardy_bpa::service::Registrar
+            + hardy_bpa::routing::Registrar
+            + 'static,
+    {
         if config.services.is_empty() {
             return Err("No gRPC services configured".into());
         }
@@ -72,16 +80,16 @@ impl GrpcServer {
         for svc in &config.services {
             match svc.as_str() {
                 "application" => {
-                    routes.add_service(application::new_application_service(&bpa, &tasks));
+                    routes.add_service(application::new_application_service(bpa.clone(), &tasks));
                 }
                 "cla" => {
-                    routes.add_service(cla::new_cla_service(&bpa, &tasks));
+                    routes.add_service(cla::new_cla_service(bpa.clone(), &tasks));
                 }
                 "service" => {
-                    routes.add_service(service::new_endpoint_service(&bpa, &tasks));
+                    routes.add_service(service::new_endpoint_service(bpa.clone(), &tasks));
                 }
                 "routing" => {
-                    routes.add_service(routing::new_routing_agent_service(&bpa, &tasks));
+                    routes.add_service(routing::new_routing_agent_service(bpa.clone(), &tasks));
                 }
                 s => {
                     warn!("Ignoring unknown gRPC service {s}");
@@ -106,15 +114,16 @@ impl GrpcServer {
         })
     }
 
-    /// The address the listening socket is bound to. With a port-0 config
-    /// address this carries the kernel-assigned port. The socket accepts
-    /// connections into its backlog from construction, before
-    /// [`serve()`](GrpcServer::serve) runs.
+    /// The address the listening socket is bound to, carrying the
+    /// kernel-assigned port for a port-0 config address.
+    ///
+    /// The socket accepts connections into its backlog from construction,
+    /// before [`serve`](GrpcServer::serve) runs.
     pub fn local_addr(&self) -> std::net::SocketAddr {
         self.local_addr
     }
 
-    /// Serve until cancelled, then shut down session tasks.
+    /// Serves until `cancel` fires, then shuts the session tasks down.
     pub async fn serve(
         self,
         cancel: hardy_async::CancellationToken,

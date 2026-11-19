@@ -7,7 +7,10 @@ mod test;
 
 use arbitrary::Arbitrary;
 use core::num::NonZeroUsize;
-use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit};
+use hardy_bpa::{
+    cla::RegistrarExt, routing::RegistrarExt as RoutingRegistrarExt,
+    service::RegistrarExt as ServiceRegistrarExt,
+};
 use std::sync::Arc;
 
 #[derive(Arbitrary)]
@@ -57,7 +60,6 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             .unwrap(),
         );
 
-    // Bundle storage
     cfg_select! {
         feature = "localdisk-storage" => {
             builder = builder.bundle_storage(std::sync::Arc::new(
@@ -78,7 +80,6 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         }
     }
 
-    // Metadata storage
     cfg_select! {
         feature = "sqlite-storage" => {
             builder = builder.metadata_storage(std::sync::Arc::new(
@@ -105,7 +106,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         }
     }
 
-    let bpa = builder.build().await.expect("Failed to build BPA");
+    let bpa = builder.build();
 
     bpa.start(cfg_select! {
         all(feature = "localdisk-storage", feature = "sqlite-storage") => true,
@@ -115,14 +116,12 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
 
     #[cfg(feature = "file-cla")]
     {
-        let cla = std::sync::Arc::new(
-            hardy_file_cla::Cla::new(&hardy_file_cla::Config {
-                outbox: None,
-                peers: [("ipn:0.3.0".parse().unwrap(), path.join("inbox"))].into(),
-            })
-            .expect("Failed to create file CLA"),
-        );
-        bpa.register_cla("file-cla".to_string(), cla, None, ClaInit::default())
+        let factory = hardy_file_cla::Cla::factory(&hardy_file_cla::Config {
+            outbox: None,
+            peers: [("ipn:0.3.0".parse().unwrap(), path.join("inbox"))].into(),
+        })
+        .expect("Failed to create file CLA");
+        bpa.register_cla("file-cla", factory)
             .await
             .expect("Failed to register CLA");
     }
@@ -139,15 +138,14 @@ impl Msg {
             get_runtime().spawn(async move {
                 let bpa = new_bpa("fuzz").await;
 
-                let cla = std::sync::Arc::new(cla::NullCla::new());
-                bpa.register_cla("fuzz".to_string(), cla.clone(), None, ClaInit::default())
+                let cla = bpa
+                    .register_cla("fuzz", cla::NullCla::factory())
                     .await
                     .expect("Failed to register CLA");
 
-                // Load static routes
                 bpa.register_routing_agent(
-                    "fuzz".to_string(),
-                    Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[
+                    "fuzz",
+                    hardy_bpa::routing::StaticAgent::factory(&[
                         (
                             "ipn:*.*".parse().unwrap(),
                             hardy_bpa::routing::RouteAction::Via("ipn:0.2.0".parse().unwrap()),
@@ -170,17 +168,19 @@ impl Msg {
                             hardy_bpa::routing::RouteAction::Reflect,
                             100,
                         ),
-                    ])),
+                    ]),
                 )
                 .await
                 .expect("Failed to register routing agent");
 
-                let service = Arc::new(service::PipeService::new());
-                bpa.register_application(hardy_bpv7::eid::Service::Ipn(1), service.clone())
+                let service = bpa
+                    .register_service(
+                        Some(hardy_bpv7::eid::Service::Ipn(1)),
+                        service::PipeService::factory(),
+                    )
                     .await
                     .expect("Failed to register service");
 
-                // Now pull from the channel
                 while let Ok(msg) = rx.recv_async().await {
                     match msg {
                         Msg::Cla(bundle) => {

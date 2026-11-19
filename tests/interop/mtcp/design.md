@@ -70,7 +70,7 @@ tests/interop/
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs            ← binary entry point, gRPC registration
-│       ├── cla.rs             ← Cla trait impl (on_register, forward)
+│       ├── cla.rs             ← Cla trait impl (register, forward)
 │       ├── config.rs          ← TOML config (bpa-address, framing, peer, etc.)
 │       ├── codec.rs           ← MtcpCodec + StcpCodec (tokio-util Decoder/Encoder)
 │       ├── listen.rs          ← TCP listener + per-connection dispatch loop

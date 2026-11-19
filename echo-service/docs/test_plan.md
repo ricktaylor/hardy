@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Functional Area** | Bundle Echo Service |
 | **Module** | `echo-service` |
-| **Implements** | `hardy_bpa::services::Service` trait |
+| **Implements** | `hardy_bpa::service::raw::Service` trait |
 | **Standard** | [draft-taylor-dtn-echo-service](https://datatracker.ietf.org/doc/draft-taylor-dtn-echo-service/) |
 | **Requirements Ref** | None (application-level service, no LLRs) |
 | **Test Suite ID** | PLAN-ECHO-01 |

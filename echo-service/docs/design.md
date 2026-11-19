@@ -46,7 +46,7 @@ Rather than constructing a new bundle from scratch, the service uses `hardy_bpv7
 
 ### With hardy-bpa
 
-Implements `hardy_bpa::services::Service`. The BPA calls `on_deliver()` with a segment stream when a bundle arrives at the registered endpoint.
+Implements `hardy_bpa::service::raw::Service`. The BPA calls `on_deliver()` with a segment stream when a bundle arrives at the registered endpoint.
 
 ### With hardy-bpa-server
 

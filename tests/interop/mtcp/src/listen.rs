@@ -52,7 +52,7 @@ async fn receive_loop<S>(
     framed: &mut S,
     remote_addr: SocketAddr,
     sink: &Arc<dyn hardy_bpa::cla::Sink>,
-    peer_addr: &Option<hardy_bpa::cla::ClaAddress>,
+    peer_addr: &Option<hardy_bpa::cla::Address>,
     cancel: &hardy_async::CancellationToken,
 ) where
     S: StreamExt<Item = Result<Bytes, std::io::Error>> + Unpin,
@@ -105,7 +105,7 @@ async fn handle_connection(
         .inspect_err(|e| warn!("Failed to set TCP_NODELAY: {e}"))
         .ok();
 
-    let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(remote_addr));
+    let peer_addr = Some(hardy_bpa::cla::Address::Tcp(remote_addr));
 
     match framing {
         config::Framing::Mtcp => {

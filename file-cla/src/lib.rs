@@ -9,39 +9,44 @@ networks via removable media, or integrating with external tools that produce
 or consume raw bundle files.
 */
 
-use hardy_async::sync::spin::Once;
-use hardy_bpv7::eid::NodeId;
 use std::{
     collections::HashMap,
+    env, fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use trace_err::*;
-use tracing::{debug, error, info, warn};
+
+use core::num::NonZeroU64;
+
+use hardy_async::TaskPool;
+// `cla` is this crate's own module holding the trait impl, so the BPA's `cla`
+// items are imported by name, with its `Error` aliased to avoid the clash.
+use hardy_bpa::cla::{Context, Error as ClaError, Factory, Request, Sink, factory_fn};
+use hardy_bpv7::eid::NodeId;
 
 mod cla;
 mod watcher;
 
 /// Configuration for the file-based Convergence Layer Adapter (CLA).
 ///
-/// All fields have sensible defaults (via `Default`): no outbox and no peers,
-/// meaning the CLA is inert until explicitly configured.
+/// Both fields default to empty, no outbox and no peers, so the CLA is
+/// inert until configured.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     /// The directory to watch for new files to be sent as bundles.
     ///
-    /// Each file in this directory is treated as a complete bundle and will be
-    /// dispatched to the BPA. After successful dispatch the file is deleted.
+    /// Each file in this directory is a complete bundle, dispatched to the
+    /// BPA and then deleted.
     ///
     /// Default: `None` (no outbox; inbound file ingestion is disabled).
     pub outbox: Option<PathBuf>,
     /// A map of peer Endpoint IDs (EIDs) to their corresponding inbox directories.
     ///
-    /// When a bundle is to be forwarded to a peer, it will be written as a file
-    /// in the directory associated with that peer's EID. The filename is derived
-    /// from the bundle's source EID, timestamp, and optional fragment offset.
+    /// A bundle forwarded to a peer is written as a file in that peer's
+    /// directory, under a filename derived from the bundle's source EID,
+    /// timestamp and optional fragment offset.
     ///
     /// Default: empty map (no peers configured).
     pub peers: HashMap<NodeId, PathBuf>,
@@ -78,19 +83,17 @@ pub enum Error {
 
     /// CLA registration with the BPA failed.
     #[error("Failed to register CLA: {0}")]
-    Registration(#[from] hardy_bpa::cla::Error),
+    Registration(#[from] ClaError),
 }
 
 fn canonicalize_path(cwd: &Path, path: &PathBuf) -> Result<String, Error> {
     let full_path = cwd.join(path);
 
-    // Check everything is UTF-8
     if full_path.to_str().is_none() {
         return Err(Error::InvalidPath(format!("{}", full_path.display())));
     }
 
-    // Ensure we have created the path
-    std::fs::create_dir_all(&full_path).map_err(|e| Error::CreateDir {
+    fs::create_dir_all(&full_path).map_err(|e| Error::CreateDir {
         path: full_path.display().to_string(),
         source: e,
     })?;
@@ -103,54 +106,56 @@ fn canonicalize_path(cwd: &Path, path: &PathBuf) -> Result<String, Error> {
     Ok(canonical.to_string_lossy().into_owned())
 }
 
-/// The main struct for the file-based Convergence Layer Adapter (CLA).
+/// A convergence layer that carries bundles as files on the local filesystem.
 pub struct Cla {
     inboxes: HashMap<NodeId, String>,
     outbox: Option<String>,
-    sink: Once<Arc<dyn hardy_bpa::cla::Sink>>,
-    tasks: hardy_async::TaskPool,
+    sink: Arc<dyn Sink>,
+    max_bundle_size: Option<NonZeroU64>,
+    tasks: TaskPool,
 }
 
 impl Cla {
-    /// Creates a new `Cla` instance.
+    /// A factory for a file CLA, resolving every configured directory now.
     ///
-    /// # Arguments
-    ///
-    /// * `config` - The configuration for this CLA.
+    /// Outbox and inbox paths are canonicalized against the current working
+    /// directory, and created if they do not exist, so that a missing or
+    /// relative path is a configuration error rather than a surprise at the
+    /// first file operation.
     ///
     /// # Errors
     ///
-    /// Returns an error if any configured paths are invalid or cannot be created.
-    pub fn new(config: &Config) -> Result<Self, Error> {
-        let cwd = std::env::current_dir().map_err(Error::CurrentDir)?;
+    /// Returns an error if a configured path is not UTF-8, or cannot be
+    /// created or canonicalized.
+    pub fn factory(config: &Config) -> Result<impl Factory<Component = Self> + use<>, Error> {
+        let cwd = env::current_dir().map_err(Error::CurrentDir)?;
 
-        // Canonicalize all peer inbox paths eagerly
         let mut inboxes = HashMap::new();
         for (eid, path) in &config.peers {
             let canonical = canonicalize_path(&cwd, path)?;
             inboxes.insert(eid.clone(), canonical);
         }
 
-        // Canonicalize outbox path if configured
         let outbox = config
             .outbox
             .as_ref()
             .map(|path| canonicalize_path(&cwd, path))
             .transpose()?;
 
-        Ok(Self {
-            inboxes,
-            outbox,
-            sink: Once::new(),
-            tasks: hardy_async::TaskPool::new(),
-        })
+        Ok(factory_fn(Request::default(), move |cx: Context| {
+            Ok(Arc::new(Self {
+                inboxes,
+                outbox,
+                sink: cx.sink,
+                max_bundle_size: cx.terms.max_bundle_size,
+                tasks: TaskPool::new(),
+            }))
+        }))
     }
 
     /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
+        self.sink.unregister().await;
     }
 }
 
@@ -184,7 +189,7 @@ mod tests {
         assert!(target.is_dir());
         assert_eq!(PathBuf::from(result), target.canonicalize().unwrap());
         assert_eq!(
-            std::fs::read_dir(cwd.path()).unwrap().count(),
+            fs::read_dir(cwd.path()).unwrap().count(),
             0,
             "an absolute path must not be prefixed with the cwd"
         );
@@ -195,7 +200,7 @@ mod tests {
     #[test]
     fn test_canonicalize_existing_file_is_create_dir_error() {
         let cwd = tempfile::tempdir().unwrap();
-        std::fs::write(cwd.path().join("occupied"), b"not a directory").unwrap();
+        fs::write(cwd.path().join("occupied"), b"not a directory").unwrap();
 
         let err = canonicalize_path(cwd.path(), &PathBuf::from("occupied")).unwrap_err();
         assert!(matches!(err, Error::CreateDir { .. }), "got {err:?}");

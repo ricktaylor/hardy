@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 
 use crate::{
     Arc,
-    cla::ClaAddress,
+    cla::Address,
     filter::slots::{
         Blob, MetadataDelta, Slot, SlotValue,
         state::{PolicyEpoch, SlotMap},
@@ -20,16 +20,18 @@ use crate::{
     routing::{RoutingKey, TableId},
 };
 
-/// How a bundle entered this BPA's custody.
+/// A bundle's point of entry into this BPA's custody.
 ///
-/// Part of the bundle's provenance: persisted, write-once. A bundle is
-/// transit traffic iff its origin is [`Ingress`](Origin::Ingress).
+/// Part of the bundle's provenance: persisted and write-once. A bundle is
+/// transit traffic if and only if its origin is
+/// [`Ingress`](Origin::Ingress).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Origin {
     /// Received from a peer through a convergence-layer adapter.
     Ingress {
-        /// Node ID of the peer that forwarded this bundle (from the CLA handshake).
+        /// Node ID of the peer that forwarded this bundle, from the CLA
+        /// handshake.
         #[cfg_attr(
             feature = "serde",
             serde(default, skip_serializing_if = "Option::is_none")
@@ -40,9 +42,9 @@ pub enum Origin {
             feature = "serde",
             serde(default, skip_serializing_if = "Option::is_none")
         )]
-        peer_addr: Option<ClaAddress>,
-        /// Name of the CLA instance that received the bundle — a fact about
-        /// arrival, valid even if that CLA instance no longer exists.
+        peer_addr: Option<Address>,
+        /// Name of the CLA instance that received the bundle, a fact about
+        /// the arrival that holds even once that instance is gone.
         cla: Arc<str>,
     },
     /// Sourced at this node: a service hand-in or a BPA-generated bundle.
@@ -53,7 +55,7 @@ pub enum Origin {
 }
 
 // Arrival facts, written once at construction. Private fields and no `&mut`
-// accessor anywhere keep the write-once property a compile-time fact.
+// accessor keep the write-once property a compile-time one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct Provenance {
@@ -61,15 +63,16 @@ struct Provenance {
     origin: Origin,
 }
 
-/// Decoded well-known extension-block fields, derived from the bundle's bytes.
+/// Decoded well-known extension-block fields, derived from the bundle's
+/// bytes.
 ///
-/// A cache, not a source of truth: produced by the parse pipelines
-/// (`bundle::parse`) and recorded here whenever the bundle's bytes are parsed
-/// — at ingress, on local build, or on re-parse. It mirrors the *stored*
-/// bytes, which stay as received: the per-attempt rewrites at Egress and
-/// Deliver (the per-hop update, a Rewriter's edits) never touch it, and
-/// must not — the expiry arithmetic reads the as-received Bundle Age.
-/// Nothing re-validates it after the fact.
+/// A cache rather than a source of truth: `bundle::parse` produces it and
+/// records it here whenever the bundle's bytes are parsed, at ingress, on a
+/// local build, or on a re-parse. It mirrors the *stored* bytes, which stay
+/// as received, so the per-attempt rewrites at Egress and Deliver, the
+/// per-hop update and a Rewriter's edits, must leave it alone: the expiry
+/// arithmetic reads the as-received Bundle Age. Nothing re-validates it
+/// afterwards.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ExtensionFields {
@@ -79,7 +82,8 @@ pub struct ExtensionFields {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub previous_node: Option<Eid>,
-    /// Age of the bundle, used when the source node has no clock (Bundle Age block).
+    /// Age of the bundle, used when the source node has no clock (Bundle
+    /// Age block).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -93,31 +97,30 @@ pub struct ExtensionFields {
     pub hop_count: Option<HopInfo>,
 }
 
-// Output of the classifier chain: persisted, cleared and re-derived at
-// restart re-admission. The class field arrives with the policy tranche
-// (see bpa/docs/filter_subsystem_design.md).
+// Output of the Classifier chain: persisted, then cleared and re-derived at
+// restart re-admission.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct Classification {
-    // Annotation slots — embedder-private, gated by the declaring static. The
-    // skip predicate keeps slot-free records byte-identical to the
+    // Annotation slots, embedder-private and gated by the declaring static.
+    // The skip predicate keeps slot-free records byte-identical to the
     // pre-slots serde shape.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "SlotMap::is_empty")
     )]
     slots: SlotMap,
-    // The {table, key} the chain derived — persisted as the cache of the
-    // chain's output and resolved by the dispatcher at every lookup, the
-    // same struct rib.find consumes. The skip predicate keeps unkeyed
-    // records byte-identical to the prior serde shape.
+    // The {table, key} the chain derived, persisted as the cache of the
+    // chain's output and read by the dispatcher at every lookup, the same
+    // struct `Rib::find` consumes. The skip predicate keeps unkeyed records
+    // byte-identical to the prior serde shape.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "RoutingKey::is_unset")
     )]
     routing: RoutingKey,
-    // Policy-epoch stamp for lazy restart re-admission — engine bookkeeping
-    // with no accessor at all.
+    // Policy-epoch stamp for lazy restart re-admission, engine bookkeeping
+    // with no accessor.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "PolicyEpoch::is_initial")
@@ -127,14 +130,14 @@ struct Classification {
 
 /// A bundle's BPA-local processing metadata.
 ///
-/// Partitioned by write discipline: provenance (write-once arrival facts,
-/// read via [`received_at`](Self::received_at) / [`origin`](Self::origin)),
-/// the [`extensions`](Self::extensions) cache of parser-decoded extension
-/// fields, the classification group (annotation slots and the routing inputs,
-/// written only through the crate-private delta-apply path), and BPA
-/// infrastructure references (crate-private). There is no `Default`: a
-/// defaulted provenance would fabricate a `received_at` and an origin, so
-/// records are built only through the constructors.
+/// The fields are partitioned by write discipline: the write-once arrival
+/// facts, read through [`received_at`](Self::received_at) and
+/// [`origin`](Self::origin); the [`extensions`](Self::extensions) cache of
+/// parser-decoded extension fields; the classification group of annotation
+/// slots and routing inputs, written only through the crate-private
+/// delta-apply path; and the crate-private storage references. There is no
+/// `Default`, since a defaulted provenance would fabricate a `received_at`
+/// and an origin, so records are built through the constructors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BundleMetadata {
@@ -147,28 +150,29 @@ pub struct BundleMetadata {
     // Classifier-chain output: annotation slots and the routing inputs.
     #[cfg_attr(feature = "serde", serde(flatten))]
     classification: Classification,
-    // Wire-scoped block removals derived at ingress: RFC 9172 §5.1.1
-    // failure-drops and honoured `delete_block_on_failure` unknowns. The
-    // stored bundle is kept as received — no editing on input — so these
-    // ride the record and are applied per transmission/delivery attempt at
-    // the output doors (egress rewrite, deliver strip). A cache of a pure
-    // derivation over the received bytes + keys, re-derived at restart
-    // re-admission; crate-private, fixed machinery only (never a filter).
+    // Block removals derived at ingress: the failure-drops of RFC 9172
+    // Section 5.1.1 and the honoured `delete_block_on_failure` unknowns.
+    // The stored bundle is kept as received, so these ride the record and
+    // are applied per forwarding or delivery attempt, at the egress rewrite
+    // and the deliver strip. They are a cache of a pure derivation over the
+    // received bytes and the keys, re-derived at restart re-admission, and
+    // written by fixed machinery rather than by a filter.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
     pub(crate) to_remove: Vec<u64>,
-    // Opaque key used by the storage backend to locate the serialised bundle data.
+    // Opaque key the storage backend locates the bundle's bytes by.
     pub(crate) storage_name: Option<Arc<str>>,
 }
 
 impl BundleMetadata {
     /// Creates a record from explicit arrival facts.
     ///
-    /// For record reconstruction (storage backends, test fixtures) and the
-    /// BPA's own recovery paths. Live traffic uses [`ingress`](Self::ingress)
-    /// or [`originated`](Self::originated), which stamp the current time.
+    /// For reconstructing a record, in a storage backend or a test fixture,
+    /// and for the BPA's own recovery paths. Live traffic uses
+    /// [`ingress`](Self::ingress) or [`originated`](Self::originated), which
+    /// stamp the current time.
     pub fn new(received_at: OffsetDateTime, origin: Origin) -> Self {
         Self {
             provenance: Provenance {
@@ -184,11 +188,7 @@ impl BundleMetadata {
 
     /// Creates the record for a bundle arriving from a peer, stamping the
     /// current time.
-    pub fn ingress(
-        cla: Arc<str>,
-        peer_node: Option<NodeId>,
-        peer_addr: Option<ClaAddress>,
-    ) -> Self {
+    pub fn ingress(cla: Arc<str>, peer_node: Option<NodeId>, peer_addr: Option<Address>) -> Self {
         Self::new(
             OffsetDateTime::now_utc(),
             Origin::Ingress {
@@ -205,8 +205,8 @@ impl BundleMetadata {
         Self::new(OffsetDateTime::now_utc(), Origin::Originated)
     }
 
-    /// Completes the record with the parse-derived extension fields, so
-    /// construction stays a single expression.
+    /// Sets the parse-derived extension fields, keeping construction a
+    /// single expression.
     #[must_use]
     pub fn with_extensions(mut self, extensions: ExtensionFields) -> Self {
         self.extensions = extensions;
@@ -218,16 +218,17 @@ impl BundleMetadata {
         self.provenance.received_at
     }
 
-    /// The bundle's creation time under the RFC 9171 rule: the primary
-    /// block's timestamp when the source is clocked, else
-    /// [`received_at`](Self::received_at) minus the Bundle Age extension
-    /// field. Lives here because both fallback inputs are this record's —
-    /// the primary block is the caller's argument.
+    /// The bundle's creation time under the RFC 9171 rule.
+    ///
+    /// The primary block's timestamp when the source is clocked, otherwise
+    /// [`received_at`](Self::received_at) less the Bundle Age extension
+    /// field. It lives here because both fallback inputs are this record's,
+    /// the primary block being the caller's argument.
     pub fn creation_time(&self, primary: &PrimaryBlock) -> OffsetDateTime {
         super::creation_time(primary, self.extensions.age, self.received_at())
     }
 
-    /// When the bundle's lifetime ends:
+    /// The end of the bundle's lifetime,
     /// [`creation_time`](Self::creation_time) plus the primary block's
     /// lifetime, saturating.
     pub fn expiry(&self, primary: &PrimaryBlock) -> OffsetDateTime {
@@ -239,19 +240,20 @@ impl BundleMetadata {
         self.expiry(primary) <= OffsetDateTime::now_utc()
     }
 
-    /// How the bundle entered this BPA's custody.
+    /// The bundle's point of entry into this BPA's custody.
     pub fn origin(&self) -> &Origin {
         &self.provenance.origin
     }
 
-    /// The `{table, key}` lookup inputs the Classifier chain derived — what
+    /// The `{table, key}` lookup inputs the Classifier chain derived, which
     /// the dispatcher hands to the RIB at every lookup.
     pub(crate) fn routing_key(&self) -> &RoutingKey {
         &self.classification.routing
     }
 
-    /// The Classifier-derived routing key, if one is set. The RIB walks this
-    /// EID in place of the destination.
+    /// The Classifier-derived routing key, if one is set.
+    ///
+    /// The RIB walks this EID in place of the destination.
     pub fn route_key(&self) -> Option<&Eid> {
         self.classification.routing.key.as_ref()
     }
@@ -264,22 +266,22 @@ impl BundleMetadata {
     /// Reads an annotation slot, decoding the stored value.
     ///
     /// Only code that can name the [`Slot`] reads it. Returns `None` when
-    /// the slot is unset — or when the stored bytes no longer decode as `T`
-    /// (a stale value from a declaration whose type changed across a restart
-    /// reads as unset rather than erroring; the next classification pass
-    /// re-derives it).
+    /// the slot is unset, and also when the stored bytes no longer decode as
+    /// `T`: a stale value, left by a declaration whose type changed across a
+    /// restart, reads as unset rather than erroring, and the next
+    /// classification pass re-derives it.
     pub fn slot<T: SlotValue>(&self, slot: &Slot<T>) -> Option<T> {
         parse_exact(self.classification.slots.get(slot.name())?).ok()
     }
 
-    /// Reads a text slot as a borrowed view of the stored bytes — the
-    /// zero-copy read.
+    /// Reads a text slot as a borrowed view of the stored bytes, without a
+    /// copy.
     ///
     /// [`set`](MetadataDelta::set) encodes canonically, so a stored text
     /// value is a definite-length string whose payload sits contiguous in
-    /// the record; the returned `&str` borrows it directly. `None` when the
-    /// slot is unset or the stored bytes are not exactly one untagged
-    /// definite-length text string.
+    /// the record, and the returned `&str` borrows it directly. Returns
+    /// `None` when the slot is unset, or when the stored bytes are not
+    /// exactly one untagged definite-length text string.
     pub fn slot_str(&self, slot: &Slot<String>) -> Option<&str> {
         let data = self.classification.slots.get(slot.name())?;
         let (head, _, offset) = parse::<(Head, bool, usize)>(data).ok()?;
@@ -296,8 +298,8 @@ impl BundleMetadata {
         from_utf8(&data[offset..end]).ok()
     }
 
-    /// Reads a blob slot as a borrowed view of the stored bytes — the
-    /// zero-copy read; see [`slot_str`](Self::slot_str).
+    /// Reads a blob slot as a borrowed view of the stored bytes; see
+    /// [`slot_str`](Self::slot_str).
     pub fn slot_bytes(&self, slot: &Slot<Blob>) -> Option<&[u8]> {
         let data = self.classification.slots.get(slot.name())?;
         let (head, _, offset) = parse::<(Head, bool, usize)>(data).ok()?;
@@ -314,13 +316,13 @@ impl BundleMetadata {
         data.get(offset..end)
     }
 
-    /// Applies a Classifier's delta — the only write path into the
+    /// Applies a Classifier's delta, the only write path into the
     /// classification group.
     ///
-    /// Per-slot and per-field last-writer-wins: a `Some` routing field
-    /// writes, `None` expresses no opinion and preserves the stored value.
-    /// Every slot write is stored as written: filters are trusted code, and
-    /// a Classifier bounds what it writes.
+    /// The last writer wins, per slot and per routing field: a `Some`
+    /// routing field writes, `None` expresses no opinion and preserves the
+    /// stored value. Every slot write is stored as written, filters being
+    /// trusted code that bounds what it writes.
     pub(crate) fn apply(&mut self, delta: MetadataDelta) {
         for write in delta.slots {
             self.classification.slots.insert(write.name, write.value);
@@ -333,8 +335,8 @@ impl BundleMetadata {
         }
     }
 
-    /// Clears the classification group for re-derivation (restart
-    /// re-admission or a policy-epoch bump), stamping the epoch the next
+    /// Clears the classification group for re-derivation, at restart
+    /// re-admission or a policy-epoch bump, stamping the epoch the next
     /// classification pass runs under.
     #[allow(dead_code)] // wired by the restart re-admission path (Phase 3, filter_subsystem_design.md)
     pub(crate) fn clear_classification(&mut self, epoch: PolicyEpoch) {
@@ -357,8 +359,8 @@ mod tests {
     }
 
     // Populated metadata survives the serde path both SQL backends persist
-    // records through, and a row written before `WritableMetadata` was
-    // removed — carrying `"flow_label":null` — still loads.
+    // records through, and a row carrying `"flow_label":null`, written
+    // before `WritableMetadata` was removed, still loads.
     #[cfg(feature = "serde")]
     #[test]
     fn populated_metadata_round_trips_through_serde() {
@@ -397,10 +399,9 @@ mod tests {
 
     #[test]
     fn owned_container_slot_values_round_trip() {
-        // The vendor-facing cases: a String rides the codec's owned
-        // decode directly through the blanket SlotValue, and an opaque
-        // byte blob rides the slots-provided Blob newtype (bare byte
-        // containers deliberately are not SlotValues — see Blob's docs).
+        // A String rides the codec's owned decode through the blanket
+        // SlotValue, and an opaque byte blob rides the Blob newtype; bare
+        // byte containers are deliberately not SlotValues, see Blob's docs.
         let h_text = handle::<String>("vendor.text");
         let h_blob = handle::<Blob>("vendor.blob");
         let mut md = BundleMetadata::originated();
@@ -416,7 +417,7 @@ mod tests {
             Some(Blob(Box::from(&[0xDEu8, 0xAD, 0xBE, 0xEF][..])))
         );
 
-        // The zero-copy reads: borrowed views straight into the record.
+        // The borrowed views read straight out of the record.
         assert_eq!(md.slot_str(&h_text), Some("parsed-at-ingress"));
         assert_eq!(
             md.slot_bytes(&h_blob),
@@ -475,7 +476,8 @@ mod tests {
         assert_eq!(md.route_key(), Some(&key_a));
         assert_eq!(md.route_table(), None);
 
-        // Table alone: None on the key is no opinion — the stored key survives.
+        // Table alone: `None` on the key is no opinion, so the stored key
+        // survives.
         md.apply(MetadataDelta {
             route_table: Some(TableId::new(7)),
             ..Default::default()
@@ -529,7 +531,7 @@ mod tests {
         let h_reader = handle::<bool>("vendor.x");
         let mut md = BundleMetadata::originated();
 
-        // A registration that changed type across a restart: the stored
+        // A declaration whose type changed across a restart: the stored
         // bytes decode as the old type, not the new one.
         let mut delta = MetadataDelta::default();
         delta.set(&h_writer, &42u32);

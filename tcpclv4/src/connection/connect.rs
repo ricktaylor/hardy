@@ -25,8 +25,8 @@ impl Connector {
     #[cfg_attr(feature = "instrument", instrument)]
     pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), Error> {
         // Bound the connect itself: a silently dropped SYN otherwise hangs
-        // for the OS connect timeout (minutes at Linux defaults), and the
-        // dial-before-queueing preference makes that stall a forward
+        // for the OS connect timeout, minutes at Linux defaults, and the
+        // dial-before-queueing preference makes that stall a forward.
         let mut stream = tokio::time::timeout(
             self.ctx.contact_timeout_duration(),
             TcpStream::connect(remote_addr),
@@ -38,8 +38,8 @@ impl Connector {
         })?
         .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
 
-        // Disable Nagle's algorithm to ensure timely delivery of small messages
-        // like XFER_ACK, KEEPALIVE, and SESS_TERM
+        // Nagle's algorithm delays the small messages this protocol leans
+        // on: XFER_ACK, KEEPALIVE and SESS_TERM.
         stream
             .set_nodelay(true)
             .inspect_err(|e| debug!("Failed to set TCP_NODELAY: {e}"))
@@ -49,7 +49,6 @@ impl Connector {
             .local_addr()
             .trace_expect("Failed to get socket local address");
 
-        // Send contact header
         stream
             .write_all(&self.ctx.dialing_contact_header())
             .await
@@ -57,7 +56,6 @@ impl Connector {
                 |e| debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}"),
             )?;
 
-        // Receive contact header
         let mut buffer = [0u8; 6];
         tokio::time::timeout(
             self.ctx.contact_timeout_duration(),
@@ -68,7 +66,6 @@ impl Connector {
         .inspect_err(|_| debug!(%local_addr, %remote_addr, "Connection timed out"))?
         .inspect_err(|e| debug!(%local_addr, %remote_addr, "Read failed: {e}"))?;
 
-        // Parse contact header
         if buffer[0..4] != *b"dtn!" {
             debug!(%local_addr, %remote_addr, "Contact header isn't: 'dtn!'");
             return Err(Error::InvalidProtocol);
@@ -82,13 +79,11 @@ impl Connector {
             if buffer[4] == 3 {
                 debug!(%local_addr, %remote_addr, "Sending TCPCLv3 SHUTDOWN message");
 
-                // Send a TCPCLv3 SHUTDOWN message
                 stream.write_all(&[0x45, 0x01]).await.inspect_err(
                     |e| debug!(%local_addr, %remote_addr, "Failed to send TCPv3 SHUTDOWN message: {e}"),
                 )?;
                 stream.shutdown().await?;
             } else {
-                // Terminate session
                 transport::terminate(
                     codec::MessageCodec::new_framed(stream),
                     codec::SessionTermReasonCode::VersionMismatch,
@@ -146,21 +141,21 @@ impl Connector {
         local_addr: SocketAddr,
         tls_config: Arc<tls::Tls>,
     ) -> Result<(), Error> {
-        // Priority: configured name > localhost (loopback) > IP address
+        // A configured name wins, since it is the one the certificate was
+        // issued to; otherwise a loopback peer is addressed as `localhost`
+        // and anything else by its IP address, which fails against a
+        // certificate issued to a domain name.
         let server_name = if let Some(configured_name) = tls_config.server_name() {
-            // Use the configured server name (for certificates issued to domain names)
             rustls::pki_types::ServerName::try_from(configured_name.to_string()).map_err(|e| {
                 error!("Invalid configured server name for TLS: {e}");
                 Error::InvalidProtocol
             })?
         } else if remote_addr.ip().is_loopback() {
-            // Fallback: localhost for loopback connections
             rustls::pki_types::ServerName::try_from("localhost").map_err(|e| {
                 error!("Invalid server name for TLS: {e}");
                 Error::InvalidProtocol
             })?
         } else {
-            // Fallback: IP address (may fail if certificate is for a domain name)
             rustls::pki_types::ServerName::from(remote_addr.ip())
         };
 
@@ -171,7 +166,8 @@ impl Connector {
         })?;
 
         // A configured identity was presented if the peer requested client
-        // authentication; a rejected certificate fails the handshake above
+        // authentication, and a rejected certificate fails the handshake
+        // above.
         debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
 
         self.new_active(
@@ -200,7 +196,6 @@ impl Connector {
     {
         debug!(%local_addr, %remote_addr, "Sending SESS_INIT");
 
-        // Send our SESS_INIT message
         transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
                 keepalive_interval: self.ctx.keepalive_interval.get(),
@@ -216,7 +211,6 @@ impl Connector {
 
         debug!(%local_addr, %remote_addr, "Reading SESS_INIT");
 
-        // Read the SESS_INIT message with timeout
         let peer_init = loop {
             match transport::next_with_timeout(
                 &mut transport,
@@ -231,7 +225,6 @@ impl Connector {
                 msg => {
                     debug!(%local_addr, %remote_addr, "Unexpected message while waiting for SESS_INIT: {msg:?}");
 
-                    // Send a MSG_REJECT/Unexpected message
                     transport
                         .send(codec::Message::Reject(codec::MessageRejectMessage {
                             reason_code: codec::MessageRejectionReasonCode::Unexpected,
@@ -247,17 +240,17 @@ impl Connector {
 
         debug!(%local_addr, %remote_addr, "Received SESS_INIT {peer_init:?}");
 
-        // Negotiated KeepAlive - See RFC9174 Section 5.1.1
+        // The negotiated keepalive, per RFC 9174 Section 5.1.1.
         let keepalive_interval = self
             .ctx
             .keepalive_interval
             .negotiate(peer_init.keepalive_interval)
             .get();
 
-        // Check peer init
+        // No session extension is supported, so a critical one ends the
+        // session.
         for i in &peer_init.session_extensions {
             if i.flags.critical {
-                // We just don't support extensions!
                 transport::terminate(
                     transport,
                     codec::SessionTermReasonCode::ContactFailure,
@@ -271,17 +264,16 @@ impl Connector {
 
         let (tx, rx) = channel(1);
         let peer_node = peer_init.node_id.clone();
-        let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(*remote_addr));
+        let peer_addr = Some(hardy_bpa::cla::Address::Tcp(*remote_addr));
         let cancel_token = self.ctx.session_cancel_token.clone();
         let keepalive_duration =
             context::ConnectionContext::keepalive_as_duration(keepalive_interval);
 
-        // Split the transport into reader and writer halves
-        // This allows the writer task to send keepalives independently of the
-        // session loop, preventing session timeout when dispatch() blocks.
+        // Splitting the transport lets the writer task send keepalives
+        // independently of the session loop, so a dispatch blocked in the
+        // BPA does not time the session out.
         let (transport_writer, transport_reader) = transport.split();
 
-        // Create the writer task (handles keepalives independently)
         let (writer_handle, writer_task) =
             writer::create_writer(transport_writer, keepalive_duration, cancel_token.clone());
 
@@ -302,21 +294,20 @@ impl Connector {
             cancel_token,
         );
 
-        // Kick off the run() as a background task
-        // Extract what we need to avoid capturing `self` (which has Arc<TaskPool>)
+        // Cloned out of `self`, which the spawned tasks below must not
+        // capture: it holds the `Arc<TaskPool>` they run on.
         let registry = self.ctx.registry.clone();
         let sink = self.ctx.sink.clone();
         let remote_addr = *remote_addr;
 
-        // Spawn the writer task first
         hardy_async::spawn!(self.tasks, "active_session_writer", async move {
             writer_task.run().await;
         });
 
         // Register before returning: the dialing forward re-checks the pool
-        // as soon as connect() returns, and registration inside the spawned
+        // as soon as `connect` returns, and registering inside the spawned
         // task would let that same forward miss its own fresh session and
-        // dial again
+        // dial again.
         registry
             .register_session(
                 sink,
@@ -333,7 +324,7 @@ impl Connector {
 
             debug!(%local_addr, %remote_addr, "Session closed");
 
-            // Unregister the session for addr, whatever happens
+            // Unregister whatever ended the session.
             registry.unregister_session(&local_addr, &remote_addr).await
         });
 

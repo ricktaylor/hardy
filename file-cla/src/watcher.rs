@@ -1,6 +1,13 @@
 use core::num::NonZeroU64;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
+use flume::{Receiver, Sender};
+use hardy_async::CancellationToken;
+use hardy_bpa::{Bytes, cla};
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
     notify::{
@@ -8,34 +15,29 @@ use notify_debouncer_full::{
         event::{CreateKind, ModifyKind, RenameMode},
     },
 };
-use tokio::fs::{metadata, read_dir};
+use tokio::fs;
+use trace_err::TraceErrResult;
+use tracing::{debug, error, info, warn};
 
-use super::*;
+use crate::Cla;
 
 impl Cla {
-    /// Starts the file watcher for the outbox directory.
+    /// Spawns the outbox watcher and the forwarder that drains it.
     ///
-    /// This function spawns two background tasks:
-    /// 1. `watcher_task`: Sweeps the files already in `outbox` (each is
-    ///    offered once at startup), then monitors the directory for created
-    ///    or renamed-in files, sending each path to the `forwarder_task`.
-    /// 2. `forwarder_task`: Receives file paths, reads each file as a
-    ///    bundle and dispatches it to the BPA via the `sink`. The file is
-    ///    deleted on acceptance, quarantined to the `outbox/refused/`
-    ///    subdirectory on refusal (a refusal is deterministic — re-offering
-    ///    would refuse forever), and left in place on a dispatch failure so
-    ///    the next startup sweep re-offers it.
+    /// The watcher sweeps the files already in `outbox`, then follows the
+    /// directory for files created or renamed into it, handing each path to
+    /// the forwarder. The forwarder reads a file whole and dispatches it to
+    /// the BPA through `sink`: an accepted file is deleted, a refused one is
+    /// quarantined under `outbox/refused/`, and one whose dispatch failed is
+    /// left in place for the next startup sweep to re-offer.
     ///
-    /// # Arguments
+    /// Files larger than `max_bundle_size` are skipped rather than offered to
+    /// a certain rejection.
     ///
-    /// * `sink` - The sink to dispatch bundles to the BPA.
-    /// * `outbox` - The path to the directory to watch for outgoing bundles.
-    /// * `max_bundle_size` - The negotiated dispatch size cap, if any;
-    ///   files larger than it are skipped rather than offered to a certain
-    ///   rejection.
+    /// Both tasks run until the CLA's task pool is cancelled.
     pub async fn start_watcher(
         &self,
-        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        sink: Arc<dyn cla::Sink>,
         outbox: String,
         max_bundle_size: Option<NonZeroU64>,
     ) {
@@ -53,30 +55,22 @@ impl Cla {
     }
 }
 
-async fn watcher_task(
-    outbox: String,
-    path_tx: flume::Sender<PathBuf>,
-    cancel_token: tokio_util::sync::CancellationToken,
-) {
+async fn watcher_task(outbox: String, path_tx: Sender<PathBuf>, cancel_token: CancellationToken) {
     let (tx, rx) = flume::unbounded();
-    let mut debouncer = new_debouncer(
-        std::time::Duration::from_secs(1),
-        None,
-        move |res| match res {
-            Ok(events) => {
-                for e in events {
-                    if tx.send(e).is_err() {
-                        break;
-                    }
+    let mut debouncer = new_debouncer(Duration::from_secs(1), None, move |res| match res {
+        Ok(events) => {
+            for e in events {
+                if tx.send(e).is_err() {
+                    break;
                 }
             }
-            Err(e) => {
-                for e in e {
-                    error!("Watch error: {e}")
-                }
+        }
+        Err(e) => {
+            for e in e {
+                error!("Watch error: {e}")
             }
-        },
-    )
+        }
+    })
     .trace_expect("Failed to create directory watcher");
 
     debouncer
@@ -91,7 +85,7 @@ async fn watcher_task(
     // installed. The watch is installed before this scan, so a file arriving
     // mid-scan is seen by at least one of the two paths; the forwarder
     // tolerates the resulting duplicate.
-    match read_dir(&outbox).await {
+    match fs::read_dir(&outbox).await {
         Ok(mut entries) => loop {
             match entries.next_entry().await {
                 Ok(Some(entry)) => {
@@ -100,7 +94,7 @@ async fn watcher_task(
                     // an ordinary file creation, so the scan has to accept one
                     // too, or the two paths disagree about the same entry.
                     let path = entry.path();
-                    if metadata(&path).await.is_ok_and(|m| m.is_file())
+                    if fs::metadata(&path).await.is_ok_and(|m| m.is_file())
                         && path_tx.send_async(path).await.is_err()
                     {
                         return;
@@ -139,8 +133,8 @@ async fn watcher_task(
 // rename-into catches the atomic write-then-rename spool idiom and an
 // operator moving a file back from `refused/` to retry it. A rename the
 // debouncer matched within the directory (the source outlived the debounce
-// window) arrives as a single `Both` event whose paths are `[from, to]` —
-// only the destination still exists to be offered.
+// window) arrives as a single `Both` event whose paths are `[from, to]`, of
+// which only the destination still exists to be offered.
 fn offered_paths(mut event: Event) -> Vec<PathBuf> {
     match event.kind {
         EventKind::Create(CreateKind::File)
@@ -152,11 +146,10 @@ fn offered_paths(mut event: Event) -> Vec<PathBuf> {
     }
 }
 
-// A refusal is deterministic — re-offering the same bundle would refuse
-// forever — so the file moves to the `refused/` sibling directory: the
-// non-recursive sweep and watcher never re-offer it, and the operator can
-// inspect it or `mv` it back into the outbox to retry. On any failure the
-// file is left in place.
+// Moves a refused file to the `refused/` sibling directory, which neither
+// the non-recursive sweep nor the watcher scans, so the same refusal is not
+// repeated on every restart. The operator can inspect the file or `mv` it
+// back into the outbox to retry. On any failure the file is left in place.
 async fn quarantine(path: &Path) {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         warn!(
@@ -166,7 +159,7 @@ async fn quarantine(path: &Path) {
         return;
     };
     let refused = dir.join("refused");
-    if let Err(e) = tokio::fs::create_dir_all(&refused).await {
+    if let Err(e) = fs::create_dir_all(&refused).await {
         warn!(
             "Bundle '{}' refused by the BPA; creating '{}' failed ({e}), file left in place",
             path.display(),
@@ -175,7 +168,7 @@ async fn quarantine(path: &Path) {
         return;
     }
     let dest = refused.join(name);
-    match tokio::fs::rename(path, &dest).await {
+    match fs::rename(path, &dest).await {
         Ok(()) => warn!(
             "Bundle '{}' refused by the BPA, quarantined at '{}'",
             path.display(),
@@ -189,50 +182,49 @@ async fn quarantine(path: &Path) {
 }
 
 async fn forwarder_task(
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
-    rx: flume::Receiver<PathBuf>,
+    sink: Arc<dyn cla::Sink>,
+    rx: Receiver<PathBuf>,
     max_bundle_size: Option<NonZeroU64>,
-    cancel_token: tokio_util::sync::CancellationToken,
+    cancel_token: CancellationToken,
 ) {
     loop {
         tokio::select! {
             res = rx.recv_async() => match res {
                 Err(_) => break,
                 Ok(path) => {
-                    // Pre-check against the BPA's dispatch size cap: an
-                    // over-cap file would be rejected deterministically, so
-                    // don't even read it. Skipped (not deleted) — the
-                    // operator's file, the operator's cleanup.
+                    // An over-cap file is rejected deterministically, so it
+                    // is never read. It is skipped rather than deleted: the
+                    // operator owns the file.
                     if let Some(cap) = max_bundle_size
-                        && let Ok(meta) = tokio::fs::metadata(&path).await
+                        && let Ok(meta) = fs::metadata(&path).await
                         && meta.len() > cap.get()
                     {
                         warn!("'{}' exceeds the negotiated max bundle size ({} > {cap}), skipped", path.display(), meta.len());
                         continue;
                     }
 
-                    // INTERIM BUFFERING: the whole file is read into memory and
-                    // dispatched as a one-segment stream (`Bytes` is a `stream::Receiver`). This
-                    // is a deliberate stepping stone toward the full streaming
-                    // pipeline (a native implementation would stream the file in
-                    // chunks); see bpa/docs/streaming_pipeline_design.md.
-                    if let Ok(buffer) = tokio::fs::read(&path).await.inspect_err(|e| error!("Failed to read from '{}': {e}", path.display())) {
+                    // The whole file is read into memory and dispatched as a
+                    // one-segment stream, since `Bytes` is a
+                    // `stream::Receiver`. See
+                    // bpa/docs/streaming_pipeline_design.md for the chunked
+                    // form this is a step towards.
+                    if let Ok(buffer) = fs::read(&path).await.inspect_err(|e| error!("Failed to read from '{}': {e}", path.display())) {
                         // The file is consumed only on acceptance. A refusal
                         // is deterministic and quarantined to `refused/`; a
                         // dispatch failure is transient, so the file stays
                         // for the next startup sweep to re-offer.
-                        // TODO:  We could implement a "Sent Items" folder instead of deleting, but not sure...
-                        match sink.dispatch(None, None, &mut hardy_bpa::Bytes::from(buffer)).await {
-                            Ok(hardy_bpa::cla::Acceptance::Accepted) => {
+                        // TODO: a "Sent Items" folder could replace the delete.
+                        match sink.dispatch(None, None, &mut Bytes::from(buffer)).await {
+                            Ok(cla::Acceptance::Accepted) => {
                                 debug!("Dispatched '{}'", path.display());
-                                tokio::fs::remove_file(&path).await.unwrap_or_else(|e| {
+                                fs::remove_file(&path).await.unwrap_or_else(|e| {
                                     warn!("Failed to remove file '{}': {e}", path.display());
                                 });
                             }
-                            Ok(hardy_bpa::cla::Acceptance::Refused) => {
+                            Ok(cla::Acceptance::Refused) => {
                                 quarantine(&path).await;
                             }
-                            Err(e) => warn!("Failed to dispatch bundle '{}': {e}; file left in place — the startup sweep re-offers it after restart", path.display()),
+                            Err(e) => warn!("Failed to dispatch bundle '{}': {e}; file left in place for the startup sweep to re-offer after restart", path.display()),
                         }
                     }
                 }
@@ -250,7 +242,7 @@ mod tests {
 
     use hardy_bpa::{
         async_trait,
-        cla::{Acceptance, ClaAddress, Segment, Sink, TransferOutcome},
+        cla::{Acceptance, Address, Segment, Sink, TransferOutcome},
         stream::Receiver,
     };
     use hardy_bpv7::{bundle::Id, eid::NodeId};
@@ -302,9 +294,11 @@ mod tests {
         }
     }
 
-    /// Signals each dispatch through a channel — the forwarder loop is
-    /// sequential, so a received signal proves every earlier-queued path
-    /// was already fully handled — and answers with a configured verdict.
+    /// Answers every dispatch with a configured verdict and signals it
+    /// through a channel.
+    ///
+    /// The forwarder loop is sequential, so a received signal proves every
+    /// earlier-queued path was already fully handled.
     struct MockSink {
         verdict: Acceptance,
         dispatched: flume::Sender<()>,
@@ -317,9 +311,9 @@ mod tests {
         async fn dispatch(
             &self,
             _peer_node: Option<&NodeId>,
-            _peer_addr: Option<&ClaAddress>,
+            _peer_addr: Option<&Address>,
             stream: &mut dyn Receiver<Segment>,
-        ) -> hardy_bpa::cla::Result<Acceptance> {
+        ) -> cla::Result<Acceptance> {
             while let Ok(segment) = stream.recv().await {
                 if matches!(segment, Segment::Final(_)) {
                     break;
@@ -329,47 +323,44 @@ mod tests {
             Ok(self.verdict)
         }
 
-        async fn add_peer(
-            &self,
-            _cla_addr: ClaAddress,
-            _node_ids: &[NodeId],
-        ) -> hardy_bpa::cla::Result<bool> {
+        async fn add_peer(&self, _cla_addr: Address, _node_ids: &[NodeId]) -> cla::Result<bool> {
             Ok(true)
         }
 
-        async fn remove_peer(&self, _cla_addr: &ClaAddress) -> hardy_bpa::cla::Result<bool> {
+        async fn remove_peer(&self, _cla_addr: &Address) -> cla::Result<bool> {
             Ok(true)
         }
 
-        async fn transfer_outcome(
+        async fn report_transfer(
             &self,
             _bundle_id: &Id,
             _outcome: TransferOutcome,
-        ) -> hardy_bpa::cla::Result<()> {
+        ) -> cla::Result<()> {
             Ok(())
         }
     }
 
-    /// An over-cap outbox file is skipped unread — never dispatched, never
-    /// deleted — while a later under-cap file dispatches. The dispatch
-    /// channel is FIFO and the forwarder sequential, so the single received
-    /// signal is the under-cap file's: an over-cap dispatch would have
-    /// queued a signal ahead of it.
+    /// An over-cap outbox file is neither dispatched nor deleted, while a
+    /// later under-cap file dispatches.
+    ///
+    /// The dispatch channel is FIFO and the forwarder sequential, so the
+    /// single received signal is the under-cap file's: an over-cap dispatch
+    /// would have queued a signal ahead of it.
     #[tokio::test]
     async fn over_cap_file_is_skipped_unread_and_preserved() {
         let dir = std::env::temp_dir().join(format!("hardy-file-cla-skip-{}", std::process::id()));
-        tokio::fs::create_dir_all(&dir).await.unwrap();
+        fs::create_dir_all(&dir).await.unwrap();
         let over = dir.join("over.bundle");
         let under = dir.join("under.bundle");
         // Contents are immaterial: the over-cap file must be skipped on
         // metadata alone, and the mock sink accepts anything.
-        tokio::fs::write(&over, [0u8; 64]).await.unwrap();
-        tokio::fs::write(&under, [0u8; 8]).await.unwrap();
+        fs::write(&over, [0u8; 64]).await.unwrap();
+        fs::write(&under, [0u8; 8]).await.unwrap();
 
         let cap = NonZeroU64::new(32).unwrap();
         let (path_tx, path_rx) = flume::unbounded();
         let (event_tx, event_rx) = flume::unbounded();
-        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = CancellationToken::new();
         let forwarder = tokio::spawn(forwarder_task(
             Arc::new(MockSink {
                 verdict: Acceptance::Accepted,
@@ -392,25 +383,25 @@ mod tests {
             "Only the under-cap file may dispatch; an over-cap dispatch would have signalled first"
         );
         assert!(
-            tokio::fs::try_exists(&over).await.unwrap(),
+            fs::try_exists(&over).await.unwrap(),
             "The over-cap file is the operator's to clean up"
         );
 
         cancel_token.cancel();
         forwarder.await.unwrap();
-        tokio::fs::remove_dir_all(&dir).await.unwrap();
+        fs::remove_dir_all(&dir).await.unwrap();
     }
 
-    // A file already in the outbox when the watcher starts is offered by
-    // the startup sweep — previously nothing ever offered it.
+    // The startup sweep offers a file already in the outbox when the
+    // watcher starts.
     #[tokio::test]
     async fn startup_sweep_offers_preexisting_files() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("pre-existing.bundle");
-        tokio::fs::write(&file, b"bundle-bytes").await.unwrap();
+        fs::write(&file, b"bundle-bytes").await.unwrap();
 
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
-        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel = CancellationToken::new();
         let task = tokio::spawn(watcher_task(
             dir.path().to_string_lossy().into_owned(),
             path_tx,
@@ -418,11 +409,10 @@ mod tests {
         ));
 
         // the timeout only bounds a regression
-        let offered =
-            tokio::time::timeout(std::time::Duration::from_secs(10), path_rx.recv_async())
-                .await
-                .expect("startup sweep never offered the pre-existing file")
-                .unwrap();
+        let offered = tokio::time::timeout(Duration::from_secs(10), path_rx.recv_async())
+            .await
+            .expect("startup sweep never offered the pre-existing file")
+            .unwrap();
         assert_eq!(offered, file);
 
         cancel.cancel();
@@ -436,7 +426,7 @@ mod tests {
     async fn refused_file_is_quarantined_not_reoffered() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("refused.bundle");
-        tokio::fs::write(&file, b"bundle-bytes").await.unwrap();
+        fs::write(&file, b"bundle-bytes").await.unwrap();
 
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
         path_tx.send(file.clone()).unwrap();
@@ -452,18 +442,18 @@ mod tests {
             }),
             path_rx,
             None,
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         )
         .await;
 
         assert!(
-            tokio::fs::try_exists(dir.path().join("refused").join("refused.bundle"))
+            fs::try_exists(dir.path().join("refused").join("refused.bundle"))
                 .await
                 .unwrap(),
             "refused file must be quarantined under refused/"
         );
         assert!(
-            !tokio::fs::try_exists(&file).await.unwrap(),
+            !fs::try_exists(&file).await.unwrap(),
             "refused file must leave the outbox"
         );
 
@@ -471,10 +461,10 @@ mod tests {
         // sentinel file proves the sweep ran; the quarantined file must not
         // be offered alongside it.
         let sentinel = dir.path().join("sentinel.bundle");
-        tokio::fs::write(&sentinel, b"bundle-bytes").await.unwrap();
+        fs::write(&sentinel, b"bundle-bytes").await.unwrap();
 
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
-        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel = CancellationToken::new();
         let task = tokio::spawn(watcher_task(
             dir.path().to_string_lossy().into_owned(),
             path_tx,
@@ -482,11 +472,10 @@ mod tests {
         ));
 
         // the timeout only bounds a regression
-        let offered =
-            tokio::time::timeout(std::time::Duration::from_secs(10), path_rx.recv_async())
-                .await
-                .expect("restart sweep never offered the sentinel")
-                .unwrap();
+        let offered = tokio::time::timeout(Duration::from_secs(10), path_rx.recv_async())
+            .await
+            .expect("restart sweep never offered the sentinel")
+            .unwrap();
         assert_eq!(
             offered, sentinel,
             "the restart sweep must offer only the sentinel, never the quarantined file"

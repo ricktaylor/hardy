@@ -9,41 +9,42 @@ use hardy_bpv7::{
 };
 
 use super::*;
-use crate::services::registry::{Service, ServiceImpl};
+use crate::service::table::{Kind, Record};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
-    pub(super) async fn deliver_bundle(&self, service: Arc<Service>, bundle: bundle::Bundle) {
+    pub(super) async fn deliver_bundle(&self, record: Arc<Record>, bundle: bundle::Bundle) {
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
 
         // The claim key and every park in the offer use the canonical
-        // registration EID stored at construction — the exact key
+        // registration EID stored at construction, the key
         // `poll_service_waiting` matches on re-registration. The bundle's
-        // own destination can be a different Eid variant for the same
-        // endpoint (e.g. LegacyIpn vs Ipn) and would never match.
-        let service_eid = service.eid().clone();
+        // own destination can be a different `Eid` variant for the same
+        // endpoint, `LegacyIpn` against `Ipn`, and would never match.
+        let service_eid = record.eid().clone();
 
         // Snapshot the routing table before the claim: the parks in the
         // offer re-check it to close the park-vs-poll window (see
         // park_bundle).
         let seen = self.rib.table_snapshot();
 
-        // Delivery commits at the claim below — the reaper defers an
-        // in-flight delivery — so never commence one for a bundle that has
-        // already expired: resolve it as the reaper would.
+        // Delivery commits at the claim below, where the reaper defers an
+        // in-flight delivery, so a bundle that has already expired is
+        // resolved here as the reaper would resolve it, rather than
+        // offered.
         if bundle.has_expired() {
             return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
 
         // Claim the bundle out of its delivery queue before offering it.
-        // The claim must be a conditional swap: the delivery channel is
-        // at-least-once, so a duplicate copy recovered by the storage
-        // poller must lose here rather than produce a second delivery. The
-        // new status also marks the point past which the delivery cannot be
-        // recalled: the reaper defers it, and the unregister sweep only
-        // touches the queued status.
+        // The claim is a conditional swap, because the delivery channel
+        // delivers at least once and a duplicate recovered by the storage
+        // poller must lose here rather than deliver twice. The new status
+        // also marks the point past which the delivery cannot be recalled:
+        // the reaper defers it, and the unregister sweep touches only the
+        // queued status.
         if !self
             .store
             .swap_status(
@@ -58,34 +59,35 @@ impl Dispatcher {
             return;
         }
 
-        // Claim-to-resolution is one expression: the offer's outcome is the
-        // claim's resolution.
+        // One expression from claim to resolution: the offer's outcome
+        // resolves the claim.
         self.resolve_offer(
             OfferKind::Delivery,
-            self.offer_to_service(service, service_eid, bundle, data, seen)
+            self.offer_to_service(record, service_eid, bundle, data, seen)
                 .await,
         )
         .await
     }
 
-    /// Offer a claimed bundle to its service. Runs strictly inside the
-    /// `DeliveryAckPending` claim: every exit is an [`OfferOutcome`] the
-    /// caller resolves, so the claim cannot dangle.
+    /// Offers a claimed bundle to its service.
+    ///
+    /// Runs inside the `DeliveryAckPending` claim: every exit is an
+    /// [`OfferOutcome`] the caller resolves, so the claim cannot dangle.
     async fn offer_to_service(
         &self,
-        service: Arc<Service>,
+        record: Arc<Record>,
         service_eid: Eid,
         mut bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // The §E removals the ingress gate deferred apply first, so the
-        // Deliver chain sees the bundle as it will be delivered, and the
-        // strip can never delete a Rewriter's insert into a removed block's
-        // number.
+        // The block removals ingress deferred apply first, so the Deliver
+        // chain sees the bundle as it is delivered, and the strip can
+        // never delete a Rewriter's insert into a removed block's number.
         let data = self.strip_removed_blocks(&mut bundle, data);
 
-        // Deliver chain: Rewriters (transport-block strip), then Verifiers.
+        // The Deliver chain strips the transport blocks in its Rewriters,
+        // then runs its Verifiers.
         let (bundle, mut data) = match self.filters.run_deliver(bundle, data, &*self.key_provider) {
             filter::ChainOutcome::Continue(bundle, data) => (bundle, data),
             filter::ChainOutcome::Drop(bundle, reason) => {
@@ -93,25 +95,27 @@ impl Dispatcher {
             }
         };
 
-        let delivery_result = match &service.service {
-            ServiceImpl::LowLevel(svc) => {
-                // Pass raw bundle bytes to low-level services: the whole
-                // bundle is in hand, so it travels as a single Final segment.
+        let delivery_result = match &record.kind {
+            Kind::Raw(service) => {
+                // A whole-bundle service takes the bundle bytes, and the
+                // whole bundle is in hand, so it travels as a single `Final`
+                // segment.
                 let total_len = data.len() as u64;
-                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
+                service
+                    .deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
                     .await
             }
-            ServiceImpl::Application(app) => {
-                // Extract and decrypt payload for Application.
-                // KeyProvider needs a &Bundle; scope the parse
-                // as a match expression so the parse OperationSets
-                // (which contain `Rc<…>` and are therefore `!Send`) are
-                // dropped at the arm boundary, before any `.await` in
-                // this async fn. Consume `data` into the parse and work
-                // from the authoritative buffer it returns (the streaming
-                // path concatenates pushes), converting the payload to an
-                // owned `Bytes` (zero-copy for the unencrypted case via
-                // `slice_ref`) before the arm ends.
+            Kind::Payload(service) => {
+                // A payload-only service takes the extracted, decrypted
+                // payload. `KeyProvider` needs a `&Bundle`, and a match
+                // expression scopes the parse, so that its `OperationSet`s,
+                // which hold `Rc`s and are therefore `!Send`, are dropped at
+                // the arm boundary, before any `.await` in this async fn.
+                // The parse consumes `data` and returns the authoritative
+                // buffer, the streaming path having concatenated its pushes,
+                // and the payload becomes an owned `Bytes` before the arm
+                // ends, through `slice_ref` and so without a copy where it
+                // is not encrypted.
                 let payload_result = match parse::parse(data) {
                     Ok(Parsed {
                         data: buf,
@@ -139,9 +143,9 @@ impl Dispatcher {
 
                 let mut payload = match payload_result {
                     Err(Bpv7Error::InvalidBPSec(bpsec::Error::NoKey)) => {
-                        // TODO: We are unable to decrypt the payload, what do we do?
-                        // For now, park for the next registration (which may
-                        // bring usable keys).
+                        // TODO: decide what an undecryptable payload
+                        // deserves. For now it parks for the next
+                        // registration, which may bring usable keys.
                         debug!("Failed to decrypt payload: No valid keys");
                         return OfferOutcome::Parked(
                             bundle,
@@ -152,10 +156,11 @@ impl Dispatcher {
                         );
                     }
                     Err(e) => {
-                        // Other decryption error - skip delivery
                         debug!("Received an invalid payload: {e}");
 
-                        // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
+                        // TODO: wrap the damaged bundle in a junk payload
+                        // and forward it to a lost-and-found endpoint. For
+                        // now it is dropped.
 
                         return OfferOutcome::Dropped(
                             bundle,
@@ -165,26 +170,28 @@ impl Dispatcher {
                     Ok(payload) => payload,
                 };
 
-                // As for low-level services, the whole payload is in hand,
-                // so it travels as a single Final segment.
+                // As for a whole-bundle service, the whole payload is in
+                // hand, so it travels as a single `Final` segment.
                 let total_len = payload.len() as u64;
-                app.on_deliver(
-                    bundle.id(),
-                    bundle.expiry(),
-                    bundle.primary().flags.app_ack_requested,
-                    total_len,
-                    &mut payload,
-                )
-                .await
+                service
+                    .deliver(
+                        bundle.id(),
+                        bundle.expiry(),
+                        bundle.primary().flags.app_ack_requested,
+                        total_len,
+                        &mut payload,
+                    )
+                    .await
             }
         };
 
         if let Err(e) = delivery_result {
             debug!("Service delivery deferred: {e}");
-            // Park under the registration EID for the next registration; the
-            // park re-checks the routing snapshot, so a service that
-            // (re-)registered while this delivery was in flight re-dispatches
-            // the bundle instead of stranding it (see park_bundle).
+            // Park under the registration EID for the next registration.
+            // The park re-checks the routing snapshot, so a service that
+            // registered again while this delivery was in flight
+            // re-dispatches the bundle rather than stranding it (see
+            // `park_bundle`).
             return OfferOutcome::Parked(
                 bundle,
                 bundle::BundleStatus::WaitingForService {

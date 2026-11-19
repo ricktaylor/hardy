@@ -8,10 +8,14 @@ use tracing::trace;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::action::{Action, InternalAction, RouteAction};
-use super::{Error, Result};
 use crate::{
-    Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, services::registry::Service,
+    Arc, BTreeMap, BTreeSet, HashSet, btree_map,
+    node_ids::NodeIds,
+    routing::{
+        Error, Result,
+        action::{Action, InternalAction, RouteAction},
+    },
+    service::table::Record,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,7 +41,7 @@ impl Ord for Entry {
 #[derive(Debug)]
 pub(super) enum LookupResult<'a> {
     AdminEndpoint,
-    Deliver(Arc<Service>),
+    Deliver(Arc<Record>),
     Forward(u32, &'a Eid),
     ForwardEcmp(Vec<(u32, &'a Eid)>),
     Drop(Option<ReasonCode>),
@@ -221,9 +225,9 @@ impl RouteTable {
                                 let sub_result = self.find_recurse(via, reflect, trail);
                                 trail.pop();
 
-                                // Carry each peer's resolved next-hop up unchanged: it is the
-                                // adjacent neighbour EID recorded at the Forward base case, which
-                                // is what egress filters need, not this intermediate via.
+                                // Each peer's next hop travels up unchanged. It is the
+                                // adjacent neighbour recorded at the `Forward` base case,
+                                // which is what egress filters need, not this via.
                                 match sub_result {
                                     Some(LookupResult::Forward(sub_peer, sub_next)) => {
                                         sorted_insert(&mut peers, sub_peer, sub_next);
@@ -275,7 +279,7 @@ impl RouteTable {
         }
     }
 
-    pub(super) fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
+    pub(super) fn find_service(&self, to: &Eid) -> Option<Arc<Record>> {
         for entries in self.routes.values() {
             for (pattern, actions) in entries {
                 if pattern.matches(to) {
@@ -291,14 +295,17 @@ impl RouteTable {
     }
 }
 
-/// Cycle-detection trail for the recursive via walk. Via chains are short,
-/// so the inline capacity keeps the common lookup allocation-free; it is used
-/// only as a set (membership, push on descent, pop on return).
+/// The trail of EIDs the recursive via walk has visited, used to detect a
+/// cycle.
+///
+/// Via chains are short, so the inline capacity keeps the common lookup
+/// free of allocation.
 pub(super) type Trail<'a> = SmallVec<[&'a Eid; 4]>;
 
-/// Candidate next-hop peers accumulated during a lookup. The non-ECMP case
-/// resolves to zero or one peer, which the inline capacity holds without
-/// allocating.
+/// The candidate next-hop peers a lookup has accumulated.
+///
+/// A lookup outside ECMP resolves to zero or one peer, which the inline
+/// capacity holds without allocating.
 type PeerVec<'a> = SmallVec<[(u32, &'a Eid); 2]>;
 
 fn sorted_insert<'a>(peers: &mut PeerVec<'a>, peer: u32, next_hop: &'a Eid) {
@@ -331,8 +338,8 @@ mod tests {
     }
 
     #[test]
-    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
-    // cancellation token's interior mutability never participates.
+    // `Record` hashes and compares on its service id alone, so the
+    // interior mutability the lint objects to never takes part.
     #[allow(clippy::mutable_key_type)]
     fn test_admin_endpoint_at_construction() {
         let table = make_table();
@@ -394,8 +401,8 @@ mod tests {
     }
 
     #[test]
-    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
-    // cancellation token's interior mutability never participates.
+    // `Record` hashes and compares on its service id alone, so the
+    // interior mutability the lint objects to never takes part.
     #[allow(clippy::mutable_key_type)]
     fn test_local_action_sort() {
         let admin = Action::Internal(InternalAction::AdminEndpoint);
@@ -431,8 +438,8 @@ mod tests {
     }
 
     #[test]
-    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
-    // cancellation token's interior mutability never participates.
+    // `Record` hashes and compares on its service id alone, so the
+    // interior mutability the lint objects to never takes part.
     #[allow(clippy::mutable_key_type)]
     fn test_route_entry_sort() {
         let mut set = BTreeSet::new();
@@ -475,8 +482,8 @@ mod tests {
     }
 
     #[test]
-    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
-    // cancellation token's interior mutability never participates.
+    // `Record` hashes and compares on its service id alone, so the
+    // interior mutability the lint objects to never takes part.
     #[allow(clippy::mutable_key_type)]
     fn test_entry_dedup() {
         let mut set = BTreeSet::new();
@@ -490,7 +497,7 @@ mod tests {
     fn test_union_route_member_specificity() {
         let mut table = make_table();
 
-        // A union pairing a specific member with a broad one: the broad
+        // A union pairing a specific member with a broad one. The broad
         // member must not drag the specific member's selection rank down.
         let union: EidPattern = "ipn:0.2.*|ipn:**".parse().unwrap();
         let union_entry = entry(Action::Internal(InternalAction::Forward(1)), "union");
@@ -510,8 +517,8 @@ mod tests {
             )
             .unwrap();
 
-        // ipn:0.2.5 matches both routes; the union's matching member is the
-        // most specific pattern in the table and must win.
+        // ipn:0.2.5 matches both routes, and the union's matching member
+        // is the most specific pattern in the table, so it wins.
         let to: Eid = "ipn:0.2.5".parse().unwrap();
         match table.find_recurse(&to, false, &mut Trail::new()) {
             Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),

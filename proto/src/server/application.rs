@@ -1,34 +1,35 @@
+use hardy_bpa::service::{Context, RegistrarExt, Sink, factory_fn};
+use hardy_bpv7::eid::Eid;
+
 use super::*;
 use proto::service::*;
 
-type AppSink = Arc<dyn hardy_bpa::services::ApplicationSink>;
-
+// The BPA's end of a remote application: it forwards deliveries through
+// the proxy standing in for the far application, and the application
+// reaches the BPA back through the sink.
 struct Application {
-    sink: Mutex<Option<AppSink>>,
-    proxy: Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
+    sink: Arc<dyn Sink>,
+    endpoint: Eid,
+    proxy: Arc<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
-    fn sink(&self) -> Result<AppSink, tonic::Status> {
-        self.sink
-            .lock()
-            .clone()
-            .ok_or(tonic::Status::unavailable("Unregistered"))
-    }
-
-    async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::services::Result<app_to_bpa::Msg> {
-        let proxy = self.proxy.get().ok_or_else(|| {
-            error!("call made before on_register!");
-            hardy_bpa::services::Error::Disconnected
-        })?;
-
-        match proxy.call(msg).await {
-            Ok(None) => Err(hardy_bpa::services::Error::Disconnected),
+    async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::service::Result<app_to_bpa::Msg> {
+        match self.proxy.call(msg).await {
+            Ok(None) => Err(hardy_bpa::service::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
-            Err(e) => Err(hardy_bpa::services::Error::Internal(e.into())),
+            Err(e) => Err(hardy_bpa::service::Error::Internal(e.into())),
         }
     }
+}
 
+// The far application's end of the session: every request it makes lands
+// on the sink its registration handed back.
+struct Handler {
+    sink: Arc<dyn Sink>,
+}
+
+impl Handler {
     async fn send(&self, request: AppSendRequest) -> Result<bpa_to_app::Msg, tonic::Status> {
         let mut options = None;
         if let Some(mut f) = request.options {
@@ -37,7 +38,7 @@ impl Application {
                 f &= !(f2 as u32);
                 b
             };
-            options = Some(hardy_bpa::services::SendOptions {
+            options = Some(hardy_bpa::service::SendOptions {
                 do_not_fragment: test_bit(app_send_request::SendOptions::DoNotFragment),
                 request_ack: test_bit(app_send_request::SendOptions::RequestAck),
                 report_status_time: test_bit(app_send_request::SendOptions::ReportStatusTime),
@@ -51,7 +52,7 @@ impl Application {
             }
         }
 
-        self.sink()?
+        self.sink
             .send(
                 request
                     .destination
@@ -71,49 +72,28 @@ impl Application {
             })
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
-
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
-    }
 }
 
 #[async_trait]
-impl hardy_bpa::services::Application for Application {
-    async fn on_register(
-        &self,
-        _source: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::services::ApplicationSink>,
-    ) {
-        *self.sink.lock() = Some(Arc::from(sink));
+impl hardy_bpa::service::Service for Application {
+    async fn unregister(&self) -> hardy_bpa::service::Result<()> {
+        self.proxy.shutdown().await;
+        Ok(())
     }
 
-    async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
-            return;
-        }
-
-        if let Some(proxy) = self.proxy.get() {
-            proxy.shutdown().await;
-        }
-    }
-
-    // INTERIM BUFFERING: the wire protocol has no segmented payload
-    // messages yet — deliveries travel as one unary AppReceiveRequest — so
-    // the stream is assembled in memory via `stream::buffer_stream` before
-    // marshalling. This is a deliberate stepping stone toward the full
-    // streaming pipeline (chunked wire messages are the blocker); see
-    // bpa/docs/streaming_pipeline_design.md.
-    async fn on_deliver(
+    // The wire carries no segmented payload messages, so a delivery travels
+    // as one unary AppReceiveRequest and the stream is assembled in memory
+    // with `stream::buffer_stream` before marshalling. See
+    // bpa/docs/streaming_pipeline_design.md for the chunked form this is a
+    // step towards.
+    async fn deliver(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<()> {
+    ) -> hardy_bpa::service::Result<()> {
         let payload = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         match self
             .call(bpa_to_app::Msg::Receive(AppReceiveRequest {
@@ -127,18 +107,18 @@ impl hardy_bpa::services::Application for Application {
             app_to_bpa::Msg::Receive(_) => Ok(()),
             msg => {
                 warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::services::Error::Internal(
+                Err(hardy_bpa::service::Error::Internal(
                     tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
                 ))
             }
         }
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         from: &hardy_bpv7::eid::Eid,
-        kind: hardy_bpa::services::StatusNotify,
+        kind: hardy_bpa::service::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -147,16 +127,16 @@ impl hardy_bpa::services::Application for Application {
                 bundle_id: bundle_id.to_key(),
                 from: from.to_string(),
                 kind: match kind {
-                    hardy_bpa::services::StatusNotify::Received => {
+                    hardy_bpa::service::StatusNotify::Received => {
                         status_notify_request::StatusKind::Received
                     }
-                    hardy_bpa::services::StatusNotify::Forwarded => {
+                    hardy_bpa::service::StatusNotify::Forwarded => {
                         status_notify_request::StatusKind::Forwarded
                     }
-                    hardy_bpa::services::StatusNotify::Delivered => {
+                    hardy_bpa::service::StatusNotify::Delivered => {
                         status_notify_request::StatusKind::Delivered
                     }
-                    hardy_bpa::services::StatusNotify::Deleted => {
+                    hardy_bpa::service::StatusNotify::Deleted => {
                         status_notify_request::StatusKind::Deleted
                     }
                 }
@@ -177,10 +157,6 @@ impl hardy_bpa::services::Application for Application {
     }
 }
 
-struct Handler {
-    app: Arc<Application>,
-}
-
 #[async_trait]
 impl ProxyHandler for Handler {
     type SMsg = bpa_to_app::Msg;
@@ -188,7 +164,7 @@ impl ProxyHandler for Handler {
 
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         let msg = match msg {
-            app_to_bpa::Msg::Send(msg) => self.app.send(msg).await,
+            app_to_bpa::Msg::Send(msg) => self.send(msg).await,
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;
@@ -202,15 +178,14 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.app.unregister().await;
-        if let Some(proxy) = self.app.proxy.get() {
-            proxy.cancel();
-        }
+        // The far application is gone: unregister, which takes the
+        // application down with the session.
+        self.sink.unregister().await;
     }
 }
 
 pub struct Service {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::service::Registrar>,
     session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
@@ -226,8 +201,9 @@ impl application_server::Application for Service {
         let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let channel_receiver = request.into_inner();
 
-        // Spawn the registration handshake and proxy — we must return the
-        // response stream immediately so the client can start sending messages.
+        // The handshake and the proxy run on their own task: the response
+        // stream has to be returned at once, so the client can start
+        // sending.
         let bpa = self.bpa.clone();
         hardy_async::spawn!(self.session_tasks, "application_session", async move {
             run_application_session(channel_sender, channel_receiver, bpa).await;
@@ -240,64 +216,82 @@ impl application_server::Application for Service {
 }
 
 async fn run_application_session(
-    mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToApp, tonic::Status>>,
-    mut channel_receiver: tonic::Streaming<AppToBpa>,
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    channel_sender: tokio::sync::mpsc::Sender<Result<BpaToApp, tonic::Status>>,
+    channel_receiver: tonic::Streaming<AppToBpa>,
+    bpa: Arc<dyn hardy_bpa::service::Registrar>,
 ) {
-    let app = Arc::new(Application {
-        sink: Mutex::new(None),
-        proxy: Once::new(),
-    });
-
-    let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
-        match msg {
-            app_to_bpa::Msg::Register(request) => {
-                let service_id = request
-                    .service_id
-                    .as_ref()
-                    .map(|service_id| match service_id {
-                        register_request::ServiceId::Dtn(s) => {
-                            hardy_bpv7::eid::Service::Dtn(s.clone().into())
-                        }
-                        register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
-                    })
-                    .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
-                let endpoint_id = bpa
-                    .register_application(service_id, app.clone())
-                    .await
-                    .map(|endpoint_id| endpoint_id.to_string())
-                    .map_err(|e| tonic::Status::from_error(e.into()))?;
-
-                Ok(bpa_to_app::Msg::Register(RegisterResponse { endpoint_id }))
-            }
-            _ => {
-                warn!("Application sent incorrect message: {msg:?}");
-                Err(tonic::Status::internal(format!(
-                    "Unexpected response: {msg:?}"
-                )))
-            }
+    let (proxy, msg_id, opening) = match RpcProxy::accept(channel_sender, channel_receiver).await {
+        Ok(session) => session,
+        Err(e) => {
+            warn!("Application session failed to open: {e}");
+            return;
         }
-    })
-    .await;
+    };
 
-    if let Err(e) = result {
-        warn!("Application registration failed: {e}");
-        return;
+    match register(&*bpa, opening, &proxy).await {
+        Ok(app) => {
+            let response = RegisterResponse {
+                endpoint_id: app.endpoint.to_string(),
+            };
+            let handler = Handler {
+                sink: app.sink.clone(),
+            };
+            proxy.open(
+                msg_id,
+                bpa_to_app::Msg::Register(response),
+                Box::new(handler),
+            );
+        }
+        Err(status) => {
+            warn!("Application registration failed: {status}");
+            proxy.fail(status).await;
+        }
     }
-
-    // Start the proxy for ongoing communication
-    let handler = Box::new(Handler { app: app.clone() });
-    app.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
 }
 
-/// Create a new Application gRPC service.
+// Registers the application the opening message asks for, built around
+// the proxy the BPA delivers through.
+async fn register(
+    bpa: &dyn hardy_bpa::service::Registrar,
+    opening: app_to_bpa::Msg,
+    proxy: &Arc<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
+) -> Result<Arc<Application>, tonic::Status> {
+    let app_to_bpa::Msg::Register(request) = opening else {
+        warn!("Application sent incorrect message: {opening:?}");
+        return Err(tonic::Status::internal(format!(
+            "Unexpected response: {opening:?}"
+        )));
+    };
+
+    let service_id = request
+        .service_id
+        .as_ref()
+        .map(|service_id| match service_id {
+            register_request::ServiceId::Dtn(s) => hardy_bpv7::eid::Service::Dtn(s.clone().into()),
+            register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
+        })
+        .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
+
+    bpa.register_service(
+        Some(service_id),
+        factory_fn(|cx: Context| {
+            Ok(Arc::new(Application {
+                sink: cx.sink,
+                endpoint: cx.endpoint,
+                proxy: proxy.clone(),
+            }))
+        }),
+    )
+    .await
+    .map_err(|e| tonic::Status::from_error(e.into()))
+}
+
 pub fn new_application_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::service::Registrar>,
     tasks: &hardy_async::TaskPool,
 ) -> application_server::ApplicationServer<Service> {
     application_server::ApplicationServer::new(Service {
-        bpa: bpa.clone(),
+        bpa,
         session_tasks: tasks.clone(),
         channel_size: 16,
     })

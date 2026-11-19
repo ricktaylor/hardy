@@ -1,7 +1,7 @@
 // Connection lifecycle, grouped in one place: the shared bring-up context
 // (`context`), the active dialer (`connect`), the passive listener
-// (`listen`), and — in this file — the pooled registry of established
-// sessions.
+// (`listen`), and the pooled registry of established sessions, in this
+// file.
 
 pub mod connect;
 pub mod context;
@@ -16,13 +16,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-// What a forward should do when every pooled session is busy.
+// A forward's fallback when every pooled session is busy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnBusy {
-    // Signal the caller to dial a new connection while the pool has capacity
+    // Signal the caller to dial a new connection while the pool has
+    // capacity.
     Dial,
-    // Queue on a busy session — the fallback for peers that cannot accept
-    // another connection
+    // Queue on a busy session, for peers that cannot accept another
+    // connection.
     Queue,
 }
 
@@ -46,7 +47,7 @@ struct ConnectionPool {
     inner: Mutex<ConnectionPoolInner>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     max_idle: usize,
-    remote_addr: hardy_bpa::cla::ClaAddress,
+    remote_addr: hardy_bpa::cla::Address,
 }
 
 impl ConnectionPool {
@@ -65,7 +66,7 @@ impl ConnectionPool {
             }),
             sink,
             max_idle,
-            remote_addr: hardy_bpa::cla::ClaAddress::Tcp(remote_addr),
+            remote_addr: hardy_bpa::cla::Address::Tcp(remote_addr),
         }
     }
 
@@ -175,7 +176,7 @@ impl ConnectionPool {
                     debug!("Connection failed to transfer bundle");
                 }
 
-                // By the time we got here, conn is in a bad state
+                // The connection is in a bad state by now.
                 self.inner
                     .lock()
                     .trace_expect("Failed to lock mutex")
@@ -216,7 +217,8 @@ impl ConnectionPool {
                     debug!("Connection failed to transfer bundle");
                 }
 
-                // By the time we got here, conn is in a bad state
+                // The connection failed the transfer, so it is dropped from
+                // the active set.
                 self.inner
                     .lock()
                     .trace_expect("Failed to lock mutex")
@@ -224,7 +226,7 @@ impl ConnectionPool {
                     .remove(&local_addr);
             }
 
-            // Nothing could send. Retry — bounded, and yielding so the tasks
+            // Nothing could send. Retry, bounded, and yield so the tasks
             // that manage the pool get a chance to run.
             retries += 1;
             if retries >= MAX_RETRIES {
@@ -245,7 +247,8 @@ pub struct ConnectionRegistry {
     // Bounds transfers accepted but not yet resolved with an outcome, per
     // peer: a forward holds a permit from acceptance until its outcome is
     // reported, and an exhausted semaphore withholds further forward
-    // verdicts — the flow control back to the BPA's per-peer egress poller.
+    // verdicts, which is the flow control back to the BPA's per-peer egress
+    // poller.
     // Per-peer scoping keeps one unreachable peer's stalled dials from
     // starving admission for healthy peers. Entries are evicted with the
     // peer's session pool; the `Arc` held by any in-flight transfer keeps
@@ -391,8 +394,8 @@ impl ConnectionRegistry {
     //
     // With `OnBusy::Dial`, Err(bundle) signals the caller to establish a new
     // connection (the pool has capacity and no session is free). With
-    // `OnBusy::Queue`, busy sessions are queued on instead — the fallback for
-    // peers that hold a session open but cannot accept new connections.
+    // `OnBusy::Queue`, busy sessions are queued on instead, for peers that
+    // hold a session open but cannot accept new connections.
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn forward(
         &self,
@@ -439,7 +442,7 @@ mod tests {
         async fn dispatch(
             &self,
             _peer_node: Option<&NodeId>,
-            _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+            _peer_addr: Option<&hardy_bpa::cla::Address>,
             _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
         ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
             Ok(hardy_bpa::cla::Acceptance::Accepted)
@@ -447,7 +450,7 @@ mod tests {
 
         async fn add_peer(
             &self,
-            _cla_addr: hardy_bpa::cla::ClaAddress,
+            _cla_addr: hardy_bpa::cla::Address,
             _node_ids: &[NodeId],
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
@@ -455,12 +458,12 @@ mod tests {
 
         async fn remove_peer(
             &self,
-            _cla_addr: &hardy_bpa::cla::ClaAddress,
+            _cla_addr: &hardy_bpa::cla::Address,
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }
 
-        async fn transfer_outcome(
+        async fn report_transfer(
             &self,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _outcome: hardy_bpa::cla::TransferOutcome,

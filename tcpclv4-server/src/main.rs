@@ -33,7 +33,6 @@ fn configure_tracing(log_level: tracing::Level) {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    // Path to configuration file
     #[arg(short, long)]
     config: Option<PathBuf>,
 }
@@ -55,6 +54,8 @@ async fn main() -> anyhow::Result<()> {
     let tasks = TaskPool::new();
     listen_for_cancel(&tasks);
 
-    let server = Tcpclv4Server::new(config, tasks).inspect_err(|e| error!("{e}"))?;
-    server.run().await.inspect_err(|e| error!("{e}"))
+    Tcpclv4Server::new(config, tasks)
+        .run()
+        .await
+        .inspect_err(|e| error!("{e}"))
 }

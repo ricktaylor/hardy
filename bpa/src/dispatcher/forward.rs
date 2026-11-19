@@ -11,11 +11,11 @@ impl Dispatcher {
         cla: &dyn cla::Cla,
         peer: u32,
         lane: Option<u32>,
-        cla_addr: &cla::ClaAddress,
+        cla_addr: &cla::Address,
         bundle: bundle::Bundle,
     ) {
-        // The queue-assignment record carries the resolved adjacency, and
-        // the claim below overwrites the status — take it first. The egress
+        // The queue assignment carries the resolved adjacency, and the
+        // claim below overwrites the status, so take it first. The egress
         // channel only delivers this queue's assignments, so any other
         // status here is a stale copy whose owner resolves it elsewhere.
         let bundle::BundleStatus::ForwardPending { next_hop, .. } = &bundle.status else {
@@ -24,32 +24,31 @@ impl Dispatcher {
         };
         let next_hop = next_hop.clone();
 
-        // Get bundle data from store, now we know we need it!
+        // The data is needed only now the bundle is going out.
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
 
-        // Snapshot the routing table before the claim: the parks below
-        // re-check it to close the park-vs-poll window (see park_bundle).
+        // Snapshot the routing table before the claim, since the parks
+        // below re-check it (see `park_bundle`).
         let seen = self.rib.table_snapshot();
 
-        // A transfer commits at the claim below — the reaper defers an
-        // in-flight hand-off — so never commence one for a bundle that has
-        // already expired: resolve it as the reaper would.
+        // The reaper defers an in-flight hand-off, so an already expired
+        // bundle is resolved here as the reaper would, not offered.
         if bundle.has_expired() {
             return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
 
-        // Claim the bundle out of its peer queue before the in-memory rewrite
-        // in the offer and before offering it. The claim must be a conditional
-        // swap: the egress channel delivers at-least-once, so a duplicate copy
-        // recovered by the storage poller must lose here rather than produce
-        // a second offer. It must happen first: a deferred outcome can arrive
-        // on another task the instant the CLA accepts, and transfer_outcome()
-        // only honours bundles already in ForwardAckPending, while the
-        // persist needs the metadata still indexing the stored (un-rewritten)
-        // data. The new status also distinguishes an in-flight transfer from
-        // a queued one, so reset_peer_queue() no longer races the offer.
+        // Claim the bundle out of its peer queue before the offer rewrites
+        // it in memory. The claim is a conditional swap, because the egress
+        // channel delivers at least once and a duplicate recovered by the
+        // storage poller must lose here. It precedes the offer because a
+        // deferred outcome can land the instant the CLA accepts, and
+        // `transfer_outcome` honours only a bundle already in
+        // `ForwardAckPending`, and because the persist needs metadata that
+        // still indexes the stored data. The status also tells an in-flight
+        // transfer from a queued one, so `reset_peer_queue` cannot race the
+        // offer.
         if !self
             .store
             .swap_status(
@@ -62,8 +61,7 @@ impl Dispatcher {
             return;
         }
 
-        // Claim-to-resolution is one expression: the offer's outcome is the
-        // claim's resolution.
+        // The offer's outcome resolves the claim.
         self.resolve_offer(
             OfferKind::Forward,
             self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, data, seen)
@@ -72,43 +70,43 @@ impl Dispatcher {
         .await
     }
 
-    /// Offer a claimed bundle to its CLA. Runs strictly inside the
-    /// `ForwardAckPending` claim: every exit is an [`OfferOutcome`] the
-    /// caller resolves, so the claim cannot dangle.
+    /// Offers a claimed bundle to its CLA.
+    ///
+    /// This runs inside the `ForwardAckPending` claim, and every exit is an
+    /// [`OfferOutcome`] the caller resolves, so the claim cannot dangle.
     #[allow(clippy::too_many_arguments)]
     async fn offer_to_cla(
         &self,
         cla: &dyn cla::Cla,
         peer: u32,
         lane: Option<u32>,
-        cla_addr: &cla::ClaAddress,
+        cla_addr: &cla::Address,
         next_hop: Eid,
         mut bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        // The §E removals the ingress gate deferred apply first, so the
-        // Rewriters see the bundle as it will travel, and the strip can never
-        // delete a Rewriter's insert into a removed block's number.
+        // The block removals ingress deferred apply first, so the
+        // rewriters see the bundle as it travels and the strip cannot
+        // delete a rewriter's insert into a removed block's number.
         let data = self.strip_removed_blocks(&mut bundle, data);
 
-        // Egress chain: the registered Rewriters, on the stripped wire form.
-        // Nothing at Egress drops a bundle, so the chain hands back the pair.
-        // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Edits are in-memory only (like Deliver), NOT persisted
-        // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress runs again with fresh context
+        // The registered egress rewriters run on the stripped wire form.
+        // Nothing at egress drops a bundle, so the chain hands the pair
+        // back. Their edits are in memory only, as at delivery, so a bundle
+        // whose send fails returns to `Waiting` and runs the chain again
+        // against whichever peer it routes to next.
         let (mut bundle, data) =
             self.filters
                 .run_egress(bundle, data, &next_hop, &*self.key_provider);
 
-        // The per-hop writes follow the Rewriters, so they supersede any
-        // Rewriter edit to the blocks they write, and the BPSec blocks (BIB/
-        // BCB, possibly peer-specific) belong after them. The rewrite shifts
-        // block extents, so the rebuilt block map replaces the old one. It is
-        // in-memory only: parks persist status alone, and a re-dispatch
-        // re-enters from the persisted representation (see park_bundle), so
-        // no exit needs to restore the stored map.
+        // The per-hop writes follow the rewriters, so they supersede any
+        // rewriter edit to the blocks they write, and the BPSec blocks,
+        // which may be peer-specific, come after them. The rewrite shifts
+        // block extents, so the rebuilt block map replaces the old one. It
+        // too is in memory only: a park persists the status alone and a
+        // re-dispatch re-enters from the stored bundle, so no exit has to
+        // restore the stored map.
         let mut data = match self.update_extension_blocks(&bundle, data, &next_hop) {
             Ok((new_bundle, data)) => {
                 bundle.bpv7.blocks = new_bundle.blocks;
@@ -129,26 +127,27 @@ impl Dispatcher {
             }
         };
 
-        // And pass to CLA: the whole bundle is in hand, so it travels as a
-        // single Final segment.
+        // The whole bundle is in hand, so it travels as a single final
+        // segment.
         let total_len = data.len() as u64;
         match cla
             .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
             .await
         {
-            Ok(cla::ForwardBundleResult::Sent) => OfferOutcome::Completed(bundle),
-            Ok(cla::ForwardBundleResult::Accepted) => {
-                // The CLA owns the transfer; the bundle stays in
-                // ForwardAckPending until the outcome arrives or the peer is
-                // removed.
+            Ok(cla::ForwardOutcome::Sent) => OfferOutcome::Completed(bundle),
+            Ok(cla::ForwardOutcome::Accepted) => {
+                // The CLA owns the transfer, and the bundle stays in
+                // `ForwardAckPending` until the outcome arrives or the peer
+                // is removed.
                 OfferOutcome::Detached(bundle)
             }
-            Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // Link-scoped evidence: the neighbour is gone. Return the
-                // bundle to Waiting, and reset the whole peer queue so its
-                // bundles await a fresh routing decision alongside it. The
-                // sweep touches only ForwardPending, never this claimed
-                // bundle, so it can run before the park.
+            Ok(cla::ForwardOutcome::NoNeighbour) => {
+                // The neighbour is gone, which is evidence about the link
+                // rather than this bundle. Return the bundle to `Waiting`
+                // and reset the whole peer queue, so its bundles await a
+                // fresh routing decision alongside it. The sweep touches
+                // only `ForwardPending`, never this claimed bundle, so it
+                // can run before the park.
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
@@ -159,31 +158,30 @@ impl Dispatcher {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
                 debug!("Failed to forward bundle to peer {peer}: {e}, returning it to Waiting");
 
-                // Bundle-scoped evidence about a single transfer: park only
-                // this bundle, leaving the rest of the peer's queue alone —
-                // resetting the queue is the response to link-scoped
-                // evidence, above. Unlike the deferred `Failed` outcome,
-                // which is paced by a network round trip, a synchronous
-                // failure can be deterministic and instantaneous, so
-                // re-running dispatch inline here could spin; the retry
-                // waits in Waiting for the next routing or link event —
-                // park_bundle re-dispatches at most once, and only if such
-                // an event landed while this transfer was in flight.
+                // The failure is evidence about this transfer alone, so
+                // park this bundle and leave the rest of the peer's queue
+                // alone; resetting the queue answers evidence about the
+                // link, above. Unlike a deferred `Failed` outcome, which a
+                // network round trip paces, a synchronous failure can be
+                // deterministic and immediate, so re-running dispatch
+                // inline could spin. The retry waits in `Waiting` for the
+                // next routing or link event, and `park_bundle`
+                // re-dispatches at most once, and only if such an event
+                // landed while this transfer was in flight.
                 OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
         }
     }
 
-    // Resolves a deferred transfer outcome reported by `cla` for a bundle it
-    // previously answered `Accepted`. The status check is the stale-outcome
-    // guard: anything not currently ForwardAckPending via a peer of the
-    // reporting CLA — already resolved, expired, another CLA's transfer — is
-    // logged and dropped. The snapshot checks only filter; the
-    // status-conditioned swap below is the authoritative arbiter.
+    // Resolves a deferred transfer outcome `cla` reports for a bundle it
+    // answered `Accepted`. A bundle not currently in `ForwardAckPending`
+    // through a peer of the reporting CLA is a stale outcome, logged and
+    // dropped. The checks against the snapshot only filter; the
+    // status-conditioned swap below arbitrates.
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     pub async fn transfer_outcome(
         &self,
-        cla: &cla::registry::Cla,
+        cla: &cla::table::Record,
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: cla::TransferOutcome,
     ) {
@@ -201,19 +199,20 @@ impl Dispatcher {
         };
 
         if !cla.owns_peer(peer) {
-            // Also fires for a legitimate CLA whose outcome raced the peer's
-            // removal, so this is unremarkable rather than a warning
+            // A legitimate CLA whose outcome raced the peer's removal
+            // arrives here too, so this is unremarkable rather than a
+            // warning.
             debug!("Transfer outcome for peer {peer} from a CLA that does not own it, ignored");
             return;
         }
 
-        // Claim the bundle: the snapshot checks above race the peer sweep,
-        // the expiry reaper, and duplicate outcomes, and losing the claim —
-        // resolve_offer's conditional tombstone for a completion, the
-        // Dispatching swap below for a failure — means one of them resolved
-        // the bundle first. A completion must not hop through Dispatching:
-        // that status is recoverable by the dispatch queue's storage poller
-        // mid-resolution, driving a duplicate transmission after delivery.
+        // Claim the bundle. The checks above race the peer sweep, the
+        // expiry reaper and duplicate outcomes, so losing the claim means
+        // one of them resolved the bundle first. A completion claims
+        // through `resolve_offer`'s conditional tombstone, a failure
+        // through the `Dispatching` swap below; a completion must not pass
+        // through `Dispatching`, which the dispatch queue's storage poller
+        // recovers mid-resolution and transmits again after delivery.
         match outcome {
             cla::TransferOutcome::Completed => {
                 self.resolve_offer(OfferKind::Forward, OfferOutcome::Completed(bundle))
@@ -233,22 +232,22 @@ impl Dispatcher {
 
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
 
-                // Bundle-scoped evidence about a single transfer: re-run the
-                // routing decision now, rather than parking in Waiting (whose
-                // semantic is "nowhere to go") or resetting the whole peer
-                // queue (link-scoped evidence). Dispatch parks the bundle in
-                // Waiting itself if no route remains, and its expiry
-                // checkpoint drops a bundle that expired during the deferred
-                // transfer.
+                // The failure is evidence about this transfer alone, so
+                // re-run the routing decision rather than park in
+                // `Waiting`, which means nowhere to go, or reset the peer
+                // queue, which answers evidence about the link. Dispatch
+                // parks the bundle itself where no route remains, and its
+                // expiry checkpoint drops one that expired during the
+                // deferred transfer.
                 self.resolve_offer(OfferKind::Forward, OfferOutcome::Redispatch(bundle))
                     .await
             }
         }
     }
 
-    // The per-hop rewrite, over the Egress Rewriters' output. Its bytes were
-    // validated at ingress, so any failure other than a PerHopRefusal is a
-    // BPA bug or storage corruption, and fatal.
+    // The per-hop rewrite, over the egress rewriters' output. Its bytes
+    // were validated at ingress, so any failure other than a
+    // `PerHopRefusal` is a BPA bug or storage corruption, and fatal.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     fn update_extension_blocks(
         &self,
@@ -256,14 +255,14 @@ impl Dispatcher {
         source_data: Bytes,
         next_hop: &Eid,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), PerHopRefusal> {
-        // We read the cached extension fields (`hop_count` / `age` from
-        // `metadata.extensions`) to rebuild the wire blocks, but never write the
-        // bumped values back: the rewrite is per-attempt and in-memory only, and
-        // the cache mirrors the stored bytes, which stay as received. The cache
-        // IS observed again after this rewrite: a park's reaper expiry watch
-        // reads `extensions.age`, and wants the original, un-bumped value.
+        // The cached `hop_count` and `age` in `metadata.extensions`
+        // rebuild the wire blocks, and the new values are never written
+        // back: the rewrite serves one attempt and lives in memory, while
+        // the cache mirrors the stored bytes, which stay as received. A
+        // park's reaper expiry watch reads `extensions.age` after this
+        // rewrite, and needs the original value.
         //
-        // Editor needs a `&Bundle`, so re-parse structurally.
+        // `Editor` takes a `&Bundle`, so the bytes are parsed again.
         let hardy_bpv7::parse::Parsed {
             data: source_data,
             bundle: raw,
@@ -273,30 +272,30 @@ impl Dispatcher {
 
         let legacy = self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop));
 
-        // RFC 9171 §4.2.3-4/-5: an admin-record or anonymous bundle's blocks
-        // may not request a report on failure, and a conformant parser (ours
-        // included) rejects the combination.
+        // RFC 9171 Section 4.2.3: the blocks of an administrative record
+        // or an anonymous bundle may not request a report on failure, and a
+        // conformant parser, this one included, rejects the combination.
         let report_on_failure = !bundle.primary().forbids_report_on_failure();
 
         // The per-hop blocks below are replaced through `insert_block`, which
         // strips a replaced block from any plaintext BIB that covers it. That
         // is Hardy's relay policy, within the waypoint latitude of RFC 9172
-        // §3.1: this node must rewrite these blocks (RFC 9171 §5.4; the hop
-        // count's increment is a §4.4.3 SHOULD), and no operation over the
-        // old body survives the rewrite. Stripping keeps the sender's other
+        // Section 3.1: this node must rewrite these blocks (RFC 9171
+        // Section 5.4, the hop count's increment being a SHOULD of Section
+        // 4.4.3), and no operation over the old body survives the rewrite. Stripping keeps the sender's other
         // results verifiable, where a stale result would fail verification
         // downstream and cost the receiver the block or the whole bundle
         // under its failure policy. Where this node is the operation's
         // security acceptor and verified it at ingress, as for a hop-by-hop
-        // PreviousNode signature, the strip also discharges the RFC 9172
-        // §5.1.2 acceptor duty; elsewhere the node in effect acts as the
-        // acceptor of an operation it may not have verified. A Previous Node
-        // or Bundle Age block the editor cannot safely update (BCB-covered,
-        // so possibly under an encrypted BIB) refuses, and the caller parks
-        // the bundle: both writes are MUSTs (RFC 9171 §5.4).
+        // PreviousNode signature, the strip also discharges the acceptor
+        // duty of RFC 9172 Section 5.1.2; elsewhere the node in effect acts
+        // as the acceptor of an operation it may not have verified. A
+        // Previous Node or Bundle Age block the editor cannot safely update,
+        // being BCB-covered and so possibly under an encrypted BIB, refuses,
+        // and the caller parks the bundle, both writes being MUSTs (RFC 9171
+        // Section 5.4).
         let covered = |(_, e)| PerHopRefusal::Covered(e);
 
-        // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(covered)?
@@ -315,11 +314,11 @@ impl Dispatcher {
             )
             .rebuild();
 
-        // Increment Hop Count, where the block can be updated. The increment
-        // is a SHOULD (RFC 9171 §4.4.3): a Hop Count block the editor refuses
-        // (BCB-covered beside an encrypted BIB that may cover it) travels
-        // unchanged, with its security operations, rather than holding the
-        // bundle back. One this node could not read at ingress has no cached
+        // Increment Hop Count, where the block can be updated. The
+        // increment is a SHOULD (RFC 9171 Section 4.4.3), so a Hop Count
+        // block the editor refuses, being BCB-covered beside an encrypted
+        // BIB that may cover it, travels unchanged, with its security
+        // operations, rather than holding the bundle back. One this node could not read at ingress has no cached
         // value, and travels unchanged too.
         if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
             editor = match editor.insert_block(hardy_bpv7::block::Type::HopCount) {
@@ -345,10 +344,9 @@ impl Dispatcher {
             };
         }
 
-        // Update Bundle Age, if required
         if bundle.metadata.extensions.age.is_some() || !bundle.id().timestamp.is_clocked() {
-            // We have a bundle age block already, or no valid clock at bundle source
-            // So we must add an updated bundle age block
+            // The bundle already carries an age block, or its source had
+            // no clock, so the age block is rewritten.
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
                 .whole_milliseconds()
                 .clamp(0, u64::MAX as i128) as u64;
@@ -365,18 +363,17 @@ impl Dispatcher {
                 .rebuild();
         }
 
-        // Config-driven legacy-EID re-encode: a next hop matching the
-        // configured patterns requires 2-element IPN encoding, so Ipn
-        // source/destination re-encode as LegacyIpn. Wire adaptation only:
-        // the caller installs the rebuilt block map (extents index the
-        // re-encoded bytes) but never the rebuilt primary — the record's
-        // primary, and with it the bundle id every store operation is keyed
-        // on, keeps the canonical encoding. The editor refuses the edit
-        // while a BIB targets the primary or a remaining operation's scope
-        // includes it, judged after the per-hop writes above have stripped
-        // the blocks they rewrote from their BIBs: an operation the
-        // re-encode would break, so the bundle cannot go to this next hop.
-        // bpv7 answers for each security context; the BPA reads none.
+        // A next hop matching the configured patterns needs 2-element IPN
+        // encoding, so an `Ipn` source and destination re-encode as
+        // `LegacyIpn`. The adaptation is to the wire form only: the caller
+        // installs the rebuilt block map, whose extents index the
+        // re-encoded bytes, but never the rebuilt primary, so the record's
+        // primary, and the bundle id every store operation keys on, keep
+        // the canonical encoding. The editor refuses the edit while a BIB
+        // targets the primary or a remaining operation's scope covers it,
+        // judged after the per-hop writes have stripped the blocks they
+        // rewrote from their BIBs. Such an operation would not survive the
+        // re-encode, so the bundle cannot go to this next hop.
         if legacy {
             if let Eid::Ipn {
                 fqnn,
@@ -416,15 +413,15 @@ impl Dispatcher {
             }
         }
 
-        // rebuild_bundle() returns a Bundle whose block extents index the
-        // rewritten data, keeping the (bundle, data) pair consistent for the
-        // CLA hand-off
+        // `rebuild_bundle` returns a bundle whose block extents index the
+        // rewritten data, so the pair stays consistent for the hand-off to
+        // the CLA.
         let (new_bundle, chunks) = editor
             .rebuild_bundle()
             .trace_expect("The per-hop rewrite failed to rebuild the bundle");
 
-        // Zero-copy in place if `source_data` uniquely owns; otherwise
-        // allocates a fresh buffer.
+        // This writes in place where `source_data` is the unique owner,
+        // and allocates otherwise.
         Ok((
             new_bundle,
             hardy_bpv7::editor::Chunk::flatten_bytes(chunks, source_data),
@@ -432,11 +429,12 @@ impl Dispatcher {
     }
 }
 
-/// Why the per-hop rewrite produced no bundle for this attempt.
+/// The reason the per-hop rewrite produced no bundle for this attempt.
 enum PerHopRefusal {
-    /// The next hop needs legacy IPN encoding, and a BPSec operation covers
-    /// the primary block the re-encode would change, as its target or
-    /// through its scope: deterministic for this next hop.
+    /// The next hop needs legacy IPN encoding, and a BPSec operation
+    /// covers the primary block the re-encode would change, as its target
+    /// or through its scope. The refusal is the same at every attempt for
+    /// this next hop.
     ProtectedPrimary,
     /// A per-hop block is under BPSec coverage the keyless rewrite cannot
     /// safely update.
@@ -445,9 +443,8 @@ enum PerHopRefusal {
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU64;
 
-    use hardy_bpv7::{bundle::Id, eid::NodeId};
+    use hardy_bpv7::bundle::Id;
 
     use super::*;
     use crate::{
@@ -461,43 +458,33 @@ mod tests {
 
     #[async_trait]
     impl cla::Cla for RecordingCla {
-        async fn on_register(
-            &self,
-            _sink: Box<dyn cla::Sink>,
-            _node_ids: &[NodeId],
-            _max_bundle_size: Option<NonZeroU64>,
-        ) {
-        }
-
-        async fn on_unregister(&self) {}
-
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
+        ) -> cla::Result<cla::ForwardOutcome> {
             let _ = self.offers_tx.send(bundle_id.clone());
-            Ok(cla::ForwardBundleResult::Sent)
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 
-    /// `forward_bundle` never commences a transfer for an expired bundle:
-    /// the pre-claim expiry checkpoint resolves it as `LifetimeExpired`
-    /// before the CLA sees an offer. Driven as a direct call because this
-    /// is exactly the egress fast path's shape — a bundle that expired
-    /// while queued arrives here from the in-memory buffer, bypassing the
-    /// storage poller's expiry filter.
+    // `forward_bundle` commences no transfer for an expired bundle: the
+    // expiry checkpoint before the claim resolves it as `LifetimeExpired`
+    // first. Calling it directly is the shape of the egress fast path,
+    // where a bundle that expired while queued arrives from the in-memory
+    // buffer and bypasses the storage poller's expiry filter.
     #[tokio::test]
     async fn expired_queued_bundle_is_never_offered() {
         let metadata_store = Arc::new(MetadataMemStorage::new(None));
         let data_store = Arc::new(BundleMemStorage::new(None, None));
         let dispatcher = dispatcher(metadata_store.clone(), data_store.clone()).await;
 
-        // Seed the record exactly as the egress queue holds it: data
-        // stored, metadata parked in ForwardPending, expired at build.
+        // Seed the record as the egress queue holds it: the data stored,
+        // the metadata parked in `ForwardPending`, and the bundle already
+        // expired.
         let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
         let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
             Some(hardy_bpv7::dtn_time::DtnTime::saturating_from(past)),
@@ -537,7 +524,7 @@ mod tests {
                 &cla,
                 7,
                 None,
-                &cla::ClaAddress::Private("peer".as_bytes().into()),
+                &cla::Address::Private("peer".as_bytes().into()),
                 bundle,
             )
             .await;
@@ -552,10 +539,10 @@ mod tests {
         );
     }
 
-    /// The per-hop rewrite's bytes were validated at ingress and come back
-    /// from storage, so failing to decode them is a BPA bug or storage
-    /// corruption: fatal, never a park. Driven as a direct call because a
-    /// panic inside a running BPA aborts the test process.
+    // The per-hop rewrite's bytes were validated at ingress and come back
+    // from storage, so failing to decode them is a BPA bug or storage
+    // corruption, and fatal rather than a park. The call is direct because
+    // a panic inside a running BPA aborts the test process.
     #[tokio::test]
     #[should_panic(expected = "The per-hop rewrite's bytes do not decode")]
     async fn undecodable_per_hop_bytes_are_fatal() {
