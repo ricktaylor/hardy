@@ -13,8 +13,8 @@ name = "hardy-tvr"
 path = "src/main.rs"
 
 [features]
-default = []
-otel = ["dep:hardy-otel"]
+default = ["otel"]
+otel = ["hardy-otel/otlp"]
 instrument = ["hardy-async/instrument"]
 
 [dependencies]
@@ -23,11 +23,10 @@ hardy-bpv7 = { version = "0.6", path = "../bpv7" }
 hardy-proto = { version = "0.2", path = "../proto" }
 hardy-async = { version = "0.2", path = "../async", features = ["signal", "watcher"] }
 hardy-eid-patterns = { version = "0.4", path = "../eid-patterns" }
-hardy-otel = { version = "0.2", path = "../otel", optional = true }
+hardy-otel = { version = "0.3", path = "../otel", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = { version = "0.1", default-features = false }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }

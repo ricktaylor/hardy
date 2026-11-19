@@ -1,32 +1,7 @@
+use std::{net::SocketAddr, path::PathBuf};
+
+use hardy_otel::LogLevel;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use tracing::Level;
-
-mod log_level_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::str::FromStr;
-    use tracing::Level;
-
-    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(level.as_str())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Level::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-fn default_log_level() -> Level {
-    Level::INFO
-}
 
 fn default_max_bundle_size() -> u64 {
     0x4000_0000 // 1GB
@@ -48,8 +23,8 @@ pub enum Framing {
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
     /// Logging level (default: INFO)
-    #[serde(default = "default_log_level", with = "log_level_serde")]
-    pub log_level: Level,
+    #[serde(default)]
+    pub log_level: LogLevel,
 
     /// The address of the BPA gRPC server (e.g. "http://[::1]:50051")
     pub bpa_address: String,
@@ -87,7 +62,11 @@ pub struct ClaConfig {
 impl Config {
     pub fn load(config_file: Option<PathBuf>) -> anyhow::Result<Config> {
         let config_file = config_file
-            .or_else(|| std::env::var("MTCP_CLA_CONFIG_FILE").ok().map(PathBuf::from))
+            .or_else(|| {
+                std::env::var("MTCP_CLA_CONFIG_FILE")
+                    .ok()
+                    .map(PathBuf::from)
+            })
             .unwrap_or_else(|| PathBuf::from("mtcp-cla"));
 
         let source_file = config::File::with_name(&config_file.to_string_lossy());

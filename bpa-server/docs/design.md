@@ -157,7 +157,7 @@ Storage trait implementations are created based on configuration and injected in
 
 ### With hardy-otel
 
-When the `otel` feature is enabled, the server initialises OpenTelemetry for logs, traces, and metrics. Observability data flows to configured collectors.
+The server calls `hardy_otel::init()` at startup with its configured `log-level`. With the `otel` feature (on by default), that initialises OpenTelemetry for logs, traces, and metrics, and observability data flows to configured collectors; without it, the server logs to the console only.
 
 ### With hardy-tcpclv4
 

@@ -810,10 +810,20 @@ dependencies = [
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-cbor",
+ "hardy-otel",
  "hardy-proto",
  "serde",
  "tokio",
  "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "hardy-otel"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
 ]

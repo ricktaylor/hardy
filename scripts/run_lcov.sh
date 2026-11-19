@@ -120,7 +120,12 @@ echo "" | tee -a "$RESULTS_FILE"
 
 for crate in "${UNIT_CRATES[@]}"; do
     echo "--- $crate ---" | tee -a "$RESULTS_FILE"
-    if cargo llvm-cov test --package "$crate" --lcov --output-path "lcov-${crate}.info" 2>&1; then
+    # hardy-otel's metrics bridge and its tests compile only with `otlp`.
+    FEATURES=()
+    if [ "$crate" = "hardy-otel" ]; then
+        FEATURES=(--all-features)
+    fi
+    if cargo llvm-cov test --package "$crate" "${FEATURES[@]}" --lcov --output-path "lcov-${crate}.info" 2>&1; then
         lcov --summary "lcov-${crate}.info" 2>&1 | tee -a "$RESULTS_FILE" \
             || echo "  FAILED — lcov summary error" | tee -a "$RESULTS_FILE"
     else

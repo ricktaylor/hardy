@@ -1,15 +1,16 @@
-use super::*;
-use dashmap::DashMap;
-use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit};
-use opentelemetry::metrics::{
-    Counter as OtelCounter, Gauge as OtelGauge, Histogram as OtelHistogram, Meter,
-};
 use std::{
     borrow::Cow,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+};
+
+use dashmap::DashMap;
+use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit};
+use opentelemetry::{
+    KeyValue,
+    metrics::{Counter as OtelCounter, Gauge as OtelGauge, Histogram as OtelHistogram, Meter},
 };
 
 /// A `metrics::Recorder` that forwards metrics to an OpenTelemetry `Meter`.
@@ -257,9 +258,11 @@ impl metrics::HistogramFn for InnerHistogram {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use metrics::{CounterFn, GaugeFn, HistogramFn};
+    use opentelemetry::metrics::MeterProvider;
     use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+    use super::*;
 
     fn test_meter() -> Meter {
         SdkMeterProvider::builder().build().meter("test")
