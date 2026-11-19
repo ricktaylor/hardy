@@ -76,7 +76,7 @@ impl SqliteStorage {
         info!("Using database: {}", path.display());
 
         Self {
-            writer: Writer::new(open_writer(&path, upgrade)),
+            writer: Writer::new(open_writer(&path, upgrade), &path),
             readers: Arc::new(Readers::new(path)),
         }
     }
@@ -116,11 +116,11 @@ fn open_writer(path: &Path, mut upgrade: bool) -> Connection {
     // journal_mode cannot be changed inside a transaction (migrations run
     // in one), so WAL is applied here, before migrate(), not in the schema;
     // it persists in the database file, so the readers inherit it.
-    // synchronous is a per-connection pragma, and this is the only
-    // connection that writes; NORMAL under WAL fsyncs at checkpoint rather
-    // than per commit. A crash loses at most the un-checkpointed tail of
-    // commits, never consistency — and bundle data storage is ground truth:
-    // restart replay re-ingests anything whose metadata the tail forgot.
+    // synchronous is a per-connection pragma, and this is the connection
+    // that commits; NORMAL under WAL fsyncs at checkpoint rather than per
+    // commit. A crash loses at most the un-checkpointed tail of commits,
+    // never consistency — and bundle data storage is ground truth: restart
+    // replay re-ingests anything whose metadata the tail forgot.
     connection
         .execute_batch(
             "PRAGMA journal_mode = WAL;

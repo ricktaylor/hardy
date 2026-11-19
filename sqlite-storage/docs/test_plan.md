@@ -8,7 +8,7 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#sqlite-storage-72) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 
 ## 1. Introduction
 
@@ -49,6 +49,12 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-08** | **Batch commit failure** | `writer.rs` | 1. Hold the writer thread.<br>2. Queue a valid insert and a write that violates a deferred foreign key.<br>3. Release the writer. | Both writes report the batch's transaction failure; neither takes effect. |
 | **SQL-09** | **Abandoned write** | `writer.rs` | 1. Hold the writer thread.<br>2. Queue a write, then drop its caller.<br>3. Release the writer. | The write is never run. |
 | **SQL-10** | **Query-only readers** | `readers.rs` | 1. Route an `INSERT` through the reader pool. | Fails with `SQLITE_READONLY`. |
+| **SQL-11** | **Background checkpoint** | `checkpoint.rs` | 1. Write past the cycle threshold.<br>2. Let the writer request a cycle.<br>3. Wait for the checkpoint thread. | The whole WAL is copied into the database file with no checkpoint on the writer. |
+| **SQL-12** | **No automatic checkpoint** | `checkpoint.rs` | 1. Write 1200 pages with the cycle threshold out of reach. | Nothing is copied: SQLite's own checkpoint at 1000 pages is off. |
+| **SQL-13** | **WAL restart** | `checkpoint.rs` | 1. Hold a reader's snapshot so the background cycle stops short.<br>2. Release it and pass the restart bound.<br>3. Write again. | The writer copies the remainder, and the next write restarts the WAL from its beginning. |
+| **SQL-14** | **No writer checkpoint below the restart bound** | `checkpoint.rs` | 1. As SQL-13, with the restart bound out of reach. | The writer copies nothing; the remainder waits for the next cycle. |
+| **SQL-15** | **WAL size limit** | `checkpoint.rs` | 1. Write past the limit.<br>2. Let the writer request a cycle and call it again. | The writer waits for the cycle and returns with the whole WAL copied. |
+| **SQL-16** | **Database file sync** | `checkpoint.rs` | 1. Sync the database file through SQLite's own file handle. | Succeeds. |
 
 ## 5. Execution
 
