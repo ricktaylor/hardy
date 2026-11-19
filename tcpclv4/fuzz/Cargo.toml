@@ -34,3 +34,8 @@ path = "fuzz_targets/active.rs"
 test = false
 doc = false
 bench = false
+
+# `libfuzzer-sys` belongs to the fuzz targets, which `cargo test` does not
+# build.
+[lints.cargo]
+unused_dependencies = "allow"
