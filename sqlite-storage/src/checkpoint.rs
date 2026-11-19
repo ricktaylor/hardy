@@ -17,14 +17,13 @@
 use std::{
     path::Path,
     sync::mpsc::{Receiver, Sender, TryRecvError, channel},
-    thread::Builder,
 };
 
 use rusqlite::{Connection, ErrorCode, MAIN_DB, OpenFlags, Result, wal::CheckpointMode};
 use trace_err::*;
-use tracing::{debug, warn};
+use tracing::debug;
 
-use super::joined::Joined;
+use super::thread::Worker;
 
 // When checkpoints run, in WAL frames. A frame is one page: 4 KiB at
 // SQLite's default page size.
@@ -58,8 +57,8 @@ const CAUGHT_UP_FRAMES: u32 = 64;
 // The most passes one cycle makes while chasing the writer.
 const MAX_PASSES: usize = 8;
 
-// The checkpoint thread stops only when its `Checkpointer` drops, so finding
-// it gone takes a panic on that thread.
+// The checkpoint thread stops only when its `Checkpointer` drops, and a
+// panic on it aborts the process, so the writer never finds it gone.
 const STOPPED: &str = "The metadata checkpoint thread has stopped";
 
 // Where the checkpoint thread is with the cycle last requested of it.
@@ -79,7 +78,7 @@ pub struct Checkpointer {
     // which is then joined.
     wake: Sender<()>,
     cycled: Receiver<()>,
-    _thread: Joined,
+    _thread: Worker,
 }
 
 impl Checkpointer {
@@ -96,26 +95,26 @@ impl Checkpointer {
         let conn = open(path)?;
         let (wake, woken) = channel();
         let (done, cycled) = channel();
-        let thread = Builder::new()
-            .name("sqlite-checkpoint".into())
-            .spawn(move || run(conn, woken, done, thresholds.restart))
-            .trace_expect("Failed to spawn the metadata checkpoint thread");
+        let thread = Worker::spawn("sqlite-checkpoint", move || {
+            run(conn, woken, done, thresholds.restart);
+        })
+        .trace_expect("Failed to spawn the metadata checkpoint thread");
 
         Ok(Self {
             cycle: Cycle::Idle,
             thresholds,
             wake,
             cycled,
-            _thread: thread.into(),
+            _thread: thread,
         })
     }
 
     // Called by the writer between transactions, with its own connection.
     pub fn after_commit(&mut self, writer: &Connection) {
-        let (frames, copied) = wal(writer).unwrap_or_else(|e| {
-            warn!("Failed to read the metadata WAL's size: {e}");
-            (0, 0)
-        });
+        let Some((frames, copied)) = settled(wal(writer), "Failed to read the metadata WAL's size")
+        else {
+            return;
+        };
 
         if matches!(self.cycle, Cycle::Running) {
             self.cycle = self.poll_cycle(frames >= self.thresholds.limit);
@@ -157,9 +156,25 @@ impl Checkpointer {
 // and between its transactions. With the whole WAL copied, the writer's
 // next transaction restarts it from its beginning.
 fn finish(writer: &Connection) {
-    if let Err(e) = pass(writer) {
-        // The WAL keeps growing until a later finish succeeds.
-        warn!("Metadata checkpoint failed on the writer: {e}");
+    // Deferred, the WAL keeps growing until a later finish succeeds.
+    _ = settled(pass(writer), "Metadata checkpoint failed on the writer");
+}
+
+// What a checkpoint step returned, or `None` if it only lost a race for one
+// of the WAL's locks: the step is then left for a later batch.
+//
+// Any other failure is the database failing to write. No caller is waiting
+// on a checkpoint to be handed the error, and a sync that failed cannot be
+// retried safely, because the kernel may have dropped the pages it could
+// not write. So the failure is fatal here: the panic aborts the process.
+fn settled<T>(step: Result<T>, failure: &str) -> Option<T> {
+    match step {
+        Ok(value) => Some(value),
+        Err(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) => {
+            debug!("Metadata checkpoint deferred: {e}");
+            None
+        }
+        Err(e) => Some(Err(e).trace_expect(failure)),
     }
 }
 
@@ -179,16 +194,10 @@ fn open(path: &Path) -> Result<Connection> {
 // The checkpoint thread: one cycle per request, until the writer has gone.
 fn run(conn: Connection, woken: Receiver<()>, done: Sender<()>, restart: u32) {
     while woken.recv().is_ok() {
-        // Either way the writer asks again after its next batch, while
-        // enough of the WAL is uncopied.
-        match cycle(&conn, restart) {
-            Ok(()) => {}
-            // Reading the WAL's header lost a race with a commit.
-            Err(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) => {
-                debug!("Metadata checkpoint deferred: {e}");
-            }
-            Err(e) => warn!("Metadata checkpoint failed: {e}"),
-        }
+        // A cycle deferred by a lock race, such as reading the WAL's header
+        // during a commit, is asked for again after the writer's next
+        // batch, while enough of the WAL is uncopied.
+        _ = settled(cycle(&conn, restart), "Metadata checkpoint failed");
         if done.send(()).is_err() {
             break;
         }
@@ -290,9 +299,14 @@ mod os {
 mod tests {
     use std::path::PathBuf;
 
+    use rusqlite::{
+        Error as SqliteError,
+        ffi::{self, SQLITE_BUSY},
+    };
     use tempfile::{TempDir, tempdir};
 
     use super::*;
+    use crate::thread::tests::assert_aborts;
 
     // Thresholds no test's writes reach, for a test to lower the ones it
     // is about.
@@ -459,5 +473,34 @@ mod tests {
     fn the_database_file_syncs_through_its_own_handle() {
         let (_dir, _path, conn) = database();
         os::sync(&conn).unwrap();
+    }
+
+    // A step that only lost a race for one of the WAL's locks is deferred.
+    #[test]
+    fn a_busy_checkpoint_step_is_deferred() {
+        let busy = SqliteError::SqliteFailure(ffi::Error::new(SQLITE_BUSY), None);
+        assert_eq!(settled::<()>(Err(busy), "a checkpoint step"), None);
+    }
+
+    // A checkpoint that fails for any other reason takes the process down.
+    // The checkpoint thread here is given an in-memory database, which has
+    // no file to sync, so its first cycle fails.
+    #[test]
+    fn a_failed_checkpoint_aborts_the_process() {
+        assert_aborts(
+            "checkpoint::tests::a_failed_checkpoint_aborts_the_process",
+            || {
+                let (_dir, _path, conn) = database();
+                let thresholds = Thresholds { cycle: 8, ..NEVER };
+                let mut checkpointer =
+                    Checkpointer::start_with(&conn, Path::new(":memory:"), thresholds).unwrap();
+
+                write(&conn, 16);
+                checkpointer.after_commit(&conn);
+                // Waits on a cycle that never completes: the abort ends
+                // the process first.
+                checkpointer.settle();
+            },
+        );
     }
 }

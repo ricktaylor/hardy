@@ -14,10 +14,10 @@ protocol (mark-unconfirmed / confirm / sweep).
 */
 
 mod checkpoint;
-mod joined;
 mod migrate;
 mod readers;
 mod storage;
+mod thread;
 mod writer;
 
 pub use self::storage::SqliteStorage;

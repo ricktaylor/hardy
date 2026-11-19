@@ -14,6 +14,8 @@ use rusqlite::{Connection, OpenFlags};
 use tokio::{sync::Semaphore, task::spawn_blocking};
 use trace_err::*;
 
+use super::thread::AbortOnPanic;
+
 pub struct Readers {
     path: PathBuf,
     idle: Mutex<Vec<Connection>>,
@@ -45,6 +47,9 @@ impl Readers {
         let permit = self.permits.clone().acquire_owned().await?;
         let readers = self.clone();
         spawn_blocking(move || {
+            // The runtime would otherwise catch a panic here and hand it
+            // to the one caller awaiting this read.
+            let _fatal = AbortOnPanic("sqlite read");
             let conn = readers.take()?;
             let result = read(&conn);
             readers.put(conn);
@@ -87,8 +92,10 @@ impl Readers {
 mod tests {
     use rusqlite::{Error as SqliteError, ErrorCode};
     use tempfile::tempdir;
+    use tokio::runtime::Builder;
 
     use super::*;
+    use crate::thread::tests::assert_aborts;
 
     // A reader refuses to write, so a write routed through the readers
     // fails loudly rather than racing the writer thread.
@@ -114,6 +121,30 @@ mod tests {
                 .downcast_ref::<SqliteError>()
                 .and_then(SqliteError::sqlite_error_code),
             Some(ErrorCode::ReadOnly)
+        );
+    }
+
+    // A read that panics takes the process down with it, where the
+    // runtime's blocking pool would otherwise catch the panic and hand it
+    // to the read's one caller.
+    #[test]
+    fn a_panicking_read_aborts_the_process() {
+        assert_aborts(
+            "readers::tests::a_panicking_read_aborts_the_process",
+            || {
+                let dir = tempdir().unwrap();
+                let path = dir.path().join("test.db");
+                Connection::open(&path)
+                    .unwrap()
+                    .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE rows (id INTEGER);")
+                    .unwrap();
+                let readers = Arc::new(Readers::new(path));
+                let runtime = Builder::new_current_thread().build().unwrap();
+                _ = runtime.block_on(
+                    readers
+                        .read(|_| -> StorageResult<()> { panic!("the read failed an invariant") }),
+                );
+            },
         );
     }
 }

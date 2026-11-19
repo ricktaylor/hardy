@@ -41,6 +41,12 @@ All 16 pass. No failures or skips.
 | `test_migration_applies_the_pending_migration` | SQL-21 | A store one migration behind is upgraded |
 | `test_migration_applies_every_pending_migration` | SQL-21 | A store several migrations behind is upgraded |
 | `test_migration_refuses_a_store_behind_without_upgrade` | SQL-21 | Without upgrade: `UpdateRequired`, store unchanged |
+| `a_panicking_worker_aborts_the_process` | SQL-22 | A worker thread's panic aborts the process |
+| `a_worker_that_returns_is_joined` | SQL-22 | A worker that returns is joined, with no abort |
+| `a_panicking_write_aborts_the_process` | SQL-22 | A panic inside a write aborts the process |
+| `a_panicking_read_aborts_the_process` | SQL-22 | A panic inside a read aborts the process |
+| `a_busy_checkpoint_step_is_deferred` | SQL-23 | A step that lost a lock race is deferred |
+| `a_failed_checkpoint_aborts_the_process` | SQL-23 | A failed checkpoint aborts the process |
 | `test_configuration_custom_db_dir` | SQL-01 | DB file created at configured path |
 | `test_concurrency_no_sqlite_busy` | SQL-04 | 10 concurrent writers, all succeed |
 | `test_corrupt_data_does_not_panic` | SQL-05 | Corrupt blob: get() errors, confirm_exists() tombstones |

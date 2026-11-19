@@ -105,12 +105,22 @@ Two things a background checkpoint cannot do are left to the writer, at threshol
 
 The database file is synced through the file handle SQLite already holds, reached with `sqlite3_file_control`. Opening a second handle to sync is not an option on POSIX systems: closing any descriptor of a file releases every lock the process holds on that file, including the ones SQLite relies on. That call is the crate's one use of `unsafe`.
 
-The trade-off is disk space and recovery time: the WAL holds up to about 64 MiB instead of about 4 MiB, and the next open after a crash replays whatever it holds. A failed checkpoint is logged and asked for again after the writer's next batch; it is not fatal, because the WAL remains the durable record of every commit. The checkpoint thread itself stopping is: the writer panics rather than carry on without it.
+The trade-off is disk space and recovery time: the WAL holds up to about 64 MiB instead of about 4 MiB, and the next open after a crash replays whatever it holds.
 
 Rejected alternatives:
 
 - **Raising SQLite's automatic checkpoint threshold.** The checkpoint still runs on the writer. It runs less often, but each one copies more and stalls the writer for longer.
 - **Checkpointing from a reader connection.** Readers are query-only and pooled on Tokio's blocking pool, which is the wrong place for a periodic sync of the whole database file.
+
+### A Store That Cannot Write Stops the Process
+
+The store's threads have no caller to hand a failure to, so a failure on one of them ends the process. This is the rule `hardy-async`'s task pools apply to a panicking task, for the same reason: a broken invariant or failed infrastructure is not something a graceful shutdown gets past.
+
+- **A panic on the writer thread, on the checkpoint thread, or in a read** aborts the process. Without this, a panic on the writer thread would leave the process running while every later write failed, and a panic in a read would reach only the one caller waiting on it.
+- **A checkpoint that fails** panics its thread, and so aborts. No caller waits on a checkpoint, and a sync that failed cannot simply be retried: the operating system may have discarded the pages it could not write. The one exception is a checkpoint step that loses a race for one of the WAL's locks, which is not a failure; it is left for the writer's next batch.
+- **A write that fails** is returned to its caller, as before, with its whole batch if SQLite rolled the transaction back. The BPA treats any storage error as fatal, so this too ends the process, by way of the caller.
+
+One consequence of batching is that a failed commit fails up to 64 callers at once, where each write used to fail alone. Since any one of those failures is fatal to the BPA, the outcome is the same.
 
 ### Pooled Readers off the Async Runtime
 

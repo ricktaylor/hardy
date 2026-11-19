@@ -17,7 +17,7 @@
 //! The writer does not checkpoint the write-ahead log as it commits: between
 //! batches it hands that to the [`Checkpointer`].
 
-use std::{mem, path::Path, sync::Arc, thread::Builder};
+use std::{mem, path::Path, sync::Arc};
 
 use hardy_bpa::storage::Result as StorageResult;
 use rusqlite::{
@@ -31,7 +31,7 @@ use tokio::sync::{
 };
 use trace_err::*;
 
-use super::{checkpoint::Checkpointer, joined::Joined};
+use super::{checkpoint::Checkpointer, thread::Worker};
 
 // The most writes one transaction commits. Every caller in a batch waits
 // for the batch's commit, so the cap bounds how long the first waits on
@@ -48,7 +48,9 @@ pub enum Error {
     #[error("Metadata write transaction failed: {0}")]
     Transaction(Arc<SqliteError>),
 
-    /// The writer thread has stopped.
+    /// The writer thread has stopped: the store is shutting down. A panic
+    /// on the writer thread never gets this far, because it aborts the
+    /// process.
     #[error("Metadata writer thread has stopped")]
     Stopped,
 }
@@ -57,7 +59,7 @@ pub struct Writer {
     // Declared before `_thread`: fields drop in declaration order, so the
     // queue closes, and the thread finishes and exits, before it is joined.
     queue: UnboundedSender<Box<dyn Job>>,
-    _thread: Joined,
+    _thread: Worker,
 }
 
 impl Writer {
@@ -67,13 +69,11 @@ impl Writer {
         let checkpointer = Checkpointer::start(&conn, path)
             .trace_expect("Failed to start the metadata checkpoint thread");
         let (queue, jobs) = unbounded_channel();
-        let thread = Builder::new()
-            .name("sqlite-writer".into())
-            .spawn(move || serve(conn, jobs, checkpointer))
+        let thread = Worker::spawn("sqlite-writer", move || serve(conn, jobs, checkpointer))
             .trace_expect("Failed to spawn the metadata writer thread");
         Self {
             queue,
-            _thread: thread.into(),
+            _thread: thread,
         }
     }
 
@@ -246,8 +246,10 @@ mod tests {
 
     use rusqlite::ErrorCode;
     use tempfile::{TempDir, tempdir};
+    use tokio::runtime::Builder;
 
     use super::*;
+    use crate::thread::tests::assert_aborts;
 
     // A writer over a scratch database: `rows` takes plain inserts, and
     // `refs` holds a deferred foreign key, checked only at commit.
@@ -436,5 +438,25 @@ mod tests {
         // The writer carries on, in a transaction of its own.
         writer.write(|conn| insert(conn, 4)).await.unwrap();
         assert_eq!(ids(&writer).await, [4]);
+    }
+
+    // A write that panics takes the process down with it: the store must
+    // not carry on, answering every later write with an error.
+    #[test]
+    fn a_panicking_write_aborts_the_process() {
+        assert_aborts(
+            "writer::tests::a_panicking_write_aborts_the_process",
+            || {
+                let (_dir, writer) = open();
+                let write = writer
+                    .write(|_| -> StorageResult<()> { panic!("the write failed an invariant") });
+                // Waits on a reply that never comes: the abort ends the
+                // process first.
+                _ = Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(write);
+            },
+        );
     }
 }
