@@ -147,7 +147,7 @@ impl Msg {
                 // Load static routes
                 bpa.register_routing_agent(
                     "fuzz".to_string(),
-                    Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[
+                    Arc::new(hardy_bpa::routing::StaticAgent::new(&[
                         (
                             "ipn:*.*".parse().unwrap(),
                             hardy_bpa::routing::RouteAction::Via("ipn:0.2.0".parse().unwrap()),
@@ -176,7 +176,7 @@ impl Msg {
                 .expect("Failed to register routing agent");
 
                 let service = Arc::new(service::PipeService::new());
-                bpa.register_application(hardy_bpv7::eid::Service::Ipn(1), service.clone())
+                bpa.register_service(hardy_bpv7::eid::Service::Ipn(1), service.clone())
                     .await
                     .expect("Failed to register service");
 

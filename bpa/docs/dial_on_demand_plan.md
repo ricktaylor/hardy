@@ -4,18 +4,18 @@
 
 ## Motivation
 
-### `ClaAddress` does four jobs
+### `cla::Address` does four jobs
 
-- **Adjacency key.** A CLA reports each adjacency with `Sink::add_peer(ClaAddress, node IDs)` and withdraws it with `remove_peer`. Every CLA keeps its own address map ([`routing_subsystem_design.md`](routing_subsystem_design.md#cla-registry-mapping)), so an address means something only to the CLA that reported it.
-- **Forward target.** `Cla::forward` names the adjacency by its `ClaAddress`.
+- **Adjacency key.** A CLA reports each adjacency with `Sink::add_peer(cla::Address, node IDs)` and withdraws it with `remove_peer`. Every CLA keeps its own address map ([`routing_subsystem_design.md`](routing_subsystem_design.md#cla-registry-mapping)), so an address means something only to the CLA that reported it.
+- **Forward target.** `Cla::forward` names the adjacency by its `cla::Address`.
 - **Ingress provenance.** The CLA that delivers a bundle names the sending adjacency (`peer_addr`), and the BPA persists it in the bundle's metadata.
-- **Dial-on-demand handler key.** `ClaInit::address_type` (over gRPC, `RegisterClaRequest.address_type`) registers a CLA as the handler for addresses of a `ClaAddressType`, in a map the RIB keeps.
+- **Dial-on-demand handler key.** `ClaInit::address_type` (over gRPC, `RegisterClaRequest.address_type`) registers a CLA as the handler for addresses of a `cla::AddressType`, in a map the RIB keeps.
 
-The fourth job conflates two kinds of address: one a CLA can resolve and dial (an IP address and port, or a DNS name), and one that is local to a CLA and cannot be dialled (`ClaAddress::Private`: a `file-cla` peer's inbox directory, a `bibe` decapsulation endpoint). Keyed by type, two CLAs that both registered `Private` would contend for one slot, and the last to register would win. Nothing consults the map: no route can name an address (route actions are drop, via and reflect, and the RIB's vocabulary is EIDs throughout, [`routing_table_redesign.md`](routing_table_redesign.md)), so the handler role is a seam with no caller.
+The fourth job conflates two kinds of address: one a CLA can resolve and dial (an IP address and port, or a DNS name), and one that is local to a CLA and cannot be dialled (`cla::Address::Private`: a `file-cla` peer's inbox directory, a `bibe` decapsulation endpoint). Keyed by type, two CLAs that both registered `Private` would contend for one slot, and the last to register would win. Nothing consults the map: no route can name an address (route actions are drop, via and reflect, and the RIB's vocabulary is EIDs throughout, [`routing_table_redesign.md`](routing_table_redesign.md)), so the handler role is a seam with no caller.
 
-### `ClaAddressType` exists for that job alone
+### `cla::AddressType` exists for that job alone
 
-`ClaAddress` is an enum over `ClaAddressType`'s families, `Tcp(SocketAddr)` and `Private(Bytes)`, and the family is what the handler map is keyed by. Nothing else in the BPA reads it. The BPA uses an adjacency's address only as a key in the reporting CLA's own map, as provenance stored beside that CLA's name, and as text in logs; no BPA code matches on the variants. The typed `Tcp` variant serves only the CLAs that build and parse it, and its name implies a dialability the BPA never acts on. The family's other uses, the `(ClaAddressType, Bytes)` wire encoding and the `tcp:`/`private:` display prefix, follow from the type rather than from any need for it. A closed enum of families also cannot describe what discovery returns: one variant per convergence layer (TCP, UDP, QUIC, and whatever follows) in the BPA's core interface and wire format, for a distinction only the dialling CLA acts on.
+`cla::Address` is an enum over `cla::AddressType`'s families, `Tcp(SocketAddr)` and `Private(Bytes)`, and the family is what the handler map is keyed by. Nothing else in the BPA reads it. The BPA uses an adjacency's address only as a key in the reporting CLA's own map, as provenance stored beside that CLA's name, and as text in logs; no BPA code matches on the variants. The typed `Tcp` variant serves only the CLAs that build and parse it, and its name implies a dialability the BPA never acts on. The family's other uses, the `(cla::AddressType, Bytes)` wire encoding and the `tcp:`/`private:` display prefix, follow from the type rather than from any need for it. A closed enum of families also cannot describe what discovery returns: one variant per convergence layer (TCP, UDP, QUIC, and whatever follows) in the BPA's core interface and wire format, for a distinction only the dialling CLA acts on.
 
 ### Dialling happens in the wrong places
 
@@ -50,7 +50,7 @@ Composition is the resolver's job, not the BPA's: the BPA has no basis for ranki
 
 A CLA that can establish adjacencies on request registers a dial capability with the subsystem, naming the CL protocol identifiers it serves (`tcpcl` for `tcpclv4`, `qbcl` for a QUBICLE CLA). This registration stands beside the CLA's own and is separate from it: a CLA with nothing to dial (`file-cla`, `bibe`) registers none, and no CLA registration declares an address type.
 
-Dialling a resolution walks its targets in priority order, hands each to the capability for its CL protocol, skips a protocol with no capability, and stops at the first adjacency. One lookup can thus offer TCP, QUIC and UDP endpoints, and the CLAs this node runs decide which are usable. A dial target is not a `ClaAddress`: a target is something to dial, while a `ClaAddress` is what a CLA reports for an adjacency that exists. CL protocol identifiers belong to dial targets and capabilities, and nowhere else in the BPA.
+Dialling a resolution walks its targets in priority order, hands each to the capability for its CL protocol, skips a protocol with no capability, and stops at the first adjacency. One lookup can thus offer TCP, QUIC and UDP endpoints, and the CLAs this node runs decide which are usable. A dial target is not a `cla::Address`: a target is something to dial, while a `cla::Address` is what a CLA reports for an adjacency that exists. CL protocol identifiers belong to dial targets and capabilities, and nowhere else in the BPA.
 
 **A dial completes with an adjacency.** A capability's dial returns once the CLA has reported the resulting adjacency through its ordinary `add_peer`, or once it has failed, so a caller can rely on the adjacency existing when the dial succeeds (`bp ping` then needs no sleep). The node the adjacency names is whatever the convergence layer learns. For TCPCLv4 that is SESS_INIT's node ID: RFC 9174 Section 4.6 lets a session whose node ID differs from the one the dial intended be established, and if it is, associates the session with the node ID it announced.
 
@@ -70,7 +70,7 @@ A node may carry one node ID per URI scheme, an `ipn:` and a `dtn:` name for the
 
 It sends over an adjacency that exists, and refuses an address with no live session. Growing an existing adjacency's session pool stays inside the CLA, and only for a pool whose address was dialled: a pool of inbound sessions is never dialled ([tcpclv4 Peer identity](../../tcpclv4/docs/design.md#peer-identity)). A transfer whose session dies mid-flight reports `Failed`, and the BPA routes the bundle again.
 
-### `ClaAddress` becomes an opaque handle, and `ClaAddressType` goes
+### `cla::Address` becomes an opaque handle, and `cla::AddressType` goes
 
 The BPA needs three things from an adjacency's address: equality within one CLA's map, a stable encoding for provenance and the wire, and a readable form for logs and inspection. It needs no family. The handle is therefore the CLA's own canonical rendering of the address, compared exactly: a socket address for `tcpclv4`, an inbox path for `file-cla`, an EID for `bibe`. Each CLA maps it to its internal key (`tcpclv4`'s pools stay keyed by `SocketAddr`), and `forward` refuses a handle the CLA cannot interpret, as `tcpclv4` refuses a `Private` address today. The proto `ClaAddress` message changes with it. Stored provenance written in today's form still decodes: it is never consulted for a decision, so the legacy `Tcp` and `Private` forms map to the handle's form, losslessly for `Tcp`.
 
@@ -87,16 +87,16 @@ Once `forward` stops dialling, the peer of a plan-less static route is probed by
 ## Alternatives rejected
 
 - **The address-type handler map** (today's `ClaInit::address_type`). A CLA registration keyed by address type conflates "reports adjacencies at addresses of this kind" with "can dial addresses of this kind", and `Private` addresses, which only their own CLA can interpret, cannot be keyed by type at all.
-- **One `ClaAddressType` variant per convergence layer** (`Udp`, `Quic` beside `Tcp`), made mandatory at CLA registration, with resolved `ClaAddress` values matched to CLAs by type. It grows the BPA's core interface and wire format by one variant per CL protocol, though the set of CL protocols is open-ended and named by ALPN and service names the BPA need not enumerate, and it keeps CLA registration doubling as dial dispatch.
+- **One `cla::AddressType` variant per convergence layer** (`Udp`, `Quic` beside `Tcp`), made mandatory at CLA registration, with resolved `cla::Address` values matched to CLAs by type. It grows the BPA's core interface and wire format by one variant per CL protocol, though the set of CL protocols is open-ended and named by ALPN and service names the BPA need not enumerate, and it keeps CLA registration doubling as dial dispatch.
 - **`connect()` on the `Cla` trait**, with a default that fails. Dialling is a capability some CLAs have and others do not; a separate registration keeps CLA registration to adjacency reporting and names the CL protocols a dialler serves.
 - **Several resolvers ranked by the BPA.** The BPA has no basis for merging their answers; the one resolver composes its sources with the context to order them.
-- **Keeping the typed `ClaAddress` for display.** It would leave a family the BPA never acts on in every CLA's interface and on the wire, with `Tcp` still suggesting the BPA can dial it; a CLA's own rendering reads as well in logs.
+- **Keeping the typed `cla::Address` for display.** It would leave a family the BPA never acts on in every CLA's interface and on the wire, with `Tcp` still suggesting the BPA can dial it; a CLA's own rendering reads as well in logs.
 - **Dialling inside `forward`** (today's `tcpclv4`). It couples reachability probing to bundle flow, one un-damped probe per bundle, and dials whatever address the adjacency is keyed by, inbound ephemeral ports included.
 - **Routes that name CL addresses** (`via tcp://host:port`). They would put CLA addresses into the RIB, whose vocabulary is EIDs throughout; bindings from EIDs to dial targets belong to the resolver instead.
 
 ## Implementation programme
 
-- **P1, `ClaAddressType` and the dead registration role.** Remove `ClaInit::address_type`, the CLA registry's address-type registration, `Rib`'s `address_types` map and `ClaAddressType`; reshape `ClaAddress` into the opaque handle, with stored provenance in today's form still decoding; reserve `RegisterClaRequest.address_type` and reshape the proto `ClaAddress` message. Forwarding behaviour does not change (open question 2).
+- **P1, `cla::AddressType` and the dead registration role.** Remove `ClaInit::address_type`, the CLA registry's address-type registration, `Rib`'s `address_types` map and `cla::AddressType`; reshape `cla::Address` into the opaque handle, with stored provenance in today's form still decoding; reserve `RegisterClaRequest.address_type` and reshape the proto `ClaAddress` message. Forwarding behaviour does not change (open question 2).
 - **P2, the subsystem (`bpa`).** The resolver trait and its single-slot registration; the dial-capability registry keyed by CL protocol identifier; resolutions with their EIDs, dial targets and lifetime; the per-EID debounce cache; keep-up targets with redial and backoff.
 - **P3, `tcpclv4`.** The `tcpcl` dial capability (today's `Tcpclv4::connect`), completing once the adjacency is reported; `forward` refuses an address with no session; pool growth only for dialled pools. `bp ping` dials through the subsystem and drops its sleep.
 - **P4, the servers.** In `bpa-server`, a DNS resolver (SVCB, with SRV as the legacy form; local names never to global DNS) and keep-up target configuration; `tcpclv4-server`'s `peers` moved onto the subsystem.

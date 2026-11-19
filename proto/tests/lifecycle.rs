@@ -8,17 +8,17 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routing::{RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{Agent, Sink};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-// A mock RoutingAgent that records lifecycle callbacks.
+// A mock routing agent that records lifecycle callbacks.
 struct MockRoutingAgent {
     registered: AtomicBool,
     unregister_count: AtomicUsize,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn RoutingSink>>>,
+    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn Sink>>>,
 }
 
 impl MockRoutingAgent {
@@ -42,14 +42,14 @@ impl MockRoutingAgent {
         self.unregister_count.load(Ordering::Relaxed)
     }
 
-    fn take_sink(&self) -> Option<Box<dyn RoutingSink>> {
+    fn take_sink(&self) -> Option<Box<dyn Sink>> {
         self.sink.lock().take()
     }
 }
 
 #[async_trait]
-impl RoutingAgent for MockRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+impl Agent for MockRoutingAgent {
+    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
         *self.sink.lock() = Some(sink);
         self.registered.store(true, Ordering::Relaxed);
     }
@@ -116,7 +116,7 @@ async fn life_01_client_initiated_unregister() {
 
 // LIFE-02: BPA-initiated unregister.
 //
-// The BPA calls `on_unregister()` on the server-side RemoteRoutingAgent
+// The BPA calls `on_unregister()` on the server-side RemoteAgent
 // (simulating BPA shutdown). The server shuts down the proxy, closing the
 // stream. The client receives a synthetic `on_unregister()` via `on_close`.
 #[tokio::test]
@@ -135,7 +135,7 @@ async fn life_02_bpa_initiated_unregister() {
     assert!(agent.is_registered());
     assert!(!agent.is_unregistered());
 
-    // BPA-initiated: call on_unregister on the server-side RemoteRoutingAgent
+    // BPA-initiated: call on_unregister on the server-side RemoteAgent
     let server_agent = bpa
         .last_routing_agent
         .lock()

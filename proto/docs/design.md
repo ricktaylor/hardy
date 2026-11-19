@@ -28,14 +28,14 @@ The package provides two main components:
 │  ├── proxy.rs       - Split reader/writer RpcProxy          │
 │  ├── server/        - BPA-side gRPC service implementations │
 │  │   ├── cla.rs     - Implements hardy_bpa::cla::{Cla,Sink} │
-│  │   ├── routing.rs - Implements routing::RoutingAgent      │
-│  │   ├── service.rs - Implements services::Service          │
-│  │   └── application.rs - Implements services::Application  │
+│  │   ├── routing.rs - Implements routing::Agent             │
+│  │   ├── service.rs - Implements service::raw::Service      │
+│  │   └── application.rs - Implements service::Service       │
 │  └── client/        - Remote-side proxy implementations     │
 │      ├── cla.rs     - register_cla()                        │
 │      ├── routing.rs - register_routing_agent()              │
-│      ├── service.rs - register_endpoint_service()           │
-│      └── application.rs - register_application_service()    │
+│      ├── service.rs - register_raw_service()                │
+│      └── application.rs - register_service()                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -203,7 +203,7 @@ The `.proto` files define the wire format for each interface:
 
 - **`service.proto`** - Endpoint registration, send/receive, status notifications, and unregistration. Defines separate message types for Application API (payload-only) and Service API (full bundle). Maps to the `Application`, `Service`, and corresponding Sink traits.
 
-- **`routing.proto`** - Routing agent registration, route add/remove, and unregistration. Maps to the `RoutingAgent` and `RoutingSink` traits.
+- **`routing.proto`** - Routing agent registration, route add/remove, and unregistration. Maps to the `routing::Agent` and `routing::Sink` traits.
 
 ## Proxy Module
 
@@ -226,7 +226,7 @@ The `RpcProxy` struct manages the bidirectional stream via split reader/writer t
 
 ### With hardy-bpa
 
-The BPA library defines the traits (`Cla`, `Sink`, `Application`, `Service`, `RoutingAgent`, `RoutingSink`). hardy-proto provides gRPC-based implementations that proxy method calls over the network.
+The BPA library defines the traits (`cla::Cla`, `cla::Sink`, `service::Service`, `service::Sink`, `service::raw::Service`, `service::raw::Sink`, `routing::Agent`, `routing::Sink`). hardy-proto provides gRPC-based implementations that proxy method calls over the network.
 
 ### With hardy-bpa-server
 

@@ -19,7 +19,7 @@ use crate::{
         Bundle, BundleMetadata, BundleStatus,
         parse::{HeaderFailure, HeaderVerify, ReceptionReport, parse_headers},
     },
-    cla::{Acceptance, ClaAddress, Segment},
+    cla::{Acceptance, Address, Segment},
     filter::ChainOutcome,
     otel_metrics::{reason_label, status_label},
     routing::{Decision, DispatchAction},
@@ -94,7 +94,7 @@ impl Dispatcher {
         &self,
         ingress_cla: Arc<str>,
         ingress_peer_node: Option<&NodeId>,
-        ingress_peer_addr: Option<&ClaAddress>,
+        ingress_peer_addr: Option<&Address>,
         stream: &mut dyn Receiver<Segment>,
     ) -> Acceptance {
         let metadata = BundleMetadata::ingress(

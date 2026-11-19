@@ -210,9 +210,10 @@ impl Sender {
     /// ownership of the bundle. A `Full` buffer is **not** an error from
     /// the caller's perspective — the bundle is in storage and will be
     /// drained by the poller.
-    // SendError deliberately carries the bundle so the caller recovers
-    // ownership; boxing it to shrink the Err variant would tax every send.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "SendError carries the bundle so the caller recovers ownership; boxing it to shrink the Err variant would allocate on every send"
+    )]
     pub async fn send(&self, bundle: Bundle) -> Result<(), SendError> {
         let status = self.shared.status.clone();
         self.send_to(bundle, status).await
@@ -230,9 +231,10 @@ impl Sender {
     /// must name this channel's queue
     /// ([`same_queue`](BundleStatus::same_queue)). See
     /// [`send`](Self::send), which uses the channel's own target status.
-    // SendError deliberately carries the bundle so the caller recovers
-    // ownership; boxing it to shrink the Err variant would tax every send.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "SendError carries the bundle so the caller recovers ownership; boxing it to shrink the Err variant would allocate on every send"
+    )]
     pub async fn send_to(&self, mut bundle: Bundle, status: BundleStatus) -> Result<(), SendError> {
         debug_assert!(
             status.same_queue(&self.shared.status),
@@ -530,7 +532,10 @@ mod tests {
     // The delivery contract requires the bundle to already exist in metadata
     // storage before it is offered to the channel; insert it with the
     // caller-side snapshot status, as every production sender does.
-    #[allow(clippy::result_large_err)] // mirrors Sender::send's signature
+    #[expect(
+        clippy::result_large_err,
+        reason = "mirrors Sender::send, whose SendError carries the bundle back"
+    )]
     async fn send(tx: &Sender, bundle: Bundle) -> Result<(), SendError> {
         tx.store.insert_metadata(&bundle).await;
         tx.send(bundle).await

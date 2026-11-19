@@ -47,7 +47,7 @@ impl Cla {
             })
             .transpose()?;
 
-        let peer_addr: Option<hardy_bpa::cla::ClaAddress> =
+        let peer_addr: Option<hardy_bpa::cla::Address> =
             request.peer_addr.map(|a| a.try_into()).transpose()?;
 
         // The unary wire message already delivered the whole bundle, so it
@@ -170,11 +170,11 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn forward(
         &self,
         lane: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        cla_addr: &hardy_bpa::cla::Address,
         bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardOutcome> {
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         match self
             .call(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
@@ -190,13 +190,13 @@ impl hardy_bpa::cla::Cla for Cla {
                     tonic::Status::internal("Invalid result code").into(),
                 )),
                 Some(forward_bundle_response::Result::Sent(_)) => {
-                    Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
+                    Ok(hardy_bpa::cla::ForwardOutcome::Sent)
                 }
                 Some(forward_bundle_response::Result::NoNeighbour(_)) => {
-                    Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
+                    Ok(hardy_bpa::cla::ForwardOutcome::NoNeighbour)
                 }
                 Some(forward_bundle_response::Result::Accepted(_)) => {
-                    Ok(hardy_bpa::cla::ForwardBundleResult::Accepted)
+                    Ok(hardy_bpa::cla::ForwardOutcome::Accepted)
                 }
             },
             msg => {
@@ -293,9 +293,9 @@ async fn run_cla_session(
                     request
                         .address_type
                         .map(|address_type| match address_type.try_into() {
-                            Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
+                            Ok(ClaAddressType::Tcp) => hardy_bpa::cla::AddressType::Tcp,
                             Err(_) | Ok(ClaAddressType::Private) => {
-                                hardy_bpa::cla::ClaAddressType::Private
+                                hardy_bpa::cla::AddressType::Private
                             }
                         });
                 // Absent = no CLA-side limit declared; an explicit 0 is

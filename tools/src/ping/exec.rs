@@ -48,7 +48,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     // Add a default 'drop' route, we don't want to cache locally
     bpa.register_routing_agent(
         "ping".to_string(),
-        alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+        alloc::sync::Arc::new(hardy_bpa::routing::StaticAgent::new(&[(
             "*:**".parse().unwrap(),
             hardy_bpa::routing::RouteAction::Drop(Some(
                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
@@ -137,7 +137,7 @@ async fn exec_builtin_cla(
     if args.destination.service().is_some() {
         bpa.register_routing_agent(
             "ping-target".to_string(),
-            alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+            alloc::sync::Arc::new(hardy_bpa::routing::StaticAgent::new(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
@@ -190,7 +190,7 @@ async fn exec_external_cla(
     // entries). The CLA subprocess connects via gRPC and the registration
     // completes asynchronously — we need the forward entries to exist before
     // we start sending pings.
-    // TODO: Replace with proper RoutingAgent notification API when available
+    // TODO: Replace with a proper routing agent notification API when available
     {
         let timeout = tokio::time::sleep(std::time::Duration::from_secs(10));
         tokio::pin!(timeout);
@@ -226,7 +226,7 @@ async fn exec_external_cla(
 
         bpa.register_routing_agent(
             "ping-target".to_string(),
-            alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+            alloc::sync::Arc::new(hardy_bpa::routing::StaticAgent::new(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
@@ -307,9 +307,9 @@ async fn exec_inner(
     service: alloc::sync::Arc<service::Service>,
 ) -> anyhow::Result<()> {
     if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
-        bpa.register_service(service_id, service.clone()).await
+        bpa.register_raw_service(service_id, service.clone()).await
     } else {
-        bpa.register_dynamic_service(service.clone()).await
+        bpa.register_dynamic_raw_service(service.clone()).await
     }
     .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 

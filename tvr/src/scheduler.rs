@@ -1,5 +1,5 @@
 use crate::contacts::{Contact, Schedule};
-use hardy_bpa::routing::{RouteAction, RoutingSink};
+use hardy_bpa::routing::{RouteAction, Sink};
 use hardy_eid_patterns::EidPattern;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -636,7 +636,7 @@ fn contacts_match(a: &Contact, b: &Contact) -> bool {
 
 // ── Core loop ───────────────────────────────────────────────────────
 
-async fn apply_route_op(sink: &dyn RoutingSink, op: PendingRouteOp) {
+async fn apply_route_op(sink: &dyn Sink, op: PendingRouteOp) {
     match op {
         PendingRouteOp::Add {
             pattern,
@@ -668,11 +668,7 @@ fn update_gauges(sched: &Scheduler) {
 }
 
 // Start the scheduler task.
-pub fn start(
-    receiver: SchedulerReceiver,
-    sink: Arc<dyn RoutingSink>,
-    tasks: &hardy_async::TaskPool,
-) {
+pub fn start(receiver: SchedulerReceiver, sink: Arc<dyn Sink>, tasks: &hardy_async::TaskPool) {
     let rx = receiver.rx;
     let cancel = tasks.cancel_token().clone();
 

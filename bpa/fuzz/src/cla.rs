@@ -82,7 +82,7 @@ impl hardy_bpa::cla::Cla for NullCla {
         _max_bundle_size: Option<NonZeroU64>,
     ) {
         sink.add_peer(
-            hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
+            hardy_bpa::cla::Address::Private("fuzz".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -99,21 +99,19 @@ impl hardy_bpa::cla::Cla for NullCla {
             panic!("Extra unregister!");
         };
 
-        sink.remove_peer(&hardy_bpa::cla::ClaAddress::Private(
-            "fuzz".as_bytes().into(),
-        ))
-        .await
-        .expect("remove_peer failed");
+        sink.remove_peer(&hardy_bpa::cla::Address::Private("fuzz".as_bytes().into()))
+            .await
+            .expect("remove_peer failed");
     }
 
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &hardy_bpa::cla::ClaAddress,
+        _cla_addr: &hardy_bpa::cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardOutcome> {
+        Ok(hardy_bpa::cla::ForwardOutcome::Sent)
     }
 }

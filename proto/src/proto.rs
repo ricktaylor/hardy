@@ -5,7 +5,7 @@ pub mod cla {
 
     tonic::include_proto!("cla");
 
-    impl TryFrom<ClaAddress> for hardy_bpa::cla::ClaAddress {
+    impl TryFrom<ClaAddress> for hardy_bpa::cla::Address {
         type Error = tonic::Status;
 
         fn try_from(value: ClaAddress) -> Result<Self, Self::Error> {
@@ -17,23 +17,23 @@ pub mod cla {
                     let address = address.parse().map_err(|e| {
                         tonic::Status::invalid_argument(format!("Invalid address: {e}"))
                     })?;
-                    Ok(hardy_bpa::cla::ClaAddress::Tcp(address))
+                    Ok(hardy_bpa::cla::Address::Tcp(address))
                 }
                 (Ok(ClaAddressType::Private) | Err(_), address) => {
-                    Ok(hardy_bpa::cla::ClaAddress::Private(address))
+                    Ok(hardy_bpa::cla::Address::Private(address))
                 }
             }
         }
     }
 
-    impl From<hardy_bpa::cla::ClaAddress> for ClaAddress {
-        fn from(value: hardy_bpa::cla::ClaAddress) -> Self {
+    impl From<hardy_bpa::cla::Address> for ClaAddress {
+        fn from(value: hardy_bpa::cla::Address) -> Self {
             match value {
-                hardy_bpa::cla::ClaAddress::Tcp(address) => ClaAddress {
+                hardy_bpa::cla::Address::Tcp(address) => ClaAddress {
                     address_type: ClaAddressType::Tcp.into(),
                     address: address.to_string().into(),
                 },
-                hardy_bpa::cla::ClaAddress::Private(address) => ClaAddress {
+                hardy_bpa::cla::Address::Private(address) => ClaAddress {
                     address_type: ClaAddressType::Private.into(),
                     address,
                 },

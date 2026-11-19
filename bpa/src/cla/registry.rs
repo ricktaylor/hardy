@@ -1,69 +1,88 @@
 use core::num::NonZeroU32;
 
-use hardy_bpv7::eid::{Eid, NodeId};
+use hardy_async::{CancellationToken, TaskPool, sync::spin::Mutex};
+use hardy_bpv7::{
+    bundle::Id,
+    eid::{Eid, NodeId},
+};
+use tracing::{debug, error, info};
 
-use super::*;
+// `cla::Cla` and `cla::Sink` are the traits this module's `Record` and
+// `Sink` are built around, so both names are taken here; the two traits
+// stay module-qualified at their few use sites.
+use super::{
+    Acceptance, Address, ClaInit, Error, Result, Segment, TransferOutcome,
+    peers::{Peer, PeerTable},
+};
+use crate::{
+    Arc, HashMap, Weak, async_trait,
+    bundle::Bundle,
+    cla,
+    dispatcher::Dispatcher,
+    hash_map::Entry,
+    node_ids::NodeIds,
+    policy::{FlowControllerFactory, null_policy},
+    routing::Rib,
+    storage::store::Store,
+};
 
-// CLA registry uses hardy_async::sync::spin::Mutex because:
-// 1. All operations are O(1) HashMap lookups/inserts
-// 2. No read-only access pattern (RwLock not needed)
-// 3. No blocking/RNG/iteration while holding lock
-// 4. Avoids OS mutex overhead on CLA lifecycle operations
+// The maps here are behind spin locks. Every critical section is an O(1)
+// lookup or insert with nothing awaited, blocked or iterated inside it, so
+// the lock is never held long enough to repay an OS mutex's park.
 
-pub struct Cla {
+pub struct Record {
     pub cla: Arc<dyn cla::Cla>,
-    pub policy: Arc<dyn policy::FlowControllerFactory>,
+    pub policy: Arc<dyn FlowControllerFactory>,
     // Snapshotted from the `ClaInit` declarations at registration.
-    pub address_type: Option<ClaAddressType>,
     pub lane_count: Option<NonZeroU32>,
 
     name: Arc<str>,
     // Cancelled at unregistration; every in-flight stream of this
     // registration races it and fails immediately.
-    cancel: hardy_async::CancellationToken,
-    // sync::spin::Mutex for O(1) peer HashMap operations
-    // Key: ClaAddress (primary key for a link-layer adjacency)
-    // Value: (known EIDs for the peer, peer_id in PeerTable)
-    // An empty EID vec means a Neighbour (EID not yet known; no RIB entry installed)
-    peers: hardy_async::sync::spin::Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
+    cancel: CancellationToken,
+    // Keyed by the link-layer adjacency, which is a peer's primary key.
+    // The value pairs the node ids known for that peer with its id in the
+    // `PeerTable`; an empty list is a neighbour whose EID has not been
+    // learned yet, and so has no RIB entry.
+    peers: Mutex<HashMap<Address, (Vec<NodeId>, u32)>>,
 }
 
-impl PartialEq for Cla {
+impl PartialEq for Record {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
     }
 }
 
-impl Eq for Cla {}
+impl Eq for Record {}
 
-impl PartialOrd for Cla {
+impl PartialOrd for Record {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Cla {
+impl Ord for Record {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.name.cmp(&other.name)
     }
 }
 
-impl core::hash::Hash for Cla {
+impl core::hash::Hash for Record {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
 
-impl core::fmt::Debug for Cla {
+impl core::fmt::Debug for Record {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Cla")
+        f.debug_struct("Record")
             .field("name", &self.name)
             .field("peers", &self.peers)
             .finish_non_exhaustive()
     }
 }
 
-impl Cla {
+impl Record {
     // Whether `peer_id` is one of this CLA's peers — the ownership check for
     // deferred transfer outcomes.
     pub fn owns_peer(&self, peer_id: u32) -> bool {
@@ -71,29 +90,35 @@ impl Cla {
     }
 }
 
-type ClaMap = HashMap<String, Arc<Cla>>;
+type RecordMap = HashMap<String, Arc<Record>>;
 
+// The back-edges are weak. `Bpa` owns the registry and the dispatcher for
+// the life of the BPA, so a strong edge would add no reachability — only a
+// cycle through the CLA that holds this sink, and a cycle of `Arc`s never
+// drops. A failed upgrade is the condition the trait already names,
+// `Error::Disconnected`.
 struct Sink {
-    cla: Weak<Cla>,
-    registry: Arc<ClaRegistry>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    cla: Weak<Record>,
+    registry: Weak<ClaRegistry>,
+    dispatcher: Weak<Dispatcher>,
 }
 
 #[async_trait]
 impl cla::Sink for Sink {
     async fn unregister(&self) {
-        if let Some(cla) = self.cla.upgrade() {
-            self.registry.unregister(cla).await;
+        if let (Some(cla), Some(registry)) = (self.cla.upgrade(), self.registry.upgrade()) {
+            registry.unregister(cla).await;
         }
     }
 
     async fn dispatch(
         &self,
-        peer_node: Option<&hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<&ClaAddress>,
+        peer_node: Option<&NodeId>,
+        peer_addr: Option<&Address>,
         stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<cla::Acceptance> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
+    ) -> Result<Acceptance> {
+        let cla = self.cla.upgrade().ok_or(Error::Disconnected)?;
+        let dispatcher = self.dispatcher.upgrade().ok_or(Error::Disconnected)?;
 
         // A CLA that unregisters mid-stream must not land its bundle: the
         // registration's token races every pull, so teardown wakes this
@@ -104,56 +129,45 @@ impl cla::Sink for Sink {
             inner: stream,
             token: cla.cancel.clone(),
         };
-        let verdict = self
-            .dispatcher
+        let verdict = dispatcher
             .receive_bundle(cla.name.clone(), peer_node, peer_addr, &mut stream)
             .await;
 
         // A refusal caused by that teardown is not a verdict on the bundle
         // — the registration died. Report the dead sink instead, so the CLA
         // does not mistake its own unregistration for a per-bundle refusal.
-        if matches!(verdict, cla::Acceptance::Refused) && cla.cancel.is_cancelled() {
-            return Err(cla::Error::Disconnected);
+        if matches!(verdict, Acceptance::Refused) && cla.cancel.is_cancelled() {
+            return Err(Error::Disconnected);
         }
         Ok(verdict)
     }
 
-    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
-        Ok(self
-            .registry
-            .add_peer(cla, self.dispatcher.clone(), cla_addr, node_ids)
-            .await)
+    async fn add_peer(&self, cla_addr: Address, node_ids: &[NodeId]) -> Result<bool> {
+        let cla = self.cla.upgrade().ok_or(Error::Disconnected)?;
+        let registry = self.registry.upgrade().ok_or(Error::Disconnected)?;
+        let dispatcher = self.dispatcher.upgrade().ok_or(Error::Disconnected)?;
+        Ok(registry.add_peer(cla, dispatcher, cla_addr, node_ids).await)
     }
 
-    async fn remove_peer(&self, cla_addr: &ClaAddress) -> cla::Result<bool> {
-        Ok(self
-            .registry
-            .remove_peer(
-                self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
-                cla_addr,
-            )
-            .await)
+    async fn remove_peer(&self, cla_addr: &Address) -> Result<bool> {
+        let cla = self.cla.upgrade().ok_or(Error::Disconnected)?;
+        let registry = self.registry.upgrade().ok_or(Error::Disconnected)?;
+        Ok(registry.remove_peer(cla, cla_addr).await)
     }
 
-    async fn transfer_outcome(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        outcome: cla::TransferOutcome,
-    ) -> cla::Result<()> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
-        self.dispatcher
-            .transfer_outcome(&cla, bundle_id, outcome)
-            .await;
+    async fn transfer_outcome(&self, bundle_id: &Id, outcome: TransferOutcome) -> Result<()> {
+        let cla = self.cla.upgrade().ok_or(Error::Disconnected)?;
+        let dispatcher = self.dispatcher.upgrade().ok_or(Error::Disconnected)?;
+        dispatcher.transfer_outcome(&cla, bundle_id, outcome).await;
         Ok(())
     }
 }
 
 impl Drop for Sink {
     fn drop(&mut self) {
-        if let Some(cla) = self.cla.upgrade() {
-            let registry = self.registry.clone();
-            hardy_async::spawn!(self.registry.tasks, "cla_drop_cleanup", async move {
+        if let (Some(cla), Some(registry)) = (self.cla.upgrade(), self.registry.upgrade()) {
+            let tasks = registry.tasks.clone();
+            hardy_async::spawn!(tasks, "cla_drop_cleanup", async move {
                 registry.unregister(cla).await;
             });
         }
@@ -163,11 +177,11 @@ impl Drop for Sink {
 // A CLA awaiting registration, held by the building-phase registry.
 struct PendingCla {
     cla: Arc<dyn cla::Cla>,
-    policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+    policy: Option<Arc<dyn FlowControllerFactory>>,
     init: ClaInit,
 }
 
-// CLA registry in the building phase — only insert() is available.
+// The registry before the BPA starts: declarations only, no registration.
 pub struct ClaRegistryBuilder {
     clas: HashMap<String, PendingCla>,
 }
@@ -183,11 +197,11 @@ impl ClaRegistryBuilder {
         &mut self,
         name: String,
         cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
         init: ClaInit,
-    ) -> cla::Result<()> {
-        let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
-            return Err(cla::Error::AlreadyExists(name));
+    ) -> Result<()> {
+        let Entry::Vacant(e) = self.clas.entry(name.clone()) else {
+            return Err(Error::AlreadyExists(name));
         };
         info!("Inserted CLA: {name}");
         e.insert(PendingCla { cla, policy, init });
@@ -200,44 +214,44 @@ impl ClaRegistryBuilder {
     // not race the consistency check.
     pub fn build(
         self,
-        node_ids: &Arc<node_ids::NodeIds>,
+        node_ids: &Arc<NodeIds>,
         poll_channel_depth: usize,
-        rib: &Arc<routing::Rib>,
-        store: &Arc<storage::store::Store>,
+        rib: &Arc<Rib>,
+        store: &Arc<Store>,
     ) -> Arc<ClaRegistry> {
-        let peers = Arc::new(cla::peers::PeerTable::new());
+        let peers = Arc::new(PeerTable::new());
         Arc::new(ClaRegistry {
             node_ids: node_ids.clone(),
-            clas: hardy_async::sync::spin::Mutex::new(Default::default()),
-            pending: hardy_async::sync::spin::Mutex::new(self.clas.into_iter().collect()),
+            clas: Mutex::new(Default::default()),
+            pending: Mutex::new(self.clas.into_iter().collect()),
             rib: rib.clone(),
             store: store.clone(),
             peers,
             poll_channel_depth,
-            tasks: hardy_async::TaskPool::new(),
+            tasks: TaskPool::new(),
         })
     }
 }
 
-// CLA registry in the running phase — full register/unregister available.
+// The registry once the BPA is running.
 pub struct ClaRegistry {
-    node_ids: Arc<node_ids::NodeIds>,
-    clas: hardy_async::sync::spin::Mutex<ClaMap>,
+    node_ids: Arc<NodeIds>,
+    clas: Mutex<RecordMap>,
     // Builder-configured CLAs, parked until `start` activates them after
     // storage recovery.
-    pending: hardy_async::sync::spin::Mutex<Vec<(String, PendingCla)>>,
-    rib: Arc<routing::Rib>,
-    store: Arc<storage::store::Store>,
-    peers: Arc<peers::PeerTable>,
+    pending: Mutex<Vec<(String, PendingCla)>>,
+    rib: Arc<Rib>,
+    store: Arc<Store>,
+    peers: Arc<PeerTable>,
     poll_channel_depth: usize,
-    tasks: hardy_async::TaskPool,
+    tasks: TaskPool,
 }
 
 impl ClaRegistry {
     /// Activate the builder-configured CLAs, in configuration order.
     /// Called by `Bpa::start` once storage recovery has completed: a CLA
     /// going live earlier would race the consistency check.
-    pub async fn start(self: &Arc<Self>, dispatcher: &Arc<dispatcher::Dispatcher>) {
+    pub async fn start(self: &Arc<Self>, dispatcher: &Arc<Dispatcher>) {
         let pending = core::mem::take(&mut *self.pending.lock());
         for (name, pending) in pending {
             // The builder pre-checked duplicate names; a failure here is a
@@ -257,15 +271,16 @@ impl ClaRegistry {
         }
     }
 
-    // Err(bundle) deliberately hands ownership back to the caller; boxing
-    // the bundle to shrink the Err variant would tax every call site.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "Err(bundle) hands ownership back to the caller; boxing it to shrink the Err variant would allocate on every call"
+    )]
     pub async fn forward(
         &self,
         peer_id: u32,
         next_hop: Eid,
-        bundle: bundle::Bundle,
-    ) -> core::result::Result<(), bundle::Bundle> {
+        bundle: Bundle,
+    ) -> core::result::Result<(), Bundle> {
         self.peers.forward(peer_id, next_hop, bundle).await
     }
 
@@ -288,10 +303,10 @@ impl ClaRegistry {
         self: &Arc<Self>,
         name: String,
         cla: Arc<dyn cla::Cla>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+        dispatcher: &Arc<Dispatcher>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
         init: ClaInit,
-    ) -> cla::Result<Vec<NodeId>> {
+    ) -> Result<Vec<NodeId>> {
         // The effective cap: the BPA's configured max folded with whatever
         // limit the CLA declared at registration — the min of the caps
         // declared, or `None` when neither side has one.
@@ -302,26 +317,20 @@ impl ClaRegistry {
 
         let entry = {
             let mut clas = self.clas.lock();
-            let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
-                return Err(cla::Error::AlreadyExists(name));
+            let Entry::Vacant(e) = clas.entry(name.clone()) else {
+                return Err(Error::AlreadyExists(name));
             };
-            e.insert(Arc::new(Cla {
-                cancel: hardy_async::CancellationToken::new(),
+            e.insert(Arc::new(Record {
+                cancel: CancellationToken::new(),
                 cla,
-                address_type: init.address_type,
                 lane_count: init.lane_count,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
                 policy: policy
-                    .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
+                    .unwrap_or_else(|| Arc::new(null_policy::FlowControllerFactory::new())),
             }))
             .clone()
         };
-
-        // Register that the CLA is a handler for the address type
-        if let Some(address_type) = entry.address_type {
-            self.rib.add_address_type(address_type, entry.clone());
-        }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
@@ -330,8 +339,8 @@ impl ClaRegistry {
             .on_register(
                 Box::new(Sink {
                     cla: Arc::downgrade(&entry),
-                    registry: self.clone(),
-                    dispatcher: dispatcher.clone(),
+                    registry: Arc::downgrade(self),
+                    dispatcher: Arc::downgrade(dispatcher),
                 }),
                 &node_ids,
                 max_bundle_size,
@@ -344,7 +353,7 @@ impl ClaRegistry {
         Ok(node_ids)
     }
 
-    async fn unregister(&self, cla: Arc<Cla>) {
+    async fn unregister(&self, cla: Arc<Record>) {
         let cla = self.clas.lock().remove(&*cla.name);
 
         if let Some(cla) = cla {
@@ -353,15 +362,11 @@ impl ClaRegistry {
         }
     }
 
-    async fn unregister_cla(&self, cla: Arc<Cla>) {
+    async fn unregister_cla(&self, cla: Arc<Record>) {
         // First: wake every in-flight stream of this registration.
         cla.cancel.cancel();
 
         cla.cla.on_unregister().await;
-
-        if let Some(address_type) = cla.address_type {
-            self.rib.remove_address_type(&address_type);
-        }
 
         let peers = core::mem::take(&mut *cla.peers.lock());
         for (_, (node_ids, peer_id)) in peers {
@@ -382,9 +387,9 @@ impl ClaRegistry {
 
     async fn add_peer(
         &self,
-        cla: Arc<Cla>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-        cla_addr: ClaAddress,
+        cla: Arc<Record>,
+        dispatcher: Arc<Dispatcher>,
+        cla_addr: Address,
         node_ids: &[NodeId],
     ) -> bool {
         // Mint the id without publishing anything (reserved against reuse),
@@ -395,11 +400,11 @@ impl ClaRegistry {
         let claimed = {
             let mut peers = cla.peers.lock();
             match peers.entry(cla_addr.clone()) {
-                hash_map::Entry::Vacant(e) => {
+                Entry::Vacant(e) => {
                     e.insert((node_ids.to_vec(), peer_id));
                     true
                 }
-                hash_map::Entry::Occupied(_) => false,
+                Entry::Occupied(_) => false,
             }
         };
         if !claimed {
@@ -412,7 +417,7 @@ impl ClaRegistry {
 
         // Construct the peer complete, then publish: the table only ever
         // holds working peers.
-        let peer = peers::Peer::start(
+        let peer = Peer::start(
             self.poll_channel_depth,
             cla.clone(),
             peer_id,
@@ -434,9 +439,8 @@ impl ClaRegistry {
             return false;
         }
 
-        // Add RIB entry for each known EID.
-        // Neighbours (empty node_ids) get no RIB entry; nothing yet supplies
-        // their EIDs later.
+        // A neighbour — one whose node ids are not known — gets no RIB
+        // entry, and nothing supplies them later.
         for node_id in node_ids {
             let _ = self.rib.add_forward(node_id.clone(), peer_id).await;
             metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
@@ -445,7 +449,7 @@ impl ClaRegistry {
         true
     }
 
-    async fn remove_peer(&self, cla: Arc<Cla>, cla_addr: &ClaAddress) -> bool {
+    async fn remove_peer(&self, cla: Arc<Record>, cla_addr: &Address) -> bool {
         let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };
@@ -464,9 +468,16 @@ impl ClaRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::bpa::{Bpa, BpaRegistration};
+    use core::num::NonZeroU64;
+
     use hardy_async::sync::spin::Once;
+    use hardy_bpv7::eid::IpnNodeId;
+
+    use super::*;
+    use crate::{
+        bpa::{Bpa, BpaRegistration},
+        cla::ForwardOutcome,
+    };
 
     struct TestCla {
         sink: Once<Box<dyn cla::Sink>>,
@@ -483,7 +494,7 @@ mod tests {
         async fn on_register(
             &self,
             sink: Box<dyn cla::Sink>,
-            _node_ids: &[hardy_bpv7::eid::NodeId],
+            _node_ids: &[NodeId],
             _max_bundle_size: Option<NonZeroU64>,
         ) {
             self.sink.call_once(|| sink);
@@ -492,12 +503,12 @@ mod tests {
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &ClaAddress,
-            _bundle_id: &hardy_bpv7::bundle::Id,
+            _cla_addr: &Address,
+            _bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
-            Ok(cla::ForwardBundleResult::Sent)
+        ) -> Result<ForwardOutcome> {
+            Ok(ForwardOutcome::Sent)
         }
     }
 
@@ -518,7 +529,7 @@ mod tests {
             .register_cla("test-cla".to_string(), cla2, None, ClaInit::default())
             .await;
         assert!(
-            matches!(result, Err(cla::Error::AlreadyExists(ref name)) if name == "test-cla"),
+            matches!(result, Err(Error::AlreadyExists(ref name)) if name == "test-cla"),
             "Duplicate CLA name should return AlreadyExists, got: {result:?}"
         );
 
@@ -542,24 +553,21 @@ mod tests {
         .unwrap();
 
         let sink = cla.sink.get().expect("Sink should be set after register");
-        let peer_addr = ClaAddress::Private("peer1".as_bytes().into());
-        let peer_node = hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+        let peer_addr = Address::Private("peer1".as_bytes().into());
+        let peer_node = NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: 10,
         });
 
-        // Add peer
         let added = sink
             .add_peer(peer_addr.clone(), core::slice::from_ref(&peer_node))
             .await
             .unwrap();
         assert!(added, "First add_peer should succeed");
 
-        // Remove peer
         let removed = sink.remove_peer(&peer_addr).await.unwrap();
         assert!(removed, "remove_peer should succeed");
 
-        // Removing again should return false
         let removed = sink.remove_peer(&peer_addr).await.unwrap();
         assert!(!removed, "Double remove_peer should return false");
 
@@ -584,14 +592,13 @@ mod tests {
 
         let sink = cla.sink.get().expect("Sink should be set");
 
-        // Add two peers
-        let addr1 = ClaAddress::Private("p1".as_bytes().into());
-        let addr2 = ClaAddress::Private("p2".as_bytes().into());
-        let node1 = hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+        let addr1 = Address::Private("p1".as_bytes().into());
+        let addr2 = Address::Private("p2".as_bytes().into());
+        let node1 = NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: 20,
         });
-        let node2 = hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+        let node2 = NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: 21,
         });
@@ -599,10 +606,8 @@ mod tests {
         sink.add_peer(addr1, &[node1]).await.unwrap();
         sink.add_peer(addr2, &[node2]).await.unwrap();
 
-        // Unregister the CLA — should cascade-remove both peers
         sink.unregister().await;
 
-        // Re-registering with same name should now succeed (name freed)
         let cla2 = Arc::new(TestCla::new());
         let result = bpa
             .register_cla("cascade-cla".to_string(), cla2, None, ClaInit::default())

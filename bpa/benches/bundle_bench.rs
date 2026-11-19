@@ -46,13 +46,13 @@ impl cla::Cla for BenchCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.arrival_tx.send(std::time::Instant::now());
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -109,7 +109,7 @@ fn get_state() -> &'static BenchState {
                 .get()
                 .unwrap()
                 .add_peer(
-                    cla::ClaAddress::Private("peer".as_bytes().into()),
+                    cla::Address::Private("peer".as_bytes().into()),
                     &[remote_node],
                 )
                 .await

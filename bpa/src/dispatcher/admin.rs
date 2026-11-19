@@ -115,7 +115,7 @@ impl Dispatcher {
                             .on_status_notify(
                                 &report.bundle_id,
                                 &bundle.id().source,
-                                services::StatusNotify::Received,
+                                service::StatusNotify::Received,
                                 report.reason,
                                 assertion.0,
                             )
@@ -126,7 +126,7 @@ impl Dispatcher {
                             .on_status_notify(
                                 &report.bundle_id,
                                 &bundle.id().source,
-                                services::StatusNotify::Forwarded,
+                                service::StatusNotify::Forwarded,
                                 report.reason,
                                 assertion.0,
                             )
@@ -137,7 +137,7 @@ impl Dispatcher {
                             .on_status_notify(
                                 &report.bundle_id,
                                 &bundle.id().source,
-                                services::StatusNotify::Delivered,
+                                service::StatusNotify::Delivered,
                                 report.reason,
                                 assertion.0,
                             )
@@ -148,7 +148,7 @@ impl Dispatcher {
                             .on_status_notify(
                                 &report.bundle_id,
                                 &bundle.id().source,
-                                services::StatusNotify::Deleted,
+                                service::StatusNotify::Deleted,
                                 report.reason,
                                 assertion.0,
                             )

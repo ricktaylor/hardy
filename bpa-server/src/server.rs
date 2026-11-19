@@ -14,7 +14,7 @@ use hardy_bpa::{
     bpa::Bpa,
     cla::{Cla, ClaInit},
     policy::FlowControllerFactory,
-    routing::RoutingAgent,
+    routing::Agent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
 #[cfg(feature = "echo")]
@@ -210,7 +210,7 @@ impl BpaServer {
                     }
                 })
                 .transpose()?;
-            let agent: Arc<dyn RoutingAgent> = Arc::new(StaticRoutesAgent::new(
+            let agent: Arc<dyn Agent> = Arc::new(StaticRoutesAgent::new(
                 routes_file,
                 sr_config.priority,
                 sr_config.watch.into(),
@@ -231,7 +231,7 @@ impl BpaServer {
                     } else {
                         for service_id in services {
                             builder = builder
-                                .service(Arc::new(EchoService::new()), service_id);
+                                .raw_service(Arc::new(EchoService::new()), service_id);
                         }
                     }
                 }

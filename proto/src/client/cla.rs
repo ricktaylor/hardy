@@ -29,11 +29,9 @@ async fn forward(
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?
     {
-        hardy_bpa::cla::ForwardBundleResult::Sent => forward_bundle_response::Result::Sent(()),
-        hardy_bpa::cla::ForwardBundleResult::Accepted => {
-            forward_bundle_response::Result::Accepted(())
-        }
-        hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
+        hardy_bpa::cla::ForwardOutcome::Sent => forward_bundle_response::Result::Sent(()),
+        hardy_bpa::cla::ForwardOutcome::Accepted => forward_bundle_response::Result::Accepted(()),
+        hardy_bpa::cla::ForwardOutcome::NoNeighbour => {
             forward_bundle_response::Result::NoNeighbour(())
         }
     };
@@ -67,7 +65,7 @@ impl hardy_bpa::cla::Sink for Sink {
     async fn dispatch(
         &self,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+        peer_addr: Option<&hardy_bpa::cla::Address>,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         // The transport cap doubles as the pre-check from
@@ -106,7 +104,7 @@ impl hardy_bpa::cla::Sink for Sink {
 
     async fn add_peer(
         &self,
-        cla_addr: hardy_bpa::cla::ClaAddress,
+        cla_addr: hardy_bpa::cla::Address,
         node_ids: &[hardy_bpv7::eid::NodeId],
     ) -> hardy_bpa::cla::Result<bool> {
         match self
@@ -125,7 +123,7 @@ impl hardy_bpa::cla::Sink for Sink {
 
     async fn remove_peer(
         &self,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        cla_addr: &hardy_bpa::cla::Address,
     ) -> hardy_bpa::cla::Result<bool> {
         match self
             .call(cla_to_bpa::Msg::RemovePeer(RemovePeerRequest {
@@ -246,8 +244,8 @@ pub async fn register_cla(
             name: name.clone(),
             address_type: init.address_type.map(|a| {
                 match a {
-                    hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp,
-                    hardy_bpa::cla::ClaAddressType::Private => ClaAddressType::Private,
+                    hardy_bpa::cla::AddressType::Tcp => ClaAddressType::Tcp,
+                    hardy_bpa::cla::AddressType::Private => ClaAddressType::Private,
                 }
                 .into()
             }),

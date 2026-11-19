@@ -13,7 +13,7 @@ use hardy_bpa::{
     bundle::{Bundle, BundleMetadata, BundleStatus},
     cla,
     node_ids::NodeIds,
-    services,
+    service::{self, StatusNotify, raw},
     storage::{self, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, Sender},
 };
@@ -28,7 +28,7 @@ use hardy_bpv7::{
 /// Records each delivered bundle id; holds the first delivery open until
 /// the release sender fires (or is dropped).
 struct HoldService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
     delivered_tx: flume::Sender<Id>,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
@@ -59,8 +59,8 @@ impl HoldService {
 }
 
 #[async_trait]
-impl services::Service for HoldService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
+impl raw::Service for HoldService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -72,7 +72,7 @@ impl services::Service for HoldService {
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let _ = self.started_tx.send_async(()).await;
         let _ = self.release_rx.recv_async().await;
         loop {
@@ -89,7 +89,7 @@ impl services::Service for HoldService {
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -116,12 +116,12 @@ impl cla::Cla for IngressCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        Ok(cla::ForwardBundleResult::Sent)
+    ) -> cla::Result<cla::ForwardOutcome> {
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -169,7 +169,7 @@ async fn unregister_sweeps_queued_deliveries() {
 
     let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
     let (svc_a, delivered_a_rx, started_rx, release_tx) = HoldService::new();
-    bpa.register_service(Service::Ipn(7), svc_a.clone())
+    bpa.register_raw_service(Service::Ipn(7), svc_a.clone())
         .await
         .unwrap();
 
@@ -257,7 +257,7 @@ async fn unregister_sweeps_queued_deliveries() {
     // A later registration on the same EID recovers the swept bundle.
     let (svc_b, delivered_b_rx, _started_b_rx, release_b_tx) = HoldService::new();
     drop(release_b_tx); // complete deliveries immediately
-    bpa.register_service(Service::Ipn(7), svc_b.clone())
+    bpa.register_raw_service(Service::Ipn(7), svc_b.clone())
         .await
         .unwrap();
     let delivered = tokio::time::timeout(
@@ -463,7 +463,7 @@ async fn registration_does_not_await_the_post_registration_poll() {
     drop(svc_release_tx); // complete deliveries immediately
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        bpa.register_service(Service::Ipn(9), svc.clone()),
+        bpa.register_raw_service(Service::Ipn(9), svc.clone()),
     )
     .await
     .expect("registration awaited the parked poll — the spawn regressed")

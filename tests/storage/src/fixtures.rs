@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use hardy_bpa::{bundle::Origin, cla::ClaAddress};
+use hardy_bpa::{bundle::Origin, cla::Address};
 use hardy_bpv7::{
     bundle::{Bundle as Bpv7Bundle, FragmentInfo, Id},
     hop_info::HopInfo,
@@ -53,7 +53,7 @@ pub fn ingress_bundle() -> bundle::Bundle {
     let mut metadata = BundleMetadata::ingress(
         "test-cla".into(),
         Some("ipn:1.0".parse().unwrap()),
-        Some(ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap())),
+        Some(Address::Tcp("127.0.0.1:4556".parse().unwrap())),
     );
     metadata.extensions.previous_node = Some("ipn:1.0".parse().unwrap());
     metadata.extensions.age = Some(Duration::from_millis(1234));

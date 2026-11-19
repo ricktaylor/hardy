@@ -2,7 +2,7 @@ use super::*;
 use proto::service::*;
 
 async fn receive(
-    service: &dyn hardy_bpa::services::Service,
+    service: &dyn hardy_bpa::service::raw::Service,
     mut request: ServiceReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
     let expiry = request
@@ -25,7 +25,7 @@ async fn receive(
 }
 
 async fn status_notify(
-    service: &dyn hardy_bpa::services::Service,
+    service: &dyn hardy_bpa::service::raw::Service,
     request: StatusNotifyRequest,
 ) -> Result<(), tonic::Status> {
     let timestamp = request
@@ -40,14 +40,10 @@ async fn status_notify(
             warn!("Unused status kind");
             return Err(tonic::Status::invalid_argument("Unused status"));
         }
-        status_notify_request::StatusKind::Deleted => hardy_bpa::services::StatusNotify::Deleted,
-        status_notify_request::StatusKind::Delivered => {
-            hardy_bpa::services::StatusNotify::Delivered
-        }
-        status_notify_request::StatusKind::Forwarded => {
-            hardy_bpa::services::StatusNotify::Forwarded
-        }
-        status_notify_request::StatusKind::Received => hardy_bpa::services::StatusNotify::Received,
+        status_notify_request::StatusKind::Deleted => hardy_bpa::service::StatusNotify::Deleted,
+        status_notify_request::StatusKind::Delivered => hardy_bpa::service::StatusNotify::Delivered,
+        status_notify_request::StatusKind::Forwarded => hardy_bpa::service::StatusNotify::Forwarded,
+        status_notify_request::StatusKind::Received => hardy_bpa::service::StatusNotify::Received,
     };
 
     let reason = hardy_bpv7::status_report::ReasonCode::try_from(request.reason)
@@ -76,17 +72,17 @@ impl Sink {
     async fn call(
         &self,
         msg: service_to_bpa::Msg,
-    ) -> hardy_bpa::services::Result<bpa_to_service::Msg> {
+    ) -> hardy_bpa::service::Result<bpa_to_service::Msg> {
         match self.proxy.call(msg).await {
-            Ok(None) => Err(hardy_bpa::services::Error::Disconnected),
+            Ok(None) => Err(hardy_bpa::service::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
-            Err(e) => Err(hardy_bpa::services::Error::Internal(e.into())),
+            Err(e) => Err(hardy_bpa::service::Error::Internal(e.into())),
         }
     }
 }
 
 #[async_trait]
-impl hardy_bpa::services::ServiceSink for Sink {
+impl hardy_bpa::service::raw::Sink for Sink {
     // INTERIM BUFFERING: the wire has no streamed Send message yet, so the
     // segment stream is accumulated (bounded by the transport cap) and sent
     // as one unary ServiceSendRequest. This is a deliberate stepping stone
@@ -95,7 +91,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
     async fn send(
         &self,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
+    ) -> hardy_bpa::service::Result<hardy_bpv7::bundle::Id> {
         // The transport cap doubles as the pre-check from
         // `client::application::Sink::send`: an oversized bundle returns a
         // typed error here instead of letting tonic break the gRPC stream,
@@ -104,10 +100,10 @@ impl hardy_bpa::services::ServiceSink for Sink {
             .await
             .map_err(|e| match e {
                 hardy_bpa::stream::ConcatError::Cancelled => {
-                    hardy_bpa::services::Error::StreamCancelled
+                    hardy_bpa::service::Error::StreamCancelled
                 }
                 hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
-                    hardy_bpa::services::Error::PayloadTooLarge {
+                    hardy_bpa::service::Error::PayloadTooLarge {
                         size: size as u64,
                         max: max as u64,
                     }
@@ -119,11 +115,11 @@ impl hardy_bpa::services::ServiceSink for Sink {
         {
             bpa_to_service::Msg::Send(response) => {
                 hardy_bpv7::bundle::Id::from_key(&response.bundle_id)
-                    .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
+                    .map_err(|e| hardy_bpa::service::Error::Internal(e.into()))
             }
             msg => {
                 warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::services::Error::Internal(
+                Err(hardy_bpa::service::Error::Internal(
                     tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
                 ))
             }
@@ -136,7 +132,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
 }
 
 struct Handler {
-    service: Weak<dyn hardy_bpa::services::Service>,
+    service: Weak<dyn hardy_bpa::service::raw::Service>,
 }
 
 #[async_trait]
@@ -188,16 +184,16 @@ impl ProxyHandler for Handler {
 ///
 /// This connects to the BPA's Service gRPC endpoint and establishes a
 /// bidirectional streaming connection for the service lifecycle.
-pub async fn register_endpoint_service(
+pub async fn register_raw_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
-    service: Arc<dyn hardy_bpa::services::Service>,
-) -> hardy_bpa::services::Result<eid::Eid> {
+    service: Arc<dyn hardy_bpa::service::raw::Service>,
+) -> hardy_bpa::service::Result<eid::Eid> {
     let mut svc_client = service_client::ServiceClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
-            hardy_bpa::services::Error::Internal(e.into())
+            hardy_bpa::service::Error::Internal(e.into())
         })?
         .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
         .max_decoding_message_size(crate::MAX_MESSAGE_SIZE);
@@ -211,7 +207,7 @@ pub async fn register_endpoint_service(
         .await
         .map_err(|e| {
             error!("Service Registration failed: {e}");
-            hardy_bpa::services::Error::Internal(e.into())
+            hardy_bpa::service::Error::Internal(e.into())
         })?
         .into_inner();
 
@@ -233,13 +229,13 @@ pub async fn register_endpoint_service(
     .await
     .map_err(|e| {
         error!("Failed to send registration: {e}");
-        hardy_bpa::services::Error::Internal(e.into())
+        hardy_bpa::service::Error::Internal(e.into())
     })? {
-        None => return Err(hardy_bpa::services::Error::Disconnected),
+        None => return Err(hardy_bpa::service::Error::Disconnected),
         Some(bpa_to_service::Msg::Register(response)) => response,
         Some(msg) => {
             error!("Service Registration failed: Unexpected response: {msg:?}");
-            return Err(hardy_bpa::services::Error::Internal(
+            return Err(hardy_bpa::service::Error::Internal(
                 tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
             ));
         }
@@ -250,7 +246,7 @@ pub async fn register_endpoint_service(
         .parse()
         .map_err(|e: hardy_bpv7::eid::Error| {
             warn!("Failed to parse EID in response: {e}");
-            hardy_bpa::services::Error::Internal(e.into())
+            hardy_bpa::service::Error::Internal(e.into())
         })?;
 
     // Now we have got here, we can create a Sink proxy and call on_register()

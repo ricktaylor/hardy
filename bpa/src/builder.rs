@@ -1,5 +1,9 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
+// `eid::Service` is the service number inside an EID, not the service
+// trait registered here; it is aliased to the word the code already uses
+// for it.
+use hardy_bpv7::eid::Service as ServiceId;
 use hardy_eid_patterns::EidPattern;
 
 use crate::{
@@ -11,8 +15,11 @@ use crate::{
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
-    routing::{RibBuilder, RoutingAgent},
-    services::{self, Service, registry::ServiceRegistryBuilder},
+    routing::{Agent, RibBuilder},
+    service::{
+        Service, raw,
+        registry::{Kind, ServiceRegistryBuilder},
+    },
     storage::{
         BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
         store::Store,
@@ -154,10 +161,10 @@ impl BpaBuilder {
         self
     }
 
-    /// Register a CLA to be initialized when the BPA is built.
+    /// Registers a CLA, to be initialized when the BPA is built.
     ///
     /// `init` carries the CLA's set-once declarations
-    /// ([`ClaInit`](crate::cla::ClaInit)), snapshotted at registration;
+    /// ([`ClaInit`]), snapshotted at registration;
     /// its `max_bundle_size` is the CLA's declared receive limit, folded
     /// with the BPA's configured cap into the effective value delivered to
     /// [`Cla::on_register`](crate::cla::Cla).
@@ -174,28 +181,31 @@ impl BpaBuilder {
         self
     }
 
-    /// Register a service to be initialized when the BPA is built.
-    pub fn service(
-        mut self,
-        service: Arc<dyn Service>,
-        service_id: hardy_bpv7::eid::Service,
-    ) -> Self {
+    /// Registers a payload-only service, to be initialized when the BPA
+    /// is built.
+    pub fn service(mut self, service: Arc<dyn Service>, service_id: ServiceId) -> Self {
         self.service_registry_builder
-            .insert(
-                service_id,
-                services::registry::ServiceImpl::LowLevel(service),
-            )
+            .insert(service_id, Kind::Payload(service))
             .expect("Failed to register service");
         self
     }
 
-    /// Register a routing agent to be initialized when the BPA is built.
-    pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn RoutingAgent>) -> Self {
+    /// Registers a whole-bundle service, to be initialized when the BPA
+    /// is built.
+    pub fn raw_service(mut self, service: Arc<dyn raw::Service>, service_id: ServiceId) -> Self {
+        self.service_registry_builder
+            .insert(service_id, Kind::Bundle(service))
+            .expect("Failed to register service");
+        self
+    }
+
+    /// Registers a routing agent, to be initialized when the BPA is built.
+    pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn Agent>) -> Self {
         self.rib_builder.insert(name.into(), agent);
         self
     }
 
-    /// Set the key provider for BPSec operations.
+    /// Sets the key provider for BPSec operations.
     pub fn key_provider(mut self, provider: Arc<dyn KeyProvider>) -> Self {
         self.key_provider = provider;
         self
@@ -242,7 +252,8 @@ impl BpaBuilder {
         self
     }
 
-    /// Consume the builder and construct the BPA with all registered components.
+    /// Consumes the builder and constructs the BPA with every registered
+    /// component.
     pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
         // Freeze the filter packs first: the per-hook chains splice in call
         // order, and each input hook's P = the max peek its registrations
@@ -254,12 +265,12 @@ impl BpaBuilder {
             .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(None)));
 
         let bundle_storage: Arc<dyn BundleStorage> = match self.bundle_storage {
-            Some(raw) if !self.cache_disabled => Arc::new(CachedBundleStorage::new(
-                raw,
+            Some(backend) if !self.cache_disabled => Arc::new(CachedBundleStorage::new(
+                backend,
                 self.lru_capacity,
                 self.max_cached_bundle_size,
             )),
-            Some(raw) => raw,
+            Some(backend) => backend,
             None => Arc::new(BundleMemStorage::new(None, None)),
         };
 

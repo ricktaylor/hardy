@@ -22,20 +22,14 @@ use tracing::{debug, info, trace};
 use tracing::instrument;
 
 use super::{
-    Error, Result, RoutingAgent, TableId,
+    Agent, Error, Result, TableId,
     action::{Action, InternalAction, RouteAction},
     agent::sink::Sink,
     table::{Entry, LookupResult, RouteTable, Trail},
 };
 use crate::{
-    Arc, HashMap, HashSet,
-    bundle::Bundle,
-    cla::{ClaAddressType, registry::Cla},
-    dispatcher::Dispatcher,
-    hash_map::Entry as HashMapEntry,
-    node_ids::NodeIds,
-    services::registry::Service,
-    storage::store::Store,
+    Arc, HashMap, HashSet, bundle::Bundle, dispatcher::Dispatcher, hash_map::Entry as HashMapEntry,
+    node_ids::NodeIds, service::registry::Record, storage::store::Store,
 };
 
 /// The resolved inputs of a RIB lookup — the `{table, key}` pair
@@ -110,7 +104,7 @@ impl RoutingKey {
 #[derive(Debug)]
 pub enum DispatchAction {
     AdminEndpoint,
-    Deliver(Arc<Service>),
+    Deliver(Arc<Record>),
     Forward {
         /// The selected CLA peer.
         peer: u32,
@@ -139,8 +133,7 @@ pub struct Decision {
 pub struct Rib {
     snapshot: ArcSwap<RouteTable>,
     table: Mutex<RouteTable>,
-    address_types: spin::Mutex<HashMap<ClaAddressType, Arc<Cla>>>,
-    agents: spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
+    agents: spin::Mutex<HashMap<String, Arc<dyn Agent>>>,
     node_ids: Arc<NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
     // Random across BPA instances (unpredictable), but consistent within
@@ -162,7 +155,7 @@ pub struct Rib {
 }
 
 pub struct RibBuilder {
-    agents: Vec<(String, Arc<dyn RoutingAgent>)>,
+    agents: Vec<(String, Arc<dyn Agent>)>,
     service_priority: u32,
 }
 
@@ -174,7 +167,7 @@ impl RibBuilder {
         }
     }
 
-    pub fn insert(&mut self, name: String, agent: Arc<dyn RoutingAgent>) {
+    pub fn insert(&mut self, name: String, agent: Arc<dyn Agent>) {
         self.agents.push((name, agent));
     }
 
@@ -200,7 +193,6 @@ impl Rib {
         Self {
             snapshot: ArcSwap::from_pointee(table.clone()),
             table: Mutex::new(table),
-            address_types: Default::default(),
             agents: Default::default(),
             node_ids,
             ecmp_hash_state: RandomState::default(),
@@ -344,7 +336,7 @@ impl Rib {
         !Arc::ptr_eq(&seen.0, &self.snapshot.load_full())
     }
 
-    pub fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
+    pub fn find_service(&self, to: &Eid) -> Option<Arc<Record>> {
         self.snapshot.load().find_service(to)
     }
 
@@ -554,7 +546,7 @@ impl Rib {
         .await
     }
 
-    pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> Result<bool> {
+    pub async fn add_service(&self, eid: Eid, service: Arc<Record>) -> Result<bool> {
         self.add(
             eid.into(),
             Self::SERVICES_NAME.into(),
@@ -564,7 +556,7 @@ impl Rib {
         .await
     }
 
-    pub async fn remove_service(&self, eid: &Eid, service: Arc<Service>) -> bool {
+    pub async fn remove_service(&self, eid: &Eid, service: Arc<Record>) -> bool {
         let pattern: EidPattern = eid.clone().into();
         self.remove(
             &pattern,
@@ -578,7 +570,7 @@ impl Rib {
     pub(crate) async fn register_agent(
         self: &Arc<Self>,
         name: String,
-        agent: Arc<dyn RoutingAgent>,
+        agent: Arc<dyn Agent>,
     ) -> Result<Vec<NodeId>> {
         {
             let mut agents = self.agents.lock();
@@ -594,7 +586,7 @@ impl Rib {
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
         agent
-            .on_register(Box::new(Sink::new(name, self.clone())), &node_ids)
+            .on_register(Box::new(Sink::new(name, Arc::downgrade(self))), &node_ids)
             .await;
 
         Ok(node_ids)
@@ -628,14 +620,6 @@ impl Rib {
             self.remove_by_source(&name).await;
             info!("Unregistered routing agent: {name}");
         }
-    }
-
-    pub fn add_address_type(&self, address_type: ClaAddressType, cla: Arc<Cla>) {
-        self.address_types.lock().insert(address_type, cla);
-    }
-
-    pub fn remove_address_type(&self, address_type: &ClaAddressType) {
-        self.address_types.lock().remove(address_type);
     }
 
     pub(super) fn has_agent(&self, name: &str) -> bool {
@@ -679,8 +663,8 @@ mod tests {
     use super::*;
     use crate::bundle::tests::test_bundle;
     use crate::filter::slots::MetadataDelta;
-    use crate::services::registry::ServiceImpl;
-    use crate::services::tests::NullService;
+    use crate::service::raw::tests::NullService;
+    use crate::service::registry::Kind;
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_store() -> Arc<Store> {
@@ -709,7 +693,7 @@ mod tests {
 
     /// A complete `Service` for route entries: `Service::new` demands the
     /// delivery queue and canonical EID, so the test wires a real channel.
-    fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Service> {
+    fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Record> {
         let eid: Eid = eid.parse().unwrap();
         let (tx, _rx) = store.channel(
             crate::bundle::BundleStatus::DeliverPending {
@@ -717,8 +701,8 @@ mod tests {
             },
             1,
         );
-        Service::new(
-            ServiceImpl::LowLevel(Arc::new(NullService)),
+        Record::new(
+            Kind::Bundle(Arc::new(NullService)),
             EidService::Ipn(42),
             eid,
             tx,

@@ -83,7 +83,7 @@ These are unit tests because they use custom mock servers built from crate-inter
 
 ### Suite 7: Server Proxy Handlers (unit tests in `src/server/routing.rs`)
 
-These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration handshake), SRV-05 (on_close cancels proxy), and SRV-06 (on_unregister drains proxy) were removed — they are covered by Suites 1–4 and Suite 6 lifecycle tests respectively.
+These are unit tests on the `RemoteAgent` struct. SRV-01 (Registration handshake), SRV-05 (on_close cancels proxy), and SRV-06 (on_unregister drains proxy) were removed — they are covered by Suites 1–4 and Suite 6 lifecycle tests respectively.
 
 | Test Function | Test ID | Scope |
 | :--- | :--- | :--- |
@@ -145,7 +145,7 @@ The lowest-covered files are the Application and Service client proxies — thei
 | File | Purpose |
 | :--- | :--- |
 | `common/mod.rs` | MockBpa (BpaRegistration impl), sink wrappers, server helpers, port allocation |
-| `common/sinks.rs` | Mock sink implementations (RoutingSink, CLA Sink, ServiceSink, ApplicationSink) |
+| `common/sinks.rs` | Mock sink implementations (`routing::Sink`, `cla::Sink`, `service::raw::Sink`, `service::Sink`) |
 
 ### Key Bugs Found During Development
 
