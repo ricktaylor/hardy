@@ -38,6 +38,9 @@ All 16 pass. No failures or skips.
 | `test_migration_detects_missing_historic` | SQL-03 | Renamed version row detected as missing |
 | `test_migration_detects_extra_historic` | SQL-03 | Inserted fake version row detected |
 | `test_migration_detects_altered_historic` | SQL-03 | Corrupted hash detected |
+| `test_migration_applies_the_pending_migration` | SQL-21 | A store one migration behind is upgraded |
+| `test_migration_applies_every_pending_migration` | SQL-21 | A store several migrations behind is upgraded |
+| `test_migration_refuses_a_store_behind_without_upgrade` | SQL-21 | Without upgrade: `UpdateRequired`, store unchanged |
 | `test_configuration_custom_db_dir` | SQL-01 | DB file created at configured path |
 | `test_concurrency_no_sqlite_busy` | SQL-04 | 10 concurrent writers, all succeed |
 | `test_corrupt_data_does_not_panic` | SQL-05 | Corrupt blob: get() errors, confirm_exists() tombstones |
