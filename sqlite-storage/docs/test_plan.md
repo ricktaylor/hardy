@@ -59,6 +59,7 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-18** | **Expiry poll plan** | `storage.rs` | 1. `EXPLAIN QUERY PLAN` the expiry poll's SQL. | A search of `idx_bundles_expiry`, with no table scan and no sort. |
 | **SQL-19** | **Secondary index set** | `storage.rs` | 1. List the indexes on `bundles`. | Exactly the two live-row indexes, both partial. |
 | **SQL-20** | **Batch loses its transaction** | `writer.rs` | 1. Cap the database's size.<br>2. Queue a small write, a write that fills the database, and another small write.<br>3. Release the writer. | All three report the batch's failure with `SQLITE_FULL`; no row is written; the writer's next write succeeds. |
+| **SQL-21** | **Upgrade of an existing store** | `migrate.rs` | 1. Migrate a store with all but the newest migration (and, separately, with only the first).<br>2. Reopen with `upgrade`.<br>3. Reopen a store one behind without `upgrade`. | Every pending migration runs and is recorded, and the newest one's schema change is present; without `upgrade` the store is refused with `UpdateRequired` and left unchanged. |
 
 ## 5. Execution
 
