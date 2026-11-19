@@ -1,7 +1,7 @@
 //! CLA client proxy tests (CLA-CLI-01 through CLA-CLI-06).
 //!
-//! Verify the CLA client correctly maps Rust trait calls to cla.proto
-//! messages via the gRPC proxy.
+//! The CLA client maps its Rust trait calls onto cla.proto messages,
+//! across the gRPC proxy.
 
 mod common;
 
@@ -97,7 +97,6 @@ async fn cla_cli_01_registration() {
         "should receive at least one node ID"
     );
 
-    // Clean up
     cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -122,7 +121,6 @@ async fn cla_cli_02_dispatch_bundle() {
         hardy_bpa::cla::Acceptance::Accepted
     );
 
-    // Clean up
     cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -172,7 +170,6 @@ async fn cla_cli_03_forward_bundle() {
         "MockCla should have received the forward request"
     );
 
-    // Clean up
     cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -198,7 +195,6 @@ async fn cla_cli_04_add_peer() {
 
     assert!(added, "peer should be added");
 
-    // Clean up
     cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -223,7 +219,6 @@ async fn cla_cli_05_remove_peer() {
 
     assert!(removed, "peer should be removed");
 
-    // Clean up
     cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -288,7 +283,6 @@ async fn cla_cli_06_deferred_outcome() {
         "The BPA should have received the outcome"
     );
 
-    // Clean up
     cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -333,7 +327,6 @@ async fn cla_cli_07_declarations_round_trip() {
         "The CLA should receive the terms the BPA settled"
     );
 
-    // Clean up
     cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -363,7 +356,6 @@ async fn cla_cli_08_absent_declarations_round_trip_as_none() {
         "The CLA should see no settled terms"
     );
 
-    // Clean up
     cla.sink.unregister().await;
     server_tasks.shutdown().await;
 }

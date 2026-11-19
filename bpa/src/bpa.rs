@@ -1,13 +1,12 @@
 use hardy_async::{async_trait, sync::spin::Mutex};
-// `eid::Service` is the service number inside an EID, not the service
-// trait registered here; it is aliased to the word the code already uses
-// for it.
+// `eid::Service` is a service number, not the service trait registered
+// here, so it is aliased to the word the rest of the code uses for it.
 use hardy_bpv7::eid::Service as ServiceId;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-// The CLA, service and routing agent tables are all `Table`; each is
-// aliased to the subsystem it belongs to.
+// The CLA, service and routing agent tables are all named `Table`, so
+// each is aliased to the subsystem it belongs to.
 use crate::{
     Arc,
     builder::BpaBuilder,
@@ -22,16 +21,8 @@ use crate::{
     storage::store::Store,
 };
 
-/// The core Bundle Processing Agent (RFC 9171).
-///
-/// Holds the store, the RIB, the CLA table, the service table, the
-/// routing agent table and the dispatcher. Construct via [`BpaBuilder`]
-/// (obtained from [`Bpa::builder()`]).
-///
-/// After construction, call [`start()`](Bpa::start) to begin processing and
-/// [`shutdown()`](Bpa::shutdown) for ordered teardown.
-/// The component factories an embedder handed to the [`BpaBuilder`],
-/// each waiting for [`Bpa::start`] to register what it builds.
+/// The component factories an embedder declared on the [`BpaBuilder`],
+/// each held until [`Bpa::start`] registers what it builds.
 #[derive(Default)]
 pub(crate) struct Factories {
     pub clas: Vec<(String, cla::BoxFactory<'static>)>,
@@ -39,6 +30,12 @@ pub(crate) struct Factories {
     pub agents: Vec<(String, routing::BoxFactory<'static>)>,
 }
 
+/// The core Bundle Processing Agent (RFC 9171).
+///
+/// The BPA owns the store, the RIB, the CLA, service and routing agent
+/// tables, and the dispatcher. It is built with a [`BpaBuilder`], from
+/// [`Bpa::builder`]; [`start`](Self::start) brings it up, and
+/// [`shutdown`](Self::shutdown) takes it down in order.
 pub struct Bpa {
     store: Arc<Store>,
     rib: Arc<Rib>,
@@ -46,8 +43,8 @@ pub struct Bpa {
     services: Arc<ServiceTable>,
     agents: Arc<AgentTable>,
     dispatcher: Arc<Dispatcher>,
-    // Emptied by `start`, which hands each factory to the table that
-    // will hold what it builds.
+    // Emptied by `start`, which hands each factory to the table that holds
+    // what it builds.
     factories: Mutex<Factories>,
 }
 
@@ -72,8 +69,7 @@ impl Bpa {
         }
     }
 
-    // The CLA table, for that table's own unit tests: a factory that
-    // runs under the table's lock is otherwise unobservable from here.
+    // The crate's tests have no other way to reach the table.
     #[cfg(test)]
     pub(crate) fn cla_table(&self) -> &Arc<ClaTable> {
         &self.clas
@@ -83,18 +79,19 @@ impl Bpa {
         BpaBuilder::new()
     }
 
-    /// Starts the BPA's background machinery and registers every
-    /// declared component.
+    /// Starts the BPA's background machinery and registers every declared
+    /// component.
     ///
     /// When `recover_storage` is set, storage crash recovery runs to
-    /// completion before anything registers: recovery's checkpoint
+    /// completion before anything registers, since recovery's checkpoint
     /// resets assume a quiescent store.
     ///
-    /// The first declaration the BPA cannot honour ends the start and
-    /// is returned. The components registered before it are running, so
-    /// an embedder that answers a dead transport with anything other
-    /// than exiting takes the BPA down through
-    /// [`shutdown`](Self::shutdown).
+    /// # Errors
+    ///
+    /// Returns the error of the first declared component that fails to
+    /// register. The components registered before it are running, so an
+    /// embedder that carries on rather than exiting takes the BPA down
+    /// with [`shutdown`](Self::shutdown).
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn start(
         &self,
@@ -102,16 +99,15 @@ impl Bpa {
     ) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
         otel_metrics::init();
 
-        // Start the store, awaiting recovery so the registrations that
-        // follow cannot race the consistency check
+        // Await recovery, so that the registrations that follow cannot
+        // race the consistency check.
         self.store
             .start(self.dispatcher.clone(), recover_storage)
             .await;
 
-        // Each declaration takes the door every other component takes:
-        // a declaration settles when a component registers, not how.
-        // Start-up is teardown's mirror, so the routing agents come up
-        // last of the three and go down first.
+        // A declared component registers exactly as one registered while
+        // the BPA runs. Registration mirrors teardown, so the routing
+        // agents come up last and go down first.
         let factories = core::mem::take(&mut *self.factories.lock());
         for (name, factory) in factories.clas {
             self.clas.register(&name, factory).await?;
@@ -123,7 +119,6 @@ impl Bpa {
             self.agents.register(&name, factory).await?;
         }
 
-        // Start the RIB
         self.rib.start(self.dispatcher.clone());
 
         Ok(())
@@ -131,20 +126,11 @@ impl Bpa {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn shutdown(&self) {
-        // Shutdown order is critical for clean termination:
-        //
-        // 1. Routing agents - Remove dynamic routes (prevents new forwarding decisions)
-        // 2. CLAs - Stop external bundle sources (network I/O)
-        // 3. Services - Stop internal bundle sources (services calling sink.send())
-        // 4. Dispatcher - Drain remaining in-flight bundles (all sources now closed)
-        // 5. RIB - No more routing lookups needed
-        // 6. Store - No more data access needed
-        //
-        // Routing agents shut down first so their routes are removed before CLAs
-        // drain. CLAs and Services must shut down BEFORE dispatcher because they
-        // are bundle sources. The dispatcher's processing pool may have tasks
-        // blocked on CLA forwarding or waiting for service responses.
-
+        // Order matters. The routing agents go first, so that their routes
+        // are gone before the CLAs drain. The CLAs and the services are the
+        // bundle sources, so both stop before the dispatcher, whose pool
+        // may hold tasks blocked on a CLA forward or a service delivery.
+        // The RIB and the store are last, with nothing left to read them.
         self.agents.shutdown().await;
         self.clas.shutdown().await;
         self.services.shutdown().await;
@@ -223,8 +209,8 @@ mod tests {
         stream::{Receiver, Segment},
     };
 
-    /// Fails every `forward` call synchronously, without pulling, recording
-    /// the bundle each attempt was for.
+    // Fails every `forward` call synchronously, without pulling, and
+    // records the bundle each attempt was for.
     struct FailingCla {
         sink: Arc<dyn cla::Sink>,
         attempts_tx: flume::Sender<Id>,
@@ -256,7 +242,7 @@ mod tests {
         }
     }
 
-    /// Originates bundles; never has any delivered.
+    // Originates bundles, and never has one delivered.
     struct SendOnlyService {
         sink: Arc<dyn service::Sink>,
     }
@@ -291,10 +277,10 @@ mod tests {
         }
     }
 
-    /// A synchronous per-transfer failure parks only that bundle, with no
-    /// inline retry: a deterministic failure must not spin dispatch →
-    /// forward → fail, so exactly one attempt occurs until the next routing
-    /// or link event.
+    // A synchronous per-transfer failure parks that bundle and nothing
+    // else, with no inline retry: a deterministic failure must not spin
+    // dispatch, forward, fail, so exactly one attempt occurs until the next
+    // routing or link event.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_forward_does_not_retry_inline() {
         let bpa = Bpa::builder().build();
@@ -321,9 +307,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Each registration above is a routing change that wakes the Waiting
-        // poller; a poll still scanning when the failed bundle parks would
-        // re-attempt it for a change that predates it. Let them finish.
+        // Each registration above is a routing change that wakes the
+        // Waiting poller, and a poll still scanning when the failed bundle
+        // parks would re-attempt it for a change that predates it. Let the
+        // polls finish.
         bpa.rib.poll_waiting_idle().await;
 
         let sent = service

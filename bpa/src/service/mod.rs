@@ -1,8 +1,7 @@
 use core::fmt::{self, Display, Formatter};
 
-// `eid::Service` is the service number inside an EID, not the trait of the
-// same name this module defines; it is aliased to the word the code
-// already uses for it.
+// `eid::Service` is a service number, not the service trait defined here,
+// so it is aliased to the word the rest of the code uses for it.
 use hardy_bpv7::{
     bundle::Id,
     eid::{Eid, Service as ServiceId},
@@ -27,10 +26,10 @@ pub use crate::stream::Segment;
 pub use factory::{BoxFactory, Context, Factory, factory_fn};
 pub use sink::{SendOptions, Sink};
 
-/// A specialized `Result` type for service operations.
+/// A `Result` whose error type is this module's [`enum@Error`].
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// Errors that can occur during service registration and bundle sending.
+/// An error raised by service registration or by sending a bundle.
 #[derive(Debug, Error)]
 pub enum Error {
     /// The requested service id is already registered by another service.
@@ -59,35 +58,33 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
-    /// The payload exceeds a size limit; `max` is the limit exceeded:
+    /// The payload exceeds a size limit, which `max` reports. The limit is
+    /// one of:
     ///
-    /// * the BPA's `max_bundle_size`, against a bundle's declared wire size
-    ///   at either originate door or an ADU send's declared `total_len`,
-    ///   before a payload byte is pulled, or against the bytes a drain has
-    ///   taken;
-    /// * an ADU send's declared `total_len`, when its stream delivers more;
-    /// * a transport-backed sink's (e.g. gRPC) pre-flight limit, instead of
-    ///   letting the oversized message break the underlying stream.
-    ///
-    /// The fields are wire-size-domain `u64`.
+    /// * the BPA's `max_bundle_size`, checked against a declared wire size
+    ///   or `total_len` before any payload byte is pulled, and against the
+    ///   bytes a drain has taken;
+    /// * a send's declared `total_len`, when its stream delivers more;
+    /// * a transport's own limit, such as a gRPC message size, checked
+    ///   before the oversized message breaks the underlying stream.
     #[error("Payload too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: u64, max: u64 },
 
     /// A bundle stream completed with fewer bytes than its declared
-    /// `total_len`. An implementation may size buffers — or frame a
-    /// transfer — from the declared length before pulling the first
-    /// segment, so an under-delivering producer is rejected at the seam.
-    /// The fields are wire-size-domain `u64`.
+    /// `total_len`. An implementation may size buffers, or frame a
+    /// transfer, from that length before pulling the first segment, so a
+    /// producer that under-delivers is rejected.
     #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
     PayloadUnderrun { size: u64, expected: u64 },
 
-    /// A stream declared a `total_len` too large to address in memory on
-    /// this target: no buffer can hold it, so the stream is rejected
-    /// before the first segment is pulled.
+    /// A stream declared a `total_len` that cannot be addressed in memory
+    /// on this target. No buffer can hold it, so the stream is rejected
+    /// before its first segment is pulled.
     #[error("declared length of {total_len} bytes is unaddressable on this target")]
     PayloadUnaddressable { total_len: u64 },
 
-    /// The node ID configuration doesn't support the requested service scheme.
+    /// The node id configuration does not support the requested service
+    /// scheme.
     #[error(transparent)]
     NodeId(#[from] crate::node_ids::Error),
 
@@ -95,9 +92,9 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
-    /// The bundle is a fragment. Fragmentation is a forwarding-time action
-    /// (RFC 9171 §5.8) — a source never emits fragments — so the raw
-    /// originate door rejects a service-built fragment outright.
+    /// The bundle is a fragment. A source never emits fragments, since
+    /// fragmentation is a forwarding-time action (RFC 9171 Section 5.8), so
+    /// a service-built fragment is rejected.
     #[error("Cannot originate a bundle fragment")]
     FragmentedBundle,
 
@@ -106,10 +103,10 @@ pub enum Error {
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
-    /// The bundle was dropped before it was stored — by an Originate filter,
-    /// an origination gate check (an expired lifetime, an exhausted hop
-    /// limit, or a failed RFC 9171 validity check), or an explicit Drop
-    /// route — with an optional reason code.
+    /// The bundle was dropped before it was stored, with an optional reason
+    /// code. The drop comes from an Originate filter, from an origination
+    /// check such as an expired lifetime, an exhausted hop limit or a
+    /// failed RFC 9171 validity check, or from an explicit Drop route.
     #[error("Bundle dropped{}", DroppedReason(.0))]
     Dropped(Option<ReasonCode>),
 
@@ -121,13 +118,12 @@ pub enum Error {
     #[error(transparent)]
     InvalidBundle(#[from] hardy_bpv7::Error),
 
-    /// An internal error from an underlying subsystem.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
 
-// The `Dropped` message's tail: the reason code when the drop gave one,
-// nothing otherwise.
+// Formats the tail of the `Dropped` message: the reason code if the drop
+// carried one, and nothing otherwise.
 struct DroppedReason<'a>(&'a Option<ReasonCode>);
 
 impl Display for DroppedReason<'_> {
@@ -139,9 +135,10 @@ impl Display for DroppedReason<'_> {
     }
 }
 
-/// The kind of bundle status event being reported to a service.
+/// The kind of bundle status event reported to a service.
 ///
-/// These correspond to the four status assertions defined in RFC 9171 Section 6.1.1.
+/// The variants are the four status assertions of RFC 9171 Section
+/// 6.1.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusNotify {
     /// The bundle was received by the reporting node.
@@ -173,75 +170,80 @@ impl From<BufferError> for Error {
 
 /// A service that works with bundle payloads alone.
 ///
-/// The BPA hands a delivered bundle's payload to the service and wraps
-/// sent data in a bundle of its own, so bundle structure never surfaces
-/// here. This is the contract most services want; one that must see or
-/// build the bundle itself implements [`raw::Service`].
+/// The BPA passes a delivered bundle's payload to the service and wraps
+/// sent data in a bundle of its own, so bundle structure never appears
+/// here. This is the contract most services want; a service that must
+/// read or build the bundle itself implements [`raw::Service`].
 ///
 /// The BPA builds the service from a [`Factory`], owns it, and drives its
 /// lifecycle: [`register`](Self::register) brings it up,
-/// [`deliver`](Self::deliver) hands it bundles addressed to its endpoint,
-/// and [`unregister`](Self::unregister) takes it down again.
-/// Traffic in the other direction goes through the [`Sink`] the
-/// [`Context`] carries, which the service keeps for as long as it is
-/// registered.
+/// [`deliver`](Self::deliver) passes it bundles addressed to its endpoint,
+/// and [`unregister`](Self::unregister) takes it down again. Sent payloads
+/// travel the other way, through the [`Sink`] in the [`Context`] the
+/// service was built from.
 #[async_trait]
 pub trait Service: Send + Sync {
-    /// Brings the service up: spawns tasks, opens the resources it serves
-    /// from.
+    /// Brings the service up, spawning tasks and opening the resources it
+    /// serves from.
     ///
-    /// Called once, as the registration opens: at
-    /// [`Bpa::start`](crate::bpa::Bpa::start) for a declared service,
-    /// after storage recovery, so a delivery never races the
-    /// consistency check, and at the registration call for any other.
-    /// An `Err` means the service cannot run at all: the registration
-    /// is undone, and the error reaches whoever asked for it.
+    /// Called once, when the registration opens. For a service declared on
+    /// the [`BpaBuilder`](crate::builder::BpaBuilder) that is during
+    /// [`Bpa::start`](crate::bpa::Bpa::start), after storage recovery, so a
+    /// delivery never races the consistency check.
     ///
-    /// The default implementation does nothing, for a service that is
-    /// live from the moment it is built.
+    /// The default implementation does nothing, which suits a service that
+    /// is live as soon as it is built.
+    ///
+    /// # Errors
+    ///
+    /// An error means the service cannot run at all. The registration is
+    /// undone and the error is returned to the caller that asked for it.
     async fn register(&self) -> Result<()> {
         Ok(())
     }
 
-    /// Takes the service down: stops background tasks, releases
+    /// Takes the service down, stopping background tasks and releasing
     /// resources.
     ///
     /// Called once, when the service unregisters or the BPA shuts down.
-    /// The sink answers [`Error::Disconnected`] to everything by then, so
-    /// nothing can be sent from here; an `Err` is logged and teardown
-    /// continues regardless.
+    /// The sink returns [`Error::Disconnected`] from every method by then,
+    /// so nothing can be sent from here.
     ///
     /// The default implementation does nothing.
+    ///
+    /// # Errors
+    ///
+    /// An error is logged, and the teardown continues regardless.
     async fn unregister(&self) -> Result<()> {
         Ok(())
     }
 
-    /// Delivers a bundle payload to this service as a stream of segments.
+    /// Delivers a bundle payload to this service, reading it from `stream`
+    /// as a sequence of segments.
     ///
-    /// The implementation pulls [`Segment::Next`] items from `stream`
-    /// until [`Segment::Final`] (which may carry empty bytes) completes
-    /// the delivery. The source endpoint of the payload is
-    /// `bundle_id.source`.
+    /// The implementation pulls [`Segment::Next`] items from `stream` until
+    /// a [`Segment::Final`], which may itself carry no bytes, completes the
+    /// delivery. An implementation that needs the whole payload in memory
+    /// reads it with [`buffer_stream`](crate::stream::buffer_stream), whose
+    /// errors convert into this module's [`enum@Error`].
     ///
-    /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
-    /// before `Final` means the producer aborted the delivery: the
-    /// implementation must not act on the partial payload and must not
-    /// return `Ok`. Returning `Err` parks the bundle as
-    /// `WaitingForService`; a subsequent registration on the same EID
-    /// re-delivers it.
+    /// `bundle_id.source` is the endpoint the payload came from.
     ///
-    /// `ack_requested` carries the source's request for an
-    /// application-level acknowledgement (RFC 9171 Section 4.2.3); a
-    /// service that honours it answers through its [`Sink`].
+    /// `ack_requested` is the source's request for an application-level
+    /// acknowledgement (RFC 9171 Section 4.2.3). A service that honours it
+    /// replies through its [`Sink`].
     ///
-    /// `total_len` is the exact number of payload bytes the stream will
-    /// deliver — the sum of all segment payload lengths — carried as `u64`
-    /// so it remains valid on 32-bit targets. An implementation may size
-    /// buffers from it before pulling the first segment.
+    /// `total_len` is the exact number of payload bytes `stream` delivers.
+    /// An implementation may size buffers from it before pulling the first
+    /// segment.
     ///
-    /// An implementation that needs the whole payload in memory buffers the
-    /// stream with [`buffer_stream`](crate::stream::buffer_stream), whose
-    /// errors convert into this module's [`enum@Error`] via `?`.
+    /// # Errors
+    ///
+    /// A pull that returns `Err(`[`RecvError`](crate::stream::RecvError)`)`
+    /// before the final segment means the producer aborted the delivery.
+    /// The implementation must then neither act on the partial payload nor
+    /// return `Ok`. An error parks the bundle as `WaitingForService`, and a
+    /// later registration on the same EID delivers it again.
     async fn deliver(
         &self,
         bundle_id: &Id,
@@ -251,7 +253,8 @@ pub trait Service: Send + Sync {
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<()>;
 
-    /// Reports a status report received for a bundle this service sent.
+    /// Passes on a status report received for a bundle this service
+    /// sent.
     async fn report_status(
         &self,
         bundle_id: &Id,
@@ -262,23 +265,22 @@ pub trait Service: Send + Sync {
     );
 }
 
-/// Somewhere a service can be registered: a local BPA, or a proxy
-/// standing in for a remote one.
+/// Something a service can be registered with: a local BPA, or a proxy
+/// for a remote one.
 ///
-/// This is the dyn-compatible half of the door, taking an erased
-/// [`BoxFactory`]. Callers use [`RegistrarExt`] instead, which keeps the
-/// concrete component type and hands it back.
+/// This is the dyn-compatible trait, taking an erased [`BoxFactory`].
+/// Callers use [`RegistrarExt`], which preserves the concrete component
+/// type.
 ///
-/// `id` names the endpoint's service number, and `None` asks the BPA to
-/// allocate one. The key comes first because the embedder owns the
-/// namespace: two instances of the same service crate are told apart
-/// here, without the crate's cooperation.
+/// `id` is the endpoint's service number, and `None` asks the BPA to
+/// allocate one. The embedder owns that namespace, so two instances of the
+/// same service crate are distinguished here rather than by the crate.
 ///
-/// An `Ok` return means the factory was built and the service started;
-/// the registrar may not report success without having done both.
+/// An implementation returns `Ok` only once it has both built the factory
+/// and started the service.
 #[async_trait]
 pub trait Registrar: Send + Sync {
-    /// Builds the payload-only service `factory` makes, registers it at
+    /// Builds the payload-only service from `factory`, registers it at
     /// `id`, and starts it.
     async fn register_service_boxed(
         &self,
@@ -286,7 +288,7 @@ pub trait Registrar: Send + Sync {
         factory: BoxFactory<'_>,
     ) -> Result<()>;
 
-    /// Builds the whole-bundle service `factory` makes, registers it at
+    /// Builds the whole-bundle service from `factory`, registers it at
     /// `id`, and starts it.
     async fn register_raw_service_boxed(
         &self,
@@ -295,27 +297,25 @@ pub trait Registrar: Send + Sync {
     ) -> Result<()>;
 }
 
-/// The typed [`Registrar`] door.
+/// The typed counterpart of [`Registrar`], implemented for every
+/// registrar.
 #[async_trait]
 pub trait RegistrarExt: Registrar {
-    /// Builds the payload-only service `factory` makes, registers it at
-    /// `id`, starts it, and hands back the component the registrar now
-    /// owns.
+    /// Builds the payload-only service from `factory`, registers it at
+    /// `id`, starts it, and returns the component.
     ///
-    /// The returned handle is for the embedder's own use: reading the
-    /// service's endpoint, driving it, reading its statistics. Holding it
-    /// does not keep the service registered, and dropping it does not
-    /// unregister it: the registrar owns the service until something
-    /// unregisters it.
+    /// The returned handle is for the embedder's own use, such as reading
+    /// the service's endpoint or driving it. The registrar owns the service
+    /// until it is unregistered, so holding the handle does not keep the
+    /// service registered, and dropping it does not unregister it.
     async fn register_service<F: Factory>(
         &self,
         id: Option<ServiceId>,
         factory: F,
     ) -> Result<Arc<F::Component>>;
 
-    /// Builds the whole-bundle service `factory` makes, registers it at
-    /// `id`, starts it, and hands back the component the registrar now
-    /// owns.
+    /// Builds the whole-bundle service from `factory`, registers it at
+    /// `id`, starts it, and returns the component.
     async fn register_raw_service<F: raw::Factory>(
         &self,
         id: Option<ServiceId>,
@@ -334,8 +334,8 @@ impl<T: Registrar + ?Sized> RegistrarExt for T {
         self.register_service_boxed(id, BoxFactory::capturing(factory, &mut component))
             .await?;
 
-        // `Registrar`'s contract: an `Ok` return means the factory was
-        // built, and building it fills the slot.
+        // `Registrar` returns `Ok` only after building the factory, and
+        // building it fills the slot.
         Ok(component.expect("Registrar reported success without building the factory"))
     }
 

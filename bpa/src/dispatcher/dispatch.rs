@@ -3,11 +3,12 @@ use futures::{FutureExt, join, select_biased};
 use super::*;
 
 impl Dispatcher {
-    /// Queue a bundle for dispatch processing.
-    /// The caller must have claimed the bundle (`Dispatching`), or be
-    /// re-queueing one recovered still queued (`DispatchPending`); the send's
-    /// conditional swap moves it to `DispatchPending`, the queue's commit
-    /// point, until the consumer claims it back.
+    /// Queues a bundle for dispatch processing.
+    ///
+    /// The caller must have claimed the bundle, at `Dispatching`, or be
+    /// re-queueing one recovered still queued, at `DispatchPending`. The
+    /// send's conditional swap moves it to `DispatchPending`, the queue's
+    /// commit point, until the consumer claims it back.
     pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) {
         debug_assert!(matches!(
             bundle.status,
@@ -19,7 +20,8 @@ impl Dispatcher {
         }
     }
 
-    /// Consumer task for the dispatch queue
+    /// Consumes the dispatch queue, claiming each bundle and processing it
+    /// on the pool.
     pub(super) async fn run_dispatch_queue(
         self: Arc<Self>,
         dispatch_rx: hardy_async::closeable::Receiver<bundle::Bundle>,
@@ -28,12 +30,13 @@ impl Dispatcher {
             let dispatcher = self.clone();
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
                 let mut bundle = bundle;
-                // Claim the bundle out of DispatchPending: the channel is
-                // at-least-once (its storage poller can push a copy already
-                // snapshotted before this claim), so a copy that loses the
-                // swap is a duplicate and is dropped here. The claim runs
-                // inside the pooled task so claims for successive bundles
-                // overlap — the pool permit is the consumer's only await.
+                // Claim the bundle out of `DispatchPending`. The channel
+                // delivers at least once, its storage poller being free to
+                // push a copy snapshotted before this claim, so a copy that
+                // loses the swap is a duplicate and is dropped here. The
+                // claim runs inside the pooled task so that claims for
+                // successive bundles overlap, the pool permit being the
+                // consumer's only await.
                 if !dispatcher
                     .store
                     .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
@@ -51,11 +54,12 @@ impl Dispatcher {
         debug!("Dispatch queue consumer exiting");
     }
 
-    /// Routing decision hub: determines bundle disposition based on RIB lookup.
+    /// Looks the bundle up in the RIB and executes the decision.
     ///
-    /// Bundle data is loaded lazily — only the `AdminEndpoint` and `Deliver`
-    /// paths need it immediately. `Forward` defers loading to `forward_bundle`
-    /// (after dequeue from the peer's backpressure channel).
+    /// Bundle data is loaded lazily, only the `AdminEndpoint` and `Deliver`
+    /// paths needing it at once. `Forward` defers the load to
+    /// `forward_bundle`, past the dequeue from the peer's backpressure
+    /// channel.
     ///
     /// # Route Results
     ///
@@ -71,32 +75,34 @@ impl Dispatcher {
     /// | `None` (local lookup EID, default table) | Wait for a service | `Dispatching` → `WaitingForService` |
     /// | `None` (otherwise) | Wait for route | `Dispatching` → `Waiting` |
     ///
-    /// The lookup EID is the bundle's route key, else its destination; a
-    /// table other than the default waits for a route whatever the EID.
+    /// The lookup EID is the bundle's route key, or its destination where
+    /// there is none, and a table other than the default waits for a route
+    /// whatever the EID.
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn process_bundle(&self, bundle: bundle::Bundle, clas: &Table) {
-        // The decision carries the table it was made against: the parks
-        // re-check it to close the park-vs-poll window (see park_bundle). A
-        // Forward result names the peer, whose egress queue carries the
-        // adjacency.
+        // The decision carries the table it was made against, which the
+        // parks re-check to close the window against a poll (see
+        // `park_bundle`). A `Forward` result names the peer, whose egress
+        // queue carries the adjacency.
         let decision = self.rib.decide(&bundle);
         self.execute_dispatch_action(bundle, decision, clas).await
     }
 
-    // Execute an input door's routing decision of record, after the
-    // metadata insert, on the door's task. The decision was made at the
-    // pre-drain gate, so it is made again if the table changed during the
-    // drain: a route withdrawn meanwhile must not carry the bundle. That
-    // narrows the window to the one dispatch always has, from here to the
-    // hand-off, without closing it. The arms whose cost scales with
-    // embedder callbacks or the payload — the admin endpoint, and a
-    // fragment's reassembly, which may complete the ADU — go through the
-    // dispatch queue to the processing pool, so the door's caller (a CLA
-    // session awaiting its acknowledgement) waits on nothing heavier than a
-    // status swap and a queue push. The queue send never awaits a pool
-    // permit, so this is safe from pool tasks too.
+    // Executes an arrival's routing decision of record, after the metadata
+    // insert, on the receiving task. The decision was made at the pre-drain
+    // gate, so it is made again if the table changed during the drain: a
+    // route withdrawn meanwhile must not carry the bundle. That narrows the
+    // window to the one dispatch always has, from here to the hand-off,
+    // without closing it.
+    //
+    // The arms whose cost scales with embedder callbacks or the payload, the
+    // admin endpoint and a fragment's reassembly, which may complete the
+    // ADU, go through the dispatch queue to the processing pool, so the
+    // caller, a CLA session awaiting its acknowledgement, waits on nothing
+    // heavier than a status swap and a queue push. The queue send never
+    // awaits a pool permit, so a pool task may call this too.
     pub(super) async fn execute_admitted(
         &self,
         bundle: bundle::Bundle,
@@ -119,13 +125,13 @@ impl Dispatcher {
         }
     }
 
-    // Execute a routing decision. Shared by `process_bundle` (which routes
-    // at dispatch: the re-dispatch, poll, sweep, and recovery paths) and
-    // `execute_admitted` (the input doors' decision of record). A decision
+    // Executes a routing decision, for `process_bundle`, which routes at
+    // dispatch on the re-dispatch, poll, sweep and recovery paths, and for
+    // `execute_admitted`, with an arrival's decision of record. A decision
     // that proves stale at the hand-off lands in a failure arm whose park
-    // re-checks the table it was made against and re-enters dispatch; one
-    // the hand-off accepts stands, so callers keep the window between the
-    // decision and this call short.
+    // re-checks the table it was made against and re-enters dispatch, and
+    // one the hand-off accepts stands, so callers keep the window between
+    // the decision and this call short.
     pub(super) async fn execute_dispatch_action(
         &self,
         bundle: bundle::Bundle,
@@ -134,11 +140,11 @@ impl Dispatcher {
     ) {
         let routing::Decision { action, seen } = decision;
 
-        // Expiry checkpoint: the reaper defers the hand-off statuses
-        // (DeliveryAckPending/ForwardAckPending), so an expired bundle can
-        // re-enter dispatch through a transfer outcome, a sweep, or a poll —
-        // and the ingress drain takes real time — so resolve expiry here
-        // rather than routing the bundle onward.
+        // The reaper defers the hand-off statuses, `DeliveryAckPending` and
+        // `ForwardAckPending`, so an expired bundle can re-enter dispatch
+        // through a transfer outcome, a sweep or a poll, and the ingress
+        // drain takes real time. Expiry is resolved here rather than routing
+        // the bundle onward.
         if bundle.has_expired() {
             return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
@@ -157,18 +163,15 @@ impl Dispatcher {
                 self.administrative_bundle(bundle).await
             }
             Some(routing::DispatchAction::Deliver(service)) => {
-                // Check for reassembly
                 if bundle.id().fragment_info.is_some() {
-                    // Reassemble the bundle before delivery
                     self.reassemble(bundle).await
                 } else {
-                    // Queue to the service's delivery channel
                     if let Err(bundle) = service.deliver(bundle).await {
-                        // The service unregistered between the RIB lookup and
-                        // the send: park for the next registration, under
-                        // the canonical registration EID stored at
-                        // construction — the exact key the re-registration
-                        // poll matches.
+                        // The service unregistered between the RIB lookup
+                        // and the send, so the bundle parks for the next
+                        // registration, under the canonical registration EID
+                        // stored at construction, the key the
+                        // re-registration poll matches.
                         debug!("Service delivery queue closed, parking bundle");
                         self.park_bundle(
                             bundle,
@@ -185,20 +188,22 @@ impl Dispatcher {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
                 if let Err(bundle) = clas.forward(peer, next_hop, bundle).await {
                     // The peer vanished between the RIB lookup and the
-                    // forward: return the bundle to Waiting so the next route
-                    // event re-dispatches it, rather than leaving it stranded
-                    // in Dispatching/ForwardPending until lifetime expiry.
+                    // forward, so the bundle returns to `Waiting` and the
+                    // next routing event re-dispatches it, rather than
+                    // stranding in `Dispatching` or `ForwardPending` until
+                    // lifetime expiry.
                     debug!("CLA forward failed, returning bundle to Waiting");
                     self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
                         .await
                 }
             }
             None => {
-                // No opportunity available — wait for one, under the inputs
-                // the lookup walked. A local lookup EID (the key, else the
-                // destination) waits for its service to register; anything
-                // else waits for a route, including a table other than the
-                // default, which no registration can satisfy.
+                // No opportunity is available, so the bundle waits for one
+                // under the inputs the lookup walked. A local lookup EID,
+                // the key or else the destination, waits for its service to
+                // register, and anything else waits for a route, a table
+                // other than the default included, which no registration can
+                // satisfy.
                 debug!("Storing bundle until a forwarding opportunity arises");
 
                 let key = bundle.metadata.routing_key();
@@ -222,13 +227,13 @@ impl Dispatcher {
 
         let dispatcher = self.clone();
 
-        // Run producer and consumer concurrently
         join!(
-            // Producer: feed bundles into the channel until exhausted or
-            // cancelled. Racing the poll against cancel (then dropping the
-            // stream) stops the producer blocking forever on a full channel
-            // after the consumer breaks on cancel — join! keeps the receiver
-            // alive, so without this the two sides deadlock.
+            // The producer feeds bundles into the channel until it is
+            // exhausted or cancelled. Racing the poll against the token and
+            // then dropping the stream stops the producer blocking forever
+            // on a full channel after the consumer breaks on cancellation:
+            // `join!` keeps the receiver alive, so without this the two
+            // sides deadlock.
             async {
                 select_biased! {
                     _ = self.store.poll_waiting(&stream).fuse() => {}
@@ -236,7 +241,7 @@ impl Dispatcher {
                 }
                 drop(stream);
             },
-            // Consumer: drain channel into shared processing pool
+            // The consumer drains the channel into the processing pool.
             async {
                 loop {
                     select_biased! {

@@ -365,8 +365,8 @@ async fn transmit(
 
         // One dial at a time per peer: concurrent forwards coalesce here
         // rather than racing parallel dials, and the pool is re-checked
-        // under the lock — the previous holder's session may already be
-        // registered
+        // under the lock, since the previous holder's session may already
+        // be registered.
         let dial_lock = ctx.registry.dial_lock(remote_addr);
         let _dialing = dial_lock.lock().await;
         bundle = match ctx

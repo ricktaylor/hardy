@@ -244,10 +244,8 @@ pub async fn register_service(
         .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
         .max_decoding_message_size(crate::MAX_MESSAGE_SIZE);
 
-    // Create a channel for sending messages to the service.
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
 
-    // Call the service's streaming method
     let mut channel_receiver = app_client
         .register(tokio_stream::wrappers::ReceiverStream::new(rx))
         .await
@@ -257,7 +255,6 @@ pub async fn register_service(
         })?
         .into_inner();
 
-    // Send the initial registration message.
     let response = match RpcProxy::send(
         &mut channel_sender,
         &mut channel_receiver,

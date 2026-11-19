@@ -140,12 +140,11 @@ impl hardy_bpa::cla::Cla for Cla {
         Ok(())
     }
 
-    // INTERIM BUFFERING: the wire protocol has no segmented bundle messages
-    // yet — transfers travel as one unary ForwardBundleRequest — so the
-    // stream is assembled in memory via `stream::buffer_stream` before
-    // marshalling. This is a deliberate stepping stone toward the full
-    // streaming pipeline (chunked wire messages are the blocker); see
-    // bpa/docs/streaming_pipeline_design.md.
+    // The wire carries no segmented bundle messages, so a transfer travels
+    // as one unary ForwardBundleRequest and the stream is assembled in
+    // memory with `stream::buffer_stream` before marshalling. See
+    // bpa/docs/streaming_pipeline_design.md for the chunked form this is a
+    // step towards.
     async fn forward(
         &self,
         lane: Option<u32>,
@@ -235,8 +234,9 @@ impl cla_server::Cla for Service {
         let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let channel_receiver = request.into_inner();
 
-        // Spawn the registration handshake and proxy — we must return the
-        // response stream immediately so the client can start sending messages.
+        // The handshake and the proxy run on their own task: the response
+        // stream has to be returned at once, so the client can start
+        // sending.
         let bpa = self.bpa.clone();
         hardy_async::spawn!(self.session_tasks, "cla_session", async move {
             run_cla_session(channel_sender, channel_receiver, bpa).await;
@@ -350,7 +350,6 @@ async fn register(
     .map_err(|e| tonic::Status::from_error(e.into()))
 }
 
-/// Create a new CLA gRPC service.
 pub fn new_cla_service(
     bpa: Arc<dyn hardy_bpa::cla::Registrar>,
     tasks: &hardy_async::TaskPool,

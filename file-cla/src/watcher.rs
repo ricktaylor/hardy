@@ -133,8 +133,8 @@ async fn watcher_task(outbox: String, path_tx: Sender<PathBuf>, cancel_token: Ca
 // rename-into catches the atomic write-then-rename spool idiom and an
 // operator moving a file back from `refused/` to retry it. A rename the
 // debouncer matched within the directory (the source outlived the debounce
-// window) arrives as a single `Both` event whose paths are `[from, to]` —
-// only the destination still exists to be offered.
+// window) arrives as a single `Both` event whose paths are `[from, to]`, of
+// which only the destination still exists to be offered.
 fn offered_paths(mut event: Event) -> Vec<PathBuf> {
     match event.kind {
         EventKind::Create(CreateKind::File)
@@ -146,11 +146,10 @@ fn offered_paths(mut event: Event) -> Vec<PathBuf> {
     }
 }
 
-// A refusal is deterministic — re-offering the same bundle would refuse
-// forever — so the file moves to the `refused/` sibling directory: the
-// non-recursive sweep and watcher never re-offer it, and the operator can
-// inspect it or `mv` it back into the outbox to retry. On any failure the
-// file is left in place.
+// Moves a refused file to the `refused/` sibling directory, which neither
+// the non-recursive sweep nor the watcher scans, so the same refusal is not
+// repeated on every restart. The operator can inspect the file or `mv` it
+// back into the outbox to retry. On any failure the file is left in place.
 async fn quarantine(path: &Path) {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         warn!(
@@ -193,10 +192,9 @@ async fn forwarder_task(
             res = rx.recv_async() => match res {
                 Err(_) => break,
                 Ok(path) => {
-                    // Pre-check against the BPA's dispatch size cap: an
-                    // over-cap file would be rejected deterministically, so
-                    // don't even read it. Skipped (not deleted) — the
-                    // operator's file, the operator's cleanup.
+                    // An over-cap file is rejected deterministically, so it
+                    // is never read. It is skipped rather than deleted: the
+                    // operator owns the file.
                     if let Some(cap) = max_bundle_size
                         && let Ok(meta) = fs::metadata(&path).await
                         && meta.len() > cap.get()
@@ -205,17 +203,17 @@ async fn forwarder_task(
                         continue;
                     }
 
-                    // INTERIM BUFFERING: the whole file is read into memory and
-                    // dispatched as a one-segment stream (`Bytes` is a `stream::Receiver`). This
-                    // is a deliberate stepping stone toward the full streaming
-                    // pipeline (a native implementation would stream the file in
-                    // chunks); see bpa/docs/streaming_pipeline_design.md.
+                    // The whole file is read into memory and dispatched as a
+                    // one-segment stream, since `Bytes` is a
+                    // `stream::Receiver`. See
+                    // bpa/docs/streaming_pipeline_design.md for the chunked
+                    // form this is a step towards.
                     if let Ok(buffer) = fs::read(&path).await.inspect_err(|e| error!("Failed to read from '{}': {e}", path.display())) {
                         // The file is consumed only on acceptance. A refusal
                         // is deterministic and quarantined to `refused/`; a
                         // dispatch failure is transient, so the file stays
                         // for the next startup sweep to re-offer.
-                        // TODO:  We could implement a "Sent Items" folder instead of deleting, but not sure...
+                        // TODO: a "Sent Items" folder could replace the delete.
                         match sink.dispatch(None, None, &mut Bytes::from(buffer)).await {
                             Ok(cla::Acceptance::Accepted) => {
                                 debug!("Dispatched '{}'", path.display());
@@ -226,7 +224,7 @@ async fn forwarder_task(
                             Ok(cla::Acceptance::Refused) => {
                                 quarantine(&path).await;
                             }
-                            Err(e) => warn!("Failed to dispatch bundle '{}': {e}; file left in place — the startup sweep re-offers it after restart", path.display()),
+                            Err(e) => warn!("Failed to dispatch bundle '{}': {e}; file left in place for the startup sweep to re-offer after restart", path.display()),
                         }
                     }
                 }
@@ -296,9 +294,11 @@ mod tests {
         }
     }
 
-    /// Signals each dispatch through a channel — the forwarder loop is
-    /// sequential, so a received signal proves every earlier-queued path
-    /// was already fully handled — and answers with a configured verdict.
+    /// Answers every dispatch with a configured verdict and signals it
+    /// through a channel.
+    ///
+    /// The forwarder loop is sequential, so a received signal proves every
+    /// earlier-queued path was already fully handled.
     struct MockSink {
         verdict: Acceptance,
         dispatched: flume::Sender<()>,
@@ -340,11 +340,12 @@ mod tests {
         }
     }
 
-    /// An over-cap outbox file is skipped unread — never dispatched, never
-    /// deleted — while a later under-cap file dispatches. The dispatch
-    /// channel is FIFO and the forwarder sequential, so the single received
-    /// signal is the under-cap file's: an over-cap dispatch would have
-    /// queued a signal ahead of it.
+    /// An over-cap outbox file is neither dispatched nor deleted, while a
+    /// later under-cap file dispatches.
+    ///
+    /// The dispatch channel is FIFO and the forwarder sequential, so the
+    /// single received signal is the under-cap file's: an over-cap dispatch
+    /// would have queued a signal ahead of it.
     #[tokio::test]
     async fn over_cap_file_is_skipped_unread_and_preserved() {
         let dir = std::env::temp_dir().join(format!("hardy-file-cla-skip-{}", std::process::id()));
@@ -391,8 +392,8 @@ mod tests {
         fs::remove_dir_all(&dir).await.unwrap();
     }
 
-    // A file already in the outbox when the watcher starts is offered by
-    // the startup sweep — previously nothing ever offered it.
+    // The startup sweep offers a file already in the outbox when the
+    // watcher starts.
     #[tokio::test]
     async fn startup_sweep_offers_preexisting_files() {
         let dir = tempfile::tempdir().unwrap();

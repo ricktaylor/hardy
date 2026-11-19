@@ -104,10 +104,10 @@ impl ProxyHandler for Handler {
     }
 }
 
-/// Register a routing agent with the BPA via gRPC.
+/// Registers a routing agent with the BPA over gRPC.
 ///
-/// This connects to the BPA's RoutingAgent gRPC endpoint and establishes
-/// a bidirectional streaming connection for the agent lifecycle.
+/// The bidirectional stream to the BPA's RoutingAgent endpoint stays open
+/// for the agent's lifetime, and closing it unregisters the agent.
 pub async fn register_routing_agent(
     grpc_addr: String,
     name: &str,
@@ -133,7 +133,6 @@ pub async fn register_routing_agent(
         })?
         .into_inner();
 
-    // Send the initial registration message.
     let response = match RpcProxy::send(
         &mut channel_sender,
         &mut channel_receiver,
@@ -285,8 +284,8 @@ mod tests {
         NEXT_PORT.fetch_add(1, Ordering::Relaxed) as u16
     }
 
-    // The loopback host for test servers: IPv6 when available, IPv4 as a
-    // fallback (some sandboxes have no ::1)
+    // The loopback host for test servers: IPv6 when available, IPv4 where
+    // no ::1 is bindable.
     fn loopback_host() -> &'static str {
         static HOST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         HOST.get_or_init(|| {
@@ -317,7 +316,6 @@ mod tests {
                 .unwrap();
         });
 
-        // Give the server a moment to bind
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         (grpc_addr, handle)
@@ -338,10 +336,8 @@ mod tests {
             let mut stream = request.into_inner();
 
             tokio::spawn(async move {
-                // Read the client's registration message
                 let _ = stream.message().await;
 
-                // Send valid response
                 let _ = tx
                     .send(Ok(BpaToAgent {
                         msg_id: 0,
@@ -351,7 +347,8 @@ mod tests {
                     }))
                     .await;
 
-                // Drop tx immediately — closes the stream right after handshake
+                // Dropping tx here closes the stream right after the
+                // handshake.
             });
 
             Ok(tonic::Response::new(ReceiverStream::new(rx)))
@@ -373,7 +370,6 @@ mod tests {
             let mut stream = request.into_inner();
 
             tokio::spawn(async move {
-                // Read the client's registration message
                 let _ = stream.message().await;
 
                 let response = BpaToAgent {
@@ -383,16 +379,13 @@ mod tests {
                     })),
                 };
 
-                // Send valid response
                 let _ = tx.send(Ok(response.clone())).await;
 
-                // Small delay to ensure the first response is processed
+                // Let the client consume the first response before the
+                // duplicate, then hold the stream open long enough for it to
+                // consume the duplicate too.
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-                // Send duplicate response (protocol violation)
                 let _ = tx.send(Ok(response)).await;
-
-                // Keep stream alive briefly so the client reader processes the duplicate
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             });
 
@@ -415,11 +408,12 @@ mod tests {
             let mut stream = request.into_inner();
 
             tokio::spawn(async move {
-                // Read the client's registration message (must consume it)
+                // The registration message must be consumed before the
+                // response goes out.
                 let _ = stream.message().await;
 
-                // Send an AddRouteResponse with non-zero msg_id — the client
-                // handshake expects msg_id 0.
+                // The handshake expects msg_id 0, so an AddRouteResponse at
+                // msg_id 5 is out of sequence.
                 let _ = tx
                     .send(Ok(BpaToAgent {
                         msg_id: 5,
@@ -472,9 +466,9 @@ mod tests {
     //
     // A custom mock server sends `RegisterRoutingAgentResponse` twice.
     // The first response completes the handshake normally. The second
-    // arrives as an unsolicited message — the reader finds no pending
-    // entry for msg_id 0 and dispatches it to `on_notify`, which logs
-    // a warning and ignores it.
+    // arrives unsolicited: the reader finds no pending entry for msg_id 0
+    // and dispatches it to `on_notify`, which logs a warning and ignores
+    // it.
     #[tokio::test]
     async fn err_cli_03_duplicate_register_response() {
         let (grpc_addr, server_handle) = start_bad_server(DuplicateRegisterServer).await;
@@ -492,11 +486,11 @@ mod tests {
         assert!(result.is_ok(), "registration should succeed");
         assert!(lifecycle.is_registered());
 
-        // Wait for the duplicate to arrive and be processed
+        // Wait for the duplicate to arrive and be processed.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-        // No panic — test completing is the primary assertion.
-        // After the server's stream closes, the client unregisters its agent.
+        // Reaching here without a panic is half the assertion; once the
+        // server's stream closes, the client unregisters its agent.
         assert!(
             lifecycle.is_unregistered(),
             "agent should have been unregistered after the server stream closed"

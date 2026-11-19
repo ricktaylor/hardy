@@ -1,8 +1,7 @@
 use core::num::{NonZeroU64, NonZeroUsize};
 
-// `eid::Service` is the service number inside an EID, not the service
-// trait registered here; it is aliased to the word the code already uses
-// for it.
+// `eid::Service` is a service number, not the service trait registered
+// here, so it is aliased to the word the rest of the code uses for it.
 use hardy_bpv7::eid::Service as ServiceId;
 use hardy_eid_patterns::EidPattern;
 
@@ -23,16 +22,17 @@ use crate::{
     },
 };
 
-/// Builder for constructing a [`Bpa`] with custom configuration, obtained
-/// from [`Bpa::builder()`](crate::bpa::Bpa::builder).
+/// Builds a [`Bpa`], obtained from
+/// [`Bpa::builder`](crate::bpa::Bpa::builder).
 ///
-/// Provides fluent setters for storage backends, processing pool size,
-/// node identifiers, bundle cache parameters, and status report generation.
-/// Call [`build()`](BpaBuilder::build) to produce the final [`Bpa`].
+/// The setters cover the storage backends, the processing pool, the node
+/// identities, the bundle cache, status reports, and the components the
+/// BPA declares. [`build`](Self::build) produces the [`Bpa`].
 ///
-/// Defaults: in-memory storage (never cached), status reports disabled,
-/// processing pool = 4x available parallelism. A configured bundle storage
-/// is cached unless [`no_cache()`](BpaBuilder::no_cache) is called.
+/// The defaults are in-memory storage, which is never cached, status
+/// reports disabled, and a processing pool of four times the available
+/// parallelism. Configured bundle storage is cached unless
+/// [`no_cache`](Self::no_cache) is called.
 #[must_use = "a builder does nothing until build() is called"]
 pub struct BpaBuilder {
     status_reports: bool,
@@ -58,7 +58,6 @@ pub struct BpaBuilder {
 }
 
 impl BpaBuilder {
-    // The one constructor: reachable only through Bpa::builder().
     pub(crate) fn new() -> Self {
         let poll_channel_depth = NonZeroUsize::new(16).unwrap();
         let processing_pool_size =
@@ -113,34 +112,39 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets the LRU cache capacity, in entries; unset applies the cache's
-    /// own default. Has no effect when no bundle storage is configured:
-    /// the default memory store is never cached.
+    /// Sets the LRU cache capacity, in entries. Unset, the cache's own
+    /// default applies. This has no effect where no bundle storage is
+    /// configured, since the default memory store is never cached.
     pub fn lru_capacity(mut self, v: NonZeroUsize) -> Self {
         self.lru_capacity = Some(v);
         self
     }
 
-    /// Sets the maximum size, in bytes, of a single bundle at any ingress
-    /// door.
+    /// Sets the maximum size, in bytes, of a single bundle entering the
+    /// BPA.
     ///
     /// A received or originated bundle accumulates in memory until it is
-    /// stored, so this bound stops a runaway or hostile producer growing BPA
-    /// memory without limit. An over-cap or truncated CLA transfer is
-    /// answered [`Acceptance::Refused`](crate::cla::Acceptance) (the CLA
-    /// withholds its acknowledgement); an over-cap origination fails with a
-    /// size error to the producer. A cap beyond the target's
-    /// addressable bound (`isize::MAX`, relevant on 32-bit targets) is
-    /// clamped to it — the clamped value is both enforced and advertised to
-    /// CLAs at registration.
+    /// stored, so this bound stops a runaway or hostile producer from
+    /// growing BPA memory without limit. An over-cap or truncated CLA
+    /// transfer is answered
+    /// [`Acceptance::Refused`](crate::cla::Acceptance), so the CLA
+    /// withholds its acknowledgement, and an over-cap origination fails
+    /// with a size error to the producer.
+    ///
+    /// A cap beyond the target's addressable bound, `isize::MAX`, is
+    /// clamped to it, and the clamped value is both enforced and
+    /// advertised to CLAs at registration. Unset, an interim default of
+    /// 64 MiB applies, for as long as ingress accumulates a whole bundle
+    /// in memory.
     pub fn max_bundle_size(mut self, v: NonZeroU64) -> Self {
         self.max_bundle_size = Some(v);
         self
     }
 
-    /// Sets the largest bundle size eligible for caching, in bytes; unset
-    /// applies the cache's own default. Has no effect when no bundle
-    /// storage is configured: the default memory store is never cached.
+    /// Sets the largest bundle size eligible for caching, in bytes.
+    /// Unset, the cache's own default applies. This has no effect where no
+    /// bundle storage is configured, since the default memory store is
+    /// never cached.
     pub fn max_cached_bundle_size(mut self, v: NonZeroUsize) -> Self {
         self.max_cached_bundle_size = Some(v);
         self
@@ -165,10 +169,10 @@ impl BpaBuilder {
     /// Declares a CLA, registered at
     /// [`Bpa::start`](crate::bpa::Bpa::start).
     ///
-    /// The BPA settles the factory's [`Request`](crate::cla::Request)
+    /// The BPA negotiates the factory's [`Request`](crate::cla::Request)
     /// against its own configuration and builds the CLA from the
-    /// [`Terms`](crate::cla::Terms). A name already declared, or a CLA
-    /// that cannot run, fails `start` rather than this call, so
+    /// resulting [`Terms`](crate::cla::Terms). A name already declared, or
+    /// a CLA that cannot run, fails `start` rather than this call, so that
     /// declaration stays chainable.
     pub fn cla<F: Factory + 'static>(self, name: impl Into<String>, factory: F) -> Self {
         self.cla_boxed(name, BoxFactory::new(factory))
@@ -177,7 +181,8 @@ impl BpaBuilder {
     /// Declares a CLA from an erased factory, for an embedder choosing
     /// among factory types of its own.
     ///
-    /// [`cla`](Self::cla) is the typed door, and erases for the caller.
+    /// [`cla`](Self::cla) takes a typed factory and erases it for the
+    /// caller.
     pub fn cla_boxed(mut self, name: impl Into<String>, factory: BoxFactory<'static>) -> Self {
         self.clas.push((name.into(), factory));
         self
@@ -185,11 +190,10 @@ impl BpaBuilder {
 
     /// Shapes the egress queues feeding the CLA named `name`.
     ///
-    /// The policy is the BPA's own half of the attachment, chosen by the
-    /// embedder rather than by the CLA, so it applies to a CLA registered
-    /// at runtime exactly as it does to one declared here. A name no CLA
-    /// ever attaches under shapes nothing, and a CLA not named here runs
-    /// unshaped.
+    /// The policy is the embedder's choice rather than the CLA's, so it
+    /// applies to a CLA registered while the BPA runs exactly as it does
+    /// to one declared here. A name no CLA ever registers under shapes
+    /// nothing, and a CLA not named here runs unshaped.
     pub fn egress_policy(
         mut self,
         name: impl Into<String>,
@@ -199,11 +203,11 @@ impl BpaBuilder {
         self
     }
 
-    /// Declares a payload-only service, built when the BPA is built and
-    /// started when the BPA starts.
+    /// Declares a payload-only service, registered at
+    /// [`Bpa::start`](crate::bpa::Bpa::start).
     ///
     /// `id` names the endpoint's service number, and `None` asks the BPA
-    /// to allocate one. The key comes first because the embedder owns the
+    /// to allocate one. The id comes first because the embedder owns the
     /// namespace: two instances of the same service crate are told apart
     /// here, without the crate's cooperation.
     pub fn service<F: service::Factory + 'static>(
@@ -245,8 +249,8 @@ impl BpaBuilder {
     /// Declares a routing agent from an erased factory, for an embedder
     /// choosing among factory types of its own.
     ///
-    /// [`routing_agent`](Self::routing_agent) is the typed door, and
-    /// erases for the caller.
+    /// [`routing_agent`](Self::routing_agent) takes a typed factory and
+    /// erases it for the caller.
     pub fn routing_agent_boxed(
         mut self,
         name: impl Into<String>,
@@ -262,42 +266,50 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets whether the pre-drain gate requires the primary block to carry
-    /// integrity protection (a CRC, or BIB coverage). RFC 9171 §4.3.1;
-    /// strict by default. Disable for interoperability with peers that add
-    /// neither.
+    /// Sets whether a received bundle must carry integrity protection over
+    /// its primary block, a CRC or BIB coverage (RFC 9171 Section 4.3.1).
+    ///
+    /// Required by default. Disable it for interoperability with peers
+    /// that send neither.
     pub fn primary_block_integrity(mut self, enabled: bool) -> Self {
         self.primary_block_integrity = enabled;
         self
     }
 
-    /// Sets whether the pre-drain gate requires a clockless bundle to carry
-    /// a Bundle Age block. RFC 9171 §4.4.2; strict by default. Disable for
-    /// compatibility with the RFC 9173 Appendix A test vectors.
+    /// Sets whether a received bundle whose creation timestamp carries no
+    /// clock must contain a Bundle Age block (RFC 9171 Section 4.4.2).
+    ///
+    /// Required by default. Disable it for compatibility with the RFC 9173
+    /// Appendix A test vectors.
     pub fn bundle_age_required(mut self, enabled: bool) -> Self {
         self.bundle_age_required = enabled;
         self
     }
 
-    /// Sets the peers that require legacy 2-element IPN EID encoding: a
-    /// bundle forwarded to a next hop matching any of `patterns` has its
-    /// `Ipn` source and destination re-encoded as `LegacyIpn` in the
-    /// per-hop rewrite stage. Wire adaptation only — the stored bundle and
-    /// its id are untouched. A bundle carrying a BPSec operation that covers
-    /// the primary block, as its target or through its scope (an encrypted
-    /// BIB counts whatever its scope, its ciphertext hiding it), cannot
-    /// survive the re-encode: it is deleted at such a next hop, not
-    /// re-routed, with `UnexpectedSecurityOperation` as the reason for any
-    /// deletion report.
+    /// Sets the peers that require legacy 2-element IPN EID encoding.
+    ///
+    /// A bundle forwarded to a next hop matching any of `patterns` has its
+    /// `Ipn` source and destination re-encoded as `LegacyIpn` when the
+    /// bundle is rewritten for that hop. The adaptation is to the wire form only; the
+    /// stored bundle and its id are untouched.
+    ///
+    /// A bundle carrying a BPSec operation that covers the primary block,
+    /// as its target or through its scope, cannot survive the re-encode.
+    /// It is deleted at such a next hop rather than re-routed, with
+    /// `UnexpectedSecurityOperation` as the reason for any deletion
+    /// report. An encrypted BIB counts whatever its scope, since its
+    /// ciphertext hides it.
     pub fn ipn_legacy_peers(mut self, patterns: Vec<EidPattern>) -> Self {
         self.ipn_legacy_peers = patterns;
         self
     }
 
-    /// Adds a filter pack: its filter registrations are spliced into the
-    /// per-hook chains at [`build()`](Self::build), in registration order
-    /// within the pack and in `add_filters` call order across packs. The
-    /// registrations' diagnostic labels carry the pack's name as a prefix.
+    /// Adds a filter pack.
+    ///
+    /// Its filter registrations are spliced into the per-hook chains at
+    /// [`build`](Self::build), in registration order within the pack and
+    /// in `add_filters` call order across packs. The registrations'
+    /// diagnostic labels carry the pack's name as a prefix.
     pub fn add_filters(mut self, pack: FilterPack) -> Self {
         self.filter_packs.push(pack);
         self
@@ -306,12 +318,12 @@ impl BpaBuilder {
     /// Consumes the builder and constructs the BPA, whose declared
     /// components register at [`Bpa::start`](crate::bpa::Bpa::start).
     ///
-    /// The BPA that comes back is inert: no component exists yet and no
-    /// task runs until it starts.
+    /// The BPA returned is inert: no component exists, and no task runs,
+    /// until it starts.
     pub fn build(self) -> Bpa {
-        // Freeze the filter packs first: the per-hook chains splice in call
-        // order, and each input hook's P = the max peek its registrations
-        // declare.
+        // Freeze the filter packs first: the per-hook chains splice in
+        // call order, and each input hook's peek is the largest its
+        // registrations declare.
         let filter_chains = FilterChains::freeze(self.filter_packs);
 
         let metadata_storage = self
@@ -358,10 +370,9 @@ impl BpaBuilder {
             filter_chains,
         );
 
-        // The tables start empty: a declared component is no different
-        // from one that registers while the BPA runs, so it waits for
-        // the same door, which `Bpa::start` opens once the store is
-        // quiescent.
+        // The tables start empty: a declared component registers at
+        // `Bpa::start`, by the same path as one registered while the BPA
+        // runs.
         let services = service::table::Table::new(node_ids.clone(), &dispatcher, rib.clone());
         let clas = cla::table::Table::new(
             node_ids.clone(),
@@ -373,12 +384,12 @@ impl BpaBuilder {
         );
         let agents = routing::agent::table::Table::new(node_ids, rib.clone());
 
-        // TODO: Dispatcher and the CLA table still reference each other:
-        // the table holds the dispatcher, and the dispatcher late-binds the
-        // table through its Once cell, so readers driven from Rib::start
-        // (poll_waiting) rest on a runtime expect rather than the type
-        // system. The start closure fixes the wiring order; the cycle
-        // itself remains to be dissolved.
+        // TODO: the dispatcher and the CLA table still reference each
+        // other. The table holds the dispatcher, and the dispatcher
+        // late-binds the table through a `Once` cell, so the readers driven
+        // from `Rib::start` rest on a runtime `expect` rather than on the
+        // type system. The start closure fixes the wiring order; the cycle
+        // itself remains.
         start_dispatcher(clas.clone());
 
         Bpa::from_parts(

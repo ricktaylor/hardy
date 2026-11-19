@@ -1,7 +1,8 @@
-//! Lifecycle tests for gRPC proxy unregistration (LIFE-01 through LIFE-06).
+//! Lifecycle tests for gRPC proxy unregistration (LIFE-01 through
+//! LIFE-06).
 //!
-//! These tests validate that stream close correctly triggers cleanup on
-//! both client and server sides for all shutdown scenarios.
+//! Closing the stream unregisters the component on both the client and the
+//! server side, whichever end initiates the shutdown.
 
 mod common;
 
@@ -89,7 +90,6 @@ async fn life_01_client_initiated_unregister() {
         "BPA sink should have been unregistered by the server's on_close"
     );
 
-    // Clean up server
     server_tasks.shutdown().await;
 }
 
@@ -129,7 +129,6 @@ async fn life_02_bpa_initiated_unregister() {
         "agent should have been unregistered via on_close"
     );
 
-    // Clean up server
     server_tasks.shutdown().await;
 }
 
@@ -161,7 +160,6 @@ async fn life_04_server_crash() {
         "agent should have been unregistered via on_close"
     );
 
-    // Clean up server
     server_tasks.shutdown().await;
 }
 
@@ -193,14 +191,14 @@ async fn life_05_simultaneous_unregister() {
         "agent should have been unregistered exactly once"
     );
 
-    // No panic, no deadlock — test completing is the assertion
+    // Reaching here without a panic or a deadlock is the assertion.
     server_tasks.shutdown().await;
 }
 
 // LIFE-06: Client unregisters its agent exactly once.
 //
-// After BPA-initiated unregister (which closes the stream), the client
-// must unregister its agent exactly once — not zero times, not twice.
+// A BPA-initiated unregister closes the stream, and the client then
+// unregisters its agent exactly once: not zero times, not twice.
 #[tokio::test]
 async fn life_06_exactly_once_unregister() {
     let bpa = Arc::new(MockBpa::new());
@@ -219,7 +217,7 @@ async fn life_06_exactly_once_unregister() {
     // Give the client time to process
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // Exactly one unregistration — not zero (missed), not two (duplicate)
+    // Zero would be a missed unregistration, two a duplicate.
     assert_eq!(
         agent.unregister_count(),
         1,

@@ -19,8 +19,8 @@ use std::{
 use core::num::NonZeroU64;
 
 use hardy_async::TaskPool;
-// `cla` is this crate's own module holding the trait impl, so the BPA's
-// `cla` items are imported by name; its `Error` is aliased against ours.
+// `cla` is this crate's own module holding the trait impl, so the BPA's `cla`
+// items are imported by name, with its `Error` aliased to avoid the clash.
 use hardy_bpa::cla::{Context, Error as ClaError, Factory, Request, Sink, factory_fn};
 use hardy_bpv7::eid::NodeId;
 
@@ -29,24 +29,24 @@ mod watcher;
 
 /// Configuration for the file-based Convergence Layer Adapter (CLA).
 ///
-/// All fields have sensible defaults (via `Default`): no outbox and no peers,
-/// meaning the CLA is inert until explicitly configured.
+/// Both fields default to empty, no outbox and no peers, so the CLA is
+/// inert until configured.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     /// The directory to watch for new files to be sent as bundles.
     ///
-    /// Each file in this directory is treated as a complete bundle and will be
-    /// dispatched to the BPA. After successful dispatch the file is deleted.
+    /// Each file in this directory is a complete bundle, dispatched to the
+    /// BPA and then deleted.
     ///
     /// Default: `None` (no outbox; inbound file ingestion is disabled).
     pub outbox: Option<PathBuf>,
     /// A map of peer Endpoint IDs (EIDs) to their corresponding inbox directories.
     ///
-    /// When a bundle is to be forwarded to a peer, it will be written as a file
-    /// in the directory associated with that peer's EID. The filename is derived
-    /// from the bundle's source EID, timestamp, and optional fragment offset.
+    /// A bundle forwarded to a peer is written as a file in that peer's
+    /// directory, under a filename derived from the bundle's source EID,
+    /// timestamp and optional fragment offset.
     ///
     /// Default: empty map (no peers configured).
     pub peers: HashMap<NodeId, PathBuf>,
@@ -89,12 +89,10 @@ pub enum Error {
 fn canonicalize_path(cwd: &Path, path: &PathBuf) -> Result<String, Error> {
     let full_path = cwd.join(path);
 
-    // Check everything is UTF-8
     if full_path.to_str().is_none() {
         return Err(Error::InvalidPath(format!("{}", full_path.display())));
     }
 
-    // Ensure we have created the path
     fs::create_dir_all(&full_path).map_err(|e| Error::CreateDir {
         path: full_path.display().to_string(),
         source: e,
@@ -132,14 +130,12 @@ impl Cla {
     pub fn factory(config: &Config) -> Result<impl Factory<Component = Self> + use<>, Error> {
         let cwd = env::current_dir().map_err(Error::CurrentDir)?;
 
-        // Canonicalize all peer inbox paths eagerly
         let mut inboxes = HashMap::new();
         for (eid, path) in &config.peers {
             let canonical = canonicalize_path(&cwd, path)?;
             inboxes.insert(eid.clone(), canonical);
         }
 
-        // Canonicalize outbox path if configured
         let outbox = config
             .outbox
             .as_ref()

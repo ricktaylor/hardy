@@ -1,7 +1,5 @@
-//! BPA Pipeline Integration Tests
-//!
-//! These tests verify end-to-end bundle processing through the BPA,
-//! covering the component test plan (PLAN-BPA-01) Suites A and B.
+//! End-to-end bundle processing through the BPA, covering Suites A and B
+//! of the component test plan (PLAN-BPA-01).
 
 use core::{
     num::{NonZeroU8, NonZeroU32, NonZeroU64},
@@ -102,7 +100,7 @@ impl cla::Cla for PipelineCla {
 }
 
 // ---------------------------------------------------------------------------
-// Test service — receives delivered bundles via a channel
+// A service that forwards each delivered bundle over a channel
 // ---------------------------------------------------------------------------
 
 struct TestService {
@@ -162,7 +160,7 @@ impl Service for TestService {
 }
 
 // ---------------------------------------------------------------------------
-// Inline Echo Service — swaps source/destination and sends back
+// An echo service: swaps source and destination, and sends the bundle back
 // ---------------------------------------------------------------------------
 
 struct EchoService {
@@ -218,7 +216,7 @@ impl raw::Service for EchoService {
 }
 
 // ---------------------------------------------------------------------------
-// Timed CLA — captures arrival time inside forward() for accurate benchmarking
+// A CLA that records the arrival time inside `forward`, for the benchmarks
 // ---------------------------------------------------------------------------
 
 struct TimedCla {
@@ -260,7 +258,7 @@ impl cla::Cla for TimedCla {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: print system info for benchmark context
+// System information, printed alongside the benchmark results
 // ---------------------------------------------------------------------------
 
 fn print_system_info() {
@@ -323,7 +321,7 @@ fn print_system_info() {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: build a bundle as raw bytes
+// Bundle construction
 // ---------------------------------------------------------------------------
 
 fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
@@ -345,7 +343,6 @@ async fn service_to_cla_routing() {
     let bpa = Bpa::builder().build();
     bpa.start(false).await.unwrap();
 
-    // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
@@ -356,7 +353,6 @@ async fn service_to_cla_routing() {
     });
     cla.sink.add_peer(peer_addr, &[remote_node]).await.unwrap();
 
-    // Register a service to send from
     let (factory, _service_rx) = TestService::factory();
     let service = bpa
         .register_service(Some(ServiceId::Ipn(42)), factory)
@@ -364,7 +360,6 @@ async fn service_to_cla_routing() {
         .unwrap();
     let source_eid = service.endpoint.clone();
 
-    // Send a bundle to the remote node
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
     service
         .sink
@@ -377,7 +372,6 @@ async fn service_to_cla_routing() {
         .await
         .unwrap();
 
-    // The CLA should forward the bundle
     // Event-driven wait; the timeout only bounds a regression.
     let forwarded = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -387,7 +381,7 @@ async fn service_to_cla_routing() {
     .expect("Timeout waiting for forwarded bundle")
     .expect("Channel closed");
 
-    // Parse and verify the forwarded bundle (structural — no keys).
+    // Parse the forwarded bundle structurally, without keys.
     let Parsed {
         bundle: parsed_bundle,
         ..
@@ -399,11 +393,11 @@ async fn service_to_cla_routing() {
     bpa.shutdown().await;
 }
 
-// A block the ingress gate schedules for §E removal (here an unrecognised
-// extension block flagged `delete_block_on_failure`) is kept in the stored
-// bundle — no editing on input — and stripped per attempt ahead of the
-// Egress chain, so the transmitted wire form no longer carries it while the
-// payload survives.
+// A block ingress schedules for removal, here an unrecognised extension
+// block flagged `delete_block_on_failure`, stays in the stored bundle, which
+// is kept as received, and is stripped per attempt ahead of the Egress
+// chain, so the transmitted wire form no longer carries it while the payload
+// survives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_removal_applied_at_egress() {
     let node_id = IpnNodeId {
@@ -423,9 +417,9 @@ async fn deferred_removal_applied_at_egress() {
     });
     cla.sink.add_peer(peer_addr, &[remote]).await.unwrap();
 
-    // Craft a bundle to the remote node carrying an unrecognised block (type
-    // 999, block 2) flagged delete_block_on_failure, inserted between the
-    // primary and the payload.
+    // A bundle to the remote node carrying an unrecognised block, type 999
+    // and block number 2, flagged `delete_block_on_failure`, spliced between
+    // the primary block and the payload.
     let source: Eid = "ipn:0.9.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
     let base = build_bundle(&source, &dest, b"payload");
@@ -445,7 +439,7 @@ async fn deferred_removal_applied_at_egress() {
     modified.extend_from_slice(&base[insert..]);
     let inbound = Bytes::from(modified);
 
-    // The crafted bundle really carries the unrecognised block as it arrives.
+    // The bundle carries the unrecognised block as it arrives.
     let Parsed { bundle: pre, .. } = parse(inbound.clone()).expect("crafted bundle parses");
     assert!(
         pre.blocks
@@ -476,15 +470,14 @@ async fn deferred_removal_applied_at_egress() {
         fwd.blocks
             .values()
             .all(|b| b.block_type != Type::Unrecognised(999)),
-        "the deferred removal is applied at the egress door"
+        "the deferred removal is applied at egress"
     );
     assert!(fwd.blocks.contains_key(&1), "the payload survives");
 
     bpa.shutdown().await;
 }
 
-// A low-level (raw-bundle) service that captures each delivered bundle's
-// wire bytes.
+// A raw service that captures each delivered bundle's wire bytes.
 struct CapturingService {
     /// The endpoint the BPA settled on, which delivered bundles are
     /// addressed to.
@@ -532,10 +525,10 @@ impl raw::Service for CapturingService {
     }
 }
 
-// The deliver-side twin of `deferred_removal_applied_at_egress`: a bundle
-// addressed to a local raw-bundle service, carrying an unrecognised
-// `delete_block_on_failure` block, is delivered with that block stripped —
-// the stored bundle stays as received.
+// The deliver-side counterpart of `deferred_removal_applied_at_egress`: a
+// bundle addressed to a local raw service, carrying an unrecognised
+// `delete_block_on_failure` block, is delivered with that block stripped,
+// and the stored bundle stays as received.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_removal_applied_at_delivery() {
     let node_id = IpnNodeId {
@@ -557,8 +550,8 @@ async fn deferred_removal_applied_at_delivery() {
     let (cla, _forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    // A bundle to the local service, carrying an unrecognised block (type
-    // 999, block 2) flagged delete_block_on_failure.
+    // A bundle to the local service, carrying an unrecognised block, type
+    // 999 and block number 2, flagged `delete_block_on_failure`.
     let source: Eid = "ipn:0.9.1".parse().unwrap();
     let base = build_bundle(&source, &endpoint, b"payload");
     let unknown = emit_array(Some(5), |a| {
@@ -597,16 +590,16 @@ async fn deferred_removal_applied_at_delivery() {
         del.blocks
             .values()
             .all(|b| b.block_type != Type::Unrecognised(999)),
-        "the deferred removal is applied at the deliver door"
+        "the deferred removal is applied at delivery"
     );
     assert!(del.blocks.contains_key(&1), "the payload survives");
 
     bpa.shutdown().await;
 }
 
-// Splices an unrecognised block (type 999, block 2) flagged
-// `delete_block_on_failure` between `base`'s primary and its first
-// canonical block: the ingress gate schedules it for removal.
+// Splices an unrecognised block, type 999 and block number 2, flagged
+// `delete_block_on_failure`, between `base`'s primary block and its first
+// canonical block, so that ingress schedules it for removal.
 fn with_deletable_unknown(base: &Bytes) -> Bytes {
     let unknown = emit_array(Some(5), |a| {
         a.emit(&999u64); // unrecognised block type
@@ -625,9 +618,9 @@ fn with_deletable_unknown(base: &Bytes) -> Bytes {
     Bytes::from(modified)
 }
 
-/// Records whether it was handed a block scheduled for removal (type 999),
+/// Records whether it was handed a block scheduled for removal, type 999,
 /// then inserts a block of its own, which the editor numbers from the lowest
-/// free block number — the removed block's, when the removal came first.
+/// free block number, the removed block's when the removal came first.
 struct ScheduledBlockObserver {
     saw_scheduled: Arc<AtomicBool>,
 }
@@ -642,8 +635,9 @@ impl Rewriter for ScheduledBlockObserver {
         {
             self.saw_scheduled.store(true, Ordering::SeqCst);
         }
-        // A refusal is a no-match, never a panic (a panicking filter aborts
-        // the node); `assert_insert_survives` catches a refused insert.
+        // A refusal is a no-match rather than a panic, a panicking filter
+        // aborting the node, and `assert_insert_survives` catches a refused
+        // insert.
         let _ = ctx.editor().insert(
             INSERTED,
             BlockFlags::default(),
@@ -672,10 +666,10 @@ fn assert_insert_survives(data: Bytes) {
     assert_eq!(inserted.payload(&out.data), Some(emit(&42u64).0.as_slice()));
 }
 
-/// The scheduled removals apply ahead of the Egress chain: a Rewriter never
-/// sees a block scheduled for removal, and the block it inserts travels,
-/// where a removal applied after it could delete an insert that took the
-/// removed block's number.
+/// The scheduled removals apply ahead of the Egress chain, so a Rewriter
+/// never sees a block scheduled for removal and the block it inserts
+/// travels. A removal applied afterwards could delete an insert that took
+/// the removed block's number.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_removal_precedes_the_egress_rewriters() {
     let saw_scheduled = Arc::new(AtomicBool::new(false));
@@ -741,9 +735,9 @@ async fn deferred_removal_precedes_the_egress_rewriters() {
     bpa.shutdown().await;
 }
 
-/// The Deliver twin: the scheduled removals apply ahead of the Deliver
-/// chain, so a Deliver Rewriter never sees a block scheduled for removal,
-/// and the raw-bundle service receives its insert.
+/// The Deliver counterpart: the scheduled removals apply ahead of the
+/// Deliver chain, so a Deliver Rewriter never sees a block scheduled for
+/// removal, and the raw service receives its insert.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_removal_precedes_the_deliver_chain() {
     let saw_scheduled = Arc::new(AtomicBool::new(false));
@@ -823,12 +817,10 @@ async fn echo_round_trip() {
     let bpa = Bpa::builder().node_ids(node_ids).build();
     bpa.start(false).await.unwrap();
 
-    // Register echo service on service number 7
     bpa.register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
         .unwrap();
 
-    // Register CLA with a peer for the "remote" node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
@@ -842,12 +834,11 @@ async fn echo_round_trip() {
         .await
         .unwrap();
 
-    // Build an inbound bundle: from remote node, to our echo service
+    // Inbound from the remote node, addressed to the echo service.
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let echo_dest: Eid = "ipn:0.1.7".parse().unwrap();
     let mut inbound = build_bundle(&remote_source, &echo_dest, b"ping");
 
-    // Dispatch it as if received from the CLA
     assert_eq!(
         cla.sink
             .dispatch(Some(&remote_node), None, &mut inbound)
@@ -856,10 +847,9 @@ async fn echo_round_trip() {
         cla::Acceptance::Accepted
     );
 
-    // The echo service should reflect the bundle back:
-    // source=ipn:0.1.7 (echo), dest=ipn:0.2.1 (remote)
-    // BPA routes to CLA peer (ipn:0.2.*)
-    // Event-driven wait; the timeout only bounds a regression.
+    // The echo service sends the bundle back, from ipn:0.1.7 to ipn:0.2.1,
+    // which the BPA routes to the CLA peer. Event-driven wait; the timeout
+    // only bounds a regression.
     let forwarded = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         forwarded_rx.recv_async(),
@@ -868,13 +858,12 @@ async fn echo_round_trip() {
     .expect("Timeout waiting for echo reply")
     .expect("Channel closed");
 
-    // Parse and verify the echo reply (structural — no keys).
+    // Parse the echo reply structurally, without keys.
     let Parsed {
         bundle: parsed_bundle,
         ..
     } = parse(forwarded).expect("Failed to parse echo reply");
 
-    // Source and destination should be swapped
     assert_eq!(
         parsed_bundle.primary.destination, remote_source,
         "Echo reply destination should be the original source"
@@ -891,8 +880,9 @@ async fn echo_round_trip() {
 // INT-BPA-12: Streamed service originate
 // ---------------------------------------------------------------------------
 
-// Register a service and a CLA peer; the returned (bpa, sink-holder, forwarded
-// channel, service EID) drive ServiceSink::send directly with multi-segment streams.
+// Registers a service and a CLA peer. The returned BPA, sink holder,
+// forwarded channel and service EID drive `ServiceSink::send` directly with
+// multi-segment streams.
 async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<Bytes>, Eid) {
     let node_id = IpnNodeId {
         allocator_id: 0,
@@ -903,7 +893,7 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
     let bpa = Bpa::builder().node_ids(node_ids).build();
     bpa.start(false).await.unwrap();
 
-    // The service only captures its sink here; the test drives the sink itself.
+    // The service only captures its sink, which the test drives itself.
     let svc = bpa
         .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
@@ -926,8 +916,8 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
 }
 
 /// A bundle streamed through `ServiceSink::send` in several segments
-/// originates identically to a whole-buffer `send`: the returned id matches
-/// the built bundle, and the bundle is forwarded to the CLA peer.
+/// originates as a whole-buffer `send` does: the returned id matches the
+/// built bundle, which is forwarded to the CLA peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_originate_forwards() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -935,8 +925,8 @@ async fn service_streamed_originate_forwards() {
     let dest: Eid = "ipn:0.2.1".parse().unwrap();
     let data = build_bundle(&source_eid, &dest, b"streamed-originate");
 
-    // Split into two Next segments and a Final; the channel is sized to hold
-    // them all so the producer side completes before the sink pulls.
+    // Two `Next` segments and a `Final`. The channel holds all three, so the
+    // producer completes before the sink pulls.
     let third = data.len() / 3;
     let (tx, mut rx) = hardy_async::channel::bounded(4);
     tx.send(Segment::Next(data.slice(..third))).await.unwrap();
@@ -967,8 +957,9 @@ async fn service_streamed_originate_forwards() {
     bpa.shutdown().await;
 }
 
-/// Dropping the producer before `Final` cancels the send: the caller gets
-/// `StreamCancelled` and nothing enters custody (nothing is forwarded).
+/// Dropping the producer before `Final` cancels the send: the caller
+/// receives `StreamCancelled`, nothing enters custody and nothing is
+/// forwarded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_cancel_stores_nothing() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -980,7 +971,7 @@ async fn service_streamed_cancel_stores_nothing() {
     tx.send(Segment::Next(data.slice(..data.len() / 2)))
         .await
         .unwrap();
-    drop(tx); // no Final — the producer aborts
+    drop(tx); // The producer aborts, without a `Final`.
 
     let result = svc.sink.send(&mut rx).await;
     assert!(matches!(
@@ -988,7 +979,7 @@ async fn service_streamed_cancel_stores_nothing() {
         Err(hardy_bpa::service::Error::StreamCancelled)
     ));
 
-    // Nothing was originated: no forward may arrive.
+    // Nothing was originated, so no forward arrives.
     assert!(
         // Event-driven wait; the timeout only bounds a regression.
         tokio::time::timeout(
@@ -1003,9 +994,9 @@ async fn service_streamed_cancel_stores_nothing() {
     bpa.shutdown().await;
 }
 
-/// Unregistering a service wakes its in-flight sends immediately: a consumer
-/// parked behind a stalled producer fails with `StreamCancelled` the moment
-/// the registration dies, without waiting for the producer's next segment.
+/// Unregistering a service wakes its in-flight sends at once: a consumer
+/// parked behind a stalled producer fails with `StreamCancelled` as the
+/// registration ends, without awaiting the producer's next segment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_unregister_cancels_parked_send() {
     let (bpa, svc, _forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -1013,8 +1004,8 @@ async fn service_unregister_cancels_parked_send() {
     let dest: Eid = "ipn:0.2.1".parse().unwrap();
     let data = build_bundle(&source_eid, &dest, b"parked");
 
-    // One segment then a stall — the sender stays alive throughout, so only
-    // registration teardown can end the stream.
+    // One segment, then a stall. The sender stays alive throughout, so only
+    // registration teardown ends the stream.
     let (tx, mut rx) = hardy_async::channel::bounded(2);
     hardy_async::channel::Sender::send(&tx, Segment::Next(data.slice(..data.len() / 2)))
         .await
@@ -1045,8 +1036,8 @@ async fn service_unregister_cancels_parked_send() {
     bpa.shutdown().await;
 }
 
-/// The source-spoof check holds on the streamed path: a bundle whose source
-/// is not the registered service endpoint is rejected.
+/// The source-spoof check holds on the streamed path, rejecting a bundle
+/// whose source is not the registered service endpoint.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_send_rejects_spoofed_source() {
     let (bpa, svc, _forwarded_rx, _source_eid) = streamed_originate_setup().await;
@@ -1068,8 +1059,8 @@ async fn service_streamed_send_rejects_spoofed_source() {
     bpa.shutdown().await;
 }
 
-// Sends `data` through the raw service door and returns the bundle the
-// CLA forwards: origination admitted it.
+// Sends `data` through the raw service sink and returns the bundle the CLA
+// forwards, which origination admitted.
 #[cfg(feature = "rfc9173")]
 async fn originate_raw_and_forward(
     svc: &EchoService,
@@ -1095,8 +1086,8 @@ async fn originate_raw_and_forward(
 }
 
 /// Origination admits a Hop Count block this node cannot decrypt, as
-/// ingress does (its increment is a SHOULD), and the bundle leaves with the
-/// block unchanged.
+/// ingress does, its increment being a SHOULD, and the bundle leaves with
+/// the block unchanged.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
@@ -1164,8 +1155,8 @@ async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
 // INT-BPA-03: Local Delivery
 // ---------------------------------------------------------------------------
 
-/// A bundle dispatched via CLA addressed to a local service is
-/// delivered to that service's `deliver` door.
+/// A bundle dispatched by a CLA and addressed to a local service reaches
+/// that service's `deliver`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_delivery() {
     let node_id = IpnNodeId {
@@ -1177,28 +1168,23 @@ async fn local_delivery() {
     let bpa = Bpa::builder().node_ids(node_ids).build();
     bpa.start(false).await.unwrap();
 
-    // Register a service on service number 42
     let (factory, service_rx) = TestService::factory();
     bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    // Register CLA (needed for dispatch)
     let (cla, _forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    // Build an inbound bundle addressed to our local service
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let mut inbound = build_bundle(&remote_source, &local_dest, b"Hello local");
 
-    // Dispatch via CLA
     assert_eq!(
         cla.sink.dispatch(None, None, &mut inbound).await.unwrap(),
         cla::Acceptance::Accepted
     );
 
-    // The service should receive the payload
     let (source, payload) =
         // Event-driven wait; the timeout only bounds a regression.
         tokio::time::timeout(tokio::time::Duration::from_secs(5), service_rx.recv_async())
@@ -1217,15 +1203,15 @@ async fn local_delivery() {
 }
 
 // ---------------------------------------------------------------------------
-// Reception report reason codes (RFC 9172 §7.1)
+// Reception report reason codes (RFC 9172 Section 7.1)
 // ---------------------------------------------------------------------------
 
-// Splice a BCB with an unrecognised security context (id 99) targeting the
-// payload into `data` as block number 2, flagged must-replicate (required
-// for a payload target) + report-on-failure.
+// Splices a BCB with an unrecognised security context, id 99, targeting the
+// payload into `data` as block number 2, flagged must-replicate, which a
+// payload target requires, and report-on-failure.
 fn splice_unrecognised_bcb(data: &[u8]) -> Bytes {
-    // ASB CBOR sequence: targets [1], context id 99, context flags 0 (no
-    // parameters), source EID, then one result list per target.
+    // The ASB as a CBOR sequence: targets [1], context id 99, context flags
+    // 0 for no parameters, the source EID, then one result list per target.
     let result_val = [0x41u8, 0xAA]; // result value: bytes(0xAA)
     let source: Eid = "ipn:0.2.1".parse().unwrap();
     let mut asb = emit(&[1u64]).0;
@@ -1256,12 +1242,12 @@ fn splice_unrecognised_bcb(data: &[u8]) -> Bytes {
     modified.into()
 }
 
-// A transit bundle carrying a BCB this node cannot understand (unrecognised
-// security context, `report_on_failure` set) is still forwarded, and the
-// requested reception report carries the RFC 9172 `UnknownSecurityOperation`
-// reason rather than the generic `BlockUnsupported`. The bundle is addressed
-// to a remote node so it forwards — a payload-targeting BCB is only ever
-// decrypted at delivery.
+// A transit bundle carrying a BCB this node cannot understand, of an
+// unrecognised security context and with `report_on_failure` set, is still
+// forwarded, and the requested reception report cites the RFC 9172
+// `UnknownSecurityOperation` reason rather than the generic
+// `BlockUnsupported`. The bundle is addressed to a remote node so that it
+// forwards, a payload-targeting BCB being decrypted only at delivery.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reception_report_carries_unknown_security_operation() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -1278,9 +1264,8 @@ async fn reception_report_carries_unknown_security_operation() {
         .build();
     bpa.start(false).await.unwrap();
 
-    // Register CLA with a peer for the remote node (ipn:0.2) — the route for
-    // both the forwarded bundle and the reception report (report-to defaults
-    // to the source).
+    // A peer for the remote node ipn:0.2, the route for both the forwarded
+    // bundle and the reception report, report-to defaulting to the source.
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
     let peer_addr = cla::Address::Private("peer".as_bytes().into());
@@ -1335,8 +1320,8 @@ async fn reception_report_carries_unknown_security_operation() {
         }
     }
 
-    // The original is forwarded intact, BCB and all (an operation we cannot
-    // understand is left for a downstream security acceptor).
+    // The original is forwarded intact, BCB and all, an operation this node
+    // cannot understand being left to a downstream security acceptor.
     let original = original.expect("Original bundle should be forwarded");
     assert_eq!(original.bundle.primary.destination, dest);
     assert!(
@@ -1373,8 +1358,8 @@ async fn reception_report_carries_unknown_security_operation() {
 // ---------------------------------------------------------------------------
 
 /// A bundle dispatched through `Sink::dispatch` in several segments
-/// ingresses identically to the whole-buffer `dispatch`: the reassembled
-/// bundle reaches its local service.
+/// ingresses as the whole-buffer `dispatch` does, the reassembled bundle
+/// reaching its local service.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_streamed_ingress_delivers() {
     let node_id = IpnNodeId {
@@ -1399,7 +1384,7 @@ async fn cla_streamed_ingress_delivers() {
     let inbound = build_bundle(&remote_source, &local_dest, b"streamed ingress");
 
     // Three segments through a bounded channel with a spawned producer, so
-    // the pull side is genuinely driving.
+    // the pull side drives.
     let third = inbound.len() / 3;
     let (tx, mut rx) = hardy_async::channel::bounded(1);
     let segments = vec![
@@ -1433,9 +1418,9 @@ async fn cla_streamed_ingress_delivers() {
     bpa.shutdown().await;
 }
 
-/// Unregistering a CLA wakes its in-flight streams immediately: a consumer
-/// parked behind a stalled producer fails with `StreamCancelled` the moment
-/// the registration dies, without waiting for the producer's next segment.
+/// Unregistering a CLA wakes its in-flight streams at once: a consumer
+/// parked behind a stalled producer fails with `StreamCancelled` as the
+/// registration ends, without awaiting the producer's next segment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_unregister_cancels_parked_stream() {
     let node_id = IpnNodeId {
@@ -1450,11 +1435,11 @@ async fn cla_unregister_cancels_parked_stream() {
     let (cla, _forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    // A producer that sends one segment then stalls — the sender stays
-    // alive throughout, so only registration teardown can end the stream.
-    // The segment is a genuine bundle prefix: the ingress gate parses
-    // eagerly, so arbitrary bytes would be rejected structurally instead
-    // of leaving the consumer parked on the next pull.
+    // A producer that sends one segment then stalls. The sender stays alive
+    // throughout, so only registration teardown ends the stream. The segment
+    // is a real bundle prefix: the header pass parses eagerly, so arbitrary
+    // bytes would be rejected structurally rather than leaving the consumer
+    // parked on the next pull.
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let inbound = build_bundle(&remote_source, &local_dest, b"parked");
@@ -1475,9 +1460,9 @@ async fn cla_unregister_cancels_parked_stream() {
 
     cla.sink.unregister().await;
 
-    // The parked pull must fail promptly — the assertion is event-driven;
-    // the timeout only bounds a regression. The teardown is reported as the
-    // dead registration, not a per-bundle refusal.
+    // The parked pull fails promptly. The assertion is event-driven and the
+    // timeout only bounds a regression. The teardown is reported as the dead
+    // registration rather than as a per-bundle refusal.
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
         .await
         .expect("parked stream was not woken by unregistration")
@@ -1488,8 +1473,8 @@ async fn cla_unregister_cancels_parked_stream() {
     bpa.shutdown().await;
 }
 
-/// A producer that dies before `Final` is a truncation: the sink refuses
-/// acceptance (so a CLA withholds its transfer ack) and nothing is
+/// A producer that dies before `Final` has truncated the bundle: the sink
+/// refuses it, so a CLA withholds its transfer ack, and nothing is
 /// delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_streamed_ingress_truncation_is_refused() {
@@ -1538,8 +1523,8 @@ async fn cla_streamed_ingress_truncation_is_refused() {
     bpa.shutdown().await;
 }
 
-// A CLA-door node with a service on ipn:0.1.42, for the abandoned
-// transfer tests: the BPA, the service's delivery receiver, and the CLA.
+// A node with a CLA and a service on ipn:0.1.42, for the abandoned-transfer
+// tests. Returns the BPA, the service's delivery receiver and the CLA.
 async fn abandoned_transfer_setup() -> (
     Bpa,
     Arc<TestService>,
@@ -1567,7 +1552,7 @@ async fn abandoned_transfer_setup() -> (
     (bpa, service, service_rx, cla)
 }
 
-// Sends `segments` (no `Final` among them), drops the producer, and returns
+// Sends `segments`, none of them a `Final`, drops the producer, and returns
 // the sink's verdict.
 async fn dispatch_abandoned(cla: &PipelineCla, segments: Vec<Segment>) -> cla::Acceptance {
     let (tx, mut rx) = hardy_async::channel::bounded(segments.len());
@@ -1582,8 +1567,8 @@ async fn dispatch_abandoned(cla: &PipelineCla, segments: Vec<Segment>) -> cla::A
 }
 
 /// A whole bundle sent in `Segment::Next` whose producer then dies before
-/// `Final` is an abandoned transfer: the sink refuses it (so a CLA withholds
-/// its transfer ack) and nothing is delivered.
+/// `Final` is an abandoned transfer: the sink refuses it, so a CLA withholds
+/// its transfer ack, and nothing is delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_complete_at_head_without_final_is_refused() {
     let (bpa, _app, service_rx, cla) = abandoned_transfer_setup().await;
@@ -1605,9 +1590,9 @@ async fn cla_complete_at_head_without_final_is_refused() {
     );
 }
 
-/// The same for a bundle segmented past its outer break: the
-/// producer dies after the last byte but before `Final`, and the sink refuses
-/// the transfer.
+/// The same for a bundle segmented past its outer break: the producer dies
+/// after the last byte but before `Final`, and the sink refuses the
+/// transfer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_segmented_without_final_is_refused() {
     let (bpa, _app, service_rx, cla) = abandoned_transfer_setup().await;
@@ -1616,7 +1601,8 @@ async fn cla_segmented_without_final_is_refused() {
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let inbound = build_bundle(&remote_source, &local_dest, &vec![0xA5_u8; 20_000]);
 
-    // Every byte arrives, in 1000-byte `Next` segments (forces Partial).
+    // Every byte arrives, in 1000-byte `Next` segments, which forces the
+    // `Partial` route.
     let segments = inbound
         .chunks(1000)
         .map(|chunk| Segment::Next(Bytes::copy_from_slice(chunk)))
@@ -1635,20 +1621,20 @@ async fn cla_segmented_without_final_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// Streamed ingress: a CLA delivers a bundle split across many segments, its
-// payload arriving after its header — exercising the `Partial` path
-// end-to-end, the payload drained by the `ValidatingReceiver`.
+// Streamed ingress: a CLA delivers a bundle split across many segments,
+// its payload arriving after its header, which exercises the `Partial`
+// route end to end, the payload drained by the `ValidatingReceiver`.
 // ---------------------------------------------------------------------------
 
-// A `Receiver` that yields a fixed sequence of segments then reports the
-// producer is gone — mimics a CLA reassembling a transfer into segments.
+// A `Receiver` that yields a fixed sequence of segments and then reports
+// the producer gone, as a CLA reassembling a transfer into segments does.
 struct SegmentReceiver {
     segments: Mutex<VecDeque<cla::Segment>>,
 }
 
 impl SegmentReceiver {
-    // Split `data` into `chunk`-byte segments: `Next` for all but the last,
-    // which is `Final`.
+    // `data` in `chunk`-byte segments, `Next` for all but the last, which
+    // is `Final`.
     fn new(data: &[u8], chunk: usize) -> Self {
         let mut segments = VecDeque::new();
         let mut off = 0;
@@ -1667,8 +1653,8 @@ impl SegmentReceiver {
         }
     }
 
-    // Segments not yet pulled by the parser. Non-zero after dispatch means the
-    // payload tail was never drained.
+    // Segments the parser has not pulled. Non-zero after a dispatch means
+    // the payload tail was never drained.
     fn remaining(&self) -> usize {
         self.segments.lock().unwrap().len()
     }
@@ -1686,15 +1672,15 @@ impl Receiver<cla::Segment> for SegmentReceiver {
 }
 
 // A segment source that yields a fixed prefix of a bundle's segments and
-// then parks forever — a transfer whose producer never completes. A
-// consumer that returns while this source is parked provably did not wait
-// for the payload.
+// then parks forever, a transfer whose producer never completes. A consumer
+// that returns while this source is parked provably did not await the
+// payload.
 struct ParkedReceiver {
     segments: VecDeque<cla::Segment>,
 }
 
 impl ParkedReceiver {
-    // The first `count` `chunk`-byte segments of `data`, all `Next` — the
+    // The first `count` `chunk`-byte segments of `data`, all `Next`, so the
     // stream never completes.
     fn new(data: &[u8], chunk: usize, count: usize) -> Self {
         Self {
@@ -1742,7 +1728,8 @@ async fn segmented_payload_local_delivery() {
     let payload = vec![0xA5_u8; 20_000];
     let inbound = build_bundle(&remote_source, &local_dest, &payload);
 
-    // Deliver the bundle as a stream of 1000-byte segments (forces Partial).
+    // The bundle as a stream of 1000-byte segments, which forces the
+    // `Partial` route.
     let mut stream = SegmentReceiver::new(&inbound, 1000);
     assert_eq!(
         cla.sink.dispatch(None, None, &mut stream).await.unwrap(),
@@ -1765,11 +1752,11 @@ async fn segmented_payload_local_delivery() {
     bpa.shutdown().await;
 }
 
-// A replayed arrival is settled at the ingress gate: the first copy was
-// committed (and, once delivered, tombstoned), so the replay's duplicate
-// probe fires while its payload source is still parked — the transfer is
-// acked and dropped without spooling a byte. A consumer that returns while
-// the source is parked provably did not wait for the payload.
+// A replayed arrival is settled before the drain: the first copy committed,
+// and was tombstoned once delivered, so the replay's duplicate probe fires
+// while its payload source is still parked, and the transfer is acked and
+// dropped without spooling a byte. A consumer that returns while the source
+// is parked provably did not await the payload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_arrival_never_awaits_the_payload() {
     let node_id = IpnNodeId {
@@ -1793,9 +1780,10 @@ async fn duplicate_arrival_never_awaits_the_payload() {
     let payload = vec![0xA5_u8; 20_000];
     let inbound = build_bundle(&remote_source, &local_dest, &payload);
 
-    // First copy: delivered whole, so the record commits and its id enters
-    // the gates' recently-committed cache (delivery tombstones the record,
-    // but the probe answers from the cached id, not the record's state).
+    // The first copy is delivered whole, so the record commits and its id
+    // enters the recently-committed cache. Delivery tombstones the record,
+    // but the probe answers from the cached id rather than from the
+    // record's state.
     let mut stream = SegmentReceiver::new(&inbound, 1000);
     assert_eq!(
         cla.sink.dispatch(None, None, &mut stream).await.unwrap(),
@@ -1807,10 +1795,10 @@ async fn duplicate_arrival_never_awaits_the_payload() {
         .expect("Timeout waiting for first delivery")
         .expect("Channel closed");
 
-    // Replay: headers resident, payload parked forever. The gate's duplicate
-    // probe must settle the transfer — acked, dropped — without the payload.
-    // The timeout only bounds a regression: a door that waits for the
-    // payload parks forever.
+    // The replay has resident headers and a payload parked forever. The
+    // duplicate probe settles the transfer, acked and dropped, without the
+    // payload. The timeout only bounds a regression, since a pipeline that
+    // awaited the payload would park forever.
     let mut replay = ParkedReceiver::new(&inbound, 1000, 3);
     let acceptance = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -1830,7 +1818,7 @@ async fn duplicate_arrival_never_awaits_the_payload() {
     assert!(service_rx.is_empty(), "the duplicate must not deliver");
 }
 
-// A bundle whose creation time + lifetime is already in the past — expired on
+// A bundle whose creation time plus lifetime is already past, expired on
 // arrival. Sent in segments, its payload streams as `Partial`.
 fn build_expired_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
     let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
@@ -1858,10 +1846,11 @@ fn build_hop_exhausted_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -
     Bytes::from(data)
 }
 
-// The §5.4 early-reject gate: a streamed bundle that fails a header-only check
-// (lifetime, hop count) is dropped *before* its payload tail is drained, so the
-// CLA never has to spool a gigantic invalid payload. Asserted by counting the
-// segments left un-pulled in the `SegmentReceiver`.
+// The early-reject checks of RFC 9171 Section 5.4: a streamed bundle that
+// fails a header-only check, on lifetime or hop count, is dropped *before*
+// its payload tail is drained, so the CLA never spools a large invalid
+// payload. The count of segments left un-pulled in the `SegmentReceiver`
+// asserts it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn segmented_gate_drops_before_draining_payload() {
     let node_id = IpnNodeId {
@@ -1885,7 +1874,8 @@ async fn segmented_gate_drops_before_draining_payload() {
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let payload = vec![0xA5_u8; 20_000];
 
-    // Expired — gated on lifetime; the payload tail must stay un-pulled.
+    // Expired, so the lifetime check drops it and the payload tail stays
+    // un-pulled.
     let expired = build_expired_bundle(&remote_source, &local_dest, &payload);
     let mut stream = SegmentReceiver::new(&expired, 1000);
     assert_eq!(
@@ -1897,7 +1887,8 @@ async fn segmented_gate_drops_before_draining_payload() {
         "expired bundle must be dropped before the payload tail is drained"
     );
 
-    // Hop-exhausted — gated on hop count; same expectation.
+    // Hop-exhausted, so the hop count check drops it, with the same
+    // expectation.
     let hopped = build_hop_exhausted_bundle(&remote_source, &local_dest, &payload);
     let mut stream = SegmentReceiver::new(&hopped, 1000);
     assert_eq!(
@@ -1909,9 +1900,9 @@ async fn segmented_gate_drops_before_draining_payload() {
         "hop-exhausted bundle must be dropped before the payload tail is drained"
     );
 
-    // Control: a valid bundle of the same size passes the gate, drains fully,
-    // and delivers — proving the un-pulled segments above are the gate at work,
-    // not a stalled stream.
+    // A valid bundle of the same size passes the checks, drains fully and
+    // delivers, which shows the un-pulled segments above come from the
+    // checks rather than from a stalled stream.
     let valid = build_bundle(&remote_source, &local_dest, &payload);
     let mut stream = SegmentReceiver::new(&valid, 1000);
     assert_eq!(
@@ -1939,12 +1930,13 @@ async fn segmented_gate_drops_before_draining_payload() {
     bpa.shutdown().await;
 }
 
-// The gate's reporting split: a hop-exhausted arrival with the report flags
-// set emits the combined §5.6/§5.10 status report — one §6.1.1 record
-// asserting both reception and deletion, citing `HopLimitExceeded` — while
-// an already-expired arrival with the same flags emits nothing at all
-// (anti-amplification: it is treated as if it never arrived). Swapping the
-// two gate branches fails both halves.
+// The two checks report differently. A hop-exhausted arrival with the
+// report flags set emits the combined report of RFC 9171 Sections 5.6 and
+// 5.10, one Section 6.1.1 record asserting both reception and deletion and
+// citing `HopLimitExceeded`, while an already-expired arrival with the same
+// flags emits nothing: it is treated as never having arrived, which keeps
+// an expired flood from being amplified. Swapping the two branches fails
+// both halves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_reports_hop_exhaustion_but_not_expiry() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -1960,8 +1952,8 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
         .build();
     bpa.start(false).await.unwrap();
 
-    // A CLA with a peer for the remote node — the route for the reports
-    // (report-to defaults to the source).
+    // A CLA with a peer for the remote node, the route for the reports,
+    // report-to defaulting to the source.
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
     let peer_addr = cla::Address::Private("peer".as_bytes().into());
@@ -2001,8 +1993,8 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
         cla::Acceptance::Accepted
     );
 
-    // The single combined status report comes out of the CLA — reception and
-    // deletion asserted in one record; the bundle itself must not be
+    // One combined status report comes out of the CLA, asserting reception
+    // and deletion in a single record, and the bundle itself is not
     // forwarded. Event-driven wait; the timeout only bounds a regression.
     let forwarded = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -2031,7 +2023,8 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     assert!(status.deleted.is_some(), "deletion asserted");
     assert_eq!(status.reason, ReasonCode::HopLimitExceeded);
 
-    // An already-expired arrival with the same report flags: total silence.
+    // An already-expired arrival with the same report flags reports
+    // nothing.
     let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
     let timestamp = CreationTimestamp::from_parts(Some(DtnTime::saturating_from(past)), 1);
     let (_, data) = Builder::new(remote_source.clone(), dest)
@@ -2057,12 +2050,12 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     );
 }
 
-// A complete-but-invalid streamed payload — a CRC mismatch the drain's
-// `ValidatingReceiver` detects after the header pass admitted the bundle — is
-// accepted, terminated, and reported exactly like a gate drop: the §5.6/§5.10
-// reception + deletion pair, the deletion citing `BlockUnintelligible`. The
-// transfer is accepted, never refused: the content cannot become valid by
-// resending.
+// A complete but invalid streamed payload, a CRC mismatch the drain's
+// `ValidatingReceiver` detects after the header pass admitted the bundle, is
+// accepted, terminated and reported as a header-check drop is: the reception
+// and deletion pair of RFC 9171 Sections 5.6 and 5.10, the deletion citing
+// `BlockUnintelligible`. The transfer is accepted rather than refused, the
+// content not becoming valid by being resent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drain_failure_reports_reception_then_deletion() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -2078,8 +2071,8 @@ async fn drain_failure_reports_reception_then_deletion() {
         .build();
     bpa.start(false).await.unwrap();
 
-    // A CLA with a peer for the remote node — the route for the reports
-    // (report-to defaults to the source).
+    // A CLA with a peer for the remote node, the route for the reports,
+    // report-to defaulting to the source.
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
     let peer_addr = cla::Address::Private("peer".as_bytes().into());
@@ -2095,11 +2088,11 @@ async fn drain_failure_reports_reception_then_deletion() {
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
 
-    // A bundle fed in CLA-sized chunks: its payload block is incomplete when
-    // its header parses, so the bundle takes the `Partial` route and the
-    // payload streams through the validating drain. One
-    // corrupt byte deep in the payload body fails the payload CRC there —
-    // after the header pass admitted the bundle.
+    // A bundle fed in CLA-sized chunks: its payload block is incomplete
+    // when its header parses, so it takes the `Partial` route and the
+    // payload streams through the validating drain. One corrupt byte deep in
+    // the payload body fails the payload CRC there, after the header pass
+    // admitted the bundle.
     let (_, data) = Builder::new(remote_source.clone(), dest)
         .with_flags(Flags {
             receipt_report_requested: true,
@@ -2110,7 +2103,7 @@ async fn drain_failure_reports_reception_then_deletion() {
         .build(CreationTimestamp::now())
         .unwrap();
     let mut data = data.into_vec();
-    let corrupt_at = data.len() - 100; // inside the payload body, before its CRC field
+    let corrupt_at = data.len() - 100; // Inside the payload body, before its CRC field.
     data[corrupt_at] ^= 0xFF;
 
     let mut stream = SegmentReceiver::new(&data, 1000);
@@ -2123,8 +2116,8 @@ async fn drain_failure_reports_reception_then_deletion() {
         "a complete-but-corrupt transfer is accepted and terminated, never refused"
     );
 
-    // The single combined status report comes out of the CLA — reception and
-    // deletion asserted in one record; the bundle itself must not be
+    // One combined status report comes out of the CLA, asserting reception
+    // and deletion in a single record, and the bundle itself is not
     // forwarded. Event-driven wait; the timeout only bounds a regression.
     let forwarded = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -2154,7 +2147,7 @@ async fn drain_failure_reports_reception_then_deletion() {
     assert_eq!(status.reason, ReasonCode::BlockUnintelligible);
 
     // The completed shutdown is the barrier proving nothing else left the
-    // node — one report bundle, and never the rejected bundle itself.
+    // node: one report bundle, and never the rejected bundle itself.
     bpa.shutdown().await;
     assert!(
         forwarded_rx.is_empty(),
@@ -2162,12 +2155,12 @@ async fn drain_failure_reports_reception_then_deletion() {
     );
 }
 
-// A keyed header-pass failure with a recoverable bundle id — here an
-// unrecognised extension block flagged `delete_bundle_on_failure`, fatal at
-// the §A classify — is reported exactly like a gate or drain drop: one
-// status report asserting both reception and deletion, citing
-// `BlockUnsupported` (§5.6 Step 4's delete-bundle case). The transfer is
-// accepted: the content cannot become valid by resending.
+// A header-pass failure with a recoverable bundle id, here an unrecognised
+// extension block flagged `delete_bundle_on_failure`, is reported as a
+// header-check or drain drop is: one status report asserting both reception
+// and deletion, citing `BlockUnsupported`, the delete-bundle case of RFC
+// 9171 Section 5.6 Step 4. The transfer is accepted, the content not
+// becoming valid by being resent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn header_failure_reports_reception_then_deletion() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -2183,8 +2176,8 @@ async fn header_failure_reports_reception_then_deletion() {
         .build();
     bpa.start(false).await.unwrap();
 
-    // A CLA with a peer for the remote node — the route for the reports
-    // (report-to defaults to the source).
+    // A CLA with a peer for the remote node, the route for the reports,
+    // report-to defaulting to the source.
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
     let peer_addr = cla::Address::Private("peer".as_bytes().into());
@@ -2200,9 +2193,9 @@ async fn header_failure_reports_reception_then_deletion() {
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
 
-    // A report-requesting bundle carrying an unrecognised block (type 999,
-    // block 2) flagged delete_bundle_on_failure, spliced between the primary
-    // and the payload.
+    // A report-requesting bundle carrying an unrecognised block, type 999
+    // and block number 2, flagged `delete_bundle_on_failure`, spliced
+    // between the primary block and the payload.
     let (_, data) = Builder::new(remote_source.clone(), dest)
         .with_flags(Flags {
             receipt_report_requested: true,
@@ -2237,8 +2230,8 @@ async fn header_failure_reports_reception_then_deletion() {
         "a complete-but-unsupported bundle is accepted and terminated, never refused"
     );
 
-    // The single combined status report comes out of the CLA — reception and
-    // deletion asserted in one record; the bundle itself must not be
+    // One combined status report comes out of the CLA, asserting reception
+    // and deletion in a single record, and the bundle itself is not
     // forwarded. Event-driven wait; the timeout only bounds a regression.
     let forwarded = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -2268,7 +2261,7 @@ async fn header_failure_reports_reception_then_deletion() {
     assert_eq!(status.reason, ReasonCode::BlockUnsupported);
 
     // The completed shutdown is the barrier proving nothing else left the
-    // node — one report bundle, and never the rejected bundle itself.
+    // node: one report bundle, and never the rejected bundle itself.
     bpa.shutdown().await;
     assert!(
         forwarded_rx.is_empty(),
@@ -2276,12 +2269,12 @@ async fn header_failure_reports_reception_then_deletion() {
     );
 }
 
-// §5.6 Step 4 reports, then deletes: an unrecognised block flagged both
-// `report_on_failure` and `delete_bundle_on_failure`, on a bundle requesting
-// no status reports at bundle level, still raises its reception report
-// citing `BlockUnsupported`. The report carries no deletion assertion (none
-// was requested); the deletion the second flag orders shows as the bundle
-// never leaving the node.
+// RFC 9171 Section 5.6 Step 4 reports before it deletes: an unrecognised
+// block flagged both `report_on_failure` and `delete_bundle_on_failure`, on
+// a bundle requesting no status reports at bundle level, still raises its
+// reception report citing `BlockUnsupported`. The report asserts no
+// deletion, none having been requested, and the deletion the second flag
+// orders shows as the bundle never leaving the node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn step4_block_flag_report_survives_delete_bundle() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -2312,9 +2305,9 @@ async fn step4_block_flag_report_survives_delete_bundle() {
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
 
-    // No bundle-level report flags; unrecognised block (type 999, block 2)
-    // flagged report_on_failure and delete_bundle_on_failure, spliced after
-    // the primary.
+    // No bundle-level report flags, and an unrecognised block, type 999 and
+    // block number 2, flagged `report_on_failure` and
+    // `delete_bundle_on_failure`, spliced after the primary block.
     let base = build_bundle(&remote_source, &dest, b"payload");
     let unknown = emit_array(Some(5), |a| {
         a.emit(&999u64); // unrecognised block type
@@ -2376,12 +2369,12 @@ async fn step4_block_flag_report_survives_delete_bundle() {
     );
 }
 
-// A rejected bundle that requested only reception reporting (no deletion
-// reports) still carries the §5.6 Step-4 facts on its reception-only status
+// A rejected bundle that requested reception reporting alone still carries
+// the facts of RFC 9171 Section 5.6 Step 4 on its reception-only status
 // report: an unrecognised `report_on_failure` block sets the reception
-// reason to `BlockUnsupported`, and a hop-exhausted gate drop must not
-// squash it to `NoAdditionalInformation` — with no deletion asserted, the
-// record's one reason slot belongs to the reception assertion.
+// reason to `BlockUnsupported`, and a hop-exhausted drop does not reduce it
+// to `NoAdditionalInformation`. With no deletion asserted, the record's one
+// reason belongs to the reception assertion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reception_only_reject_carries_step4_reason() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -2412,9 +2405,9 @@ async fn reception_only_reject_carries_step4_reason() {
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
 
-    // Hop-exhausted, reception-report-only bundle carrying an unrecognised
-    // block (type 999, block 3 — the builder's Hop Count block takes 2)
-    // flagged report_on_failure.
+    // A hop-exhausted, reception-report-only bundle carrying an
+    // unrecognised block, type 999 and block number 3, the builder's Hop
+    // Count block taking 2, flagged `report_on_failure`.
     let (_, data) = Builder::new(remote_source.clone(), dest)
         .with_flags(Flags {
             receipt_report_requested: true,
@@ -2451,8 +2444,8 @@ async fn reception_only_reject_carries_step4_reason() {
         cla::Acceptance::Accepted
     );
 
-    // One reception-only report: received asserted with the Step-4 reason,
-    // no deletion asserted (deletion reports were not requested).
+    // One reception-only report, asserting reception with the Step 4 reason
+    // and no deletion, deletion reports not having been requested.
     // Event-driven wait; the timeout only bounds a regression.
     let forwarded = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -2481,7 +2474,7 @@ async fn reception_only_reject_carries_step4_reason() {
     assert_eq!(status.reason, ReasonCode::BlockUnsupported);
 
     // The completed shutdown is the barrier proving nothing else left the
-    // node — one report bundle, and never the rejected bundle itself.
+    // node: one report bundle, and never the rejected bundle itself.
     bpa.shutdown().await;
     assert!(
         forwarded_rx.is_empty(),
@@ -2489,10 +2482,10 @@ async fn reception_only_reject_carries_step4_reason() {
     );
 }
 
-// §5.6 Step 4's block-flag-alone trigger: a bundle requesting NO status
-// reports at bundle level, carrying an unrecognised block flagged
-// `report_on_failure`, still generates a reception report citing
-// `BlockUnsupported` — the block's own flag is the request. The bundle
+// A block flag alone triggers RFC 9171 Section 5.6 Step 4: a bundle
+// requesting no status reports at bundle level, carrying an unrecognised
+// block flagged `report_on_failure`, still generates a reception report
+// citing `BlockUnsupported`, the block's flag being the request. The bundle
 // itself is forwarded intact, unrecognised block and all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn step4_block_flag_alone_forces_reception_report() {
@@ -2524,8 +2517,9 @@ async fn step4_block_flag_alone_forces_reception_report() {
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
 
-    // No bundle-level report flags at all; unrecognised block (type 999,
-    // block 2) flagged report_on_failure, spliced after the primary.
+    // No bundle-level report flags, and an unrecognised block, type 999 and
+    // block number 2, flagged `report_on_failure`, spliced after the primary
+    // block.
     let base = build_bundle(&remote_source, &dest, b"payload");
     let unknown = emit_array(Some(5), |a| {
         a.emit(&999u64); // unrecognised block type
@@ -2551,8 +2545,8 @@ async fn step4_block_flag_alone_forces_reception_report() {
         cla::Acceptance::Accepted
     );
 
-    // Two bundles leave the node in either order: the forced reception
-    // report (to the source) and the forwarded original.
+    // Two bundles leave the node in either order: the reception report, to
+    // the source, and the forwarded original.
     let mut report = None;
     let mut original = None;
     for _ in 0..2 {
@@ -2572,7 +2566,8 @@ async fn step4_block_flag_alone_forces_reception_report() {
         }
     }
 
-    // The original forwards intact — a report flag never removes the block.
+    // The original forwards intact, a report flag never removing the
+    // block.
     let original = original.expect("original bundle forwarded");
     assert!(
         original
@@ -2583,7 +2578,7 @@ async fn step4_block_flag_alone_forces_reception_report() {
         "the unrecognised block rides on unchanged"
     );
 
-    // The report asserts reception only, citing the Step-4 reason.
+    // The report asserts reception alone, citing the Step 4 reason.
     let report = report.expect("block-demanded reception report emitted");
     assert_eq!(report.bundle.primary.destination, remote_source);
     let body = report
@@ -2602,11 +2597,11 @@ async fn step4_block_flag_alone_forces_reception_report() {
     bpa.shutdown().await;
 }
 
-// The null-endpoint carve-out for the forced report: the same
-// block-demanded bundle whose report-to is `dtn:none` produces no report —
-// there is nowhere to send it. (A bundle with no bundle-level report flags
-// may lawfully carry a null report-to; only the §4.2.3 flag combinations
-// are parse-rejected.) The bundle still forwards.
+// The same block-demanded bundle, with `dtn:none` as its report-to,
+// produces no report, there being nowhere to send it. A bundle with no
+// bundle-level report flags may carry a null report-to, only the flag
+// combinations of RFC 9171 Section 4.2.3 being parse-rejected. The bundle
+// still forwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn step4_forced_report_suppressed_for_null_report_to() {
     let node_id = IpnNodeId {
@@ -2688,11 +2683,12 @@ async fn step4_forced_report_suppressed_for_null_report_to() {
     );
 }
 
-// A transfer that delivers its `Final` with the bundle short is complete: the
-// bundle is invalid, so it is accepted and dropped, never refused (a custodial
-// peer would resend the same bytes until they expire), and its headers parsed,
-// so the drop is reported. A single `Final` carrying a bundle whose payload is
-// cut short is never handed to the payload drain, whose stream is exhausted.
+// A transfer that delivers its `Final` with the bundle short is complete.
+// The bundle is invalid, so it is accepted and dropped rather than refused,
+// a custodial peer otherwise resending the same bytes until they expire,
+// and its headers parsed, so the drop is reported. A single `Final`
+// carrying a bundle whose payload is cut short is never handed to the
+// payload drain, whose stream is exhausted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_short_bundle_in_one_final_is_reported() {
     assert_short_final_is_reported(short_bundle(), None).await;
@@ -2707,15 +2703,16 @@ async fn a_short_bundle_in_segments_is_reported() {
 }
 
 // A bundle short by less than one parser chunk, in a single `Final`, is
-// reported too: the parser does not wait for bytes that will never come.
+// reported too, the parser not awaiting bytes that never come.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_final_short_within_one_parser_chunk_is_reported() {
     let full = reporting_bundle(10_000);
     assert_short_final_is_reported(full.slice(..full.len() - 100), None).await;
 }
 
-// The same short bytes without their `Final` are an abandoned transfer, not a
-// reception: refused, so the peer may resend, and never reported.
+// The same short bytes without their `Final` are an abandoned transfer
+// rather than a reception: refused, so that the peer may resend, and never
+// reported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_abandoned_short_transfer_is_refused_and_unreported() {
     let (bpa, _app, service_rx, cla, forwarded_rx) = short_final_setup().await;
@@ -2755,15 +2752,15 @@ fn reporting_bundle(payload_len: usize) -> Bytes {
     Bytes::from(data)
 }
 
-// A 20 KB-payload reporting bundle cut to 8 KB: the payload's byte-string
-// header still claims 20 KB, but the body is short.
+// A reporting bundle with a 20 KB payload cut to 8 KB: the payload's
+// byte-string header still declares 20 KB, but the body is short.
 fn short_bundle() -> Bytes {
     reporting_bundle(20_000).slice(..8_000)
 }
 
 // A node that observes how a short transfer ends: status reports on, the
-// local service registered, and a peer for the remote source's node —
-// the route for the reports (report-to defaults to the source).
+// local service registered, and a peer for the remote source's node, the
+// route for the reports, report-to defaulting to the source.
 async fn short_final_setup() -> (
     Bpa,
     Arc<TestService>,
@@ -2805,17 +2802,17 @@ async fn short_final_setup() -> (
     (bpa, service, service_rx, cla, forwarded_rx)
 }
 
-// Dispatches `short` in `chunk`-byte segments ending in a `Final` (a single
-// `Final` for `None`), and asserts it is rejected with one report.
+// Dispatches `short` in `chunk`-byte segments ending in a `Final`, or in a
+// single `Final` for `None`, and asserts it is rejected with one report.
 async fn assert_short_final_is_reported(short: Bytes, chunk: Option<usize>) {
     let mut stream = SegmentReceiver::new(&short, chunk.unwrap_or(short.len()));
     assert_rejected_with_one_report(&mut stream).await;
 }
 
-// Dispatches `stream`, a complete transfer of an invalid bundle, and asserts
-// the transfer is accepted, the bundle never delivered, and exactly one
-// status report leaves: reception and deletion asserted, the deletion citing
-// `BlockUnintelligible`.
+// Dispatches `stream`, a complete transfer of an invalid bundle, and
+// asserts that the transfer is accepted, the bundle never delivered, and
+// exactly one status report leaves, asserting reception and deletion, the
+// deletion citing `BlockUnintelligible`.
 async fn assert_rejected_with_one_report(stream: &mut SegmentReceiver) {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
 
@@ -2871,13 +2868,14 @@ async fn assert_rejected_with_one_report(stream: &mut SegmentReceiver) {
     );
 }
 
-// A payload CRC mismatch is reported however the bundle arrives: whole in one
-// `Final`, or whole in a `Next` that an empty `Final` closes. The payload tail
-// checks the trailer in the buffer as it would in a later segment.
+// A payload CRC mismatch is reported however the bundle arrives, whole in
+// one `Final` or whole in a `Next` that an empty `Final` closes. The payload
+// tail checks the trailer in the buffer as it would in a later segment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_payload_crc_mismatch_is_reported_however_it_arrives() {
     let mut bad = reporting_bundle(1000).to_vec();
-    // The last byte of the CRC-32 value: the trailer is `44 c0 c1 c2 c3 FF`.
+    // The last byte of the CRC-32 value, the trailer being
+    // `44 c0 c1 c2 c3 FF`.
     let last_crc_byte = bad.len() - 2;
     bad[last_crc_byte] ^= 0xFF;
     let bad = Bytes::from(bad);
@@ -2894,10 +2892,10 @@ async fn a_payload_crc_mismatch_is_reported_however_it_arrives() {
 }
 
 // R-04: the ingress size cap refuses an over-cap bundle at both of
-// `parse_headers`' enforcement points — the accumulated header bytes and the
-// declared whole-bundle size, each a `HeaderFailure::TooLarge` — surfacing
-// `Acceptance::Refused` so the CLA withholds the transfer ack. The declared
-// case refuses without awaiting the payload.
+// `parse_headers`' enforcement points, the accumulated header bytes and the
+// declared whole-bundle size, each a `HeaderFailure::TooLarge`, surfacing
+// `Acceptance::Refused` so that the CLA withholds the transfer ack. The
+// declared case refuses without awaiting the payload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_size_cap_refuses_oversized_bundle() {
     let node_ids = NodeIds::try_from(
@@ -2912,8 +2910,8 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let inbound = build_bundle(&remote_source, &local_dest, &vec![0xA5_u8; 20_000]);
 
-    // Header phase: a cap below the first accumulated segment trips
-    // `parse_headers` before the header chain even completes.
+    // A cap below the first accumulated segment trips `parse_headers`
+    // before the header chain completes.
     {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
@@ -2931,10 +2929,10 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         bpa.shutdown().await;
     }
 
-    // Declared phase: a cap that admits the header chain (parse yields
-    // `Partial`) but not the declared payload refuses in the header pass,
-    // before a single payload byte is drained — proved by a source that parks
-    // forever after the header chunks. The timeout only bounds a regression.
+    // A cap that admits the header chain, parsing to `Partial`, but not the
+    // declared payload refuses in the header pass, before a payload byte is
+    // drained, which the source parking forever after the header chunks
+    // shows. The timeout only bounds a regression.
     {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
@@ -2960,9 +2958,9 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
 }
 
 // A payload declaration whose wire form ends at `u64::MAX` leaves no room
-// for the outer break. The header pass rejects it as invalid, so the CLA door
-// disposes of it (accepted, never stored) without pulling a payload byte and
-// without computing the bundle's length, which would overflow.
+// for the outer break. The header pass rejects it as invalid, so CLA ingress
+// disposes of it, accepted and never stored, without pulling a payload byte
+// and without computing the bundle's length, which would overflow.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
     let node_ids = NodeIds::try_from(
@@ -2998,9 +2996,9 @@ async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
     crafted.extend_from_slice(&[0x86, 0x01, 0x01, 0x04, 0x02, 0x5b]);
     crafted.extend_from_slice(&len.to_be_bytes());
 
-    // The headers arrive whole and the source then parks forever, so a door
-    // that admitted the declaration would wait on the payload. The timeout
-    // only bounds a regression.
+    // The headers arrive whole and the source then parks forever, so a
+    // header pass that admitted the declaration would await the payload. The
+    // timeout only bounds a regression.
     let mut stream = ParkedReceiver::new(&crafted, crafted.len(), 1);
     assert_eq!(
         tokio::time::timeout(
@@ -3020,8 +3018,9 @@ async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
 // PERF-01: Throughput (REQ-13: >1000 bundles/sec)
 // ---------------------------------------------------------------------------
 
-/// Measures bundle forwarding throughput through the BPA pipeline.
-/// Dispatches bundles via CLA, routes to a peer, signals on the other side.
+/// Measures forwarding throughput through the BPA pipeline, dispatching
+/// bundles through a CLA, routing them to a peer and signalling on the
+/// other side.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn throughput() {
     print_system_info();
@@ -3051,7 +3050,8 @@ async fn throughput() {
     let dst: Eid = "ipn:0.2.99".parse().unwrap();
     let count = 1000usize;
 
-    // Pre-generate all bundles with unique IDs (avoids construction overhead in measurement)
+    // The bundles, each with a unique id, are built up front, to keep
+    // construction out of the measurement.
     let warmup_bundles: Vec<_> = (0..10)
         .map(|_| build_bundle(&src, &dst, b"warmup"))
         .collect();
@@ -3059,7 +3059,7 @@ async fn throughput() {
         .map(|_| build_bundle(&src, &dst, b"throughput"))
         .collect();
 
-    // Warm up
+    // Warm up the pipeline.
     for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
         assert_eq!(
             cla.sink.dispatch(None, None, &mut bundle).await.unwrap(),
@@ -3072,8 +3072,8 @@ async fn throughput() {
             .unwrap();
     }
 
-    // Measure — serial dispatch+receive to avoid backpressure and duplicate issues.
-    // Each bundle is dispatched and received before the next is sent.
+    // Dispatch and receive each bundle before sending the next, which keeps
+    // backpressure and duplicates out of the measurement.
     let start = tokio::time::Instant::now();
     let mut last_arrival = start;
     for (i, mut bundle) in test_bundles.into_iter().enumerate() {
@@ -3095,21 +3095,22 @@ async fn throughput() {
     let bundles_per_sec = count as f64 / elapsed.as_secs_f64();
     eprintln!("Throughput: {count} bundles in {elapsed:.2?} = {bundles_per_sec:.0} bundles/sec",);
 
-    // REQ-13 (>1000 bundles/sec, in memory) is measured by the criterion
-    // benchmark, not gated: a wall-clock gate here fails under build load.
-    // This test pins that every bundle arrives, and reports the rate.
+    // The criterion benchmark measures REQ-13, more than 1000 bundles per
+    // second in memory, rather than this test gating it: a wall-clock gate
+    // here fails under build load. This test pins that every bundle arrives,
+    // and reports the rate.
 
-    // Don't call bpa.shutdown() — 1000 ForwardPending bundles in metadata
-    // cause the internal poller to re-poll indefinitely during shutdown.
-    // The BPA is leaked; the runtime cleans up on test exit.
+    // `bpa.shutdown()` is not called: 1000 `ForwardPending` bundles in
+    // metadata leave the poller re-polling indefinitely through shutdown.
+    // The BPA is leaked, and the runtime cleans up as the test exits.
 }
 
 // ---------------------------------------------------------------------------
 // PERF-LAT-01: Forwarding Latency
 // ---------------------------------------------------------------------------
 
-/// Measures per-bundle forwarding latency through the BPA pipeline.
-/// Unidirectional: CLA dispatch → BPA route → CLA forward.
+/// Measures per-bundle forwarding latency through the BPA pipeline, one
+/// way: a CLA dispatch, the BPA's routing, then a CLA forward.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forwarding_latency() {
     print_system_info();
@@ -3139,7 +3140,7 @@ async fn forwarding_latency() {
     let dst: Eid = "ipn:0.2.99".parse().unwrap();
     let count = 100usize;
 
-    // Pre-generate all bundles with unique IDs
+    // The bundles, each with a unique id, are built up front.
     let warmup_bundles: Vec<_> = (0..10)
         .map(|_| build_bundle(&src, &dst, b"warmup"))
         .collect();
@@ -3160,9 +3161,8 @@ async fn forwarding_latency() {
             .unwrap();
     }
 
-    // Measure individual dispatch-to-forward latencies.
-    // The arrival time is sampled inside forward(), so we measure the
-    // actual pipeline processing time, not the channel wait.
+    // The arrival time is sampled inside `forward`, so the measurement
+    // covers the pipeline's processing rather than the channel wait.
     let mut latencies = Vec::with_capacity(count);
 
     for (i, mut bundle) in test_bundles.into_iter().enumerate() {
@@ -3187,7 +3187,7 @@ async fn forwarding_latency() {
 
     eprintln!("Forwarding latency ({count} bundles): P50={p50:.2?} P95={p95:.2?} P99={p99:.2?}");
 
-    // Drop receiver to unblock any poller send_async, then shutdown
+    // Dropping the receiver unblocks any parked poller send.
     drop(arrival_rx);
     bpa.shutdown().await;
 }
@@ -3199,10 +3199,10 @@ async fn forwarding_latency() {
 // The block type the extent-checking Rewriter inserts.
 const INSERTED: Type = Type::Unrecognised(200);
 
-/// Records any divergence between the Bundle's block extents and the wire
-/// data it is handed alongside, observed through the reader's extent-based
-/// block access: a stale block map over the bytes reads back shifted
-/// garbage. Then inserts a block, shifting the payload extent the per-hop
+/// Records any divergence between the `Bundle`'s block extents and the wire
+/// data it is handed alongside, seen through the reader's extent-based
+/// block access, where a stale block map over the bytes reads back shifted
+/// bytes. It then inserts a block, shifting the payload extent the per-hop
 /// rewrite works over next.
 struct ExtentCheckRewriter {
     mismatch: Arc<Mutex<Option<String>>>,
@@ -3213,7 +3213,7 @@ impl Rewriter for ExtentCheckRewriter {
         let reader = ctx.reader();
         let mut mismatch = self.mismatch.lock().unwrap();
 
-        // The payload extent must index the bytes.
+        // The payload extent indexes the bytes.
         match reader.block(1) {
             Some((_, Availability::Available(payload))) if payload.as_ref() == b"Hello remote" => {}
             Some((_, Availability::Available(payload))) => {
@@ -3236,9 +3236,9 @@ impl Rewriter for ExtentCheckRewriter {
     }
 }
 
-/// The Egress Rewriters see the stored (bundle, data) pair consistently, and
-/// hand the per-hop rewrite a consistent rewritten pair: the transmitted
-/// bundle carries the Rewriter's insert, this node's Previous Node and the
+/// The Egress Rewriters see a consistent `(bundle, data)` pair, and hand
+/// the per-hop rewrite a consistent rewritten one: the transmitted bundle
+/// carries the Rewriter's insert, this node's Previous Node block and the
 /// payload, each decoding from its own extent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_filter_sees_consistent_extents() {
@@ -3253,7 +3253,6 @@ async fn egress_filter_sees_consistent_extents() {
     let bpa = Bpa::builder().add_filters(pack).build();
     bpa.start(false).await.unwrap();
 
-    // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
@@ -3264,9 +3263,8 @@ async fn egress_filter_sees_consistent_extents() {
     });
     cla.sink.add_peer(peer_addr, &[remote_node]).await.unwrap();
 
-    // Register a service and send a bundle to the remote node — a
-    // locally-originated bundle has no Previous Node block, so the per-hop
-    // rewrite inserts one after the Rewriter's insert
+    // A locally-originated bundle has no Previous Node block, so the
+    // per-hop rewrite inserts one after the Rewriter's insert.
     let (factory, _service_rx) = TestService::factory();
     let service = bpa
         .register_service(Some(ServiceId::Ipn(42)), factory)
@@ -3334,9 +3332,9 @@ async fn egress_filter_sees_consistent_extents() {
     bpa.shutdown().await;
 }
 
-/// Keys traffic for the unrouted ipn:0.3 node onto ipn:0.2.1 — the
-/// SR-shaped per-bundle override, honouring the skip-self discipline by
-/// keying only a foreign destination.
+/// Keys traffic for the unrouted ipn:0.3 node onto ipn:0.2.1, a per-bundle
+/// override in the shape of a source route, keying only a foreign
+/// destination.
 struct KeyingClassifier;
 
 impl Classifier for KeyingClassifier {
@@ -3351,10 +3349,10 @@ impl Classifier for KeyingClassifier {
     }
 }
 
-/// A Classifier-written route_key persists in the record's metadata and
-/// drives the RIB lookup: a bundle whose destination has no route forwards
-/// via the route for its key. Without the key threading the bundle parks
-/// Waiting forever, so the forward event is the proof.
+/// A Classifier-written `route_key` persists in the record's metadata and
+/// drives the RIB lookup, so a bundle whose destination has no route
+/// forwards over the route for its key. Without the key, the bundle parks
+/// `Waiting` forever, which makes the forward the proof.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn classifier_route_key_drives_the_lookup() {
     let mut pack = FilterPack::new("test");
@@ -3362,7 +3360,7 @@ async fn classifier_route_key_drives_the_lookup() {
     let bpa = Bpa::builder().add_filters(pack).build();
     bpa.start(false).await.unwrap();
 
-    // A peer exists for ipn:0.2 only; ipn:0.3 has no route.
+    // A peer exists for ipn:0.2 alone, and ipn:0.3 has no route.
     let (cla, forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -3406,7 +3404,7 @@ async fn classifier_route_key_drives_the_lookup() {
 }
 
 /// Keys traffic for the unregistered local service ipn:0.1.77 onto
-/// ipn:0.2.1: a foreign key for a local destination.
+/// ipn:0.2.1, a foreign key for a local destination.
 struct LocalKeyingClassifier;
 
 impl Classifier for LocalKeyingClassifier {
@@ -3420,8 +3418,8 @@ impl Classifier for LocalKeyingClassifier {
 }
 
 // A bundle parks under the inputs its lookup walked: one addressed to an
-// unregistered local service but keyed onto a foreign EID waits for a route
-// to its key, not for its destination's service, so the key's route
+// unregistered local service but keyed onto a foreign EID awaits a route to
+// its key rather than its destination's service, so the key's route
 // appearing forwards it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_keyed_local_destination_waits_for_its_key_route() {
@@ -3442,8 +3440,8 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
     // A fresh arrival executes its routing decision before the CLA's
-    // dispatch returns, so the bundle has parked once it does: nothing
-    // routes its key yet.
+    // dispatch returns, so the bundle has parked by then, nothing routing
+    // its key yet.
     let (bundle, data) = Builder::new("ipn:0.3.1".parse().unwrap(), "ipn:0.1.77".parse().unwrap())
         .with_payload(Cow::Borrowed(b"Keyed away".as_slice()))
         .build(CreationTimestamp::now())
@@ -3483,7 +3481,7 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
 }
 
 // ---------------------------------------------------------------------------
-// Failing service — always returns Err from deliver
+// A service whose `deliver` always returns `Err`
 // ---------------------------------------------------------------------------
 
 struct FailingService {
@@ -3491,9 +3489,9 @@ struct FailingService {
     /// The endpoint the BPA settled on, which delivered bundles are
     /// addressed to.
     endpoint: Eid,
-    /// Fires once `deliver` completes (after constructing the Err), so a
-    /// waiter observes the point at which the dispatcher's Err-handling
-    /// branch is about to run rather than the point at which it started.
+    /// Fires once `deliver` has built its `Err` and returned, so a waiter
+    /// observes the point at which the dispatcher's error branch is about
+    /// to run rather than the point at which `deliver` started.
     completed_tx: flume::Sender<()>,
 }
 
@@ -3543,12 +3541,11 @@ impl Service for FailingService {
 // INT-BPA-05: dispatcher tolerates deliver returning Err
 // ---------------------------------------------------------------------------
 
-/// When `deliver` returns `Err`, the dispatcher must preserve the bundle
-/// as `WaitingForService`, not report it delivered and delete it. Proven
-/// end-to-end: after the failing receiver rejects the bundle, a fresh working
-/// receiver registered on the same service id must have it re-delivered. A
-/// regression to the old drop-on-error behaviour makes the re-delivery time
-/// out.
+/// When `deliver` returns `Err`, the dispatcher keeps the bundle as
+/// `WaitingForService` rather than reporting it delivered and deleting it.
+/// After the failing receiver rejects the bundle, a working receiver
+/// registered on the same service id receives it. A regression to dropping
+/// on error makes the re-delivery time out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatcher_handles_deliver_err() {
     let bpa = Bpa::builder().build();
@@ -3588,10 +3585,10 @@ async fn dispatcher_handles_deliver_err() {
     .expect("dispatcher must call deliver")
     .unwrap();
 
-    // Swap in a working receiver on the same service id — no quiesce
-    // needed: the failed delivery's park re-checks the routing snapshot, so
-    // whether it lands before this registration's WaitingForService poll or
-    // after it, the bundle re-enters dispatch and reaches the new receiver.
+    // A working receiver on the same service id, with no quiesce needed:
+    // the failed delivery's park re-checks the routing snapshot, so whether
+    // it lands before this registration's `WaitingForService` poll or after
+    // it, the bundle re-enters dispatch and reaches the new receiver.
     failing.sink.unregister().await;
     let (factory, received_rx) = TestService::factory();
     bpa.register_service(Some(ServiceId::Ipn(42)), factory)
@@ -3612,8 +3609,8 @@ async fn dispatcher_handles_deliver_err() {
 }
 
 // ---------------------------------------------------------------------------
-// Deferring CLA — answers Accepted for the first N offers, Sent afterwards,
-// and reports every offered bundle id to the test
+// A CLA that answers `Accepted` to the first N offers and `Sent` afterwards,
+// reporting every offered bundle id to the test
 // ---------------------------------------------------------------------------
 
 struct DeferringCla {
@@ -3665,7 +3662,7 @@ impl cla::Cla for DeferringCla {
     }
 }
 
-// Helper: BPA with a DeferringCla registered and a peer for ipn:0.<node>
+// A BPA with a `DeferringCla` registered and a peer for ipn:0.<node>.
 async fn deferring_setup(
     accepts: usize,
     peer_node_number: u32,
@@ -3720,12 +3717,12 @@ async fn expect_no_offer(rx: &flume::Receiver<Id>) {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-07: deferred outcome — Failed re-enters dispatch per-bundle
+// INT-BPA-07: a deferred outcome of Failed re-enters dispatch, per bundle
 // ---------------------------------------------------------------------------
 
-/// A transfer answered `Accepted` whose outcome is reported `Failed` gets a
-/// fresh routing decision and is re-offered to the CLA; the bundle is never
-/// dropped.
+/// A transfer answered `Accepted` whose outcome is reported `Failed` takes
+/// a fresh routing decision and is re-offered to the CLA, the bundle never
+/// being dropped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_failed_redispatches() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
@@ -3752,8 +3749,8 @@ async fn deferred_outcome_failed_redispatches() {
         .await
         .unwrap();
 
-    // The failed transfer re-enters dispatch and is re-offered (the route is
-    // unchanged); the second offer is answered Sent by the mock.
+    // The failed transfer re-enters dispatch and is re-offered over the
+    // unchanged route, and the CLA answers the second offer `Sent`.
     let id2 = expect_offer(&offers_rx).await;
     assert_eq!(id, id2, "Re-offer must be the same bundle");
 
@@ -3761,12 +3758,12 @@ async fn deferred_outcome_failed_redispatches() {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-08: deferred outcome — Completed resolves the transfer
+// INT-BPA-08: a deferred outcome of Completed resolves the transfer
 // ---------------------------------------------------------------------------
 
 /// A transfer answered `Accepted` whose outcome is reported `Completed` is
-/// complete: no re-offer, a late duplicate outcome is ignored, and a
-/// re-arrival of the same bundle is dropped as a duplicate.
+/// finished: there is no re-offer, a late duplicate outcome is ignored, and
+/// a re-arrival of the same bundle is dropped as a duplicate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_completed_resolves() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
@@ -3790,14 +3787,14 @@ async fn deferred_outcome_completed_resolves() {
         .await
         .unwrap();
 
-    // A late duplicate outcome is ignored, not honoured twice.
+    // A late duplicate outcome is ignored rather than honoured twice.
     cla.sink()
         .report_transfer(&id, cla::TransferOutcome::Failed)
         .await
         .unwrap();
     expect_no_offer(&offers_rx).await;
 
-    // The completed bundle's id was committed: a re-arrival of the same
+    // The completed bundle's id was committed, so a re-arrival of the same
     // bundle is dropped as a duplicate rather than re-forwarded.
     assert_eq!(
         cla.sink().dispatch(None, None, &mut data).await.unwrap(),
@@ -3809,12 +3806,12 @@ async fn deferred_outcome_completed_resolves() {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-09: deferred outcome — peer removal resolves outcome-unknown
+// INT-BPA-09: removing a peer resolves a deferred outcome as unknown
 // ---------------------------------------------------------------------------
 
 /// Removing the peer while a transfer awaits its outcome resolves it as
-/// outcome-unknown: the bundle returns to Waiting and is re-offered when the
-/// peer comes back.
+/// unknown: the bundle returns to `Waiting` and is re-offered once the peer
+/// comes back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_peer_removal_resolves_unknown() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
@@ -3850,8 +3847,8 @@ async fn deferred_outcome_peer_removal_resolves_unknown() {
             .unwrap()
     );
 
-    // The unresolved transfer went back to Waiting on peer removal, and the
-    // re-added peer's route re-dispatches it.
+    // The unresolved transfer returned to `Waiting` on the peer's removal,
+    // and the re-added peer's route re-dispatches it.
     let id2 = expect_offer(&offers_rx).await;
     assert_eq!(id, id2, "Re-offer must be the same bundle");
 
@@ -3859,17 +3856,17 @@ async fn deferred_outcome_peer_removal_resolves_unknown() {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-10: deferred outcome — only the owning CLA may resolve a transfer
+// INT-BPA-10: only the owning CLA resolves a transfer's deferred outcome
 // ---------------------------------------------------------------------------
 
 /// An outcome reported by a CLA that does not own the transfer's peer is
-/// ignored; the owning CLA's subsequent outcome is still honoured. Outcomes
-/// for unknown bundles are ignored without error.
+/// ignored, and the owning CLA's later outcome is still honoured. An
+/// outcome for an unknown bundle is ignored without error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_ignores_wrong_cla() {
     let (bpa, cla_a, offers_a) = deferring_setup(1, 2).await;
 
-    // A second CLA with its own peer on a different node
+    // A second CLA, with its own peer on another node.
     let (cla_b, offers_b) = DeferringCla::factory(0);
     let cla_b = bpa.register_cla("deferring-b", cla_b).await.unwrap();
     cla_b
@@ -3915,7 +3912,7 @@ async fn deferred_outcome_ignores_wrong_cla() {
         .await
         .unwrap();
 
-    // CLA B does not own the transfer's peer: its outcome is ignored.
+    // CLA B does not own the transfer's peer, so its outcome is ignored.
     cla_b
         .sink()
         .report_transfer(&id, cla::TransferOutcome::Completed)
@@ -3937,15 +3934,15 @@ async fn deferred_outcome_ignores_wrong_cla() {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-11: expiry during a CLA-owned transfer is covered by
-// tests/forward_expiry.rs — the reaper defers a ForwardAckPending bundle,
-// and the outcome resolves it (a failed transfer expires at the dispatch
-// expiry checkpoint).
+// INT-BPA-11: expiry during a CLA-owned transfer lives in
+// tests/forward_expiry.rs, where the reaper defers a `ForwardAckPending`
+// bundle and the outcome resolves it, a failed transfer expiring at the
+// dispatch expiry checkpoint.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Blocking CLA — holds the first forward open until released, then fails it
-// synchronously; every subsequent offer is answered Sent. All offers are
+// A CLA that holds the first forward open until released and then fails it
+// synchronously, answering `Sent` to every later offer. Every offer is
 // recorded.
 // ---------------------------------------------------------------------------
 
@@ -3998,11 +3995,11 @@ impl cla::Cla for BlockingCla {
     }
 }
 
-/// A route event that lands while a transfer is in flight is not missed:
-/// the event's poll cannot see the bundle (claimed ForwardAckPending), but
-/// the synchronous failure's park re-checks the routing snapshot captured
-/// when the flight began and re-enters dispatch — the only path to the
-/// second offer, since no further route events occur.
+/// A route event that lands while a transfer is in flight is not missed.
+/// The event's poll cannot see the bundle, claimed as `ForwardAckPending`,
+/// but the synchronous failure's park re-checks the routing snapshot taken
+/// when the flight began and re-enters dispatch, the only route to the
+/// second offer, no further route events occurring.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_park_recheck_redispatches() {
     let bpa = Bpa::builder().build();
@@ -4038,8 +4035,8 @@ async fn forward_failure_park_recheck_redispatches() {
         .await
         .unwrap();
 
-    // The transfer is in flight, held open by the CLA...
-    // (every timeout below only bounds a regression)
+    // The transfer is in flight, held open by the CLA. Every timeout below
+    // only bounds a regression.
     let offered =
         tokio::time::timeout(tokio::time::Duration::from_secs(5), offered_rx.recv_async())
             .await
@@ -4047,8 +4044,8 @@ async fn forward_failure_park_recheck_redispatches() {
             .unwrap();
     assert_eq!(offered, id);
 
-    // ...when a second peer for the same node appears. Its route event
-    // polls Waiting bundles and cannot see this one.
+    // A second peer for the same node appears. Its route event polls
+    // `Waiting` bundles and cannot see this one.
     cla.sink
         .add_peer(
             cla::Address::Private("peer-b".as_bytes().into()),
@@ -4057,8 +4054,8 @@ async fn forward_failure_park_recheck_redispatches() {
         .await
         .unwrap();
 
-    // Release: the synchronous failure parks the bundle; the park detects
-    // the mid-flight routing change and re-dispatches.
+    // On release, the synchronous failure parks the bundle, and the park
+    // detects the mid-flight routing change and re-dispatches.
     release_tx.send(()).expect("CLA gone");
     let offered =
         tokio::time::timeout(tokio::time::Duration::from_secs(5), offered_rx.recv_async())
@@ -4070,9 +4067,9 @@ async fn forward_failure_park_recheck_redispatches() {
     bpa.shutdown().await;
 }
 
-/// A synchronous forward failure must not resurrect a bundle that was
-/// resolved while its transfer was in flight: the failure's Waiting park is
-/// conditional and loses against the terminal claim.
+/// A synchronous forward failure does not resurrect a bundle resolved while
+/// its transfer was in flight: the failure's `Waiting` park is conditional
+/// and loses against the terminal claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_never_resurrects_resolved_bundle() {
     let metadata_store = Arc::new(MetadataMemStorage::new(None));
@@ -4111,7 +4108,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .await
         .unwrap();
 
-    // The transfer is in flight (the timeout only bounds a regression)...
+    // The transfer is in flight; the timeout only bounds a regression.
     let offered =
         tokio::time::timeout(tokio::time::Duration::from_secs(5), offered_rx.recv_async())
             .await
@@ -4119,13 +4116,13 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
             .unwrap();
     assert_eq!(offered, id);
 
-    // ...when the bundle is resolved, exactly as the reaper's terminal
-    // claim would leave it (delete wins every race).
+    // The bundle is resolved, as the reaper's terminal claim would leave
+    // it, a delete winning every race.
     metadata_store.tombstone(&id).await.unwrap();
 
-    // Release: the failure's park must lose against the tombstone.
-    // shutdown() is the barrier — it joins the egress pollers, so the park
-    // has fully run by the time it returns; no quiet window is involved.
+    // On release, the failure's park loses against the tombstone.
+    // `shutdown` is the barrier: it joins the egress pollers, so the park
+    // has run by the time it returns, with no quiet window involved.
     release_tx.send(()).expect("CLA gone");
     bpa.shutdown().await;
 
@@ -4143,7 +4140,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
 }
 
 // ---------------------------------------------------------------------------
-// The config-gated RFC 9171 validity checks at the pre-drain gate
+// The config-gated RFC 9171 validity checks, applied before the drain
 // ---------------------------------------------------------------------------
 
 /// Feeds `data` to the BPA through the CLA sink as one Final segment.
@@ -4205,8 +4202,8 @@ fn clockless_ageless_bundle() -> Bytes {
     Bytes::from(data)
 }
 
-/// RFC 9171 §4.3.1: with the default strict config, a primary block with
-/// neither CRC nor BIB coverage is rejected at the pre-drain gate.
+/// RFC 9171 Section 4.3.1: with the default strict config, a primary block
+/// with neither CRC nor BIB coverage is rejected at the pre-drain gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_rejects_unprotected_primary_block() {
     let (bpa, cla, service_rx) = gate_fixture(|b| b).await;
@@ -4222,8 +4219,8 @@ async fn gate_rejects_unprotected_primary_block() {
     );
 }
 
-/// `primary_block_integrity(false)` relaxes the §4.3.1 check: the same
-/// bundle is admitted and delivered.
+/// `primary_block_integrity(false)` relaxes the Section 4.3.1 check: the
+/// same bundle is admitted and delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relaxed_gate_admits_unprotected_primary_block() {
     let (bpa, cla, service_rx) = gate_fixture(|b| b.primary_block_integrity(false)).await;
@@ -4241,8 +4238,8 @@ async fn relaxed_gate_admits_unprotected_primary_block() {
     bpa.shutdown().await;
 }
 
-/// RFC 9171 §4.4.2: with the default strict config, a clockless bundle
-/// without a Bundle Age block is rejected at the pre-drain gate.
+/// RFC 9171 Section 4.4.2: with the default strict config, a clockless
+/// bundle without a Bundle Age block is rejected at the pre-drain gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_rejects_clockless_bundle_without_age() {
     let (bpa, cla, service_rx) = gate_fixture(|b| b).await;
@@ -4258,8 +4255,8 @@ async fn gate_rejects_clockless_bundle_without_age() {
     );
 }
 
-/// `bundle_age_required(false)` relaxes the §4.4.2 check: the same bundle
-/// is admitted and delivered.
+/// `bundle_age_required(false)` relaxes the Section 4.4.2 check: the same
+/// bundle is admitted and delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relaxed_gate_admits_clockless_bundle_without_age() {
     let (bpa, cla, service_rx) = gate_fixture(|b| b.bundle_age_required(false)).await;
@@ -4278,12 +4275,12 @@ async fn relaxed_gate_admits_clockless_bundle_without_age() {
 }
 
 // A peer removed while its construction is still in flight leaves nothing
-// behind (whole-codebase review #14): add_peer claims the address, builds
-// the peer complete, publishes, then re-checks its claim before installing
-// RIB entries — a concurrent remove wins the claim, and the half-added peer
-// is withdrawn (add_peer reports false). The policy's controller
-// construction is the interception point: it parks until released, and a
-// fresh add on the same address afterwards succeeds cleanly.
+// behind: `add_peer` claims the address, builds the peer, publishes it, then
+// re-checks its claim before installing RIB entries, so a concurrent
+// `remove_peer` wins the claim and the half-added peer is withdrawn
+// (`add_peer` returns false). Controller construction is the interception
+// point: it parks until the test releases it, and a fresh add on the same
+// address afterwards succeeds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peer_removed_mid_construction_is_withdrawn() {
     use hardy_bpa::policy;
@@ -4399,10 +4396,10 @@ async fn peer_removed_mid_construction_is_withdrawn() {
 }
 
 // Routing is decided at the ingress gate: a destination resolving to an
-// explicit Drop route rejects the bundle before its payload is drained —
-// the stream is left unconsumed and nothing spools. Drop-with-reason
-// reports like any gated drop (the combined reception + deletion record);
-// Drop-without-reason is silent, with no reception report either.
+// explicit Drop route rejects the bundle before its payload is drained, so
+// the stream is left unconsumed and nothing spools. A Drop carrying a reason
+// reports as any other gated drop does, with one combined reception and
+// deletion record; a reasonless Drop emits nothing at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn early_route_drop_never_awaits_the_payload() {
     let node_id = IpnNodeId {
@@ -4457,10 +4454,10 @@ async fn early_route_drop_never_awaits_the_payload() {
         data
     };
 
-    // Reasoned Drop: accepted with one combined report, while the payload
-    // source is parked forever — the verdict returning at all proves the
-    // decision never awaited the drain, and a rejected arrival spools
-    // nothing. The timeout only bounds a regression.
+    // Reasoned Drop: accepted with one combined report while the payload
+    // source is parked forever, so the verdict returning at all proves the
+    // decision never awaited the drain. The timeout only bounds a
+    // regression.
     let data = oversized("ipn:0.9.99");
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
     assert_eq!(
@@ -4534,9 +4531,9 @@ impl SinkAgent {
 
 impl Agent for SinkAgent {}
 
-// The gate's decision of record is made again at the commit when the table
-// changed during the drain, so a route withdrawn while the payload was still
-// arriving does not carry the bundle. The route moves from one peer to
+// The gate's decision of record is made again at the commit when the routing
+// table changed during the drain, so a route withdrawn while the payload was
+// still arriving does not carry the bundle. The route moves from one peer to
 // another while the source is parked mid-payload, and the bundle leaves
 // through the new route's peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4725,8 +4722,8 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
     let (cla, _forwarded_rx) = PipelineCla::factory();
     let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    // A delivery report, from a remote node's admin endpoint to ours, about
-    // a bundle the service sent.
+    // A delivery report about a bundle the service sent, from a remote node's
+    // admin endpoint to the local one.
     let (record, ()) = emit(&AdministrativeRecord::BundleStatusReport(
         BundleStatusReport {
             bundle_id: Id {
@@ -4770,16 +4767,16 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
 }
 
 // ---------------------------------------------------------------------------
-// The originate door: the validation split, route-at-door, and the caller's
+// Origination: the validation split, the route lookup, and the caller's
 // error surface
 // ---------------------------------------------------------------------------
 
-/// Routing is decided at the originate door: a destination resolving to an
-/// explicit Drop route rejects the send before its payload is drained — the
-/// stream is left unconsumed and nothing spools. Unlike the CLA gate there
-/// is never a status report, report flags notwithstanding: the error return
-/// is the originator's notification, and even a reasonless (silent) Drop
-/// route surfaces as `Dropped(None)`.
+/// Routing is decided before the payload drains: a destination resolving to
+/// an explicit Drop route rejects the send with the stream left unconsumed
+/// and nothing spooled. Unlike CLA ingress there is never a status report,
+/// report flags notwithstanding: the error return is the originator's
+/// notification, and even a reasonless Drop route surfaces as
+/// `Dropped(None)`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originate_route_drop_never_awaits_the_payload() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -4811,9 +4808,8 @@ async fn originate_route_drop_never_awaits_the_payload() {
     };
 
     // Reasoned Drop: the error returns while the payload source is parked
-    // forever — returning at all proves the decision never awaited the
-    // drain, and the cancelled spool persists nothing. The timeout only
-    // bounds a regression.
+    // forever, so returning at all proves the decision never awaited the
+    // drain. The timeout only bounds a regression.
     let data = oversized("ipn:0.9.99");
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
@@ -4829,7 +4825,7 @@ async fn originate_route_drop_never_awaits_the_payload() {
         )))
     ));
 
-    // Silent Drop: the originator still gets an error where the CLA gate
+    // Silent Drop: the originator still gets an error, though CLA ingress
     // drops silently.
     let data = oversized("ipn:0.9.98");
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
@@ -4849,9 +4845,9 @@ async fn originate_route_drop_never_awaits_the_payload() {
     );
 }
 
-// The ADU doors refuse a bundle that expires at creation, as the raw door's
-// admission gate does: a zero lifetime surfaces as `Dropped(LifetimeExpired)`
-// with nothing admitted, whole-buffer or streamed.
+// `Sink::send` and `Sink::send_streamed` refuse a bundle that expires at
+// creation, as `raw::Sink::send`'s admission gate does: a zero lifetime
+// surfaces as `Dropped(LifetimeExpired)` with nothing admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adu_originate_refuses_a_zero_lifetime() {
     let (bpa, _svc, forwarded_rx, _) = streamed_originate_setup().await;
@@ -4875,7 +4871,7 @@ async fn adu_originate_refuses_a_zero_lifetime() {
         Err(service::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
     ));
 
-    // The streamed door, the same refusal before the payload is pulled: the
+    // `send_streamed`, the same refusal before the payload is pulled: the
     // source pends forever if pulled. The timeout only bounds a regression.
     let mut stream = ParkedReceiver::new(b"expired", 7, 0);
     let result = tokio::time::timeout(
@@ -4900,17 +4896,17 @@ async fn adu_originate_refuses_a_zero_lifetime() {
     assert!(forwarded_rx.is_empty(), "nothing was admitted");
 }
 
-/// The raw door carries the validation the ADU door doesn't: hop-exhausted
-/// service bytes trip the lifetime/hop admission check, and the
-/// config-gated RFC 9171 validity checks (strict by default) now apply to
-/// raw sends at the same seat — each surfacing as `Dropped(reason)` to the
-/// caller, with nothing admitted.
+/// `raw::Sink::send` carries the validation the ADU sinks do not:
+/// hop-exhausted service bytes trip the lifetime and hop admission check,
+/// and the config-gated RFC 9171 validity checks, strict by default, apply
+/// to raw sends as well. Each surfaces as `Dropped(reason)` to the caller,
+/// with nothing admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_applies_the_admission_gates() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
     let dest: Eid = "ipn:0.2.1".parse().unwrap();
 
-    // Hop-exhausted (count past limit): the lifetime/hop admission pair.
+    // Hop-exhausted, the count past the limit.
     let (_, data) = Builder::new(source_eid.clone(), dest.clone())
         .with_hop_count(&HopInfo {
             limit: NonZeroU8::new(1).unwrap(),
@@ -4925,8 +4921,7 @@ async fn raw_originate_applies_the_admission_gates() {
         Err(service::Error::Dropped(Some(ReasonCode::HopLimitExceeded)))
     ));
 
-    // Unprotected primary block: RFC 9171 §4.3.1, newly applied to raw
-    // sends.
+    // Unprotected primary block: RFC 9171 Section 4.3.1.
     let (_, data) = Builder::new(source_eid.clone(), dest.clone())
         .with_crc_type(CrcType::None)
         .with_payload(Cow::Borrowed(b"no integrity".as_slice()))
@@ -4940,7 +4935,7 @@ async fn raw_originate_applies_the_admission_gates() {
         )))
     ));
 
-    // Clockless without a Bundle Age block: RFC 9171 §4.4.2.
+    // Clockless without a Bundle Age block: RFC 9171 Section 4.4.2.
     let (_, data) = Builder::new(source_eid.clone(), dest)
         .with_payload(Cow::Borrowed(b"no clock".as_slice()))
         .build(CreationTimestamp::default())
@@ -4956,18 +4951,17 @@ async fn raw_originate_applies_the_admission_gates() {
     assert!(forwarded_rx.is_empty(), "nothing was admitted");
 }
 
-/// A service-built fragment is rejected at the raw door: fragmentation is
-/// a forwarding-time action (RFC 9171 §5.8), so a source never emits
-/// fragments — the send surfaces `FragmentedBundle` and nothing is
-/// admitted.
+/// A service-built fragment is rejected: fragmentation is a forwarding-time
+/// action (RFC 9171 Section 5.8), so a source never emits fragments. The
+/// send surfaces `FragmentedBundle` and nothing is admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_rejects_a_fragment() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
     let dest: Eid = "ipn:0.2.1".parse().unwrap();
 
     // A valid bundle, rewritten as a self-declared fragment: the editor
-    // sets the fragment flag from the fragment_info and re-emits canonical
-    // bytes, so only the fragment fact can trip the door.
+    // sets the fragment flag from the fragment info and re-emits canonical
+    // bytes, so only the fragment fact can trip the rejection.
     let (_, data) = Builder::new(source_eid, dest)
         .with_payload(Cow::Borrowed(b"a piece of an adu".as_slice()))
         .build(CreationTimestamp::now())
@@ -4993,9 +4987,9 @@ async fn raw_originate_rejects_a_fragment() {
     assert!(forwarded_rx.is_empty(), "the fragment must not be admitted");
 }
 
-/// A duplicate raw send surfaces `DuplicateBundle` to the caller — service
-/// bundles carry service-authored ids, so the door cannot retry for them —
-/// and the first copy is unaffected: forwarded exactly once.
+/// A duplicate raw send surfaces `DuplicateBundle` to the caller, since
+/// service bundles carry service-authored ids that the BPA cannot reissue
+/// for a retry. The first copy is unaffected, forwarded exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_duplicate_surfaces_to_the_caller() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -5029,9 +5023,9 @@ async fn raw_originate_duplicate_surfaces_to_the_caller() {
 }
 
 // The originate twin of the gate-side duplicate probe: once the first send
-// commits, a replay through the raw door is refused with `DuplicateBundle`
-// while its payload source is still parked — the caller's stream is never
-// drained for a bundle the node already holds.
+// commits, a replay is refused with `DuplicateBundle` while its payload
+// source is still parked, so the caller's stream is never drained for a
+// bundle the node already holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_duplicate_never_awaits_the_payload() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -5054,8 +5048,8 @@ async fn raw_originate_duplicate_never_awaits_the_payload() {
 
     // Replay with the payload parked: the duplicate must surface from the
     // gate probe, not from an insert that waited on the whole payload. The
-    // timeout only bounds a regression: a door that waits for the payload
-    // parks forever.
+    // timeout only bounds a regression, since an origination that waits for
+    // the payload parks forever.
     let mut replay = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -5072,7 +5066,7 @@ async fn raw_originate_duplicate_never_awaits_the_payload() {
     assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
 }
 
-// A node whose storage survives a restart, with a peer for ipn:0.2.
+// Builds a node over the supplied storage, with a peer for ipn:0.2.
 async fn restart_setup(
     metadata: Arc<MetadataMemStorage>,
     bundles: Arc<BundleMemStorage>,
@@ -5189,11 +5183,11 @@ async fn a_duplicate_after_a_restart_is_refused_at_the_insert() {
 }
 
 /// An origination declaring more than `max_bundle_size` is refused before a
-/// byte spools, at both doors: the raw door from its headers' declared size
-/// (the header pass), the ADU door from its declared payload. Both payload
-/// sources park after their first segments, so a refusal returning at all
-/// proves the door never drained the payload, and each refusal reports a
-/// declared size rather than a count of bytes taken.
+/// byte spools: `raw::Sink::send` from the wire size its headers declare,
+/// read in the header pass, and `Sink::send_streamed` from its declared
+/// payload. Both payload sources park after their first segments, so a
+/// refusal returning at all proves the payload was never drained, and each
+/// refusal reports a declared size rather than a count of bytes taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_originate_refuses_before_the_payload() {
     let node_ids = NodeIds::try_from(
@@ -5396,14 +5390,14 @@ async fn configured_endpoints_activate_at_start() {
 }
 
 // ---------------------------------------------------------------------------
-// The streamed ADU door: Sink::send_streamed
+// The streamed ADU sink: Sink::send_streamed
 // ---------------------------------------------------------------------------
 
 /// A payload streamed through `send_streamed` originates a bundle
-/// wire-equivalent to the whole-buffer `send` of the same payload: same
-/// source, destination, flags, and payload bytes (the ids differ only by
-/// creation timestamp), and the streamed form parses canonically — the CRC
-/// computed as the payload flowed is the CRC a resident build writes.
+/// wire-equivalent to the whole-buffer `send` of the same payload: the same
+/// source, destination, flags and payload bytes, with the ids differing only
+/// by creation timestamp. The streamed form parses canonically, since the
+/// CRC computed as the payload flowed is the CRC a resident build writes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_send_streamed_matches_whole_buffer_send() {
     let node_ids = NodeIds::try_from(
@@ -5548,7 +5542,7 @@ async fn app_send_streamed_producer_drop_cancels() {
     tx.send(Segment::Next(Bytes::from(vec![0u8; 1000])))
         .await
         .unwrap();
-    drop(tx); // no Final — the producer aborts
+    drop(tx); // no Final: the producer aborts
 
     let result = service
         .sink
@@ -5639,9 +5633,9 @@ async fn app_send_streamed_enforces_the_declared_length() {
     ));
 
     // A declaration past `max_bundle_size` is refused with its declared
-    // length before the payload is pulled, however large: `u64::MAX` would
-    // otherwise overflow the built bundle's extents. The timeout only bounds
-    // a regression.
+    // length before the payload is pulled, however large that declaration
+    // is: `u64::MAX` would otherwise overflow the built bundle's extents.
+    // The timeout only bounds a regression.
     let mut stream = ParkedReceiver::new(&[], 1, 0);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -5661,9 +5655,9 @@ async fn app_send_streamed_enforces_the_declared_length() {
     assert!(forwarded_rx.is_empty(), "nothing was originated");
 }
 
-/// The trait's provided `send_streamed` buffers and delegates to `send`
-/// with the same error surface, so third-party sinks (the gRPC bridge
-/// included) get the streamed API without implementing it.
+/// The provided `send_streamed` buffers and delegates to `send` with the
+/// same error surface, so a third-party [`Sink`], the gRPC bridge included,
+/// has the streamed API without implementing it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_send_streamed_default_buffers_and_delegates() {
     struct RecordingSink(flume::Sender<Bytes>);

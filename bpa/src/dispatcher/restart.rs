@@ -8,27 +8,28 @@ impl Dispatcher {
         file_time: time::OffsetDateTime,
     ) {
         let Some(mut data) = self.store.load_data(&storage_name).await else {
-            // Data has gone while we were restarting — the reaper hasn't started,
-            // so this is data loss. Safe because metadata recovery will report it
-            // if the bundle is in the metadata store.
+            // The data went while the restart was running, and the reaper
+            // has not started, so this is data loss. Metadata recovery
+            // reports it if the bundle is in the metadata store.
             return;
         };
 
-        // Validate the stored bundle data is not corrupt. We use the
-        // Preserve-mode parse (rather than the full ingress pipeline) because the
-        // bundle was already fully processed at ingress — restart should verify
-        // integrity and resume, not re-apply block removal or canonicalization.
-        // Soft NoKey: re-checking already-accepted data, so a key that has since
-        // rotated away mustn't drop the bundle — the `nokey_ext` facts are ignored.
+        // Check the stored bundle data for corruption. The parse preserves
+        // the bundle rather than running the full ingress pipeline, because
+        // ingress processed it already and restart verifies integrity and
+        // resumes rather than re-applying block removal or canonicalisation.
+        // A missing key is soft here: this is already-accepted data, so a key
+        // that has since rotated away must not drop the bundle, and the
+        // `nokey_ext` facts are ignored.
         let bundle = match crate::bundle::parse::parse_validate_with_provider(
             data.clone(),
             self.key_provider(),
         ) {
             Ok(bundle) => bundle,
             Err(e) => {
-                // Can't extract a bundle ID, so we can't check or clean up
-                // metadata here. Any orphaned metadata referencing this
-                // storage_name will be caught by metadata_storage_recovery.
+                // No bundle id can be extracted, so the metadata cannot be
+                // checked or cleaned up here. Metadata recovery catches any
+                // orphan referencing this `storage_name`.
                 warn!("Corrupt bundle data found: {storage_name}, {e}");
                 self.store.delete_data(&storage_name).await;
                 metrics::counter!("bpa.restart.junk").increment(1);
@@ -36,10 +37,10 @@ impl Dispatcher {
             }
         };
 
-        // Reconcile with metadata store
         if let Some((metadata, status)) = self.store.confirm_exists(&bundle.primary.id).await {
             if metadata.storage_name.as_ref() != Some(&storage_name) {
-                // Metadata references a different copy — this one is a duplicate
+                // The metadata references another copy, so this one is a
+                // duplicate.
                 if metadata.storage_name.is_none() {
                     warn!("Duplicate copy of processed bundle data found: {storage_name}");
                 } else {
@@ -53,18 +54,19 @@ impl Dispatcher {
                 return;
             }
 
-            // Resume processing based on the checkpoint status, pairing the
-            // stored record with the freshly-parsed bundle — the bytes on
-            // disk stay authoritative for the wire half.
+            // Resume from the checkpoint status, pairing the stored record
+            // with the freshly parsed bundle: the bytes on disk stay
+            // authoritative for the wire half.
             let bundle = bundle::Bundle {
                 bpv7: bundle,
                 metadata,
                 status,
             };
             match &bundle.status {
-                // Dispatching: claimed by the consumer but processing never
-                // completed; DispatchPending: still queued. Both re-enqueue —
-                // the chain already ran, so re-dispatch rather than re-run it.
+                // `Dispatching` was claimed by the consumer with the
+                // processing never completed, and `DispatchPending` is still
+                // queued. Both re-enqueue: the chain has run, so the bundle
+                // is re-dispatched rather than run through it again.
                 bundle::BundleStatus::Dispatching | bundle::BundleStatus::DispatchPending => {
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                     self.dispatch_bundle(bundle).await;
@@ -73,16 +75,18 @@ impl Dispatcher {
                 | bundle::BundleStatus::ForwardAckPending { .. }
                 | bundle::BundleStatus::DeliverPending { .. }
                 | bundle::BundleStatus::DeliveryAckPending { .. } => {
-                    // Peer IDs and CLA registrations are stale after restart —
-                    // queued bundles re-route, and an in-flight transfer's
-                    // outcome can never arrive (outcome-unknown) — so transfer
-                    // checkpoints reset to Waiting. Service registrations do
-                    // not survive a restart either: queued and in-flight
-                    // deliveries re-park as WaitingForService, recovered when
-                    // the service (re-)registers. The reset is a conditional
-                    // swap from the recovery read: registration is gated until
-                    // recovery completes, but a checkpoint that has somehow
-                    // moved on is live state this reset must not stomp.
+                    // Peer ids and CLA registrations are stale after a
+                    // restart, so queued bundles re-route and an in-flight
+                    // transfer's outcome can never arrive, leaving it
+                    // unknown, and the transfer checkpoints reset to
+                    // `Waiting`. Service registrations do not survive a
+                    // restart either, so queued and in-flight deliveries
+                    // re-park as `WaitingForService` and are recovered when
+                    // the service registers again. The reset is a
+                    // conditional swap from the recovery read: registration
+                    // waits on recovery, but a checkpoint that has moved on
+                    // regardless is live state this reset must not
+                    // overwrite.
                     let parked = match &bundle.status {
                         bundle::BundleStatus::DeliverPending { service }
                         | bundle::BundleStatus::DeliveryAckPending { service } => {
@@ -98,14 +102,15 @@ impl Dispatcher {
                         debug!("Recovered checkpoint moved on, leaving it be");
                     }
                 }
-                // Handled by their own recovery mechanisms — poll_waiting,
-                // poll_service_waiting on re-registration, and fragment
-                // reassembly polling respectively. `New` never reaches
-                // storage — fresh ingress runs the chain in memory and
-                // writes a single `Dispatching` checkpoint — so it is not a
-                // recoverable state; a legacy row simply keeps its gauge.
-                // No wildcard: a new status must choose its re-admission
-                // here, not silently assume some poller recovers it.
+                // These have their own recovery: `poll_waiting`,
+                // `poll_service_waiting` on re-registration, and the
+                // fragment reassembly poll. `New` never reaches storage,
+                // fresh ingress running the chain in memory and writing a
+                // single `Dispatching` checkpoint, so it is not a
+                // recoverable state and a row carrying it keeps its gauge.
+                // There is no wildcard arm, so that a new status has to
+                // choose its re-admission here rather than assume some
+                // poller recovers it.
                 bundle::BundleStatus::New
                 | bundle::BundleStatus::Waiting
                 | bundle::BundleStatus::WaitingForService { .. }
@@ -114,19 +119,20 @@ impl Dispatcher {
                 }
             }
         } else {
-            // Orphan — data exists but no metadata. Run the full receive
-            // pipeline (process_received_bundle: parse, validate, report, run
-            // the Ingress filter, and execute the routing decision), handing
-            // the loaded bytes as the bundle stream: the pipeline's spool
-            // saves an admitted bundle fresh, so the orphan copy is stranded
-            // in every outcome and deleted below. A crash before the delete
-            // re-admits it on the next restart, where it loses as a
-            // duplicate.
+            // An orphan: the data exists with no metadata. The full receive
+            // pipeline runs it, `process_received_bundle` parsing,
+            // validating, reporting, running the Ingress filter and
+            // executing the routing decision, with the loaded bytes as the
+            // bundle stream. The pipeline's spool saves an admitted bundle
+            // fresh, so the orphan copy is stranded in every outcome and
+            // deleted below. A crash before the delete re-admits it on the
+            // next restart, where it loses as a duplicate.
             let metadata = bundle::BundleMetadata::new(file_time, bundle::Origin::Recovered);
             match self.process_received_bundle(&mut data, metadata).await {
                 Received::Dispatched | Received::Disposed => {}
-                // A stored orphan has no live transfer to refuse (reachable
-                // only when the size cap tightened across the restart).
+                // A stored orphan has no live transfer to refuse, and this
+                // is reachable only where the size cap tightened across the
+                // restart.
                 Received::Refused => {
                     warn!("Restart orphan refused, deleted");
                 }
@@ -191,11 +197,11 @@ mod tests {
         }
     }
 
-    // MetadataMemStorage deliberately opts out of restart recovery
-    // (in-memory metadata cannot survive a real restart, so its
-    // confirm_exists is a stub). This wrapper answers confirm_exists from
-    // the live map, making the replay path reachable in a test that seeds
-    // the same storage instance it recovers from.
+    // `MetadataMemStorage` opts out of restart recovery, in-memory metadata
+    // being unable to survive a real restart, so its `confirm_exists` is a
+    // stub. This wrapper answers `confirm_exists` from the live map, which
+    // makes the replay path reachable in a test that seeds the same storage
+    // instance it recovers from.
     struct RecoverableMem(MetadataMemStorage);
 
     #[async_trait]
@@ -292,17 +298,19 @@ mod tests {
         }
     }
 
-    // A transfer that is still ForwardAckPending when the BPA comes back up
-    // (an unclean stop: a clean shutdown's unregistration sweep resolves it
-    // first) is outcome-unknown: recovery resets it to Waiting, and it is
-    // re-offered once a route to its destination reappears.
+    // A transfer still `ForwardAckPending` when the BPA comes back up has
+    // an unknown outcome, which an unclean stop leaves behind, a clean
+    // shutdown's unregistration sweep resolving it first. Recovery resets it
+    // to `Waiting`, and it is re-offered once a route to its destination
+    // reappears.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restart_resets_ack_pending_transfer() {
         let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
         let data_store = Arc::new(BundleMemStorage::new(None, None));
 
-        // Seed the stores as an unclean stop would leave them: bundle data
-        // present, metadata parked in ForwardAckPending via a now-stale peer
+        // Seed the stores as an unclean stop would leave them: the bundle
+        // data present, the metadata parked in `ForwardAckPending` under a
+        // peer that is now stale.
         let (_, data) = hardy_bpv7::builder::Builder::new(
             "ipn:0.3.1".parse().unwrap(),
             "ipn:0.2.99".parse().unwrap(),
@@ -342,8 +350,8 @@ mod tests {
             .build();
         bpa.start(true).await.unwrap();
 
-        // start(true) awaits recovery to completion, so the reset is
-        // visible the moment it returns — no wait is involved.
+        // `start(true)` awaits recovery, so the reset is visible the moment
+        // it returns, with nothing to wait for.
         assert_eq!(
             metadata_store
                 .get(&id)
@@ -355,7 +363,8 @@ mod tests {
             "start(true) resolves only after recovery reset the transfer"
         );
 
-        // A route to the destination appears; the bundle is re-offered
+        // A route to the destination appears, and the bundle is
+        // re-offered.
         let (factory, offers_rx) = RecordingCla::factory();
         let cla = bpa.register_cla("recording-2", factory).await.unwrap();
         cla.sink
@@ -379,16 +388,16 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // A bundle still queued for dispatch (DispatchPending) when the BPA
-    // comes back up re-enters the dispatch pipeline on recovery: once a
-    // route to its destination exists, it is offered for forwarding.
+    // A bundle still queued for dispatch, at `DispatchPending`, when the
+    // BPA comes back up re-enters the dispatch pipeline on recovery, and is
+    // offered for forwarding once a route to its destination exists.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restart_requeues_dispatch_pending_bundle() {
         let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
         let data_store = Arc::new(BundleMemStorage::new(None, None));
 
-        // Seed the stores as an unclean stop would leave them: bundle data
-        // present, metadata still queued in DispatchPending
+        // Seed the stores as an unclean stop would leave them: the bundle
+        // data present, the metadata still queued at `DispatchPending`.
         let (_, data) = hardy_bpv7::builder::Builder::new(
             "ipn:0.3.1".parse().unwrap(),
             "ipn:0.2.99".parse().unwrap(),
@@ -428,9 +437,10 @@ mod tests {
             .build();
         bpa.start(true).await.unwrap();
 
-        // A route to the destination: the recovered bundle is dispatched to
-        // it, whether recovery raced ahead of the peer (parked Waiting, then
-        // re-dispatched on the route event) or found it in place.
+        // A route to the destination, which the recovered bundle is
+        // dispatched to whether recovery ran ahead of the peer, parking at
+        // `Waiting` and re-dispatching on the routing event, or found it in
+        // place.
         let (factory, offers_rx) = RecordingCla::factory();
         let cla = bpa.register_cla("recording-3", factory).await.unwrap();
         cla.sink
@@ -496,10 +506,10 @@ mod tests {
         }
     }
 
-    // Channel statuses never outlive their channel: queued (DeliverPending)
-    // and in-flight (DeliveryAckPending) deliveries found at restart are
-    // re-parked as WaitingForService, and the service's (re-)registration
-    // delivers both.
+    // Channel statuses never outlive their channel: a delivery found at
+    // restart queued at `DeliverPending` or in flight at
+    // `DeliveryAckPending` is re-parked as `WaitingForService`, and the
+    // service's registration delivers both.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restart_reparks_delivery_statuses() {
         let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
@@ -560,8 +570,8 @@ mod tests {
             .build();
         bpa.start(true).await.unwrap();
 
-        // start(true) awaits recovery to completion, so both re-parks are
-        // visible the moment it returns — no wait is involved.
+        // `start(true)` awaits recovery, so both re-parks are visible the
+        // moment it returns, with nothing to wait for.
         for id in &ids {
             assert_eq!(
                 metadata_store
@@ -577,7 +587,8 @@ mod tests {
             );
         }
 
-        // The service registers: its WaitingForService poll delivers both.
+        // The service registers, and its `WaitingForService` poll delivers
+        // both.
         let (delivered_tx, delivered_rx) = flume::bounded(16);
         bpa.register_raw_service(
             Some(ServiceId::Ipn(7)),

@@ -33,7 +33,6 @@ fn configure_tracing(log_level: tracing::Level) {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    // Path to configuration file
     #[arg(short, long)]
     config: Option<PathBuf>,
 }

@@ -1,8 +1,9 @@
-//! Integration tests for expiry during a CLA-owned transfer: the reaper
-//! defers a bundle in `ForwardAckPending` (the transfer cannot be recalled
-//! from the wire), and the bundle resolves truthfully when the outcome
-//! arrives — a completed transfer reports completion, and a failed one is
-//! dropped as `LifetimeExpired` at the dispatch expiry checkpoint.
+//! Integration tests for expiry during a CLA-owned transfer.
+//!
+//! The reaper defers a bundle in `ForwardAckPending`, since the transfer
+//! cannot be recalled from the wire, and the bundle resolves when the
+//! outcome arrives: a completed transfer reports completion, and a failed
+//! one is dropped as `LifetimeExpired` at the dispatch expiry checkpoint.
 
 use core::{num::NonZeroUsize, time::Duration};
 use std::{borrow::Cow, sync::Arc};
@@ -185,17 +186,20 @@ fn decode_report(segments: &[Segment]) -> BundleStatusReport {
     status
 }
 
-/// Shared rig for the mid-transfer expiry tests: node ipn:0.1 with report
-/// capture at ipn:0.1.9; bundle A (ipn:0.2.1 → ipn:0.3.1, 2 s lifetime,
-/// deletion report requested) is forwarded to an [`AcceptingCla`] that owns
-/// the transfer across the bundle's expiry. A companion bundle B
-/// (ipn:0.2.2 → ipn:0.1.6, same lifetime, created after A) has no service,
-/// so it parks as WaitingForService at dispatch and is reaped normally: B's
-/// LifetimeExpired deletion report is the deterministic signal that the
-/// reaper's expiry pass has run past A's (earlier) expiry — and popped A's
-/// watch entry — while A's transfer was verifiably still open. Had the
-/// reaper wrongly reaped mid-transfer A, A expires first, so A's report
-/// would arrive *before* B's and fail the first source assertion.
+/// Shared rig for the mid-transfer expiry tests.
+///
+/// Node ipn:0.1 captures reports at ipn:0.1.9. Bundle A (ipn:0.2.1 to
+/// ipn:0.3.1, 2 s lifetime, deletion report requested) is forwarded to an
+/// [`AcceptingCla`] that owns the transfer across the bundle's expiry.
+/// Companion bundle B (ipn:0.2.2 to ipn:0.1.6, same lifetime, created after
+/// A) has no service, so it parks as WaitingForService at dispatch and is
+/// reaped normally.
+///
+/// B's LifetimeExpired deletion report is the deterministic signal that the
+/// reaper's expiry pass has run past A's earlier expiry, popping A's watch
+/// entry, while A's transfer was verifiably still open. A reaper that
+/// wrongly reaped mid-transfer A would report A first, since A expires
+/// first, failing the first source assertion.
 async fn expiry_mid_transfer_rig() -> (
     Bpa,
     Arc<MetadataMemStorage>,
@@ -273,7 +277,7 @@ async fn expiry_mid_transfer_rig() -> (
     .expect("Accepting CLA gone");
     assert_eq!(accepted_id, a_id);
 
-    // Now create companion B: local destination, no registered service — it
+    // Now create companion B: a local destination with no registered service
     // parks as WaitingForService straight from dispatch.
     let (_, data) = Builder::new("ipn:0.2.2".parse().unwrap(), "ipn:0.1.6".parse().unwrap())
         .with_report_to("ipn:0.1.9".parse().unwrap())
@@ -294,7 +298,7 @@ async fn expiry_mid_transfer_rig() -> (
         cla::Acceptance::Accepted
     );
 
-    // The reaper's expiry pass: B — never handed off — is reaped honestly,
+    // The reaper's expiry pass: B, never handed off, is reaped honestly,
     // while A, in ForwardAckPending since before the pass, is deferred.
     let Event::Streamed { segments } = recv_event(&reports_rx, 10).await;
     let status = decode_report(&segments);
@@ -338,9 +342,11 @@ async fn assert_fully_resolved(
 }
 
 /// A bundle that expires while a CLA owns its transfer is resolved exactly
-/// once — by the outcome. A completed transfer really was forwarded, so the
-/// resolution reports the local deletion as a completed hand-off
-/// (NoAdditionalInformation) — never LifetimeExpired.
+/// once, by the outcome.
+///
+/// A completed transfer really was forwarded, so the resolution reports the
+/// local deletion as a completed hand-off with NoAdditionalInformation
+/// rather than LifetimeExpired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expiry_mid_transfer_resolves_once() {
     let (bpa, metadata_store, reports_rx, cla, a_id) = expiry_mid_transfer_rig().await;
@@ -363,10 +369,9 @@ async fn expiry_mid_transfer_resolves_once() {
     assert_fully_resolved(bpa, &metadata_store, &reports_rx).await;
 }
 
-/// Deferral does not launder expiry: when the CLA instead reports the
-/// deferred transfer *failed*, nothing left the node — the bundle re-enters
-/// dispatch, whose expiry checkpoint resolves the expired bundle honestly
-/// with LifetimeExpired.
+/// Deferral does not launder expiry: when the CLA reports the deferred
+/// transfer failed instead, nothing left the node, so the bundle re-enters
+/// dispatch, whose expiry checkpoint resolves it with LifetimeExpired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_transfer_expires_at_dispatch() {
     let (bpa, metadata_store, reports_rx, cla, a_id) = expiry_mid_transfer_rig().await;
@@ -389,7 +394,7 @@ async fn failed_transfer_expires_at_dispatch() {
 /// the earliest expiries: they fill the cache, are deferred at expiry, and
 /// keep heading every storage scan. The refill's budget counts only
 /// accepted rows, so the reapable bundle behind them is still recovered,
-/// reaped, and reported — a deferred row can never pin the scan.
+/// reaped, and reported: a deferred row can never pin the scan.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_handoffs_do_not_starve_expiry() {
     let node_ids = NodeIds::try_from(

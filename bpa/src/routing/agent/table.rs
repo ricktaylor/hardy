@@ -2,9 +2,8 @@ use hardy_async::sync::spin::Mutex;
 use hardy_eid_patterns::EidPattern;
 use tracing::{error, info};
 
-// `routing::Agent` and `routing::Sink` are the traits this module's
-// table and `Sink` are built around, so both names are taken here; the
-// two traits stay module-qualified at their few use sites.
+// `Sink` names a type in this module, so the trait of the same name is
+// used qualified, as `routing::Sink`, and `routing::Agent` with it.
 use super::{BoxFactory, Context};
 use crate::{
     Arc, HashMap, Weak, async_trait,
@@ -13,31 +12,24 @@ use crate::{
     routing::{self, Error, Result, RouteAction, rib::Rib},
 };
 
-// The agents are behind a spin lock. Every critical section is an O(1)
-// lookup or insert with nothing awaited, blocked or iterated inside it,
-// so the lock is never held long enough to repay an OS mutex's park. In
-// particular the embedder's factory runs outside it, against a
-// reservation.
+// The map is behind a spin lock. Every critical section is an O(1) map
+// operation, and nothing is awaited while the lock is held; the embedder's
+// factory runs outside the table's lock, against a reservation.
 
-// Why a name is claimed while no agent stands under it: a registration
-// whose factory is still running, or the teardown of an agent already
-// taken out of the table.
+// A name is claimed, rather than occupied by an agent, while its
+// registration builds and while its agent is torn down.
 enum Claim {
     Building,
-    Detaching,
+    Unregistering,
 }
 
-// What holds a name. Either an agent stands there or a claim does,
-// never both and never neither, so the name's state is the slot's
-// variant.
+// The occupant of a name: a registered agent, or a claim on the name.
 enum Slot {
     Claimed(Claim),
     Attached(Arc<dyn routing::Agent>),
 }
 
 impl Slot {
-    // The agent standing under the name, if the name is not merely
-    // claimed: only an attached agent is usable.
     fn attached(&self) -> Option<&Arc<dyn routing::Agent>> {
         match self {
             Slot::Attached(agent) => Some(agent),
@@ -46,8 +38,7 @@ impl Slot {
     }
 }
 
-/// The routing agents of one BPA: the only place an agent is built, and
-/// the authority on which ones are live.
+/// The registered routing agents of a BPA.
 pub struct Table {
     node_ids: Arc<NodeIds>,
     rib: Arc<Rib>,
@@ -55,11 +46,8 @@ pub struct Table {
 }
 
 impl Table {
-    /// The empty table of one BPA.
-    ///
-    /// Every agent it ever holds arrives through
-    /// [`register`](Self::register), the agents the embedder declared
-    /// no differently from the ones that register while the BPA runs.
+    /// Creates an empty table. Agents are added by
+    /// [`register`](Self::register) only.
     pub fn new(node_ids: Arc<NodeIds>, rib: Arc<Rib>) -> Arc<Self> {
         Arc::new(Self {
             node_ids,
@@ -68,19 +56,24 @@ impl Table {
         })
     }
 
-    /// Attaches the agent and starts it, the two halves of one call. An
-    /// agent that cannot run is detached again, so a failure leaves
-    /// nothing behind.
+    /// Builds the agent, files it under `name`, and calls
+    /// [`Agent::register`](routing::Agent::register).
     ///
-    /// The factory is the embedder's code and may do anything, so it
-    /// runs outside the lock, against a reservation of the name. No one
-    /// else can claim the name while the factory runs, and no one can
-    /// reach an agent that is still being built.
+    /// The factory runs outside the table's lock, against a reservation of
+    /// `name`, so no other registration can take the name and no caller
+    /// can reach an agent that is still being built.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::DuplicateName`] or [`Error::Unregistering`] if
+    /// `name` is taken, or the error returned by the factory or by
+    /// [`Agent::register`](routing::Agent::register). An agent whose
+    /// `register` fails is unregistered again, so a failed call registers
+    /// nothing.
     pub async fn register(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<()> {
         let reservation = self.reserve(name)?;
 
-        // A build that fails drops the reservation, which releases the
-        // name: the claim existed only for this build.
+        // Dropping the reservation releases the name.
         let agent = factory.build(Context::new(
             Arc::new(Sink {
                 table: Arc::downgrade(self),
@@ -91,7 +84,7 @@ impl Table {
         reservation.publish(agent.clone())?;
 
         metrics::gauge!("bpa.routing.agents").increment(1.0);
-        info!("Attached routing agent: {name}");
+        info!("Registered routing agent: {name}");
 
         if let Err(e) = agent.register().await {
             self.unregister(name).await;
@@ -100,12 +93,13 @@ impl Table {
         Ok(())
     }
 
-    /// Unregisters the named agent and withdraws every route it added.
+    /// Unregisters the agent filed under `name` and withdraws every route
+    /// it added.
     ///
-    /// Returns whether this call did the detaching: a name that is
-    /// absent, already being detached by another caller, or still being
-    /// built, answers `false`. In the last case the build itself
-    /// completes the detachment.
+    /// Returns `true` if this call performed the unregistration, and
+    /// `false` if `name` is absent, already unregistering, or still
+    /// building. An agent that is still building is torn down by
+    /// [`register`](Self::register) instead.
     pub async fn unregister(&self, name: &str) -> bool {
         let agent = {
             let mut agents = self.agents.lock();
@@ -113,15 +107,12 @@ impl Table {
                 return false;
             };
 
-            // The name is claimed for the teardown that follows, so
-            // nothing re-registers over routes still being withdrawn.
-            match core::mem::replace(slot, Slot::Claimed(Claim::Detaching)) {
+            // Claim the name for the teardown, so that nothing registers
+            // over routes that are still being withdrawn.
+            match core::mem::replace(slot, Slot::Claimed(Claim::Unregistering)) {
                 Slot::Attached(agent) => agent,
-                // A registration still holds the name, and the replace
-                // turned its claim into a teardown: it reads that once
-                // its factory returns and takes the agent straight back
-                // down instead of filing it. A teardown already holding
-                // the name reads back what it put there.
+                // A registration holds the name. The claim just written
+                // tells it to tear the agent down instead of filing it.
                 Slot::Claimed(_) => return false,
             }
         };
@@ -130,21 +121,21 @@ impl Table {
             error!("Routing agent {name} failed to shut down cleanly: {e}");
         }
 
-        // The agent is quiet by now, so the sweep cannot race a route it
-        // adds on the way out.
+        // The agent has stopped, so the sweep cannot race a route added on
+        // the way out.
         self.rib.remove_by_source(name).await;
 
         self.agents.lock().remove(name);
         metrics::gauge!("bpa.routing.agents").decrement(1.0);
-        info!("Detached routing agent: {name}");
+        info!("Unregistered routing agent: {name}");
 
         true
     }
 
     pub async fn shutdown(&self) {
-        // Every claim becomes a teardown as well, so a registration
-        // still running its factory gives its name up instead of filing
-        // an agent into a table that is going away.
+        // Outstanding claims become teardowns, so a registration still
+        // inside its factory releases its name instead of filing into a
+        // table that is shutting down.
         let names = {
             let mut agents = self.agents.lock();
             agents
@@ -152,7 +143,7 @@ impl Table {
                 .filter_map(|(name, slot)| match slot {
                     Slot::Attached(_) => Some(name.clone()),
                     Slot::Claimed(claim) => {
-                        *claim = Claim::Detaching;
+                        *claim = Claim::Unregistering;
                         None
                     }
                 })
@@ -164,8 +155,7 @@ impl Table {
         }
     }
 
-    // Claims `name` for a registration, failing if an agent or another
-    // claim already holds it.
+    // Claims `name`, failing if an agent or another claim holds it.
     fn reserve<'a>(&'a self, name: &'a str) -> Result<Reservation<'a>> {
         match self.agents.lock().entry(name.to_owned()) {
             Entry::Vacant(slot) => {
@@ -180,14 +170,12 @@ impl Table {
                 Slot::Attached(_) | Slot::Claimed(Claim::Building) => {
                     Error::DuplicateName(name.to_owned())
                 }
-                Slot::Claimed(Claim::Detaching) => Error::Unregistering(name.to_owned()),
+                Slot::Claimed(Claim::Unregistering) => Error::Unregistering(name.to_owned()),
             }),
         }
     }
 
-    // Whether an agent is attached under `name`. A name a build still
-    // holds, and one a detaching agent still holds, both answer `false`:
-    // only an attached agent is usable.
+    // A name held only by a claim is not attached.
     fn is_attached(&self, name: &str) -> bool {
         self.agents
             .lock()
@@ -196,9 +184,8 @@ impl Table {
     }
 }
 
-// The gauge counts what the table holds: `unregister` takes agents out
-// one at a time, and dropping the table takes whatever is left, which
-// is how a BPA dropped without a shutdown is accounted for.
+// `unregister` decrements the gauge per agent; this accounts for the
+// agents still registered when the table is dropped.
 impl Drop for Table {
     fn drop(&mut self) {
         let attached = self
@@ -213,8 +200,7 @@ impl Drop for Table {
     }
 }
 
-// A name claimed for a registration, held while the embedder's factory
-// runs and given up when the registration ends, whichever way it ends.
+// A claim on a name, released on drop unless `publish` consumes it.
 #[must_use = "an unused reservation releases its name immediately"]
 struct Reservation<'a> {
     table: &'a Table,
@@ -223,12 +209,11 @@ struct Reservation<'a> {
 }
 
 impl Reservation<'_> {
-    // Files the built agent under the reserved name, the only way an
-    // agent becomes reachable.
+    // Files `agent` under the reserved name.
     //
-    // An `unregister` that arrived while the factory ran turned the claim
-    // into a teardown, and the agent is refused: nothing reached it and
-    // it was never started, so dropping it is the whole teardown.
+    // Fails with `Error::Unregistering` if an `unregister` arrived while
+    // the factory ran. The agent is then dropped having never been
+    // published or started, which completes the teardown.
     fn publish(mut self, agent: Arc<dyn routing::Agent>) -> Result<()> {
         let mut agents = self.table.agents.lock();
         self.claimed = false;
@@ -250,11 +235,9 @@ impl Drop for Reservation<'_> {
     }
 }
 
-// An agent is named, not pointed at: the sink holds its key and a weak,
-// non-owning edge to the table, and re-resolves on every operation. The
-// table is then the single authority on liveness, and a failed
-// resolution is the condition the trait already names,
-// `Error::Disconnected`.
+// Holds the agent's name and a weak reference to the table, and
+// re-resolves on each call, so the table remains the only authority on
+// liveness. A failed resolution maps to `Error::Disconnected`.
 struct Sink {
     table: Weak<Table>,
     name: Arc<str>,
@@ -323,9 +306,8 @@ mod tests {
         storage::{BundleMemStorage, MetadataMemStorage, store::Store},
     };
 
-    // An agent that does nothing but keep the sink it was built with, so
-    // the tests can drive the table from the agent's side of the
-    // contract.
+    // An agent that keeps only its sink, so that the tests can drive the
+    // table through the agent side of the contract.
     struct TestAgent {
         sink: Arc<dyn Sink>,
     }
@@ -356,7 +338,6 @@ mod tests {
         (rib, table)
     }
 
-    // Registers an agent and hands back the component the table now owns.
     async fn register(table: &Arc<Table>, name: &str) -> Arc<TestAgent> {
         let mut agent = None;
         table
@@ -369,7 +350,6 @@ mod tests {
         agent.expect("Registration builds the factory")
     }
 
-    // A name is exclusive: the second agent to claim one is refused.
     #[tokio::test]
     async fn duplicate_name_is_refused() {
         let (_rib, table) = make_table();
@@ -386,9 +366,8 @@ mod tests {
         table.shutdown().await;
     }
 
-    // The embedder's factory is not called under the table's lock. A
-    // factory may log, allocate or reach back into the table, any of
-    // which would spin against a lock `attach` was still holding.
+    // The factory must not run under the table's lock: a factory is free
+    // to call back into the table.
     #[tokio::test]
     async fn the_factory_runs_outside_the_table_lock() {
         let (_rib, table) = make_table();
@@ -402,11 +381,12 @@ mod tests {
                     let table = probe.upgrade().expect("The table outlives the build");
                     assert!(
                         table.agents.try_lock().is_some(),
-                        "The table's lock is held while the factory runs"
+                        "The table's lock is free while the factory runs"
                     );
-                    // The name is reserved for the duration, so nothing
-                    // else can claim it while this runs.
-                    assert!(table.is_attached("neighbour"));
+                    assert!(
+                        table.is_attached("neighbour"),
+                        "The table is readable from inside a factory"
+                    );
                     Ok(Arc::new(TestAgent { sink: cx.sink }))
                 })),
             )
@@ -416,8 +396,6 @@ mod tests {
         table.shutdown().await;
     }
 
-    // A factory that fails leaves nothing behind, so the name it
-    // reserved is free for the next attempt.
     #[tokio::test]
     async fn a_failed_build_releases_the_name() {
         let (_rib, table) = make_table();
@@ -440,10 +418,10 @@ mod tests {
         table.shutdown().await;
     }
 
-    // Detaching an agent takes its routes with it, disconnects its sink,
+    // Unregistration withdraws the agent's routes, disconnects its sink
     // and releases its name.
     #[tokio::test]
-    async fn detaching_sweeps_routes_and_releases_the_name() {
+    async fn unregistering_sweeps_routes_and_releases_the_name() {
         let (rib, table) = make_table();
         let agent = register(&table, "sweep").await;
 
@@ -462,14 +440,14 @@ mod tests {
         assert!(
             !rib.remove(&pattern, "sweep", Action::Route(action.clone()), 1)
                 .await,
-            "Detaching should have swept the agent's routes"
+            "Unregistering should have swept the agent's routes"
         );
         assert!(
             matches!(
                 agent.sink.add_route(pattern, action, 1).await,
                 Err(Error::Disconnected)
             ),
-            "The sink of a detached agent is disconnected"
+            "The sink of an unregistered agent is disconnected"
         );
 
         register(&table, "sweep").await;

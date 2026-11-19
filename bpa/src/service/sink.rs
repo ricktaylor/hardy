@@ -1,4 +1,4 @@
-//! The channel a payload service sends through.
+//! The interface a payload service sends through.
 
 use core::time::Duration;
 
@@ -10,12 +10,13 @@ use crate::{
     stream::{Receiver, buffer_stream},
 };
 
-/// Options controlling bundle construction when sending via [`Sink::send`].
+/// Options controlling how [`Sink::send`] builds a bundle.
 ///
-/// All fields default to `false`.
+/// Every field defaults to `false`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SendOptions {
-    /// Sets the "do not fragment" bundle processing flag (RFC 9171 Section 4.2.3).
+    /// Sets the "do not fragment" bundle processing flag (RFC 9171 Section
+    /// 4.2.3).
     pub do_not_fragment: bool,
     /// Requests an application-level acknowledgement from the destination.
     pub request_ack: bool,
@@ -32,24 +33,27 @@ pub struct SendOptions {
     pub notify_deletion: bool,
 }
 
-/// The channel a [`Service`](super::Service) sends payloads back through.
+/// The interface a [`Service`](super::Service) uses to send payloads.
 ///
-/// The [`Context`](super::Context) carries it at construction, and the
-/// service keeps it for its entire active lifetime.
+/// The sink is supplied in the [`Context`](super::Context) the service is
+/// built from.
 ///
 /// # Lifecycle
 ///
-/// [`unregister`](Self::unregister) is how a service takes itself out of
-/// service: the BPA withdraws the registration and calls
-/// [`Service::unregister`](super::Service::unregister). When the BPA
-/// shuts down instead, it calls that hook itself, after which every
-/// operation here returns [`Error::Disconnected`](super::Error::Disconnected).
+/// A service takes itself out of service with
+/// [`unregister`](Self::unregister): the BPA withdraws the registration
+/// and calls [`Service::unregister`](super::Service::unregister). A BPA
+/// shutting down calls that method itself. Either way every method here
+/// returns [`Error::Disconnected`](super::Error::Disconnected)
+/// afterwards.
 #[async_trait]
 pub trait Sink: Send + Sync {
-    /// Unregisters the associated service from the BPA.
+    /// Unregisters the service from the BPA.
     async fn unregister(&self);
 
-    /// Sends a payload to a destination, wrapped in a bundle by the BPA.
+    /// Sends `data` to `destination`, wrapped in a bundle by the BPA.
+    ///
+    /// Returns the id of the bundle the BPA created.
     async fn send(
         &self,
         destination: Eid,
@@ -58,24 +62,25 @@ pub trait Sink: Send + Sync {
         options: Option<SendOptions>,
     ) -> Result<Id>;
 
-    /// Sends a payload supplied as a segment stream, wrapped in a bundle
-    /// by the BPA.
+    /// Sends a payload read from `stream`, wrapped in a bundle by the BPA.
     ///
-    /// The stream must deliver exactly `total_len` payload bytes — the
-    /// declaration frames the bundle's wire form before the first segment
-    /// is pulled — and the stream is one-shot: an over- or
-    /// under-delivering producer is rejected
-    /// ([`PayloadTooLarge`](super::Error::PayloadTooLarge) /
-    /// [`PayloadUnderrun`](super::Error::PayloadUnderrun)), a producer that
-    /// goes away before its final segment cancels the send
-    /// ([`StreamCancelled`](super::Error::StreamCancelled)), and a
-    /// creation-timestamp collision surfaces as
-    /// [`DuplicateBundle`](super::Error::DuplicateBundle) (vanishingly
-    /// rare; the caller may resend).
+    /// `stream` must deliver exactly `total_len` payload bytes, since the
+    /// declared length frames the bundle's wire form before the first
+    /// segment is pulled, and it is read once.
     ///
-    /// The provided implementation buffers the stream
-    /// ([`buffer_stream`]) and delegates to [`send`](Self::send), with the
-    /// same error surface; the BPA's own sink streams end to end.
+    /// The provided implementation buffers the stream with
+    /// [`buffer_stream`] and calls [`send`](Self::send). The BPA's own
+    /// sink streams the payload end to end instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadTooLarge`](super::Error::PayloadTooLarge) or
+    /// [`PayloadUnderrun`](super::Error::PayloadUnderrun) if the stream
+    /// delivers more or fewer bytes than declared,
+    /// [`StreamCancelled`](super::Error::StreamCancelled) if the producer
+    /// goes away before its final segment, and
+    /// [`DuplicateBundle`](super::Error::DuplicateBundle) on a
+    /// creation-timestamp collision, which the caller may retry.
     async fn send_streamed(
         &self,
         destination: Eid,

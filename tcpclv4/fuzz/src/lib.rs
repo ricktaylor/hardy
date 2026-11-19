@@ -65,9 +65,9 @@ pub fn fuzz_addr() -> SocketAddr {
         )))
 }
 
-// Builder tuned for fuzzing — the shortest timeouts the builder accepts,
-// to keep corpus replay (coverage) fast. `contact_timeout` is in whole
-// seconds, so 1 is the floor.
+// Builder tuned for fuzzing: the shortest timeouts the builder accepts,
+// to keep corpus replay fast. `contact_timeout` is in whole seconds, so 1
+// is the floor.
 fn fuzz_builder() -> Tcpclv4Builder {
     Tcpclv4::builder()
         .contact_timeout(ContactTimeout::new(1).expect("1 second is a valid timeout"))

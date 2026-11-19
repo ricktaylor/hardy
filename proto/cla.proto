@@ -98,9 +98,9 @@ message RegisterClaRequest {
   // The CLA's declared receive limit, in bytes, if it has an inherent or
   // configured one. The declaration only shrinks the effective
   // max_bundle_size echoed in the response: the BPA does NOT enforce it at
-  // egress, and may still offer this CLA larger bundles — the CLA must
-  // refuse each such offer itself, per bundle (an Err from forward, never
-  // a link-scoped NoNeighbour, which would sweep the whole peer queue).
+  // egress, and may still offer this CLA larger bundles. The CLA refuses
+  // each such offer itself, per bundle (an Err from forward, never a
+  // link-scoped NoNeighbour, which would sweep the whole peer queue).
   // Absent means no CLA-side limit; an explicit 0 is invalid and the
   // registration is rejected.
   optional uint64         max_bundle_size = 3;
@@ -142,8 +142,9 @@ message DispatchBundleRequest {
 // contract: accepted means the CLA may acknowledge the transfer to its
 // peer; refused means it must not (the peer retains responsibility).
 enum DispatchVerdict {
-  // Not stated: the response comes from a BPA that predates this field,
-  // which only responded on acceptance — treat as DISPATCH_VERDICT_ACCEPTED.
+  // Not stated: the response comes from a BPA that predates this field
+  // and only responded on acceptance, so treat it as
+  // DISPATCH_VERDICT_ACCEPTED.
   DISPATCH_VERDICT_UNSPECIFIED = 0;
   // The BPA accepted the bundle (including accepted-then-disposed cases
   // such as invalid content or duplicates).

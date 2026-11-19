@@ -13,7 +13,7 @@ pub enum AddressType {
     Private,
 }
 
-/// Where a convergence layer reaches a peer.
+/// The address at which a convergence layer reaches a peer.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Address {

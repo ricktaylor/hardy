@@ -3,61 +3,65 @@ use hardy_bpv7::{bundle::Id, eid::NodeId};
 use super::{Acceptance, Address, Result, Segment, TransferOutcome};
 use crate::{async_trait, stream::Receiver};
 
-/// A CLA's channel back into the BPA.
+/// The interface a CLA uses to reach the BPA.
 ///
-/// The sink decouples a CLA from the BPA's internals: a stable interface
-/// for handing received bundles over and for announcing the peers the
-/// convergence layer discovers.
+/// A CLA hands received bundles over and announces the peers it discovers
+/// through this trait, which keeps it independent of the BPA's internals.
 ///
 /// # Lifecycle
 ///
-/// The sink arrives in the [`Context`](super::Context) a CLA is built
-/// from, and stays usable until the CLA unregisters, by calling
-/// [`unregister`](Self::unregister) or because the BPA is shutting down.
-/// After that every operation here returns
+/// The sink is supplied in the [`Context`](super::Context) a CLA is built
+/// from. It stays usable until the CLA unregisters, either by calling
+/// [`unregister`](Self::unregister) or because the BPA is shutting down,
+/// after which every method returns
 /// [`Error::Disconnected`](super::Error::Disconnected).
 #[async_trait]
 pub trait Sink: Send + Sync {
-    /// Unregisters the CLA from the BPA.
+    /// Unregisters the CLA from the BPA, typically after a fault the CLA
+    /// cannot recover from.
     ///
     /// The BPA calls [`Cla::unregister`](super::Cla::unregister) and
-    /// withdraws every peer the CLA published; this sink is dead from then
-    /// on.
-    /// Typically called when the CLA hits a fault it cannot recover from.
+    /// withdraws every peer the CLA published. This sink is disconnected
+    /// once the call returns.
     async fn unregister(&self);
 
-    /// Dispatches a received bundle, as a stream of segments, to the BPA.
+    /// Dispatches a received bundle to the BPA, reading it from `stream`
+    /// as a sequence of segments.
     ///
-    /// Returns the [`Acceptance`] verdict for the transfer, its only
-    /// carrier: [`Accepted`](Acceptance::Accepted) means the CLA may
-    /// acknowledge the transfer to its peer, [`Refused`](Acceptance::Refused)
-    /// means it must not. `Err(_)` is reserved for faults that make the sink
-    /// unusable (the CLA has unregistered, or the BPA has gone away), never
-    /// a verdict.
+    /// Returns the [`Acceptance`] verdict for the transfer:
+    /// [`Accepted`](Acceptance::Accepted) means the CLA may acknowledge the
+    /// transfer to its peer, and [`Refused`](Acceptance::Refused) means it
+    /// must not.
     ///
-    /// The stream itself carries no verdict. The BPA may stop pulling, and
-    /// drop its end of `stream`, at any point: it may already have decided
-    /// to accept (a duplicate identified from the headers needs no further
-    /// bytes) or not yet have decided anything. A producer that sees
-    /// [`SendError`](crate::stream::SendError) must stop pushing segments and
-    /// then take the verdict from this method's return value, never from the
+    /// The BPA may stop pulling and drop its end of `stream` at any point,
+    /// whether or not it has reached a verdict; a duplicate recognised from
+    /// the headers, for example, needs no further bytes. A producer that
+    /// sees [`SendError`](crate::stream::SendError) therefore stops pushing
+    /// segments and takes the verdict from the return value, never from the
     /// stream closing.
     ///
-    /// A producer that drops its sender before [`Segment::Final`] has
-    /// truncated the bundle; the implementation must surface that as
-    /// [`Refused`](Acceptance::Refused) (never a silent acceptance), so the
-    /// CLA withholds its transfer acknowledgement and the peer can
-    /// retransmit.
+    /// A producer that drops its sender before [`Segment::Final`]
+    /// truncates the bundle, and the BPA answers
+    /// [`Refused`](Acceptance::Refused), so that the CLA withholds its
+    /// acknowledgement and the peer can retransmit.
+    ///
+    /// `peer_node` is the sender's node identifier where the convergence
+    /// layer has learned it, as a TCPCLv4 session does at establishment,
+    /// and `peer_addr` the address the bundle arrived from. Both are `None`
+    /// for a CLA with no notion of a peer, such as a file-based one.
     ///
     /// A caller holding a complete bundle in memory passes it as a
-    /// one-segment stream, since `Bytes` implements [`Receiver`]:
-    /// `sink.dispatch(peer_node, peer_addr, &mut bundle).await`.
+    /// single-segment stream, since `Bytes` implements [`Receiver`]:
     ///
-    /// `peer_node` and `peer_addr` carry what the CLA knows about the sender:
-    /// the peer's node identifier, if the convergence layer learned it (a
-    /// TCPCLv4 session exchanges it at establishment), and the address the
-    /// bundle arrived from. Both are `None` for a CLA with no notion of a
-    /// peer, such as a file-based or unidirectional one.
+    /// ```ignore
+    /// sink.dispatch(peer_node, peer_addr, &mut bundle).await
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// An error is never a verdict on the bundle, only a fault that makes
+    /// the sink unusable: the CLA has unregistered, or the BPA has gone
+    /// away.
     async fn dispatch(
         &self,
         peer_node: Option<&NodeId>,
@@ -65,29 +69,30 @@ pub trait Sink: Send + Sync {
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Acceptance>;
 
-    /// Notifies the BPA that a peer (or neighbour) is reachable at `cla_addr`.
+    /// Notifies the BPA that a peer is reachable at `cla_addr`, returning
+    /// `true` if the address was not already known.
     ///
-    /// The `node_ids` slice provides the BPA-layer identifiers for the peer:
-    /// - An **empty slice** means the CLA has discovered a link-layer adjacency but does not yet
-    ///   know the remote node's EID (a "Neighbour"). The BPA records the adjacency but installs no
-    ///   routing entry, and no interface yet supplies the EID later, so a neighbour stays unroutable.
-    /// - A **non-empty slice** means the CLA knows one or more EIDs for the peer (a "Peer"). A node
-    ///   known under several EIDs (an `ipn` and a `dtn` one, say) lists them all at its CL address.
-    ///
-    /// The BPA updates its routing information accordingly.
+    /// `node_ids` holds the BPA-layer identifiers of the peer. An empty
+    /// slice is a link-layer adjacency whose remote EID the CLA has not
+    /// learned: the BPA records the adjacency but installs no route, and
+    /// nothing supplies the EID later. A non-empty slice lists every EID
+    /// the peer is known under, such as an `ipn` and a `dtn` one, and the
+    /// BPA routes all of them through this address.
     async fn add_peer(&self, cla_addr: Address, node_ids: &[NodeId]) -> Result<bool>;
 
-    /// Notifies the BPA that a peer is no longer reachable at `cla_addr`,
-    /// withdrawing every route through that address.
+    /// Notifies the BPA that a peer is no longer reachable at `cla_addr`
+    /// and withdraws every route through that address. Returns `true` if
+    /// the address was known.
     async fn remove_peer(&self, cla_addr: &Address) -> Result<bool>;
 
     /// Reports the final outcome of a transfer previously answered
     /// [`ForwardOutcome::Accepted`](super::ForwardOutcome::Accepted).
     ///
-    /// Every accepted transfer resolves exactly once: `Completed`, `Failed`,
-    /// or implicitly outcome-unknown when the CLA unregisters or the peer is
-    /// removed. An outcome is honoured only while the named bundle is still
-    /// awaiting one via a peer of the reporting CLA. Anything else (already
-    /// resolved, expired, another CLA's transfer) is logged and dropped.
+    /// Every accepted transfer resolves exactly once, as `Completed`, as
+    /// `Failed`, or implicitly as unknown when the CLA unregisters or the
+    /// peer is removed. An outcome is applied only while the named bundle
+    /// is still awaiting one through a peer of the reporting CLA; an
+    /// outcome for a transfer that is already resolved, has expired, or
+    /// belongs to another CLA is logged and discarded.
     async fn report_transfer(&self, bundle_id: &Id, outcome: TransferOutcome) -> Result<()>;
 }

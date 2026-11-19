@@ -141,8 +141,9 @@ impl routing_agent_server::RoutingAgent for Service {
         let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let channel_receiver = request.into_inner();
 
-        // Spawn the registration handshake and proxy — we must return the
-        // response stream immediately so the client can start sending messages.
+        // The handshake and the proxy run on their own task: the response
+        // stream has to be returned at once, so the client can start
+        // sending.
         let bpa = self.bpa.clone();
         hardy_async::spawn!(self.session_tasks, "routing_session", async move {
             run_routing_session(channel_sender, channel_receiver, bpa).await;
@@ -219,7 +220,6 @@ async fn register(
     .map_err(routing_error_to_status)
 }
 
-/// Create a new routing agent gRPC service.
 pub fn new_routing_agent_service(
     bpa: Arc<dyn hardy_bpa::routing::Registrar>,
     tasks: &hardy_async::TaskPool,

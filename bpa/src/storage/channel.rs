@@ -1,43 +1,44 @@
 //! Hybrid memory/storage channel with backpressure.
 //!
-//! Provides a fast path (in-memory [`hardy_async::closeable`] channel) and a
-//! slow path (storage lookup) for bundle queuing. When the in-memory buffer
-//! fills, sends spill to storage and a background poller drains them back
-//! into the buffer.
+//! Bundle queuing runs over a fast path, an in-memory
+//! [`hardy_async::closeable`] channel, and a slow path, a storage lookup.
+//! Once the in-memory buffer fills, sends spill to storage and a background
+//! poller drains them back into the buffer.
 //!
 //! # Delivery contract
 //!
-//! This channel does **not** persist bundles. The caller is responsible for
-//! having already inserted the bundle (blob + metadata) into the storage
-//! subsystem before invoking [`Sender::send`]; the channel only moves the
-//! metadata `status` column to its configured target status, via the
-//! conditional [`Store::swap_status`](super::store::Store::swap_status) from
-//! the caller's snapshot. The swap is fail-stop: on storage error the
-//! process aborts via `trace_expect`, so by the time a bundle is offered to
-//! the in-memory channel its status is durably persisted. A lost swap drops
-//! the send: the channels themselves deliver at-least-once, so a duplicate
-//! copy of a bundle that has already moved on (claimed in-flight by the
-//! egress path, swept, or resolved) must lose its move here rather than
-//! stomp the live assignment and re-enter circulation.
+//! This channel does not persist bundles. The caller inserts the bundle,
+//! both its bytes and its metadata, into the storage subsystem before
+//! calling [`Sender::send`], and the channel only moves the metadata
+//! `status` column to its configured target status, through a conditional
+//! [`Store::swap_status`](super::store::Store::swap_status) from the
+//! caller's snapshot. The swap is fail-stop, aborting the process through
+//! `trace_expect` on a storage error, so a bundle offered to the in-memory
+//! channel has its status durably persisted. A lost swap drops the send:
+//! the channels deliver at least once, so a duplicate copy of a bundle that
+//! has already moved on, claimed in-flight by the egress path, swept, or
+//! resolved, loses its move here rather than overwriting the live
+//! assignment and re-entering circulation.
 //!
-//! Given that precondition, the channel guarantees **at-least-once**
-//! delivery from `Sender::send` to `Receiver::recv`:
+//! Given that precondition, the channel delivers at least once from
+//! `Sender::send` to `Receiver::recv`:
 //!
-//! - On the fast path (in-memory buffer has space), the bundle is enqueued
-//!   directly. A subsequent poller cycle may *also* pull it from storage
-//!   and re-deliver it.
-//! - On the slow path (buffer full), the in-memory copy is dropped on the
-//!   floor and the poller recovers it via `MetadataStorage::poll_pending`
-//!   filtered by the channel's target status. The drop is safe because the
-//!   bundle's status is already persisted (see above).
+//! - On the fast path, where the in-memory buffer has space, the bundle is
+//!   enqueued directly. A later poller cycle may *also* pull it from
+//!   storage and re-deliver it.
+//! - On the slow path, where the buffer is full, the in-memory copy is
+//!   dropped and the poller recovers it through
+//!   `MetadataStorage::poll_pending`, filtered by the channel's target
+//!   status. The drop is safe because the bundle's status is already
+//!   persisted.
 //!
-//! Consumers therefore **must claim each received bundle out of the
-//! channel's target status** (a conditional `swap_status` from the received
-//! copy's snapshot) before acting on it, and drop copies that lose the
-//! swap. The target status must mean exactly "queued in this channel":
-//! while a bundle keeps it, the poller treats the bundle as recoverable and
-//! will re-push it. The dispatch queue claims `DispatchPending` →
-//! `Dispatching` on dequeue; the egress queues claim `ForwardPending` →
+//! A consumer therefore claims each received bundle out of the channel's
+//! target status, with a conditional `swap_status` from the received copy's
+//! snapshot, before acting on it, and drops copies that lose the swap. The
+//! target status means exactly "queued in this channel": while a bundle
+//! holds it, the poller treats the bundle as recoverable and re-pushes it.
+//! The dispatch queue claims `DispatchPending` into `Dispatching` on
+//! dequeue, and the egress queues claim `ForwardPending` into
 //! `ForwardAckPending` before offering the transfer to a CLA.
 //!
 //! # State Machine
@@ -55,7 +56,7 @@
 //!     Any state ──► Closing (shutdown)
 //! ```
 //!
-//! Uses lock-free CAS operations for state transitions on the hot path.
+//! State transitions on the hot path are lock-free compare-and-swaps.
 
 use core::result::Result;
 
@@ -72,31 +73,32 @@ use crate::{
     bundle::{Bundle, BundleStatus},
 };
 
-/// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
+/// The channel's state machine, `#[repr(usize)]` so it rides an atomic.
 #[repr(usize)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ChannelState {
-    /// Fast path is available. Senders try to send directly to the in-memory channel.
+    /// The fast path is available, and senders go straight to the
+    /// in-memory channel.
     Open = 0,
 
-    /// Fast path is closed. The background poller is draining bundles from
-    /// persistent storage into the in-memory channel.
+    /// The fast path is closed, and the background poller is draining
+    /// bundles from storage into the in-memory channel.
     Draining = 1,
 
-    /// New bundles arrived while the poller was draining. This signals to the
-    /// poller that it should loop again after completing the current drain.
+    /// New bundles arrived while the poller was draining, so the poller
+    /// loops again once the current drain completes.
     Congested = 2,
 
-    /// Channel is shutting down. No more bundles accepted; poller should exit.
+    /// The channel is shutting down. No further bundles are accepted and
+    /// the poller exits.
     Closing = 3,
 }
 
 impl ChannelState {
-    /// Convert from raw usize to ChannelState.
-    ///
     /// # Panics
-    /// Panics if the value doesn't correspond to a valid state. This should
-    /// never happen since we control all writes to the atomic.
+    ///
+    /// Panics if `value` names no state. Only this module writes the
+    /// atomic, and only from the enum.
     #[inline]
     const fn from_usize(value: usize) -> Self {
         match value {
@@ -104,31 +106,28 @@ impl ChannelState {
             1 => Self::Draining,
             2 => Self::Congested,
             3 => Self::Closing,
-            // ChannelState atomic only written with valid enum values 0-3
             _ => unreachable!(),
         }
     }
 
-    /// Convert to raw usize for atomic operations.
     #[inline]
     const fn as_usize(self) -> usize {
         self as usize
     }
 }
 
-/// Shared state between Sender and the background poller task.
+/// State shared between the senders and the background poller task.
 struct Shared {
     state: AtomicUsize,
     tx: hardy_async::closeable::Sender<Bundle>,
     status: BundleStatus,
     notify: Arc<Notify>,
-    // Test-only state-transition signal: the state machine is otherwise
-    // unobservable without polling, and the test style guide requires
-    // synchronizing on the event itself.
+    // State-transition signal the tests synchronize on; the state machine
+    // is otherwise observable only by polling.
     #[cfg(test)]
     state_notify: Notify,
-    /// Drain cycles the poller has completed (storage had nothing more to
-    /// load), signalled through `drain_notify` for tests to wait on.
+    /// Drain cycles the poller has completed, those where storage had
+    /// nothing more to load, signalled through `drain_notify`.
     #[cfg(test)]
     drain_cycles: AtomicUsize,
     #[cfg(test)]
@@ -136,13 +135,11 @@ struct Shared {
 }
 
 impl Shared {
-    /// Atomically load the current state.
     #[inline]
     fn load_state(&self, ordering: Ordering) -> ChannelState {
         ChannelState::from_usize(self.state.load(ordering))
     }
 
-    /// Atomically store a new state.
     #[inline]
     fn store_state(&self, state: ChannelState, ordering: Ordering) {
         self.state.store(state.as_usize(), ordering);
@@ -150,10 +147,10 @@ impl Shared {
         self.state_notify.notify_one();
     }
 
-    /// Atomically compare-and-swap: if current == expected, set to new.
+    /// Stores `new` if the current state is `expected`.
     ///
-    /// Returns `Ok(expected)` if the swap succeeded, or `Err(actual)` if the
-    /// current value didn't match expected.
+    /// Returns `Ok(expected)` once the swap succeeds, or `Err(actual)` if
+    /// the current state did not match.
     #[inline]
     fn compare_exchange_state(
         &self,
@@ -184,7 +181,6 @@ pub struct Sender {
 
 #[cfg(test)]
 impl Sender {
-    // Expose the current channel state for test assertions.
     fn state(&self) -> ChannelState {
         self.shared.load_state(Ordering::Acquire)
     }
@@ -195,21 +191,21 @@ impl Sender {
 pub struct SendError(pub Bundle);
 
 impl Sender {
-    /// Offer a bundle to the channel, updating its persistent status to
-    /// match the channel's target status.
+    /// Offers a bundle to the channel, moving its persistent status to the
+    /// channel's target status.
     ///
-    /// The bundle's blob and metadata must already be persisted in the
-    /// storage subsystem; see the module-level [delivery
-    /// contract](self#delivery-contract). This method updates the metadata
-    /// status (fail-stop on storage error) and then either enqueues the
-    /// bundle into the in-memory buffer (fast path) or relies on the
-    /// background poller to recover it from storage (slow path).
+    /// The bundle's bytes and metadata are already persisted; see the
+    /// module-level [delivery contract](self#delivery-contract). The status
+    /// update is fail-stop on a storage error, and the bundle then either
+    /// enters the in-memory buffer on the fast path, or waits for the
+    /// background poller to recover it from storage on the slow path.
     ///
-    /// Returns `Err(SendError(bundle))` only when the channel is closing or
-    /// the receiver has been dropped; in both cases the caller may recover
-    /// ownership of the bundle. A `Full` buffer is **not** an error from
-    /// the caller's perspective — the bundle is in storage and will be
-    /// drained by the poller.
+    /// # Errors
+    ///
+    /// Returns `Err(SendError(bundle))` when the channel is closing or the
+    /// receiver has been dropped, handing ownership of the bundle back. A
+    /// full buffer is not an error, the bundle being in storage for the
+    /// poller to drain.
     #[expect(
         clippy::result_large_err,
         reason = "SendError carries the bundle so the caller recovers ownership; boxing it to shrink the Err variant would allocate on every send"
@@ -219,18 +215,20 @@ impl Sender {
         self.send_to(bundle, status).await
     }
 
-    /// The channel's target status — its queue identity. A queue whose
-    /// assignment record carries per-bundle payload (`ForwardPending`'s
-    /// `next_hop`) holds a placeholder there; [`send_to`](Self::send_to)
-    /// supplies each bundle's real record.
+    /// The channel's target status, which identifies its queue.
+    ///
+    /// A queue whose assignment record carries per-bundle payload, such as
+    /// `ForwardPending`'s `next_hop`, holds a placeholder there, and
+    /// [`send_to`](Self::send_to) supplies each bundle's own record.
     pub fn queue_status(&self) -> &BundleStatus {
         &self.shared.status
     }
 
-    /// Offer a bundle with its full per-bundle assignment record; `status`
-    /// must name this channel's queue
-    /// ([`same_queue`](BundleStatus::same_queue)). See
-    /// [`send`](Self::send), which uses the channel's own target status.
+    /// Offers a bundle with its own assignment record.
+    ///
+    /// `status` names this channel's queue, as
+    /// [`same_queue`](BundleStatus::same_queue) decides. See
+    /// [`send`](Self::send), which uses the channel's target status.
     #[expect(
         clippy::result_large_err,
         reason = "SendError carries the bundle so the caller recovers ownership; boxing it to shrink the Err variant would allocate on every send"
@@ -242,34 +240,32 @@ impl Sender {
         );
 
         // Conditional move into this queue from the sender's snapshot: a
-        // duplicate copy of a bundle that has already moved on must lose
-        // here, not stomp the live assignment (see the delivery contract)
+        // duplicate copy of a bundle that has already moved on loses here
+        // rather than overwriting the live assignment.
         if !self.store.swap_status(&mut bundle, &status).await {
             debug!("Bundle already moved on, dropping duplicate send");
             return Ok(());
         }
 
-        // State can change between load and CAS - this is fine, CAS handles races
+        // The state may change before the compare-and-swap below, which
+        // resolves the race.
         let state = self.shared.load_state(Ordering::Acquire);
 
         match state {
-            // Fast path is open, try to send directly to the in-memory channel.
             ChannelState::Open => {
                 match self.shared.tx.try_send(bundle) {
-                    // Success! The bundle is sent, and we can return immediately.
                     Ok(()) => return Ok(()),
 
                     Err(TrySendError::Disconnected(b)) => {
-                        // Wake up the poller task so it can exit
+                        // Wake the poller so that it can exit.
                         self.shared.notify.notify_one();
                         return Err(SendError(b));
                     }
 
                     Err(TrySendError::Full(_dropped)) => {
-                        // Intentional drop: the bundle's status was just
-                        // durably moved by the conditional swap above, so the
-                        // poller can recover it via `poll_pending`. See the
-                        // module-level delivery contract.
+                        // The drop is deliberate: the swap above moved the
+                        // bundle's status durably, so the poller recovers it
+                        // through `poll_pending`.
                         let _ = self.shared.compare_exchange_state(
                             ChannelState::Open,
                             ChannelState::Draining,
@@ -280,7 +276,7 @@ impl Sender {
                 }
             }
             ChannelState::Draining => {
-                // Signal new work arrived during drain
+                // New work arrived during the drain.
                 let _ = self.shared.compare_exchange_state(
                     ChannelState::Draining,
                     ChannelState::Congested,
@@ -292,42 +288,47 @@ impl Sender {
             ChannelState::Closing => return Err(SendError(bundle)),
         }
 
-        // Notify the poll_queue task that it has work to do on the slow path.
+        // Wake `poll_queue` for the slow path.
         self.shared.notify.notify_one();
         Ok(())
     }
 
-    /// Close the channel, preventing further sends.
-    /// Cancels the underlying `closeable` channel so the receiver wakes
-    /// up and returns `Disconnected` once any buffered bundles have drained.
+    /// Closes the channel to further sends.
+    ///
+    /// The underlying `closeable` channel is cancelled, so the receiver
+    /// wakes and reports `Disconnected` once the buffered bundles have
+    /// drained.
     pub fn close(&self) {
         self.shared
             .store_state(ChannelState::Closing, Ordering::Release);
-        // Cancel the closeable channel — receiver will drain then disconnect.
+        // The receiver drains the buffer, then disconnects.
         self.shared.tx.close();
         self.shared.notify.notify_one();
     }
 }
 
-/// How often the poller re-checks a buffer still above the re-open threshold
-/// once storage has drained: the consumer's progress raises no notification.
+/// Interval between re-checks of a buffer still above the re-open
+/// threshold, once storage has drained and the consumer's progress raises
+/// no notification.
 const REOPEN_TICK: Duration = Duration::milliseconds(50);
 
 /// Whether the poller should re-open the fast path, given the number of
 /// bundles currently buffered in memory and the channel capacity.
 ///
 /// The fast path re-opens once the buffer has drained to half capacity or
-/// less. The bound is inclusive so a `cap == 1` channel — whose half
-/// capacity rounds down to 0 — can still re-open when its buffer is empty.
+/// less. The bound is inclusive so that a `cap == 1` channel, whose half
+/// capacity rounds down to 0, still re-opens when its buffer is empty.
 #[inline]
 fn should_reopen(buffered: usize, cap: usize) -> bool {
     buffered <= cap / 2
 }
 
 impl Store {
-    /// Create a hybrid channel with the given target status and memory
-    /// capacity. The returned receiver's `recv()` reports `Disconnected`
-    /// once the buffer has drained after [`Sender::close`].
+    /// Creates a hybrid channel with the given target status and in-memory
+    /// capacity.
+    ///
+    /// The returned receiver's `recv` reports `Disconnected` once the
+    /// buffer has drained after [`Sender::close`].
     pub fn channel(
         self: &Arc<Self>,
         status: BundleStatus,
@@ -354,7 +355,7 @@ impl Store {
             Self::poll_queue(store, shared_cloned, cap).await
         });
 
-        // Signal initial poll to pick up any pre-existing bundles in storage
+        // The first poll picks up bundles already in storage.
         shared.notify.notify_one();
 
         (
@@ -366,22 +367,22 @@ impl Store {
         )
     }
 
-    /// Background poller: drains storage into memory channel when congested.
+    /// Drains storage into the in-memory channel while the fast path is
+    /// closed.
     async fn poll_queue(self: Arc<Self>, shared: Arc<Shared>, cap: usize) {
         let cancel = self.tasks.cancel_token().clone();
 
-        // Wait for the initial signal, or bail if the store is shutting down.
-        // The poller is spawned on the store task pool, so it must honour that
-        // pool's cancellation — otherwise store.shutdown() (which awaits every
-        // task) would hang on an idle poller waiting on `notify`.
+        // Await the first signal, or return if the store is shutting down.
+        // The poller runs on the store's task pool, so it honours that
+        // pool's cancellation: `Store::shutdown` awaits every task, and
+        // would otherwise hang on an idle poller parked on `notify`.
         select_biased! {
             _ = shared.notify.notified().fuse() => {}
             _ = cancel.cancelled().fuse() => return,
         }
 
         loop {
-            // Transition to Draining from any state except Closing.
-            // CAS loop: load current, bail if Closing, otherwise try to write Draining.
+            // Move to Draining from any state but Closing.
             let mut current = shared.load_state(Ordering::Acquire);
             loop {
                 if current == ChannelState::Closing {
@@ -401,7 +402,6 @@ impl Store {
                 break;
             }
 
-            // Drain storage
             loop {
                 match self.poll_once(&shared, cap).await {
                     Ok(true) => {}
@@ -421,8 +421,8 @@ impl Store {
             // Re-open the fast path once the buffer has drained to half
             // capacity or less. The consumer's progress raises no
             // notification, so while the buffer sits above the threshold
-            // the check must repeat on a short tick; parking on `notify`
-            // alone would leave the fast path closed until the next send.
+            // the check repeats on a short tick: parking on `notify` alone
+            // would leave the fast path closed until the next send.
             let reopened = loop {
                 if should_reopen(shared.tx.len(), cap) {
                     break shared
@@ -441,12 +441,12 @@ impl Store {
                 }
             };
             if !reopened {
-                // Congested, or new work arrived while the buffer drained:
-                // loop again without waiting.
+                // Congested, or new work arrived while the buffer drained,
+                // so loop again without waiting.
                 continue;
             }
 
-            // Wait for new work, or bail if the store is shutting down.
+            // Await new work, or return if the store is shutting down.
             select_biased! {
                 _ = shared.notify.notified().fuse() => {}
                 _ = cancel.cancelled().fuse() => return,
@@ -462,15 +462,15 @@ impl Store {
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {
             let mut pushed_one = false;
             while let Ok(bundle) = inner_rx.recv().await {
-                // Just do some checks. Queue-identity match: a recovered
-                // bundle's record may carry per-bundle payload the channel's
-                // target status cannot name.
+                // Match on queue identity: a recovered bundle's record may
+                // carry per-bundle payload the channel's target status
+                // cannot name.
                 if !bundle.has_expired() && bundle.status.same_queue(&shared_cloned.status) {
-                    // Send into queue. A closeable send already parked on a full
-                    // buffer is not woken by the channel's own close(), so race it
-                    // against pool shutdown — otherwise store.shutdown() (which
-                    // awaits this task) would hang. The dropped bundle stays
-                    // persisted and is recovered on restart.
+                    // A closeable send already parked on a full buffer is
+                    // not woken by the channel's own `close`, so race it
+                    // against pool shutdown: `Store::shutdown` awaits this
+                    // task and would otherwise hang. The dropped bundle
+                    // stays persisted and is recovered at restart.
                     let send = shared_cloned.tx.send(bundle);
                     pin_mut!(send);
                     select_biased! {
@@ -488,7 +488,7 @@ impl Store {
             .poll_pending(&stream, &shared.status, cap)
             .await
             .trace_expect("Failed to poll store for pending bundles");
-        // Drop the stream so the consumer task sees disconnect and exits.
+        // Dropping the stream disconnects the consumer task, which exits.
         drop(stream);
 
         h.await.trace_expect("Failed to join task")
@@ -544,7 +544,7 @@ mod tests {
     // Await the channel reaching `target`, synchronized on the state
     // machine's transition signal; the timeout only bounds a regression.
     // `notify_one` stores a permit, so a transition landing between the
-    // state check and the await is never lost.
+    // state check and the await is not lost.
     async fn wait_for_state(tx: &Sender, target: ChannelState) {
         tokio::time::timeout(tokio::time::Duration::from_secs(30), async {
             while tx.state() != target {
@@ -572,10 +572,10 @@ mod tests {
         .unwrap_or_else(|_| panic!("Timed out waiting for drain cycle {n}"))
     }
 
-    // A drain cycle can end with the buffer above half capacity: storage has
-    // nothing left to deliver, but the buffer still holds bundles the consumer
-    // has not taken. The consumer draining them raises no notification and no
-    // further send arrives, yet the fast path must re-open.
+    // A drain cycle can end with the buffer above half capacity: storage
+    // has nothing left to deliver, but the buffer still holds bundles the
+    // consumer has not taken. The consumer draining them raises no
+    // notification and no further send arrives, yet the fast path re-opens.
     #[tokio::test(start_paused = true)]
     async fn the_fast_path_reopens_once_the_consumer_drains() {
         let store = make_store();
@@ -584,8 +584,8 @@ mod tests {
         // The poller's initial cycle, over empty storage.
         wait_for_drain_cycles(&tx, 1).await;
 
-        // Fill the buffer, then tombstone its bundles: they are the
-        // consumer's now, and storage holds nothing to re-deliver.
+        // Fill the buffer, then tombstone its bundles, which belong to the
+        // consumer and leave storage with nothing to re-deliver.
         for i in 1..=cap as u32 {
             let bundle = make_bundle(i);
             let id = bundle.id().clone();
@@ -603,7 +603,7 @@ mod tests {
         wait_for_drain_cycles(&tx, 2).await;
         assert_eq!(rx.len(), cap, "the drain cycle ended with the buffer full");
 
-        // The consumer drains the buffer; no further send arrives.
+        // The consumer drains the buffer, and no further send arrives.
         for _ in 0..cap {
             rx.recv().await.expect("a buffered bundle");
         }
@@ -614,36 +614,38 @@ mod tests {
         store.shutdown().await;
     }
 
-    // The fast path must re-open after draining even for tiny capacities.
+    // The fast path re-opens after draining even at the smallest
+    // capacities.
     #[test]
     fn reopen_threshold_handles_small_caps() {
-        // cap=1: half capacity rounds down to 0, so the fast path re-opens
-        // only when the buffer is empty.
+        // At cap 1 half capacity rounds down to 0, so the fast path
+        // re-opens only when the buffer is empty.
         assert!(should_reopen(0, 1));
         assert!(!should_reopen(1, 1));
-        // cap=2: re-open at or below one buffered bundle.
+        // At cap 2, at or below one buffered bundle.
         assert!(should_reopen(1, 2));
         assert!(!should_reopen(2, 2));
-        // Larger caps re-open at half capacity.
+        // Larger capacities, at half capacity.
         assert!(should_reopen(8, 16));
         assert!(!should_reopen(9, 16));
     }
 
-    // Fill the memory channel beyond capacity to trigger Draining state.
+    // Filling the in-memory channel beyond capacity moves it to Draining.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_fast_path_saturation() {
         let store = make_store();
         let cap = 2;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Wait for the poller's initial cycle to complete
+        // Await the poller's first cycle.
         wait_for_state(&tx, ChannelState::Open).await;
 
-        // Fill channel to capacity
+        // Fill the buffer.
         send(&tx, make_bundle(1)).await.unwrap();
         send(&tx, make_bundle(2)).await.unwrap();
 
-        // Channel is full — next send triggers Draining
+        // The buffer is full, so the next send moves the channel to
+        // Draining.
         send(&tx, make_bundle(3)).await.unwrap();
 
         let state = tx.state();
@@ -652,31 +654,31 @@ mod tests {
             "Should be Draining or Congested after overflow, got {state:?}"
         );
 
-        // close() is sync and non-blocking (it only cancels the cancel_token),
-        // so the receiver-then-sender ordering no longer matters for
-        // correctness — but it mirrors how producers and consumers actually
-        // wind down in production.
+        // `close` is synchronous and non-blocking, only cancelling the
+        // token, so closing the receiver before the sender is not required
+        // for correctness, but it matches how producers and consumers wind
+        // down in production.
         drop(rx);
         tx.close();
         store.shutdown().await;
     }
 
-    // Send while Draining triggers Congested state.
+    // A send while Draining moves the channel to Congested.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_congestion_signal() {
         let store = make_store();
         let cap = 2;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Wait for poller's initial cycle
+        // Await the poller's first cycle.
         wait_for_state(&tx, ChannelState::Open).await;
 
-        // Fill + overflow to enter Draining
+        // Fill and overflow to enter Draining.
         send(&tx, make_bundle(1)).await.unwrap();
         send(&tx, make_bundle(2)).await.unwrap();
         send(&tx, make_bundle(3)).await.unwrap();
 
-        // Another send while Draining should push to Congested
+        // A further send while Draining moves to Congested.
         send(&tx, make_bundle(4)).await.unwrap();
 
         let state = tx.state();
@@ -690,27 +692,28 @@ mod tests {
         store.shutdown().await;
     }
 
-    // After draining completes and channel is <50% full, fast path re-opens.
+    // Once the drain completes with the buffer below half capacity, the
+    // fast path re-opens.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_hysteresis_recovery() {
         let store = make_store();
-        // Large cap so hysteresis threshold (cap/2=8) is easily cleared
-        // after draining 5 bundles + duplicates.
+        // A capacity large enough that the re-open threshold of 8 is
+        // cleared after draining 5 bundles and their duplicates.
         let cap = 16;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Wait for the poller's initial cycle before overflowing the buffer.
+        // Await the poller's first cycle before overflowing the buffer.
         wait_for_state(&tx, ChannelState::Open).await;
 
-        // Now send enough to overflow: one more than the buffer holds.
+        // Send one more than the buffer holds, to overflow it.
         let bundles = cap + 1;
         for i in 1..=bundles as u32 {
             send(&tx, make_bundle(i)).await.unwrap();
         }
 
         // Drain until every unique bundle has been delivered and
-        // tombstoned; each recv is event-driven, the timeout only bounds a
-        // regression.
+        // tombstoned. Each recv is event-driven, and the timeout only
+        // bounds a regression.
         let mut seen = HashSet::new();
         while seen.len() < bundles {
             let b = tokio::time::timeout(tokio::time::Duration::from_secs(10), rx.recv())
@@ -727,9 +730,9 @@ mod tests {
         );
 
         // The poller re-opens once metadata is empty and the buffer is
-        // below half capacity; duplicate deliveries may still be in
-        // flight, so keep draining them while awaiting the transition.
-        // The timeout only bounds a regression.
+        // below half capacity. Duplicate deliveries may still be in flight,
+        // so keep draining them while awaiting the transition; the timeout
+        // only bounds a regression.
         tokio::time::timeout(tokio::time::Duration::from_secs(30), async {
             loop {
                 let notified = tx.shared.state_notify.notified();
@@ -739,10 +742,10 @@ mod tests {
                 tokio::select! {
                     _ = notified => {}
                     r = rx.recv() => {
-                        // The sender stays alive until after this loop, so a
-                        // recv error means the channel died mid-test; fail
-                        // immediately rather than spinning on a ready Err arm
-                        // until the outer timeout.
+                        // The sender outlives this loop, so a recv error
+                        // means the channel died mid-test. Fail at once
+                        // rather than spinning on a ready `Err` arm until
+                        // the outer timeout.
                         let b = r.expect("Channel disconnected while awaiting re-open");
                         store.tombstone_metadata(b.id()).await;
                     }
@@ -762,39 +765,38 @@ mod tests {
         store.shutdown().await;
     }
 
-    // Expired bundles should be filtered out during poll_once and not delivered.
+    // `poll_once` filters expired bundles out rather than delivering them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_lazy_expiry() {
         let store = make_store();
-        let cap = 4; // Large enough that poller doesn't block
+        let cap = 4; // Large enough that the poller does not block.
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Send a valid bundle and an expired one
+        // One live bundle and one expired.
         send(&tx, make_bundle(1)).await.unwrap();
         send(&tx, make_expired_bundle(2)).await.unwrap();
 
-        // The valid bundle should arrive on the fast path
+        // The live bundle arrives on the fast path.
         let received = rx.recv().await;
         assert!(received.is_ok(), "Valid bundle should be received");
 
-        // The expired bundle was also sent on the fast path (expiry filtering
-        // only happens in poll_once for the slow path). On the fast path,
-        // expired bundles still arrive — the dispatcher handles expiry later.
-        // This test verifies the bundle at least doesn't crash the channel.
+        // The expired bundle also went out on the fast path, which does no
+        // expiry filtering: only `poll_once` on the slow path does. It
+        // arrives, and the dispatcher handles expiry later.
 
         drop(rx);
         tx.close();
         store.shutdown().await;
     }
 
-    // Sends should fail with SendError after close.
+    // A send after `close` fails with `SendError`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_close_safety() {
         let store = make_store();
         let cap = 4;
         let (tx, _rx) = store.channel(STATUS, cap);
 
-        // Let poller complete its initial cycle
+        // Await the poller's first cycle.
         wait_for_state(&tx, ChannelState::Open).await;
 
         tx.close();
@@ -809,19 +811,20 @@ mod tests {
         store.shutdown().await;
     }
 
-    // Bundles that overflow the fast path should eventually arrive via the poller.
+    // Bundles that overflow the fast path arrive through the poller.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_drop_to_storage_integrity() {
         let store = make_store();
         let cap = 2;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Send 3 bundles — 2 fit in channel, 3rd overflows to storage
+        // Of the three bundles, two fit in the buffer and the third
+        // overflows to storage.
         send(&tx, make_bundle(1)).await.unwrap();
         send(&tx, make_bundle(2)).await.unwrap();
         send(&tx, make_bundle(3)).await.unwrap();
 
-        // Receive all 3, tombstoning each to prevent re-delivery.
+        // Receive all three, tombstoning each against re-delivery.
         let mut seen = HashSet::new();
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         while seen.len() < 3 {
@@ -845,9 +848,9 @@ mod tests {
         store.shutdown().await;
     }
 
-    // All sent bundles should arrive when the consumer tombstones them promptly.
-    // The channel may re-deliver fast-path bundles via the poller (at-least-once),
-    // but tombstoning prevents repeated re-delivery.
+    // Every sent bundle arrives when the consumer tombstones it promptly.
+    // Delivery is at least once, so the poller may re-deliver a fast-path
+    // bundle, and the tombstone stops it recurring.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_hybrid_duplication() {
         let store = make_store();
@@ -859,7 +862,8 @@ mod tests {
             send(&tx, make_bundle(i)).await.unwrap();
         }
 
-        // Consume bundles and tombstone each so the poller won't re-send.
+        // Tombstone each bundle as it is consumed, so the poller does not
+        // re-send it.
         let mut seen = HashSet::new();
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         while seen.len() < total as usize {
@@ -883,10 +887,10 @@ mod tests {
         store.shutdown().await;
     }
 
-    // Bundles sent in sequence should all arrive, preserving the set.
-    // Strict FIFO is guaranteed on the fast path (in-memory channel) and by received_at
-    // ordering on the slow path, but the concurrent poller makes strict
-    // ordering non-deterministic across paths in a test environment.
+    // Bundles sent in sequence all arrive. Order is FIFO within the
+    // in-memory buffer and by `received_at` on the slow path, but the
+    // concurrent poller leaves the order across the two paths
+    // non-deterministic, so only the set is asserted.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_ordering_preservation() {
         let store = make_store();
@@ -899,7 +903,7 @@ mod tests {
         send(&tx, make_bundle(1)).await.unwrap();
         send(&tx, make_bundle(2)).await.unwrap();
 
-        // Collect unique bundles until we've seen both
+        // Collect unique bundles until both have been seen.
         let mut seen = HashSet::new();
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         while seen.len() < 2 {
@@ -920,17 +924,17 @@ mod tests {
         store.shutdown().await;
     }
 
-    // Bundles with mismatched status should be filtered during poll_once.
+    // `poll_once` filters out bundles whose status names another queue.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_status_consistency() {
         let store = make_store();
         let cap = 2;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Send a bundle — this updates its status to ForwardPending{peer:1}
+        // The send moves the bundle's status to `ForwardPending{peer:1}`.
         send(&tx, make_bundle(1)).await.unwrap();
 
-        // The bundle should arrive normally; verify it has the correct status
+        // The bundle arrives carrying that status.
         let b = rx.recv().await.unwrap();
         assert_eq!(b.status, STATUS);
 
@@ -939,7 +943,8 @@ mod tests {
         store.shutdown().await;
     }
 
-    // After closing, the receiver should eventually see Disconnected.
+    // The receiver reports `Disconnected` once a closed channel has
+    // drained.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_zombie_task_leak() {
         let store = make_store();
@@ -949,12 +954,12 @@ mod tests {
         send(&tx, make_bundle(1)).await.unwrap();
         tx.close();
 
-        // Drain until we see Disconnected or timeout
+        // Drain until `Disconnected` or the timeout.
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         let mut got_disconnected = false;
         loop {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Ok(Ok(_)) => continue, // data bundle, keep draining
+                Ok(Ok(_)) => continue, // A bundle, so keep draining.
                 Ok(Err(_)) => {
                     got_disconnected = true;
                     break;

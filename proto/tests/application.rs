@@ -1,7 +1,7 @@
 //! Application client proxy tests (APP-CLI-01 through APP-CLI-05).
 //!
-//! Verify the Application client correctly maps Rust trait calls
-//! to service.proto messages (Application RPC) via the gRPC proxy.
+//! The Application client maps its Rust trait calls onto the Application
+//! RPC of service.proto, across the gRPC proxy.
 
 mod common;
 
@@ -80,7 +80,6 @@ async fn app_cli_01_registration_ipn() {
 
     assert_eq!(service.endpoint.to_string(), "ipn:1.42");
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -91,7 +90,7 @@ async fn app_cli_02_registration_dtn() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["application"]).await;
 
-    // MockBpa always returns ipn:1.42 regardless of service_id
+    // MockBpa answers ipn:1.42 whatever the service id.
     let service = RemoteBpa::new(grpc_addr)
         .register_service(
             Some(hardy_bpv7::eid::Service::Dtn("sensor".into())),
@@ -102,7 +101,6 @@ async fn app_cli_02_registration_dtn() {
 
     assert!(!service.endpoint.to_string().is_empty());
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -121,7 +119,7 @@ async fn app_cli_03_send_payload() {
         .await
         .expect("registration should succeed");
 
-    // send() calls the mock BPA sink which returns an error
+    // The mock BPA sink answers every send with an error.
     let result = service
         .sink
         .send(
@@ -133,7 +131,6 @@ async fn app_cli_03_send_payload() {
         .await;
     assert!(result.is_err(), "mock sink send returns error");
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -185,7 +182,6 @@ async fn app_cli_04_receive_payload() {
     assert_eq!(received_id, bundle_id, "bundle id must round-trip the wire");
     assert_eq!(received_id.source, source);
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -234,7 +230,6 @@ async fn app_cli_05_status_notify() {
         "MockService should have received the status notification"
     );
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }

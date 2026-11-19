@@ -104,7 +104,8 @@ pub struct Config {
 }
 
 impl Config {
-    // Load configuration from a file and environment variable overrides.
+    // Loads the configuration from a file, with environment variable
+    // overrides.
     //
     // Resolution order for the config file path:
     // 1. The explicit `config_file` argument (if `Some`).
@@ -160,7 +161,7 @@ mod tests {
 
     use super::*;
 
-    // Helper: write a config file and load it.
+    // Writes a config file and loads it.
     fn write_and_load(name: &str, content: &str) -> Config {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(name);

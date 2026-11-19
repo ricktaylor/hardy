@@ -18,12 +18,12 @@ use tracing::{debug, warn};
 
 use crate::{Error, pdu};
 
-/// BIBE CLA for encapsulation.
+/// The encapsulating half of a BIBE tunnel.
 ///
-/// Implements `forward()` to encapsulate bundles and re-inject them into the BPA.
-/// Virtual peers are registered via `add_tunnel()` with an
-/// `Address::Private` carrying the CBOR-encoded destination EID of the
-/// outer bundle.
+/// [`forward`](Cla::forward) encapsulates each bundle and dispatches the
+/// outer bundle back into the BPA. [`add_tunnel`](Self::add_tunnel)
+/// registers a tunnel destination as a peer whose `Address::Private`
+/// carries the CBOR-encoded destination EID of the outer bundle.
 pub struct BibeCla {
     tunnel_source: Eid,
     sink: Arc<dyn Sink>,
@@ -59,26 +59,29 @@ impl BibeCla {
         self.sink.unregister().await;
     }
 
-    /// Register a tunnel destination as a virtual peer.
+    /// Registers a tunnel destination as a peer.
     ///
-    /// The `tunnel_id` NodeId becomes routable, and bundles forwarded to it
-    /// will be encapsulated with `decap_endpoint` as the outer destination.
+    /// `tunnel_id` becomes routable, and a bundle forwarded to it is
+    /// encapsulated with `decap_endpoint` as the outer destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the BPA refuses the peer.
     pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<(), Error> {
-        // Encode the decap endpoint as CBOR
         let cbor_bytes = encode::emit(&decap_endpoint).0;
         let cla_addr = Address::Private(cbor_bytes.into());
 
-        // Register as a peer - this creates the local route entry
+        // The peer carries the local route entry for the tunnel.
         self.sink.add_peer(cla_addr, &[tunnel_id]).await?;
 
         Ok(())
     }
 
-    /// Dispatch a bundle into the BPA (used by DecapService).
-    // INTERIM BUFFERING: both callers (decapsulation and encapsulation) hold
-    // a complete bundle in memory, so it enters the BPA as a one-segment
-    // stream (`Bytes` is a `stream::Receiver`). This is a deliberate stepping stone toward
-    // the full streaming pipeline; see bpa/docs/streaming_pipeline_design.md.
+    /// Dispatches a bundle into the BPA.
+    // Both callers, decapsulation and encapsulation, hold a complete bundle
+    // in memory, so it enters the BPA as a one-segment stream, `Bytes`
+    // being a `stream::Receiver`. See bpa/docs/streaming_pipeline_design.md
+    // for the streaming form this is a step towards.
     pub(crate) async fn dispatch(&self, mut bundle: Bytes) -> Result<Acceptance, Error> {
         Ok(self.sink.dispatch(None, None, &mut bundle).await?)
     }
@@ -86,11 +89,11 @@ impl BibeCla {
 
 #[async_trait]
 impl Cla for BibeCla {
-    // INTERIM BUFFERING: encapsulation wraps the whole inner bundle in a
-    // single BIBE-PDU byte string with a whole-buffer codec, so the stream
-    // is assembled in memory via `stream::buffer_stream` first. This is a
-    // deliberate stepping stone toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md.
+    // Encapsulation wraps the whole inner bundle in a single BIBE-PDU byte
+    // string with a whole-buffer codec, so `stream::buffer_stream`
+    // assembles the stream in memory first. See
+    // bpa/docs/streaming_pipeline_design.md for the streaming form this is
+    // a step towards.
     async fn forward(
         &self,
         _lane: Option<u32>,
@@ -117,7 +120,6 @@ impl Cla for BibeCla {
 
         debug!("BIBE encapsulating bundle to {outer_dest}");
 
-        // Encapsulate the bundle
         let outer = match pdu::encapsulate(&self.tunnel_source, bundle, outer_dest) {
             Ok(outer) => outer,
             Err(e) => {
@@ -141,13 +143,12 @@ impl Cla for BibeCla {
             });
         }
 
-        // Dispatch the outer bundle back into the BPA
         match self.dispatch(outer).await {
             Ok(Acceptance::Accepted) => Ok(ForwardOutcome::Sent),
             // The BPA refused this bundle: a per-bundle verdict, reported as
             // such so the dispatcher parks this bundle alone.
             Ok(Acceptance::Refused) => Err(ClaError::Internal(Box::new(Error::Refused))),
-            // The sink is genuinely gone — the one link-scoped outcome.
+            // The sink is genuinely gone, the one link-scoped outcome.
             Err(Error::Dispatch(ClaError::Disconnected)) => Ok(ForwardOutcome::NoNeighbour),
             Err(Error::Dispatch(e)) => Err(e),
             Err(e) => Err(ClaError::Internal(Box::new(e))),
@@ -252,7 +253,7 @@ mod tests {
     }
 
     /// Encapsulation grows the bundle, so a cap equal to the inner bundle's
-    /// size is always exceeded by the outer: forward refuses per-bundle
+    /// size is always exceeded by the outer: `forward` refuses per-bundle
     /// with `PayloadTooLarge` carrying the negotiated cap, and nothing is
     /// dispatched.
     #[tokio::test]
@@ -298,7 +299,8 @@ mod tests {
     }
 
     /// A BPA refusal of the outer bundle is this bundle's verdict, surfaced
-    /// as an error the dispatcher parks per-bundle — never `NoNeighbour`.
+    /// as an error the dispatcher parks per-bundle rather than as
+    /// `NoNeighbour`.
     #[tokio::test]
     async fn bpa_refusal_is_not_no_neighbour() {
         let (cla, dispatched) = registered_cla(None, Acceptance::Refused);

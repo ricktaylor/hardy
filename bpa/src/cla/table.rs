@@ -7,9 +7,8 @@ use hardy_bpv7::{
 };
 use tracing::{debug, error, info};
 
-// `cla::Cla` and `cla::Sink` are the traits this module's `Record` and
-// `Sink` are built around, so both names are taken here; the two traits
-// stay module-qualified at their few use sites.
+// `Cla` and `Sink` name items in this module, so the traits of the same
+// name are used qualified, as `cla::Cla` and `cla::Sink`.
 use super::{
     Acceptance, Address, BoxFactory, Context, Error, Result, Segment, Terms, TransferOutcome,
     peers::{Peer, PeerTable},
@@ -27,33 +26,26 @@ use crate::{
     stream::{CancellableReceiver, Receiver},
 };
 
-// The maps here are behind spin locks. Every critical section is an O(1)
-// lookup or insert with nothing awaited, blocked or iterated inside it, so
-// the lock is never held long enough to repay an OS mutex's park. In
-// particular the embedder's factory runs outside the table's lock,
-// against a reservation.
+// The maps are behind spin locks. Every critical section is an O(1) map
+// operation, and nothing is awaited while a lock is held; the embedder's
+// factory runs outside the table's lock, against a reservation.
 
-/// One attached CLA: what it was built as, what it was built under, and
-/// what it has published.
+/// A registered CLA and the state the table keeps for it.
 pub struct Record {
     pub cla: Arc<dyn cla::Cla>,
     pub policy: Arc<dyn FlowControllerFactory>,
     pub terms: Terms,
 
     name: Arc<str>,
-    // Cancelled at detachment; every in-flight stream of this attachment
-    // races it and fails immediately.
     cancel: CancellationToken,
-    // Keyed by the link-layer adjacency, which is a peer's primary key.
-    // The value pairs the node ids known for that peer with its id in the
-    // `PeerTable`; an empty list is a neighbour whose EID has not been
-    // learned yet, and so has no RIB entry.
+    // The node ids known for the peer, empty where its EID is unknown, and
+    // its id in the `PeerTable`.
     peers: Mutex<HashMap<Address, (Vec<NodeId>, u32)>>,
 }
 
 impl Record {
-    // Whether `peer_id` is one of this CLA's peers: the ownership check
-    // for deferred transfer outcomes.
+    // Deferred transfer outcomes are accepted only from the CLA that owns
+    // the peer.
     pub fn owns_peer(&self, peer_id: u32) -> bool {
         self.peers.lock().values().any(|(_, id)| *id == peer_id)
     }
@@ -69,25 +61,20 @@ impl core::fmt::Debug for Record {
     }
 }
 
-// Why a name is claimed while no record stands under it: a registration
-// whose factory is still running, or the teardown of a record already
-// taken out of the table.
+// A name is claimed, rather than occupied by a record, while its
+// registration builds and while its record is torn down.
 enum Claim {
     Building,
-    Detaching,
+    Unregistering,
 }
 
-// What holds a name. Either a record stands there or a claim does,
-// never both and never neither, so the name's state is the slot's
-// variant.
+// The occupant of a name: a registered CLA, or a claim on the name.
 enum Slot {
     Claimed(Claim),
     Attached(Arc<Record>),
 }
 
 impl Slot {
-    // The record standing under the name, if the name is not merely
-    // claimed: only an attached CLA is usable.
     fn attached(&self) -> Option<&Arc<Record>> {
         match self {
             Slot::Attached(record) => Some(record),
@@ -96,18 +83,14 @@ impl Slot {
     }
 }
 
-/// The CLAs of one BPA: the only place a CLA is built, and the authority
-/// on which ones are live.
+/// The registered CLAs of a BPA.
 pub struct Table {
     node_ids: Arc<NodeIds>,
-    // The dispatcher owns this table through its own late-bound cell, so
-    // the edge back is weak; a failed upgrade is `Error::Disconnected`.
+    // The dispatcher owns this table, so the reference back is weak. A
+    // failed upgrade maps to `Error::Disconnected`.
     dispatcher: Weak<Dispatcher>,
-    // The BPA's own reception cap, one half of every settlement.
     max_bundle_size: Option<NonZeroU64>,
     clas: Mutex<HashMap<String, Slot>>,
-    // The egress policies configured by CLA name, the embedder's choice
-    // rather than the CLA's; a name absent here runs unshaped.
     policies: HashMap<String, Arc<dyn FlowControllerFactory>>,
     rib: Arc<Rib>,
     store: Arc<Store>,
@@ -117,13 +100,9 @@ pub struct Table {
 }
 
 impl Table {
-    /// The empty table of one BPA.
-    ///
-    /// Every CLA it ever holds arrives through
-    /// [`register`](Self::register), the CLAs the embedder declared no
-    /// differently from the ones that register while the BPA runs.
-    // The dispatcher is the one argument taken by reference: the table
-    // holds a `Weak` to it, and keeps the others.
+    /// Creates an empty table. CLAs are added by
+    /// [`register`](Self::register) only.
+    // `dispatcher` is borrowed because the table keeps only a `Weak` to it.
     pub fn new(
         node_ids: Arc<NodeIds>,
         dispatcher: &Arc<Dispatcher>,
@@ -146,14 +125,19 @@ impl Table {
         })
     }
 
-    /// Attaches the CLA and starts it, the two halves of one call. A
-    /// CLA that cannot run is detached again, so a failure leaves
-    /// nothing behind.
+    /// Builds the CLA, files it under `name`, and calls
+    /// [`Cla::register`](cla::Cla::register).
     ///
-    /// The factory is the embedder's code and may do anything, so it runs
-    /// outside the lock, against a reservation of the name. No one else
-    /// can claim the name while the factory runs, and no one can reach a
-    /// CLA that is still being built.
+    /// The factory runs outside the table's lock, against a reservation of
+    /// `name`, so no other registration can take the name and no caller can
+    /// reach a CLA that is still being built.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::DuplicateName`] or [`Error::Unregistering`] if
+    /// `name` is taken, or the error returned by the factory or by
+    /// [`Cla::register`](cla::Cla::register). A CLA whose `register` fails
+    /// is unregistered again, so a failed call registers nothing.
     pub async fn register(self: &Arc<Self>, name: &str, factory: BoxFactory<'_>) -> Result<()> {
         let terms = Terms::negotiate(factory.request(), self.max_bundle_size);
         let policy = self
@@ -164,8 +148,7 @@ impl Table {
 
         let reservation = self.reserve(name)?;
 
-        // A build that fails drops the reservation, which releases the
-        // name: the claim existed only for this build.
+        // Dropping the reservation releases the name.
         let name: Arc<str> = Arc::from(name);
         let cla = factory.build(Context::new(
             Arc::new(Sink {
@@ -185,7 +168,7 @@ impl Table {
         }))?;
 
         metrics::gauge!("bpa.cla.registered").increment(1.0);
-        info!("Attached CLA: {name}");
+        info!("Registered CLA: {name}");
 
         if let Err(e) = cla.register().await {
             self.unregister(&name).await;
@@ -194,12 +177,13 @@ impl Table {
         Ok(())
     }
 
-    /// Unregisters the named CLA and withdraws everything it published.
+    /// Unregisters the CLA filed under `name` and withdraws its peers and
+    /// their routes.
     ///
-    /// Returns whether this call did the detaching: a name that is
-    /// absent, already being detached by another caller, or still being
-    /// built, answers `false`. In the last case the build itself
-    /// completes the detachment.
+    /// Returns `true` if this call performed the unregistration, and
+    /// `false` if `name` is absent, already unregistering, or still
+    /// building. A CLA that is still building is torn down by
+    /// [`register`](Self::register) instead.
     pub async fn unregister(&self, name: &str) -> bool {
         let record = {
             let mut clas = self.clas.lock();
@@ -207,20 +191,17 @@ impl Table {
                 return false;
             };
 
-            // The name is claimed for the teardown that follows, so
-            // nothing re-registers over peers still being withdrawn.
-            match core::mem::replace(slot, Slot::Claimed(Claim::Detaching)) {
+            // Claim the name for the teardown, so that nothing registers
+            // over peers that are still being withdrawn.
+            match core::mem::replace(slot, Slot::Claimed(Claim::Unregistering)) {
                 Slot::Attached(record) => record,
-                // A registration still holds the name, and the replace
-                // turned its claim into a teardown: it reads that once
-                // its factory returns and takes the CLA straight back
-                // down instead of filing it. A teardown already holding
-                // the name reads back what it put there.
+                // A registration holds the name. The claim just written
+                // tells it to tear the CLA down instead of filing it.
                 Slot::Claimed(_) => return false,
             }
         };
 
-        // First: wake every in-flight stream of this attachment.
+        // Cancel the in-flight streams before calling into the CLA.
         record.cancel.cancel();
 
         if let Err(e) = record.cla.unregister().await {
@@ -229,11 +210,10 @@ impl Table {
 
         let peers = core::mem::take(&mut *record.peers.lock());
         for (_, (node_ids, peer_id)) in peers {
-            // Close the peer's egress queues first, then withdraw its RIB
-            // entries: the ForwardPending/ForwardAckPending sweeps inside
-            // remove_forward must run once no new send can re-enter the
-            // queue (mirrors remove_peer). A send that lands after the
-            // close bounces and is parked back to Waiting by its caller.
+            // Close the egress queues before withdrawing the RIB entries,
+            // as `remove_peer` does: the sweeps in `remove_forward` require
+            // that no further send can enter the queue. A send that arrives
+            // after the close is parked back to Waiting by its caller.
             self.peers.remove(peer_id).await;
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
@@ -243,22 +223,22 @@ impl Table {
 
         self.clas.lock().remove(name);
         metrics::gauge!("bpa.cla.registered").decrement(1.0);
-        info!("Detached CLA: {name}");
+        info!("Unregistered CLA: {name}");
 
         true
     }
 
     pub async fn shutdown(&self) {
-        // Every claim becomes a teardown as well, so a registration
-        // still running its factory gives its name up instead of filing
-        // a CLA into a table that is going away.
+        // Outstanding claims become teardowns, so a registration still
+        // inside its factory releases its name instead of filing into a
+        // table that is shutting down.
         let names = {
             let mut clas = self.clas.lock();
             clas.iter_mut()
                 .filter_map(|(name, slot)| match slot {
                     Slot::Attached(_) => Some(name.clone()),
                     Slot::Claimed(claim) => {
-                        *claim = Claim::Detaching;
+                        *claim = Claim::Unregistering;
                         None
                     }
                 })
@@ -285,8 +265,7 @@ impl Table {
         self.peers.forward(peer_id, next_hop, bundle).await
     }
 
-    // Claims `name` for a registration, failing if a CLA or another
-    // claim already holds it.
+    // Claims `name`, failing if a CLA or another claim holds it.
     fn reserve<'a>(&'a self, name: &'a str) -> Result<Reservation<'a>> {
         match self.clas.lock().entry(name.to_owned()) {
             Entry::Vacant(slot) => {
@@ -301,14 +280,12 @@ impl Table {
                 Slot::Attached(_) | Slot::Claimed(Claim::Building) => {
                     Error::DuplicateName(name.to_owned())
                 }
-                Slot::Claimed(Claim::Detaching) => Error::Unregistering(name.to_owned()),
+                Slot::Claimed(Claim::Unregistering) => Error::Unregistering(name.to_owned()),
             }),
         }
     }
 
-    // The record filed under `name`, if one is attached. A name a build
-    // still holds, and one a detaching record still holds, both answer
-    // `None`: only an attached CLA is usable.
+    // A name held only by a claim has no record.
     fn record(&self, name: &str) -> Option<Arc<Record>> {
         self.clas.lock().get(name).and_then(Slot::attached).cloned()
     }
@@ -320,9 +297,8 @@ impl Table {
         cla_addr: Address,
         node_ids: &[NodeId],
     ) -> bool {
-        // Mint the id without publishing anything (reserved against reuse),
-        // then claim the address, the adjacency's natural key, so a
-        // duplicate exits before any peer state exists.
+        // Reserve the id, then claim the address, so that a duplicate
+        // address returns before any peer state exists.
         let reservation = self.peers.reserve();
         let peer_id = reservation.id();
         let claimed = {
@@ -343,8 +319,7 @@ impl Table {
 
         debug!("Added new peer {peer_id}: [{node_ids:?}] at {cla_addr} via CLA {cla_name}");
 
-        // Construct the peer complete, then publish: the table only ever
-        // holds working peers.
+        // Publish only once the peer is running.
         let peer = Peer::start(
             self.poll_channel_depth,
             record.clone(),
@@ -357,10 +332,9 @@ impl Table {
         .await;
         reservation.publish(peer);
 
-        // Post-construction liveness re-check: a concurrent
-        // remove_peer/detach during construction has already taken the
-        // address entry, so withdraw the published peer instead of
-        // installing RIB entries nothing would ever clean up.
+        // A concurrent `remove_peer` or unregistration has taken the
+        // address entry, so withdraw the peer instead of installing RIB
+        // entries that nothing removes.
         let still_ours =
             matches!(record.peers.lock().get(&cla_addr), Some((_, id)) if *id == peer_id);
         if !still_ours {
@@ -368,8 +342,8 @@ impl Table {
             return false;
         }
 
-        // A neighbour, one whose node ids are not known, gets no RIB
-        // entry, and nothing supplies them later.
+        // An empty `node_ids` means the peer's EID is unknown: no RIB entry
+        // is installed, and none is added later.
         for node_id in node_ids {
             let _ = self.rib.add_forward(node_id.clone(), peer_id).await;
             metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
@@ -395,9 +369,8 @@ impl Table {
     }
 }
 
-// The gauge counts what the table holds: `unregister` takes CLAs out
-// one at a time, and dropping the table takes whatever is left, which
-// is how a BPA dropped without a shutdown is accounted for.
+// `unregister` decrements the gauge per CLA; this accounts for the CLAs
+// still registered when the table is dropped.
 impl Drop for Table {
     fn drop(&mut self) {
         let attached = self
@@ -412,8 +385,7 @@ impl Drop for Table {
     }
 }
 
-// A name claimed for a registration, held while the embedder's factory
-// runs and given up when the registration ends, whichever way it ends.
+// A claim on a name, released on drop unless `publish` consumes it.
 #[must_use = "an unused reservation releases its name immediately"]
 struct Reservation<'a> {
     table: &'a Table,
@@ -422,13 +394,11 @@ struct Reservation<'a> {
 }
 
 impl Reservation<'_> {
-    // Files the built record under the reserved name, the only way a
-    // CLA becomes reachable.
+    // Files `record` under the reserved name.
     //
-    // An `unregister` that arrived while the factory ran turned the claim
-    // into a teardown, and the record is refused: nothing was published
-    // and the CLA was never started, so dropping it is the whole
-    // teardown.
+    // Fails with `Error::Unregistering` if an `unregister` arrived while the
+    // factory ran. The record is then dropped having never been published
+    // or started, which completes the teardown.
     fn publish(mut self, record: Arc<Record>) -> Result<()> {
         let mut clas = self.table.clas.lock();
         self.claimed = false;
@@ -450,10 +420,9 @@ impl Drop for Reservation<'_> {
     }
 }
 
-// A CLA is named, not pointed at: the sink holds its key and a weak,
-// non-owning edge to the table, and re-resolves on every operation. The
-// table is then the single authority on liveness, and a failed resolution
-// is the condition the trait already names, `Error::Disconnected`.
+// Holds the CLA's name and a weak reference to the table, and re-resolves
+// on each call, so the table remains the only authority on liveness. A
+// failed resolution maps to `Error::Disconnected`.
 struct Sink {
     table: Weak<Table>,
     name: Arc<str>,
@@ -488,11 +457,10 @@ impl cla::Sink for Sink {
         let (table, record) = self.resolve()?;
         let dispatcher = Self::dispatcher(&table)?;
 
-        // A CLA that detaches mid-stream must not land its bundle: the
-        // attachment's token races every pull, so teardown wakes this
-        // stream immediately, even parked behind a stalled producer, and
-        // the transfer surfaces as cancelled. Sink-side, so the dispatcher's
-        // stream consumers stay attachment-agnostic.
+        // Cancel the stream if the CLA unregisters: the token is raced
+        // against every pull, so a teardown wakes a stream parked behind a
+        // stalled producer. Done here to keep the dispatcher's stream
+        // consumers independent of registration state.
         let mut stream = CancellableReceiver {
             inner: stream,
             token: record.cancel.clone(),
@@ -501,9 +469,8 @@ impl cla::Sink for Sink {
             .receive_bundle(self.name.clone(), peer_node, peer_addr, &mut stream)
             .await;
 
-        // A refusal caused by that teardown is not a verdict on the
-        // bundle: the attachment died. Report the dead sink instead, so the
-        // CLA does not mistake its own detachment for a per-bundle refusal.
+        // A refusal caused by the teardown is not a verdict on the bundle,
+        // so report the disconnected sink instead.
         if matches!(verdict, Acceptance::Refused) && record.cancel.is_cancelled() {
             return Err(Error::Disconnected);
         }
@@ -551,8 +518,8 @@ mod tests {
         stream::Receiver,
     };
 
-    // A CLA that does nothing but keep the sink it was built with, so the
-    // tests can drive the BPA from the CLA's side of the contract.
+    // A CLA that keeps only its sink, so that the tests can drive the BPA
+    // through the CLA side of the contract.
     struct TestCla {
         sink: Arc<dyn Sink>,
     }
@@ -579,7 +546,6 @@ mod tests {
         }
     }
 
-    // A name is exclusive: the second CLA to claim one is refused.
     #[tokio::test]
     async fn duplicate_name_is_refused() {
         let bpa = Bpa::builder().build();
@@ -597,9 +563,8 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // The embedder's factory is not called under the table's lock. A
-    // factory may log, allocate or reach back into the table, any of
-    // which would spin against a lock `attach` was still holding.
+    // The factory must not run under the table's lock: a factory is free to
+    // call back into the table.
     #[tokio::test]
     async fn the_factory_runs_outside_the_table_lock() {
         let bpa = Bpa::builder().build();
@@ -614,11 +579,9 @@ mod tests {
                     let clas = table
                         .clas
                         .try_lock()
-                        .expect("The table's lock is held while the factory runs");
+                        .expect("The table's lock is free while the factory runs");
                     matches!(clas.get("probe-cla"), Some(Slot::Claimed(Claim::Building)))
                 };
-                // The name is reserved for the duration, so nothing else
-                // can claim it while this runs.
                 assert!(reserved, "The name is not reserved while the factory runs");
                 Ok(Arc::new(TestCla { sink: cx.sink }))
             }),
@@ -629,8 +592,6 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // A factory that fails leaves nothing behind, so the name it
-    // reserved is free for the next attempt.
     #[tokio::test]
     async fn a_failed_build_releases_the_name() {
         let bpa = Bpa::builder().build();
@@ -656,7 +617,7 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // Adding a peer installs a RIB entry; removing it withdraws it.
+    // Adding a peer installs a RIB entry, and removing it withdraws one.
     #[tokio::test]
     async fn peer_lifecycle() {
         let bpa = Bpa::builder().build();
@@ -689,9 +650,8 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // Detaching a CLA takes its peers with it, and releases its name.
     #[tokio::test]
-    async fn detaching_releases_peers_and_name() {
+    async fn unregistering_releases_peers_and_name() {
         let bpa = Bpa::builder().build();
         bpa.start(false).await.unwrap();
 
@@ -719,7 +679,7 @@ mod tests {
         let result = bpa.register_cla("cascade-cla", TestCla::factory()).await;
         assert!(
             result.is_ok(),
-            "Re-registration after detaching should succeed, got: {}",
+            "Re-registration after unregistering should succeed, got: {}",
             result.err().unwrap()
         );
 

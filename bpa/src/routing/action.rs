@@ -4,7 +4,9 @@ use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 
 use crate::{Arc, service::table::Record};
 
-/// What routing agents configure. Validated on insert into the route table.
+/// The action a route takes, as a routing agent configures it.
+///
+/// Validated when the route is inserted into the route table.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RouteAction {
     Via(Eid),

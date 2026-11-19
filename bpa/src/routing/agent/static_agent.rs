@@ -33,7 +33,7 @@ pub struct StaticAgent {
 }
 
 impl StaticAgent {
-    /// A factory for an agent installing `routes`.
+    /// Returns a factory for an agent that installs `routes`.
     pub fn factory(routes: &[(EidPattern, RouteAction, u32)]) -> impl Factory<Component = Self> {
         let routes = routes.to_vec();
         factory_fn(move |cx: Context| {
@@ -48,8 +48,8 @@ impl StaticAgent {
 #[async_trait]
 impl Agent for StaticAgent {
     async fn register(&self) -> Result<()> {
-        // A route the RIB rejects is one route lost, not a reason to
-        // strand the rest: each is reported and the agent runs on.
+        // A route the RIB rejects is logged and skipped; the rest are
+        // still installed.
         for (pattern, action, priority) in &self.routes {
             if let Err(e) = self
                 .sink

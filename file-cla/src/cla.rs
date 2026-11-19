@@ -23,7 +23,6 @@ impl cla::Cla for Cla {
                 .await?;
         }
 
-        // Watch the outbox, where configured
         if let Some(outbox) = &self.outbox {
             self.start_watcher(self.sink.clone(), outbox.clone(), self.max_bundle_size)
                 .await;
@@ -37,11 +36,10 @@ impl cla::Cla for Cla {
         Ok(())
     }
 
-    // INTERIM BUFFERING: the bundle is written to the inbox file in one go,
-    // so the stream is assembled in memory via `stream::buffer_stream`
-    // before writing. This is a deliberate stepping stone toward the full
-    // streaming pipeline (a native implementation would spool segments
-    // straight to disk); see bpa/docs/streaming_pipeline_design.md.
+    // The bundle is written to the inbox file in one go, so
+    // `stream::buffer_stream` assembles the stream in memory first. See
+    // bpa/docs/streaming_pipeline_design.md for the streaming form this is
+    // a step towards, where segments spool straight to disk.
     async fn forward(
         &self,
         _lane: Option<u32>,
@@ -56,7 +54,6 @@ impl cla::Cla for Cla {
             && let Ok(addr_str) = str::from_utf8(remote_addr.as_ref())
             && self.inboxes.values().any(|p| p == addr_str)
         {
-            // Write bundle to peer's inbox directory
             let mut filename = format!("{}_{}", bundle_id.source, bundle_id.timestamp)
                 .replace(['\\', '/', ':', ' '], "_");
             if let Some(fragment_info) = &bundle_id.fragment_info {

@@ -55,9 +55,9 @@ impl Sender<Bundle> for VecSink {
 
 /// Delegates to [`MetadataMemStorage`], holding the dispatch channel's
 /// initial recovery poll open until armed, then answering it with each
-/// queued bundle **twice** — the second copy being exactly the stale
-/// duplicate the at-least-once channel contract permits the poller to
-/// produce while the first copy is in flight.
+/// queued bundle twice. The second copy is exactly the stale duplicate the
+/// at-least-once channel contract permits the poller to produce while the
+/// first copy is in flight.
 struct InjectingStorage {
     inner: MetadataMemStorage,
     /// Fires when a bundle lands in `DispatchPending` (the channel send's swap).
@@ -298,9 +298,9 @@ async fn stale_poller_duplicate_never_redelivers() {
         .build();
     bpa.start(false).await.unwrap();
 
-    // Both originate and fresh CLA arrivals now route at their doors and
-    // execute directly, so the dispatch queue (and the DispatchPending
-    // state this rig arms) belongs to the re-dispatch paths. The feeder
+    // Origination and fresh CLA arrivals route at their own gate and
+    // execute directly, so the dispatch queue, and the DispatchPending
+    // state this rig arms, belongs to the re-dispatch paths. The feeder
     // here is the service-registration poll: bundles originated to a
     // not-yet-registered service park WaitingForService, and registering
     // the service pushes them through `dispatch_bundle` into the queue.
@@ -335,9 +335,9 @@ async fn stale_poller_duplicate_never_redelivers() {
     // The service under test holds its deliveries open. Registering it
     // recovers the parked bundle through poll_service_waiting →
     // dispatch_bundle, which parks it in DispatchPending on the storage
-    // slow path — the channel's initial recovery poll is still blocked on
-    // the arm signal, keeping the fast path closed. (Every timeout below
-    // only bounds a regression.)
+    // slow path, since the channel's initial recovery poll is still blocked
+    // on the arm signal, keeping the fast path closed. Every timeout below
+    // only bounds a regression.
     let (service, started_rx, release_tx) = CountingHoldService::factory();
     let svc = bpa
         .register_raw_service(Some(Service::Ipn(7)), service)
@@ -390,8 +390,8 @@ async fn stale_poller_duplicate_never_redelivers() {
 
     // Only now release the held delivery and drain the pipeline. shutdown()
     // is the barrier: it joins the dispatcher pools, so every spawned
-    // delivery has completed (and been counted) by the time it returns — no
-    // quiet window is involved.
+    // delivery has completed, and been counted, by the time it returns, with
+    // no quiet window involved.
     drop(release_tx);
     bpa.shutdown().await;
 
@@ -561,11 +561,11 @@ async fn slow_claim_does_not_serialize_dispatch() {
         .build();
     bpa.start(false).await.unwrap();
 
-    // Originate and CLA arrivals route at their doors, so the dispatch
+    // Origination and CLA arrivals route at their own gate, so the dispatch
     // queue belongs to the re-dispatch paths: originate to not-yet-
-    // registered services (parking WaitingForService), then register them
-    // — each registration poll pushes its bundle through dispatch_bundle
-    // into the queue.
+    // registered services, parking them WaitingForService, then register
+    // them, each registration poll pushing its bundle through
+    // `dispatch_bundle` into the queue.
     let (service, _originator_started_rx, originator_release_tx) = CountingHoldService::factory();
     drop(originator_release_tx);
     let originator = bpa
@@ -613,9 +613,9 @@ async fn slow_claim_does_not_serialize_dispatch() {
     .expect("Storage wrapper gone");
 
     // B's registration queues B while A's claim is verifiably still held:
-    // its delivery starting is the proof that claims overlap. (The timeout
-    // only bounds a regression — an inline claim would serialize B behind
-    // A.)
+    // its delivery starting is the proof that claims overlap. The timeout
+    // only bounds a regression, since an inline claim would serialize B
+    // behind A.
     let (service, b_started_rx, b_release_tx) = CountingHoldService::factory();
     drop(b_release_tx);
     let svc_b = bpa

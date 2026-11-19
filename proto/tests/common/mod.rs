@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 // ── Mock BPA ──────────────────────────────────────────────────────────
 
-/// A mock BPA answering every registration door.
+/// A mock BPA implementing every registrar trait.
 ///
 /// Builds each component with a mock sink and fixed node IDs, and tracks
 /// the last of each kind, and its sink, for assertions.
@@ -32,7 +32,7 @@ pub struct MockBpa {
     node_ids: Arc<NodeIds>,
     /// This BPA's own receive limit, folded into the terms it settles.
     max_bundle_size: Option<NonZeroU64>,
-    /// What the last `register_cla_boxed` asked for.
+    /// The request the last `register_cla_boxed` carried.
     pub declared_request: Mutex<Option<cla::Request>>,
     /// The terms the last `register_cla_boxed` settled on.
     pub settled_terms: Mutex<Option<cla::Terms>>,
@@ -89,8 +89,8 @@ impl MockBpa {
         }
     }
 
-    /// Simulate a server crash by forcing unregistration of all
-    /// registered components.
+    /// Unregisters every registered component at once, standing in for a
+    /// server crash.
     pub async fn crash(&self) {
         let agent = self.last_routing_agent.lock().take();
         if let Some(agent) = agent {
@@ -182,8 +182,8 @@ impl routing::Registrar for MockBpa {
 
 // ── Server helpers ────────────────────────────────────────────────────
 
-/// The loopback host for test servers: IPv6 when available, IPv4 as a
-/// fallback (some sandboxes have no `::1`).
+/// The loopback host for test servers: IPv6 when available, IPv4 where no
+/// `::1` is bindable.
 fn loopback_host() -> &'static str {
     static HOST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
     HOST.get_or_init(|| {
@@ -195,8 +195,10 @@ fn loopback_host() -> &'static str {
     })
 }
 
-/// Start a gRPC server with the specified services.
-/// Returns the gRPC address string and the task pool (cancel to stop).
+/// Starts a gRPC server with the named endpoints enabled.
+///
+/// Returns the server's gRPC address and the task pool serving it, which
+/// the caller shuts down to stop the server.
 pub async fn start_server(
     bpa: &Arc<MockBpa>,
     service_names: &[&str],

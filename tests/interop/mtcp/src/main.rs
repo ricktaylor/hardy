@@ -68,7 +68,6 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
 
     tasks.cancel_token().cancelled().await;
 
-    // Gracefully unregister from the BPA before shutting down
     cla.unregister().await;
 
     tasks.shutdown().await;

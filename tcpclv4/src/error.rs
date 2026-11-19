@@ -2,8 +2,7 @@ use std::net::SocketAddr;
 
 use crate::{session, tls};
 
-/// Convenience alias used throughout the crate so callers can write
-/// `error::Result<T>` instead of `Result<T, error::Error>`.
+/// A [`Result`](std::result::Result) alias for [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The generic error for everything related to TCPCLv4: assembling and

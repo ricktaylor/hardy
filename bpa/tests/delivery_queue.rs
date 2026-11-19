@@ -1,8 +1,10 @@
-//! Per-service delivery queue lifecycle: bundles queued behind an in-flight
-//! delivery hold `DeliverPending`; unregistering the service sweeps them to
-//! `WaitingForService` (leaving the in-flight `DeliveryAckPending` claim
-//! alone — the service consumes or defers it itself), and a later
-//! registration on the same EID delivers them.
+//! Per-service delivery queue lifecycle.
+//!
+//! Bundles queued behind an in-flight delivery hold `DeliverPending`.
+//! Unregistering the service sweeps them to `WaitingForService`, leaving
+//! the in-flight `DeliveryAckPending` claim alone for the service to
+//! consume or defer itself, and a later registration on the same EID
+//! delivers them.
 
 use core::time::Duration;
 use std::{borrow::Cow, sync::Arc};
@@ -342,8 +344,8 @@ impl MetadataStorage for BlockingPollStorage {
         stream: &dyn Sender<Bundle>,
     ) -> storage::Result<()> {
         let _ = self.entered_tx.send(());
-        // Parked until the test drops the release sender — registration
-        // must not be waiting on us.
+        // Parked until the test drops the release sender: registration must
+        // not be waiting on this poll.
         let _ = self.release_rx.recv_async().await;
         self.inner.poll_service_waiting(source, stream).await
     }
@@ -367,10 +369,11 @@ impl MetadataStorage for BlockingPollStorage {
 }
 
 // Registration returns while its post-registration WaitingForService poll
-// is still parked in storage: the poll is spawned, never awaited inline —
-// a sink whose event buffer drains only after registration returns (the
-// gRPC-bridge shape) would otherwise deadlock registration against its own
-// announcements. The parked bundle still arrives once the poll runs.
+// is still parked in storage: the poll is spawned, never awaited inline,
+// since a sink whose event buffer drains only after registration returns,
+// as the gRPC bridge's does, would otherwise deadlock registration against
+// its own announcements. The parked bundle still arrives once the poll
+// runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn registration_does_not_await_the_post_registration_poll() {
     let node_ids = NodeIds::try_from(
@@ -437,7 +440,7 @@ async fn registration_does_not_await_the_post_registration_poll() {
         bpa.register_raw_service(Some(Service::Ipn(9)), factory),
     )
     .await
-    .expect("registration awaited the parked poll — the spawn regressed")
+    .expect("registration awaited the parked poll, so the spawn regressed")
     .unwrap();
 
     // The spawned poll genuinely ran and parked in storage.

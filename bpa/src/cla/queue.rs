@@ -51,10 +51,10 @@ pub fn new_set(
     cla_addr: Address,
     lane_count: Option<NonZeroU32>,
 ) -> EgressQueueSet {
-    // A queue is instantiated eagerly per declared lane, so the count a CLA
-    // declares directly sizes an allocation here — cap it to keep an absurd
-    // declaration from becoming a resource bomb. Lane indices are u32 on the
-    // trait surface; an over-declared count is clamped rather than wrapped.
+    // One queue is built eagerly per declared lane, so the count a CLA
+    // declares sizes an allocation here, and the cap keeps an absurd
+    // declaration from exhausting memory. Lane indices are `u32` on the
+    // trait surface, and an over-declared count is clamped, not wrapped.
     const MAX_EAGER_LANE_QUEUES: u32 = 256;
     let lane_count = lane_count.map_or(0, |n| n.get()).min(MAX_EAGER_LANE_QUEUES);
     let shared = Arc::new(Shared {

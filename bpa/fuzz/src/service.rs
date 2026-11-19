@@ -76,7 +76,6 @@ impl Service for PipeService {
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> service::Result<()> {
-        // Do nothing
         Ok(())
     }
 
@@ -88,6 +87,5 @@ impl Service for PipeService {
         _reason: ReasonCode,
         _timestamp: Option<OffsetDateTime>,
     ) {
-        // Do nothing
     }
 }

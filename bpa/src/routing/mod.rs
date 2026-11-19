@@ -14,10 +14,10 @@ pub use self::agent::{Agent, BoxFactory, Context, Factory, Sink, StaticAgent, fa
 
 pub(crate) use self::rib::{Decision, DispatchAction, Rib, RibSnapshot, RoutingKey};
 
-/// A specialized `Result` type for routing agent operations.
+/// A `Result` whose error type is this module's [`enum@Error`].
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// Errors that can occur during routing agent operations.
+/// An error raised by routing agent registration or by a route change.
 #[derive(Debug, Error)]
 pub enum Error {
     /// Another agent is already registered under this name.
@@ -41,38 +41,40 @@ pub enum Error {
     #[error("Route via own node {0} rejected")]
     ViaOwnNode(Eid),
 
-    /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
 
-/// Somewhere a routing agent can be registered: a local BPA, or a proxy
-/// standing in for a remote one.
+/// Something a routing agent can be registered with: a local BPA, or a
+/// proxy for a remote one.
 ///
-/// This is the dyn-compatible half of the door, taking an erased
-/// [`BoxFactory`]. Callers use [`RegistrarExt::register_routing_agent`]
-/// instead, which keeps the concrete component type and hands it back.
+/// This is the dyn-compatible trait, taking an erased [`BoxFactory`].
+/// Callers use [`RegistrarExt::register_routing_agent`], which preserves
+/// the concrete component type.
 ///
-/// An `Ok` return means the factory was built and the agent started; the
-/// registrar may not report success without having done both.
+/// An implementation returns `Ok` only once it has both built the factory
+/// and started the agent.
 #[async_trait]
 pub trait Registrar: Send + Sync {
-    /// Builds the agent `factory` makes, files it under `name`, and
+    /// Builds the agent from `factory`, registers it under `name`, and
     /// starts it.
     async fn register_routing_agent_boxed(&self, name: &str, factory: BoxFactory<'_>)
     -> Result<()>;
 }
 
-/// The typed [`Registrar`] door.
+/// The typed counterpart of [`Registrar`], implemented for every
+/// registrar.
 #[async_trait]
 pub trait RegistrarExt: Registrar {
-    /// Builds the agent `factory` makes, files it under `name`, starts
-    /// it, and hands back the component the registrar now owns.
+    /// Builds the agent from `factory`, registers it under `name`, starts
+    /// it, and returns the component.
     ///
-    /// The returned handle is for the embedder's own use: reconfiguring
-    /// the agent, reading its statistics. Holding it does not keep the
-    /// agent attached, and dropping it does not detach it: the registrar
-    /// owns the agent until something detaches it by name.
+    /// The returned handle is for the embedder's own use, such as
+    /// reconfiguring the agent or reading its statistics. The registrar
+    /// owns the agent until it is unregistered through
+    /// [`Sink::unregister`] or the BPA
+    /// shuts down, so holding the handle does not keep the agent
+    /// registered, and dropping it does not unregister it.
     async fn register_routing_agent<F: Factory>(
         &self,
         name: &str,
@@ -91,30 +93,29 @@ impl<T: Registrar + ?Sized> RegistrarExt for T {
         self.register_routing_agent_boxed(name, BoxFactory::capturing(factory, &mut component))
             .await?;
 
-        // `Registrar`'s contract: an `Ok` return means the factory was
-        // built, and building it fills the slot.
+        // `Registrar` returns `Ok` only after building the factory, and
+        // building it fills the slot.
         Ok(component.expect("Registrar reported success without building the factory"))
     }
 }
 
-/// The identity of a routing table: the table half of a bundle's
+/// The identity of a routing table, the table half of a bundle's
 /// `{table, key}` routing inputs, which a Classifier writes through
 /// [`MetadataDelta::route_table`](crate::filter::slots::MetadataDelta::route_table).
 ///
-/// Opaque while only the default table exists, so [`TableId::DEFAULT`] is
-/// the one table an embedder can name. How tables are named, and who
-/// creates them, is an open question of the tables design
-/// (`docs/routing_table_redesign.md`, "Open questions"); this type is where
-/// the answer lands.
+/// The type is opaque while only the default table exists, so
+/// [`TableId::DEFAULT`] is the one table an embedder can name. How tables
+/// are named, and who creates them, is an open question of the tables
+/// design (`docs/routing_table_redesign.md`, "Open questions").
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(transparent))]
 pub struct TableId(u32);
 
 impl TableId {
-    /// The default table: the one an unset `route_table` selects.
+    /// The default table, selected by an unset `route_table`.
     pub const DEFAULT: Self = Self(0);
 
-    /// A table by numeric id, for the crate's tests.
+    /// Creates a table id from a numeric value, for the crate's tests.
     #[cfg(test)]
     pub(crate) const fn new(id: u32) -> Self {
         Self(id)

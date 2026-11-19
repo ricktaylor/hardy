@@ -1,14 +1,13 @@
 use core::time::Duration;
 
-// `closeable::Receiver` is the receiving end of a delivery queue, not the
-// stream trait of the same name this module hands to services.
+// `Receiver` names the stream trait this module hands to services, so the
+// receiving end of a delivery queue is aliased.
 use hardy_async::{
     CancellationToken, TaskPool, async_trait, closeable::Receiver as QueueReceiver,
     sync::spin::Mutex,
 };
-// `eid::Service` is the service number inside an EID, not the trait of the
-// same name this module registers; it is aliased to the word the code
-// already uses for it.
+// `eid::Service` is a service number, not the service trait, so it is
+// aliased to the word the rest of the code uses for it.
 use hardy_bpv7::{
     bundle::Id,
     eid::{Eid, Service as ServiceId},
@@ -18,9 +17,8 @@ use portable_atomic::{AtomicU32, Ordering};
 use time::OffsetDateTime;
 use tracing::{error, info};
 
-// This module's own `Sink` implements both service sink traits, so it takes
-// the bare name here; the traits stay module-qualified at their few use
-// sites.
+// `Sink` names a type in this module, so the two sink traits it implements
+// are used qualified, as `service::Sink` and `raw::Sink`.
 use super::{BoxFactory, Context, Error, Result, Segment, SendOptions, StatusNotify, raw};
 use crate::{
     Arc, Bytes, HashMap, Weak,
@@ -34,32 +32,23 @@ use crate::{
     stream::{CancellableReceiver, Receiver},
 };
 
-// The service map is behind a spin lock. Its critical section is a lookup,
-// the opening of a delivery queue and an insert, all O(1), with the
-// service itself built outside it, so the lock is never held long enough
-// to repay an OS mutex's park. The queue opens inside because a number
-// already taken must leave no queue behind.
+// The map is behind a spin lock. Every critical section is an O(1) map
+// operation, and nothing is awaited while the lock is held; the embedder's
+// factory runs outside the table's lock, against a reservation.
 
-/// One registered service: what it was built as, and the queue the BPA
-/// delivers to it through.
+/// A registered service and the queue the BPA delivers to it through.
 pub struct Record {
     pub kind: Kind,
     pub service_id: ServiceId,
-    // Cancelled at unregistration; every in-flight stream of this
-    // registration races it and fails immediately.
     pub cancel: CancellationToken,
-    // The canonical registration EID — the exact key the DeliverPending
-    // claim, the unregister sweep, and poll_service_waiting match on.
+    // The registration's canonical EID. The DeliverPending claim, the
+    // unregister sweep and `poll_service_waiting` all match on it.
     eid: Eid,
-    // Both ends of this registration's delivery queue (the local
-    // analogue of a peer's egress queues): the dispatcher fills it
-    // through `deliver` and drains it through `next_delivery`.
     tx: Sender,
     rx: QueueReceiver<Bundle>,
 }
 
 impl Record {
-    /// A registration of `kind` at `eid`, delivered to through `queue`.
     pub fn new(
         kind: Kind,
         service_id: ServiceId,
@@ -76,10 +65,11 @@ impl Record {
         })
     }
 
-    /// Queues a bundle into this service's delivery channel.
+    /// Queues a bundle for delivery to this service.
     ///
-    /// `Err(bundle)` hands ownership back for parking (the mirror of
-    /// `Peer::forward`): the queue has closed (unregistration).
+    /// Returns the bundle if the queue has closed, which happens once the
+    /// service unregisters. The caller parks what comes back, as
+    /// `Peer::forward` does.
     #[expect(
         clippy::result_large_err,
         reason = "Err(bundle) hands ownership back to the caller; boxing it to shrink the Err variant would allocate on every call"
@@ -88,13 +78,12 @@ impl Record {
         self.tx.send(bundle).await.map_err(|SendError(b)| b)
     }
 
-    /// Pulls the next bundle queued for delivery, or `None` once the
+    /// Returns the next bundle queued for delivery, or `None` once the
     /// queue has closed.
     pub async fn next_delivery(&self) -> Option<Bundle> {
         self.rx.recv().await.ok()
     }
 
-    /// The canonical registration EID.
     pub fn eid(&self) -> &Eid {
         &self.eid
     }
@@ -139,15 +128,14 @@ impl core::fmt::Debug for Record {
 }
 
 /// The BPA's implementation of both service sink traits.
-// The back-edge is weak. `Bpa` owns the table for the life of the BPA, so
-// a strong edge would add no reachability, only a cycle through the
-// service that holds this sink, and a cycle of `Arc`s never drops. A
-// failed upgrade is the condition the trait already names,
+// The reference back to the table is weak: the BPA owns the table for its
+// own lifetime, so a strong reference would only add a cycle through the
+// service that holds this sink. A failed upgrade maps to
 // `Error::Disconnected`.
 struct Sink {
     table: Weak<Table>,
     service_id: ServiceId,
-    // The registration EID, and the source of every bundle sent here.
+    // The source of every bundle sent through this sink.
     eid: Eid,
 }
 
@@ -160,8 +148,6 @@ impl Sink {
         })
     }
 
-    // The registration behind this sink, gone once the service has been
-    // unregistered.
     fn record(&self) -> Result<(Arc<Table>, Arc<Record>)> {
         let table = self.table.upgrade().ok_or(Error::Disconnected)?;
         let record = table.record(&self.service_id).ok_or(Error::Disconnected)?;
@@ -185,11 +171,11 @@ impl raw::Sink for Sink {
         let (table, record) = self.record()?;
         let dispatcher = table.dispatcher()?;
 
-        // A service that unregisters mid-send must not originate its
-        // bundle: the registration's token races every pull, so teardown
-        // wakes this stream immediately, even parked behind a stalled
-        // producer, and the send surfaces as cancelled. Sink-side, so the
-        // dispatcher's stream consumers stay registration-agnostic.
+        // Cancel the stream if the service unregisters: a bundle half sent
+        // at that point must not be originated. The token is raced against
+        // every pull, so a teardown wakes a stream parked behind a stalled
+        // producer. Done here to keep the dispatcher's stream consumers
+        // independent of registration state.
         let mut stream = CancellableReceiver {
             inner: stream,
             token: record.cancel.clone(),
@@ -229,8 +215,7 @@ impl service::Sink for Sink {
         let (table, record) = self.record()?;
         let dispatcher = table.dispatcher()?;
 
-        // Registration teardown wakes an in-flight send exactly as on the
-        // raw door: the token races every pull, sink-side.
+        // As on the raw sink, a teardown wakes an in-flight send.
         let mut stream = CancellableReceiver {
             inner: stream,
             token: record.cancel.clone(),
@@ -248,10 +233,10 @@ impl service::Sink for Sink {
     }
 }
 
-/// Which of the two service contracts a service is declared against.
+/// A factory, tagged with the service contract it builds against.
 ///
-/// The doors differ in the factory they carry and in nothing else, so a
-/// declared service is this and its service number.
+/// The two contracts differ only in the factory they carry, so this and a
+/// service number are the whole of a declared service.
 pub enum FactoryKind<'a> {
     /// A service that receives payloads only.
     Payload(BoxFactory<'a>),
@@ -260,7 +245,6 @@ pub enum FactoryKind<'a> {
 }
 
 impl FactoryKind<'_> {
-    // Calls the factory this carries, under the contract it names.
     fn build(self, sink: Arc<Sink>, eid: Eid) -> Result<Kind> {
         match self {
             Self::Payload(factory) => Ok(Kind::Payload(factory.build(Context::new(sink, eid))?)),
@@ -269,12 +253,11 @@ impl FactoryKind<'_> {
     }
 }
 
-/// A registered service, under the contract it was built against.
+/// A registered service, tagged with the contract it was built against.
 ///
-/// Delivery is the only thing the two contracts disagree on, and the
-/// dispatcher settles it by what it hands over: a whole bundle on one
-/// side, a payload on the other. Everything else is the same call on
-/// either, so this answers it.
+/// The contracts differ only in delivery, a whole bundle on one side and a
+/// payload on the other, which the dispatcher settles by what it hands
+/// over. Every other call is dispatched here.
 pub enum Kind {
     /// A service that receives payloads only.
     Payload(Arc<dyn service::Service>),
@@ -297,7 +280,6 @@ impl Kind {
         }
     }
 
-    /// Passes a status report on to the service it was raised for.
     pub async fn report_status(
         &self,
         bundle_id: &Id,
@@ -321,29 +303,25 @@ impl Kind {
     }
 }
 
-/// Base for dynamically assigned IPN service numbers.
-/// Starts high to avoid collisions with explicitly assigned IDs.
+/// The first dynamically allocated IPN service number, high enough that
+/// allocation does not collide with an explicitly assigned number.
 const DYNAMIC_SERVICE_BASE: u32 = 0x8000_0000;
 
-// Why a service id is claimed while no registration stands under it: a
-// registration whose factory is still running, or the withdrawal of a
-// record already taken out of the table.
+// A service id is claimed, rather than occupied by a record, while its
+// registration builds and while its record is torn down.
 enum Claim {
     Building,
-    Detaching,
+    Unregistering,
 }
 
-// What holds a service id. Either a registration stands there or a
-// claim does, never both and never neither, so the id's state is the
-// slot's variant.
+// The occupant of a service id: a registered service, or a claim on the
+// id.
 enum Slot {
     Claimed(Claim),
     Attached(Arc<Record>),
 }
 
 impl Slot {
-    // The registration standing under the id, if the id is not merely
-    // claimed: only an attached service is usable.
     fn attached(&self) -> Option<&Arc<Record>> {
         match self {
             Slot::Attached(record) => Some(record),
@@ -352,13 +330,11 @@ impl Slot {
     }
 }
 
-/// The services of one BPA: the only place a service is built, and the
-/// authority on which ones are live.
+/// The registered services of a BPA.
 pub struct Table {
     node_ids: Arc<NodeIds>,
-    // The dispatcher owns the BPA's delivery machinery and outlives this
-    // table, so the edge back is weak; a failed upgrade is
-    // `Error::Disconnected`.
+    // The dispatcher outlives this table, so the reference back is weak. A
+    // failed upgrade maps to `Error::Disconnected`.
     dispatcher: Weak<Dispatcher>,
     rib: Arc<Rib>,
     services: Mutex<HashMap<ServiceId, Slot>>,
@@ -367,13 +343,9 @@ pub struct Table {
 }
 
 impl Table {
-    /// The empty table of one BPA.
-    ///
-    /// Every service it ever holds arrives through
-    /// [`register`](Self::register), the services the embedder declared
-    /// no differently from the ones that register while the BPA runs.
-    // The dispatcher is the one argument taken by reference: the table
-    // holds a `Weak` to it, and keeps the others.
+    /// Creates an empty table. Services are added by
+    /// [`register`](Self::register) only.
+    // `dispatcher` is borrowed because the table keeps only a `Weak` to it.
     pub fn new(node_ids: Arc<NodeIds>, dispatcher: &Arc<Dispatcher>, rib: Arc<Rib>) -> Arc<Self> {
         Arc::new(Self {
             node_ids,
@@ -396,11 +368,11 @@ impl Table {
                         records.push(record);
                         None
                     }
-                    // A registration still inside its factory keeps its
-                    // id, claimed for a withdrawal now, so it gives the
-                    // service up instead of filing it into a table that
-                    // is going away.
-                    Slot::Claimed(_) => Some((service_id, Slot::Claimed(Claim::Detaching))),
+                    // Outstanding claims become teardowns, so a
+                    // registration still inside its factory releases its
+                    // id instead of filing into a table that is shutting
+                    // down.
+                    Slot::Claimed(_) => Some((service_id, Slot::Claimed(Claim::Unregistering))),
                 })
                 .collect();
             records
@@ -417,25 +389,29 @@ impl Table {
         self.tasks.shutdown().await;
     }
 
-    /// Attaches the service and puts it into service: the runtime
-    /// door, where the two halves are one call. A service that cannot
-    /// run is unregistered again, so a failure leaves nothing behind.
+    /// Builds the service, files it under `id`, and calls its `register`.
     ///
-    /// The service is filed under `id`, or under a freshly allocated
-    /// service number when `id` is `None`. The factory is the
-    /// embedder's code and may do anything, so it runs outside the
-    /// lock, against a reservation of the id: no service is ever built
-    /// only to be discarded because another registration took the id,
-    /// and none can be reached while it is still being built.
+    /// When `id` is `None` the BPA allocates a service number. The
+    /// factory runs outside the table's lock, against a reservation of the
+    /// id, so no other registration can take the id and no caller can
+    /// reach a service that is still being built.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ServiceIdInUse`] if the id is taken,
+    /// [`Error::AdministrativeEndpoint`] if it names the administrative
+    /// endpoint, or the error returned by the factory or by the service's
+    /// `register`. A service whose `register` fails is unregistered again,
+    /// so a failed call registers nothing.
     pub async fn register(
         self: &Arc<Self>,
         id: Option<ServiceId>,
         factory: FactoryKind<'_>,
     ) -> Result<()> {
         // An allocated service number collides with nothing by
-        // construction; an explicit one may name the administrative
-        // endpoint, which is structurally registered (RFC 9758
-        // Section 5.7).
+        // construction, but an explicit one may name the administrative
+        // endpoint, which is structurally registered (RFC 9758 Section
+        // 5.7).
         let service_id =
             id.unwrap_or_else(|| ServiceId::Ipn(self.next_dynamic.fetch_add(1, Ordering::Relaxed)));
         if service_is_admin_endpoint(&service_id) {
@@ -446,8 +422,7 @@ impl Table {
 
         let reservation = self.reserve(&service_id)?;
 
-        // A build that fails drops the reservation, which releases the
-        // id: the claim existed only for this build.
+        // Dropping the reservation releases the id.
         let sink = Sink::new(Arc::downgrade(self), service_id.clone(), eid.clone());
         let service = factory.build(sink, eid.clone())?;
 
@@ -463,13 +438,12 @@ impl Table {
         reservation.publish(record.clone())?;
 
         metrics::gauge!("bpa.service.registered").increment(1.0);
-        info!("Attached service: {}", record.service_id);
 
         self.activate(record).await
     }
 
-    /// Unregisters the service at `service_id` and withdraws everything
-    /// it published.
+    /// Unregisters the service filed under `service_id`, closing its
+    /// delivery queue and withdrawing its route.
     pub async fn unregister(&self, service_id: &ServiceId) {
         let record = {
             let mut services = self.services.lock();
@@ -477,16 +451,12 @@ impl Table {
                 return;
             };
 
-            // The id is claimed for the withdrawal that follows, so
-            // nothing registers over a delivery queue still being
-            // drained.
-            match core::mem::replace(slot, Slot::Claimed(Claim::Detaching)) {
+            // Claim the id for the teardown, so that nothing registers
+            // over a delivery queue that is still draining.
+            match core::mem::replace(slot, Slot::Claimed(Claim::Unregistering)) {
                 Slot::Attached(record) => record,
-                // A registration still holds the id, and the replace
-                // turned its claim into a withdrawal: it reads that once
-                // its factory returns and takes the service straight
-                // back down instead of filing it. A withdrawal already
-                // holding the id reads back what it put there.
+                // A registration holds the id. The claim just written
+                // tells it to tear the service down instead of filing it.
                 Slot::Claimed(_) => return,
             }
         };
@@ -496,8 +466,7 @@ impl Table {
         self.services.lock().remove(service_id);
     }
 
-    // Claims `service_id` for a registration, failing if a service or
-    // another claim already holds it.
+    // Claims `service_id`, failing if a service or another claim holds it.
     fn reserve<'a>(&'a self, service_id: &'a ServiceId) -> Result<Reservation<'a>> {
         match self.services.lock().entry(service_id.clone()) {
             Entry::Vacant(slot) => {
@@ -512,7 +481,7 @@ impl Table {
         }
     }
 
-    // The registration at `service_id`, if there is one.
+    // An id held only by a claim has no record.
     fn record(&self, service_id: &ServiceId) -> Option<Arc<Record>> {
         self.services
             .lock()
@@ -521,15 +490,13 @@ impl Table {
             .cloned()
     }
 
-    // Brings an attached service into service: starts it, drains its
-    // delivery queue and publishes its route. One that cannot run is
-    // unregistered again.
+    // Starts the service, publishes its route and starts draining its
+    // delivery queue. A service that fails to start is unregistered again.
     async fn activate(self: &Arc<Self>, record: Arc<Record>) -> Result<()> {
         let dispatcher = self.dispatcher()?;
 
-        // The service runs before anything can reach it: its queue was
-        // opened at attachment, and may already hold bundles the
-        // channel's creation-time poll recovered.
+        // Start the service before anything reaches it; its queue already
+        // holds whatever the channel's creation-time poll recovered.
         if let Err(e) = record.kind.register().await {
             self.unregister(&record.service_id).await;
             return Err(e);
@@ -541,12 +508,11 @@ impl Table {
             .add_service(record.eid.clone(), record.clone())
             .await;
 
-        // The post-registration poll is spawned, never awaited inline: a
-        // service whose event buffer drains only after registration
-        // returns, the gRPC-bridge shape, would deadlock registration
-        // against its own announcements. Overlapping polls are safe: the
-        // poll claims each bundle out of WaitingForService with a status
-        // CAS.
+        // Spawned rather than awaited here: a service whose event buffer
+        // drains only once registration returns, as the gRPC bridge does,
+        // would deadlock registration against its own announcements.
+        // Overlapping polls are safe, since each claims its bundles out of
+        // WaitingForService with a status CAS.
         let eid = record.eid.clone();
         hardy_async::spawn!(self.tasks, "post_registration_poll", async move {
             dispatcher.poll_service_waiting(&eid).await;
@@ -560,15 +526,13 @@ impl Table {
         self.dispatcher.upgrade().ok_or(Error::Disconnected)
     }
 
-    // Tears a registration down: wake its streams, close its queue,
-    // withdraw its route, stop the service.
+    // Tears a registration down, waking its in-flight streams, closing its
+    // queue, withdrawing its route and stopping the service.
     async fn withdraw(&self, record: Arc<Record>) {
-        // First: wake every in-flight stream of this registration.
         record.cancel.cancel();
 
-        // Close the delivery queue: the consumer finishes its in-flight
-        // delivery and exits; queued bundles are swept to WaitingForService
-        // by the RIB removal below.
+        // The consumer finishes its in-flight delivery and exits; queued
+        // bundles are swept to WaitingForService by the RIB removal below.
         record.close_queue();
 
         self.rib.remove_service(&record.eid, record.clone()).await;
@@ -581,9 +545,8 @@ impl Table {
     }
 }
 
-// The gauge counts what the table holds: `unregister` takes services
-// out one at a time, and dropping the table takes whatever is left,
-// which is how a BPA dropped without a shutdown is accounted for.
+// `unregister` decrements the gauge per service; this accounts for the
+// services still registered when the table is dropped.
 impl Drop for Table {
     fn drop(&mut self) {
         let attached = self
@@ -598,9 +561,7 @@ impl Drop for Table {
     }
 }
 
-// A service id claimed for a registration, held while the embedder's
-// factory runs and given up when the registration ends, whichever way
-// it ends.
+// A claim on a service id, released on drop unless `publish` consumes it.
 #[must_use = "an unused reservation releases its id immediately"]
 struct Reservation<'a> {
     table: &'a Table,
@@ -609,13 +570,11 @@ struct Reservation<'a> {
 }
 
 impl Reservation<'_> {
-    // Files the built record under the reserved id, the only way a
-    // service becomes reachable.
+    // Files `record` under the reserved id.
     //
-    // An `unregister` that arrived while the factory ran turned the
-    // claim into a withdrawal, and the record is refused: nothing
-    // reached the service and it was never started, so dropping it is
-    // the whole teardown.
+    // Fails with `Error::Disconnected` if an `unregister` arrived while the
+    // factory ran. The record is then dropped having never been published
+    // or started, which completes the teardown.
     fn publish(mut self, record: Arc<Record>) -> Result<()> {
         let mut services = self.table.services.lock();
         self.claimed = false;

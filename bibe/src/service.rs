@@ -12,10 +12,10 @@ use tracing::{debug, warn};
 
 use crate::{cla::BibeCla, pdu};
 
-/// BIBE Decapsulation Service.
+/// The decapsulating half of a BIBE tunnel.
 ///
-/// Receives outer bundles, extracts the inner bundle from the payload,
-/// and re-injects it into the BPA via the CLA's dispatch method.
+/// Each outer bundle delivered here yields the inner bundle carried in its
+/// payload, which the CLA dispatches back into the BPA.
 pub struct DecapService {
     cla: Arc<BibeCla>,
 
@@ -39,11 +39,10 @@ impl DecapService {
 
 #[async_trait]
 impl raw::Service for DecapService {
-    // INTERIM BUFFERING: decapsulation parses the whole outer bundle with a
-    // whole-buffer codec, so the stream is assembled in memory via
-    // `stream::buffer_stream` first. This is a deliberate stepping stone
-    // toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md.
+    // Decapsulation parses the whole outer bundle with a whole-buffer
+    // codec, so `stream::buffer_stream` assembles the stream in memory
+    // first. See bpa/docs/streaming_pipeline_design.md for the streaming
+    // form this is a step towards.
     async fn deliver(
         &self,
         _bundle_id: &Id,
@@ -66,10 +65,10 @@ impl raw::Service for DecapService {
         debug!("BIBE decapsulated bundle, dispatching");
         match self.cla.dispatch(inner).await {
             Ok(Acceptance::Accepted) => Ok(()),
-            // A refusal is deterministic for these bytes (the inner cannot
-            // outgrow the outer, so this is not a size race): accept the
-            // outer bundle rather than park it for a retry that could never
-            // succeed — the same rule as a malformed outer.
+            // A refusal is deterministic for these bytes, the inner bundle
+            // being unable to outgrow the outer, so this is no size race:
+            // accept the outer bundle rather than park it for a retry that
+            // could never succeed, as for a malformed outer.
             Ok(Acceptance::Refused) => {
                 warn!("Decapsulated bundle refused by the BPA, outer bundle consumed");
                 Ok(())
@@ -83,7 +82,7 @@ impl raw::Service for DecapService {
         }
     }
 
-    /// No-op; the decapsulation service sends no bundles of its own.
+    /// Discards the notification: the service sends no bundles of its own.
     async fn report_status(
         &self,
         _bundle_id: &Id,
@@ -92,6 +91,5 @@ impl raw::Service for DecapService {
         _reason: ReasonCode,
         _timestamp: Option<OffsetDateTime>,
     ) {
-        // Do nothing
     }
 }

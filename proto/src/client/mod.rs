@@ -14,9 +14,11 @@ fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, ton
 
 /// A remote BPA, reached over gRPC.
 ///
-/// Implements the same registration doors as a local `Bpa`, so a CLA,
-/// service, application or routing agent attaches to a BPA in another
-/// process through the interface it already uses.
+/// Implements the same [`cla::Registrar`](hardy_bpa::cla::Registrar),
+/// [`service::Registrar`](hardy_bpa::service::Registrar) and
+/// [`routing::Registrar`](hardy_bpa::routing::Registrar) traits as a local
+/// `Bpa`, so a component registers with a BPA in another process through
+/// the traits it already uses.
 ///
 /// # Example
 ///
@@ -29,16 +31,15 @@ pub struct RemoteBpa {
 }
 
 impl RemoteBpa {
-    /// Create a new RemoteBpa client.
+    /// Creates a client for the BPA serving gRPC at `grpc_addr`, for
+    /// example `http://\[::1\]:50051`.
     ///
-    /// # Arguments
-    ///
-    /// * `grpc_addr` - The gRPC server address (e.g., "http://\[::1\]:50051")
+    /// No connection is made here: each registration dials its own
+    /// session.
     pub fn new(grpc_addr: String) -> Self {
         Self { grpc_addr }
     }
 
-    /// Get the gRPC address this client connects to.
     pub fn grpc_addr(&self) -> &str {
         &self.grpc_addr
     }

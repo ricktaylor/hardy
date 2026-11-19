@@ -1,19 +1,13 @@
-//! Bundle lifetime expiration monitoring (Reaper).
+//! Bundle lifetime expiry monitoring.
 //!
-//! The reaper monitors bundle lifetimes and triggers deletion when bundles
-//! expire. It maintains a bounded in-memory cache of the bundles with the
-//! soonest expiry times, refilling from storage when depleted.
-//!
-//! # Two-Level Architecture
-//!
-//! - **In-memory cache**: BTreeSet of `CacheEntry` ordered by expiry time
-//! - **Persistent storage**: MetadataStorage.poll_expiry() for refill
-//!
-//! The cache keeps bundles with the soonest expiry. When full, entries with
-//! later expiry times are evicted to make room for sooner ones.
+//! The reaper watches bundle lifetimes and deletes bundles as they expire.
+//! It holds the bundles with the soonest expiry in a bounded in-memory
+//! cache, a `BTreeSet` of `CacheEntry` ordered by expiry time, and refills
+//! it from `MetadataStorage::poll_expiry` once depleted. A full cache
+//! evicts its latest-expiring entries to make room for sooner ones.
 //!
 //! See [Storage Subsystem Design](../../docs/storage_subsystem_design.md)
-//! for architectural context.
+//! for the wider context.
 
 use core::cmp::Ordering;
 
@@ -29,9 +23,8 @@ use crate::{
     dispatcher::Dispatcher,
 };
 
-/// Cache entry for the reaper's expiry monitoring.
-///
-/// Ordered by: expiry time -> destination -> bundle ID.
+/// An entry in the reaper's cache, ordered by expiry time, then
+/// destination, then bundle id.
 #[derive(Clone, Eq, PartialEq)]
 pub(super) struct CacheEntry {
     expiry: OffsetDateTime,
@@ -54,10 +47,10 @@ impl Ord for CacheEntry {
     }
 }
 
-/// Monitors bundle lifetimes and triggers deletion when bundles expire.
+/// Watches bundle lifetimes and deletes bundles as they expire.
 ///
-/// Maintains a bounded in-memory cache of bundles with the soonest
-/// expiry times, refilling from storage when depleted.
+/// The bundles with the soonest expiry are held in a bounded in-memory
+/// cache, refilled from storage once depleted.
 pub(super) struct Reaper {
     tasks: TaskPool,
     metadata_storage: Arc<dyn super::MetadataStorage>,
@@ -81,7 +74,8 @@ impl Reaper {
         }
     }
 
-    /// Add a bundle to the reaper's cache.
+    /// Adds a bundle to the cache, evicting a later-expiring entry when
+    /// `cap` is set and the cache is full.
     pub fn watch(&self, bundle: &Bundle, cap: bool) {
         let new_entry = CacheEntry {
             expiry: bundle.expiry(),
@@ -120,16 +114,13 @@ impl Reaper {
         }
     }
 
-    /// Background task for bundle lifetime monitoring.
+    /// Runs the monitoring loop until the task pool is cancelled.
     ///
-    /// # Behavior
-    ///
-    /// 1. Sleep until the next bundle expiry (or indefinitely if cache empty)
-    /// 2. Wake on: shutdown signal, new bundle notification, or expiry timeout
-    /// 3. Expire all bundles past their lifetime via `drop_bundle()`
-    /// 4. Spawn `refill_cache()` if cache is depleted
-    ///
-    /// Uses `select_biased!` to prioritize shutdown handling.
+    /// Each pass sleeps until the next expiry, or indefinitely while the
+    /// cache is empty, waking on a shutdown, on a newly watched bundle, or
+    /// on the expiry itself. It then drops every bundle past its lifetime
+    /// through `drop_bundle`, and spawns `refill_cache` once the cache is
+    /// depleted. The `select_biased!` gives shutdown priority.
     pub async fn run(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let mut repopulation_task: Option<hardy_async::JoinHandle<()>> = None;
 
@@ -170,15 +161,16 @@ impl Reaper {
                     .await
                     .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
                 {
-                    // Hand-off commits at its claim: a bundle mid-delivery
+                    // A hand-off commits at its claim: a bundle mid-delivery
                     // cannot be recalled from the service, and a transfer a
                     // CLA has accepted cannot be recalled from the wire, so
-                    // expiring either here would report a deletion that did
-                    // not happen. Each hand-off resolves its own outcome — a
+                    // expiring either here would report a deletion that never
+                    // happened. Each hand-off resolves its own outcome: a
                     // completion tombstones truthfully, and every
-                    // non-terminal exit either parks the bundle (park_bundle
-                    // re-arms this watch) or re-enters dispatch, whose expiry
-                    // checkpoint drops it as LifetimeExpired.
+                    // non-terminal exit either parks the bundle, which
+                    // re-arms this watch through `park_bundle`, or re-enters
+                    // dispatch, whose expiry checkpoint drops it as
+                    // `LifetimeExpired`.
                     if bundle.status.defers_expiry() {
                         debug!("Deferring expiry of in-flight hand-off");
                         continue;
@@ -215,8 +207,9 @@ impl Reaper {
 
         join!(
             async {
-                // Race against cancel so the producer can't block on a full
-                // channel after the consumer drops its receiver.
+                // Race against cancellation so that the producer cannot
+                // block on a full channel once the consumer has dropped its
+                // receiver.
                 select_biased! {
                     r = self.metadata_storage.poll_expiry(&stream).fuse() => {
                         let _ = r.inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"));
@@ -229,11 +222,11 @@ impl Reaper {
                 // The consumer owns termination: it accepts rows until the
                 // cache is full, then drops the receiver, which stops the
                 // backend's scan. A skipped row costs no budget, so rows the
-                // expiry pass defers (their exits re-arm the watch) can
-                // never starve the cache of reapable bundles behind them —
+                // expiry pass defers, whose exits re-arm the watch, cannot
+                // starve the cache of the reapable bundles behind them, and
                 // the backend stays policy-blind and keeps supplying rows.
-                // The bare `New` skip is defence in depth: the backend
-                // contract already excludes it.
+                // Skipping a bare `New` is defence in depth, the backend
+                // contract already excluding it.
                 let rx = rx;
                 let mut accepted = 0;
                 loop {

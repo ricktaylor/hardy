@@ -1,7 +1,7 @@
 //! BPA pipeline throughput benchmark.
 //!
-//! Uses criterion to measure bundle forwarding throughput through the
-//! full BPA pipeline with in-memory storage.
+//! Measures bundle forwarding throughput through the full BPA pipeline
+//! over in-memory storage.
 
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use hardy_bpa::{
 };
 use hardy_bpv7::eid::{IpnNodeId, NodeId};
 
-// -- Inline CLA — captures arrival time inside forward() --
+// Records the arrival instant inside `forward`.
 
 struct BenchCla {
     sink: Arc<dyn cla::Sink>,
@@ -54,7 +54,7 @@ impl cla::Cla for BenchCla {
     }
 }
 
-// -- Static state: runtime + BPA live for the entire benchmark process --
+// The runtime and BPA live for the whole benchmark process.
 
 struct BenchState {
     cla: Arc<BenchCla>,
@@ -104,7 +104,7 @@ fn get_state() -> &'static BenchState {
                 .await
                 .unwrap();
 
-            // BPA intentionally not shut down — lives for process lifetime (like fuzz harness)
+            // Never shut down: the BPA lives for the process lifetime.
             std::mem::forget(bpa);
 
             BenchState { cla, arrival_rx }

@@ -60,7 +60,6 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             .unwrap(),
         );
 
-    // Bundle storage
     cfg_select! {
         feature = "localdisk-storage" => {
             builder = builder.bundle_storage(std::sync::Arc::new(
@@ -81,7 +80,6 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         }
     }
 
-    // Metadata storage
     cfg_select! {
         feature = "sqlite-storage" => {
             builder = builder.metadata_storage(std::sync::Arc::new(
@@ -145,7 +143,6 @@ impl Msg {
                     .await
                     .expect("Failed to register CLA");
 
-                // Load static routes
                 bpa.register_routing_agent(
                     "fuzz",
                     hardy_bpa::routing::StaticAgent::factory(&[
@@ -184,7 +181,6 @@ impl Msg {
                     .await
                     .expect("Failed to register service");
 
-                // Now pull from the channel
                 while let Ok(msg) = rx.recv_async().await {
                     match msg {
                         Msg::Cla(bundle) => {

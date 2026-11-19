@@ -61,12 +61,11 @@ impl hardy_bpa::service::raw::Service for LowLevelService {
         Ok(())
     }
 
-    // INTERIM BUFFERING: the wire protocol has no segmented bundle
-    // messages yet — deliveries travel as one unary ServiceReceiveRequest —
-    // so the stream is assembled in memory via `stream::buffer_stream`
-    // before marshalling. This is a deliberate stepping stone toward the
-    // full streaming pipeline (chunked wire messages are the blocker); see
-    // bpa/docs/streaming_pipeline_design.md.
+    // The wire carries no segmented bundle messages, so a delivery travels
+    // as one unary ServiceReceiveRequest and the stream is assembled in
+    // memory with `stream::buffer_stream` before marshalling. See
+    // bpa/docs/streaming_pipeline_design.md for the chunked form this is a
+    // step towards.
     async fn deliver(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -181,8 +180,9 @@ impl service_server::Service for GrpcService {
         let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let channel_receiver = request.into_inner();
 
-        // Spawn the registration handshake and proxy — we must return the
-        // response stream immediately so the client can start sending messages.
+        // The handshake and the proxy run on their own task: the response
+        // stream has to be returned at once, so the client can start
+        // sending.
         let bpa = self.bpa.clone();
         hardy_async::spawn!(self.session_tasks, "service_session", async move {
             run_service_session(channel_sender, channel_receiver, bpa).await;
@@ -265,7 +265,6 @@ async fn register(
     .map_err(|e| tonic::Status::from_error(e.into()))
 }
 
-/// Create a new low-level Service gRPC service.
 pub fn new_endpoint_service(
     bpa: Arc<dyn hardy_bpa::service::Registrar>,
     tasks: &hardy_async::TaskPool,

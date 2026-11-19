@@ -1,4 +1,4 @@
-//! Constructing a service.
+//! Construction of a service.
 
 use core::fmt::{self, Debug, Formatter};
 
@@ -7,24 +7,24 @@ use hardy_bpv7::eid::Eid;
 use super::{Result, Service, Sink};
 use crate::Arc;
 
-/// Everything the BPA hands a service at construction.
+/// The values the BPA supplies to a service at construction.
 #[non_exhaustive]
 pub struct Context {
-    /// The channel back to the BPA, for the service's whole active
-    /// lifetime.
+    /// The service's interface to the BPA, usable until it unregisters.
     pub sink: Arc<dyn Sink>,
 
     /// The endpoint the service is registered at, and the source of every
     /// bundle it sends.
     ///
-    /// The one value the BPA settles for a service: an embedder naming a
-    /// service number gets that number resolved against the node's
-    /// identities, and one naming none gets an allocated number.
+    /// A service number named by the embedder is resolved against the
+    /// node's identities; where the embedder named none, the BPA allocates
+    /// one.
     pub endpoint: Eid,
 }
 
 impl Context {
-    /// Mints a context. The BPA does this; a service receives one.
+    /// Creates a context. Called by the BPA, which supplies the context to
+    /// [`Factory::build`].
     pub fn new(sink: Arc<dyn Sink>, endpoint: Eid) -> Self {
         Self { sink, endpoint }
     }
@@ -38,28 +38,30 @@ impl Debug for Context {
     }
 }
 
-/// Builds a service against the endpoint the BPA settles on.
+/// Builds a service at the endpoint the BPA settles on.
 ///
 /// A service crate exposes its own factory, such as `Echo::factory()`, so
-/// what a service needs stays with the service that knows it. One with
-/// nothing to carry is written with [`factory_fn`].
+/// that a service's configuration stays in the crate that defines it. A
+/// factory with nothing of its own to carry is written with
+/// [`factory_fn`].
 pub trait Factory: Send {
     /// The service this factory builds.
     type Component: Service + 'static;
 
     /// Builds the service at the endpoint the BPA settled.
     ///
-    /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`.
-    /// Opening a file belongs in [`Service::register`], which the BPA
-    /// calls as soon as this returns.
+    /// This performs construction only: no I/O, no spawned tasks, and no
+    /// use of `cx.sink`. Opening a file belongs in [`Service::register`],
+    /// which the BPA calls as soon as this returns.
     ///
-    /// `Err` means the settled endpoint is one this service cannot work
-    /// at: the service's half of the negotiation.
+    /// # Errors
+    ///
+    /// An error means the service cannot work at the settled endpoint.
     fn build(self, cx: Context) -> Result<Arc<Self::Component>>;
 }
 
-/// A [`Factory`] from a closure, for a service whose construction needs
-/// nothing but its context.
+/// Creates a [`Factory`] from a closure, for a service whose construction
+/// needs nothing but its context.
 ///
 /// ```ignore
 /// service::factory_fn(|cx| Ok(Arc::new(MyService::new(cx))))
@@ -86,13 +88,14 @@ where
     }
 }
 
-/// A [`Factory`] erased for [`Registrar`](super::Registrar), which is
-/// dyn-compatible and so cannot carry one.
+/// A [`Factory`] with its component type erased, for
+/// [`Registrar`](super::Registrar), which is dyn-compatible and so cannot
+/// take a generic factory.
 ///
-/// A factory's one capability needs no dispatch once the associated type
-/// is gone: the constructor becomes a closure.
-/// [`RegistrarExt::register_service`] erases for the caller, so this type
-/// is only named by a `Registrar` implementation.
+/// Erasure turns the factory's constructor into a closure, so it needs no
+/// dynamic dispatch. [`RegistrarExt::register_service`] erases the factory
+/// for the caller, so only an implementation of `Registrar` names this
+/// type.
 ///
 /// [`RegistrarExt::register_service`]: super::RegistrarExt::register_service
 pub struct BoxFactory<'a>(Box<dyn FnOnce(Context) -> Result<Arc<dyn Service>> + Send + 'a>);
@@ -105,8 +108,8 @@ impl<'a> BoxFactory<'a> {
         }))
     }
 
-    // Erases `factory`, leaving the service it builds in `slot` so
-    // `RegistrarExt::register_service` can hand the concrete type back
+    // Erases `factory`, storing the service it builds in `slot` so that
+    // `RegistrarExt::register_service` can return the concrete type
     // without a downcast.
     pub(crate) fn capturing<F: Factory + 'a>(
         factory: F,
@@ -120,6 +123,10 @@ impl<'a> BoxFactory<'a> {
     }
 
     /// Builds the service, as [`Factory::build`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of the erased factory.
     pub fn build(self, cx: Context) -> Result<Arc<dyn Service>> {
         (self.0)(cx)
     }

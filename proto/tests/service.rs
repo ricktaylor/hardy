@@ -1,7 +1,7 @@
 //! Service client proxy tests (SVC-CLI-01 through SVC-CLI-06).
 //!
-//! Verify the low-level Service client correctly maps Rust trait calls
-//! to service.proto messages via the gRPC proxy.
+//! The raw Service client maps its Rust trait calls onto service.proto
+//! messages, across the gRPC proxy.
 
 mod common;
 
@@ -76,7 +76,6 @@ async fn svc_cli_01_registration() {
 
     assert_eq!(service.endpoint.to_string(), "ipn:1.42");
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -95,14 +94,13 @@ async fn svc_cli_02_send_bundle() {
         .await
         .expect("registration should succeed");
 
-    // send() calls the mock BPA sink which is unimplemented — expect an error
+    // The mock BPA sink is unimplemented, so `send` reports an error.
     let result = service
         .sink
         .send(&mut hardy_bpa::Bytes::from_static(b"\x9f\x89"))
         .await;
     assert!(result.is_err(), "mock sink send is unimplemented");
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -144,7 +142,6 @@ async fn svc_cli_03_receive_bundle() {
         "MockService should have received the bundle"
     );
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -193,7 +190,6 @@ async fn svc_cli_04_status_notify() {
         "MockService should have received the status notification"
     );
 
-    // Clean up
     service.sink.unregister().await;
     server_tasks.shutdown().await;
 }

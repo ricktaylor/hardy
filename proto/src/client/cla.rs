@@ -64,11 +64,10 @@ impl Sink {
 
 #[async_trait]
 impl hardy_bpa::cla::Sink for Sink {
-    // INTERIM BUFFERING: the wire has no streamed Dispatch message yet, so
-    // the segment stream is accumulated (bounded by the transport cap) and
-    // sent as one unary DispatchBundleRequest. This is a deliberate stepping
-    // stone toward the full streaming pipeline (chunked wire messages are
-    // the blocker); see bpa/docs/streaming_pipeline_design.md.
+    // The wire carries no streamed Dispatch message, so the segment stream
+    // is accumulated, bounded by the transport cap, and sent as one unary
+    // DispatchBundleRequest. See bpa/docs/streaming_pipeline_design.md for
+    // the chunked form this is a step towards.
     async fn dispatch(
         &self,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
@@ -79,7 +78,7 @@ impl hardy_bpa::cla::Sink for Sink {
         // `client::application::Sink::send`: an oversized bundle is refused
         // here instead of letting tonic break the gRPC stream, which would
         // cascade into `on_close` and unregister this CLA. Both pre-flight
-        // failures are local refusals — normal verdicts, not sink faults.
+        // failures answer `Refused`, a verdict rather than a sink fault.
         let bundle = match hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE).await {
             Ok(bundle) => bundle,
             Err(hardy_bpa::stream::ConcatError::Cancelled) => {
@@ -241,10 +240,8 @@ pub async fn register_cla(
         .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
         .max_decoding_message_size(crate::MAX_MESSAGE_SIZE);
 
-    // Create a channel for sending messages to the service.
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
 
-    // Call the service's streaming method
     let mut channel_receiver = cla_client
         .register(tokio_stream::wrappers::ReceiverStream::new(rx))
         .await

@@ -14,8 +14,8 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 
-// How long to wait before re-dialing a static peer that could not be
-// resolved or connected.
+// Delay before re-dialing a static peer that could not be resolved or
+// connected.
 const PEER_REDIAL_INTERVAL: Duration = Duration::from_secs(5);
 
 // The standalone server around a [`hardy_tcpclv4::Tcpclv4`] entity: the

@@ -1,6 +1,6 @@
-//! Integration tests for `Cla::forward` — the streamed egress door — and
-//! `stream::buffer_stream`, the whole-buffer convenience used by CLAs that
-//! need a contiguous bundle.
+//! Integration tests for `Cla::forward`, the streamed egress path, and
+//! `stream::buffer_stream`, the whole-buffer convenience for CLAs that need
+//! a contiguous bundle.
 
 #[cfg(feature = "rfc9173")]
 use core::num::NonZeroU8;
@@ -124,8 +124,9 @@ impl cla::Cla for StreamingCla {
     }
 }
 
-/// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
-/// — the shape every whole-buffer CLA takes on the streamed-only door.
+/// Buffers the stream into a contiguous bundle with
+/// `stream::buffer_stream`, the shape every whole-buffer CLA takes on the
+/// streamed-only forward API.
 struct BufferedCla {
     sink: Arc<dyn cla::Sink>,
     events_tx: flume::Sender<Event>,
@@ -300,7 +301,7 @@ async fn streaming_cla_receives_single_final_segment() {
         total_len,
     } = recv_event(&events_rx, 5).await
     else {
-        panic!("Expected the streamed door, got another event");
+        panic!("Expected a streamed forward, got another event");
     };
     assert_eq!(segments.len(), 1);
     let Segment::Final(data) = &segments[0] else {
@@ -398,7 +399,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
         assert!(i < 20, "Timed out waiting for the retry");
     }
     let Some(Event::Streamed { segments, .. }) = retry else {
-        panic!("Expected a successful retry through the streamed door");
+        panic!("Expected the retry to reach the CLA");
     };
     assert!(matches!(segments.last(), Some(Segment::Final(_))));
 
@@ -520,7 +521,7 @@ async fn buffering_cla_truncated_stream_is_cancelled() {
 }
 
 /// A stream completing with fewer bytes than the declared `total_len` is
-/// rejected — no short transfer reaches the transport.
+/// rejected, and no short transfer reaches the transport.
 #[tokio::test]
 async fn buffering_cla_rejects_under_delivering_stream() {
     let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
@@ -564,9 +565,9 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
 // Legacy IPN re-encode built-in (the per-hop rewrite stage)
 // ---------------------------------------------------------------------------
 
-/// Builds a BPA on an allocator-1 node — its 3-element IPN EIDs change bytes
-/// under the legacy re-encode — with the given legacy-peer patterns, wired
-/// to a buffering CLA and a send-only service.
+/// Builds a BPA on an allocator-1 node, whose 3-element IPN EIDs change
+/// bytes under the legacy re-encode, with the given legacy-peer patterns,
+/// wired to a buffering CLA and a send-only service.
 async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyService>, flume::Receiver<Event>) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
@@ -1246,9 +1247,10 @@ async fn keyless_relay_forwards_a_signed_then_encrypted_bundle() {
     assert_eq!(payload.as_ref(), b"relay me");
 }
 
-// A keyless relay can't read an encrypted Hop Count. The increment is a
-// SHOULD (RFC 9171 §4.4.3), so the bundle passes ingress and the block
-// travels unchanged with its BCB; the PreviousNode is still replaced.
+// A keyless relay cannot read an encrypted Hop Count. The increment is a
+// SHOULD (RFC 9171 Section 4.4.3), so the bundle passes ingress and the
+// block travels unchanged with its BCB; the PreviousNode is still
+// replaced.
 #[cfg(feature = "rfc9173")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn keyless_relay_forwards_an_encrypted_hop_count_unchanged() {

@@ -1,38 +1,36 @@
-/*!
-TCPCLv4 Convergence Layer Adapter for the Bundle Protocol.
-
-This crate implements the TCP Convergence-Layer Protocol Version 4 (TCPCLv4)
-as defined in [RFC 9174](https://www.rfc-editor.org/rfc/rfc9174). It provides
-a [`Tcpclv4`] CLA that registers with the BPA to send and receive bundles
-over TCP connections, with optional TLS encryption.
-
-# Key types
-
-- [`Tcpclv4`] — the convergence layer adapter. A BPA builds it from the
-  factory the embedder hands over, and owns it from then on.
-- [`builder::Tcpclv4Builder`] — the fluent constructor; every setting has a
-  default documented on its method. [`build`](builder::Tcpclv4Builder::build)
-  loads the TLS material and binds the listener sockets, yielding the
-  factory.
-- [`tls::Tls`] — TLS material (trust anchor, node identity, mutual-TLS
-  policy), chained from [`tls::Tls::builder`] and loaded by
-  [`builder::Tcpclv4Builder::build`].
-- [`config::Config`] — the builder inputs as plain data, for
-  configuration files; [`Tcpclv4::factory`] is the shorthand that maps one
-  onto the builder and builds it.
-- [`enum@Error`] — the generic error for everything TCPCLv4: assembling
-  and registering the entity, with each sub-concept's error wrapped as a
-  variant (`Tls`, `Session`).
-
-# Feature flags
-
-- `instrument` — adds `tracing` spans to the async internals.
-- `serde` — adds `Serialize`/`Deserialize` impls to [`config::Config`]
-  (the strict kebab-case schema the Hardy servers read),
-  [`tls::ClientAuth`], and the invariant newtypes ([`ContactTimeout`],
-  [`KeepaliveInterval`]), so invalid values are rejected at
-  deserialization.
-*/
+//! TCPCLv4 convergence layer adapter for the Bundle Protocol.
+//!
+//! Implements the TCP Convergence-Layer Protocol Version 4 of
+//! [RFC 9174](https://www.rfc-editor.org/rfc/rfc9174) as a [`Tcpclv4`] CLA
+//! that registers with a BPA and carries bundles over TCP, with optional
+//! TLS.
+//!
+//! # Key types
+//!
+//! - [`Tcpclv4`]: the convergence layer adapter. A BPA builds it from the
+//!   factory the embedder hands over, and owns it from then on.
+//! - [`builder::Tcpclv4Builder`]: the fluent constructor; every setting has
+//!   a default documented on its method.
+//!   [`build`](builder::Tcpclv4Builder::build) loads the TLS material and
+//!   binds the listener sockets, yielding the factory.
+//! - [`tls::Tls`]: the TLS material (trust anchor, node identity,
+//!   mutual-TLS policy), chained from [`tls::Tls::builder`] and loaded by
+//!   [`builder::Tcpclv4Builder::build`].
+//! - [`config::Config`]: the builder inputs as plain data, for
+//!   configuration files. [`Tcpclv4::factory`] maps one onto the builder
+//!   and builds it.
+//! - [`enum@Error`]: the error for everything TCPCLv4, assembling and
+//!   registering the entity, with each sub-concept's error wrapped as a
+//!   variant (`Tls`, `Session`).
+//!
+//! # Feature flags
+//!
+//! - `instrument`: adds `tracing` spans to the async internals.
+//! - `serde`: adds `Serialize` and `Deserialize` impls to
+//!   [`config::Config`] (the strict kebab-case schema the Hardy servers
+//!   read), [`tls::ClientAuth`], and the invariant newtypes
+//!   ([`ContactTimeout`], [`KeepaliveInterval`]), so invalid values are
+//!   rejected at deserialization.
 
 mod codec;
 mod connection;

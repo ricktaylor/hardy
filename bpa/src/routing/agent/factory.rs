@@ -1,24 +1,23 @@
-//! Constructing a routing agent.
+//! Construction of a routing agent.
 
 use core::fmt::{self, Debug, Formatter};
 
 use super::{Agent, Sink};
 use crate::{Arc, node_ids::NodeIds, routing::Result};
 
-/// Everything the BPA hands a routing agent at construction.
+/// The values the BPA supplies to a routing agent at construction.
 #[non_exhaustive]
 pub struct Context {
-    /// The channel back to the BPA, for the agent's whole active
-    /// lifetime.
+    /// The agent's interface to the BPA, usable until it unregisters.
     pub sink: Arc<dyn Sink>,
 
-    /// The BPA's own identities, the routes an agent installs are
-    /// relative to.
+    /// The identities an agent's routes are relative to.
     pub node_ids: Arc<NodeIds>,
 }
 
 impl Context {
-    /// Mints a context. The BPA does this; an agent receives one.
+    /// Creates a context. Called by the BPA, which supplies the context
+    /// to [`Factory::build`].
     pub fn new(sink: Arc<dyn Sink>, node_ids: Arc<NodeIds>) -> Self {
         Self { sink, node_ids }
     }
@@ -32,28 +31,31 @@ impl Debug for Context {
     }
 }
 
-/// Builds a routing agent against the node the BPA runs as.
+/// Builds a routing agent for the node the BPA runs as.
 ///
-/// An agent crate exposes its own factory, such as `Tvr::factory(&config)`,
-/// so what an agent needs stays with the agent that knows it. One with
-/// nothing to carry is written with [`factory_fn`].
+/// An agent crate exposes its own factory, such as
+/// `Tvr::factory(&config)`, so that an agent's configuration stays in the
+/// crate that defines it. A factory with nothing of its own to carry is
+/// written with [`factory_fn`].
 pub trait Factory: Send {
     /// The agent this factory builds.
     type Component: Agent + 'static;
 
     /// Builds the agent from its context.
     ///
-    /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`.
-    /// Reading a routes file belongs in [`Agent::register`], which the
-    /// BPA calls as soon as this returns.
+    /// This performs construction only: no I/O, no spawned tasks, and no
+    /// use of `cx.sink`. Reading a routes file belongs in
+    /// [`Agent::register`], which the BPA calls as soon as this returns.
     ///
-    /// `Err` means the node the BPA runs as is one this agent cannot
-    /// route for.
+    /// # Errors
+    ///
+    /// An error means the agent cannot route for the node the BPA runs
+    /// as.
     fn build(self, cx: Context) -> Result<Arc<Self::Component>>;
 }
 
-/// A [`Factory`] from a closure, for an agent whose construction needs
-/// nothing but its context.
+/// Creates a [`Factory`] from a closure, for an agent whose construction
+/// needs nothing but its context.
 ///
 /// ```ignore
 /// routing::factory_fn(|cx| Ok(Arc::new(MyAgent::new(cx))))
@@ -80,13 +82,14 @@ where
     }
 }
 
-/// A [`Factory`] erased for [`Registrar`](crate::routing::Registrar), which is
-/// dyn-compatible and so cannot carry one.
+/// A [`Factory`] with its component type erased, for
+/// [`Registrar`](crate::routing::Registrar), which is dyn-compatible and
+/// so cannot take a generic factory.
 ///
-/// A factory's one capability needs no dispatch once the associated type
-/// is gone: the constructor becomes a closure.
-/// [`RegistrarExt::register_routing_agent`] erases for the caller, so
-/// this type is only named by a `Registrar` implementation.
+/// Erasure turns the factory's constructor into a closure, so it needs no
+/// dynamic dispatch. [`RegistrarExt::register_routing_agent`] erases the
+/// factory for the caller, so only an implementation of `Registrar` names
+/// this type.
 ///
 /// [`RegistrarExt::register_routing_agent`]: crate::routing::RegistrarExt::register_routing_agent
 pub struct BoxFactory<'a>(Box<dyn FnOnce(Context) -> Result<Arc<dyn Agent>> + Send + 'a>);
@@ -99,9 +102,9 @@ impl<'a> BoxFactory<'a> {
         }))
     }
 
-    // Erases `factory`, leaving the agent it builds in `slot` so
-    // `RegistrarExt::register_routing_agent` can hand the concrete type
-    // back without a downcast.
+    // Erases `factory`, storing the agent it builds in `slot` so that
+    // `RegistrarExt::register_routing_agent` can return the concrete type
+    // without a downcast.
     pub(crate) fn capturing<F: Factory + 'a>(
         factory: F,
         slot: &'a mut Option<Arc<F::Component>>,
@@ -114,6 +117,10 @@ impl<'a> BoxFactory<'a> {
     }
 
     /// Builds the agent, as [`Factory::build`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of the erased factory.
     pub fn build(self, cx: Context) -> Result<Arc<dyn Agent>> {
         (self.0)(cx)
     }

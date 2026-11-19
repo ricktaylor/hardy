@@ -1,14 +1,13 @@
-//! The routing agents of one BPA: the contract they implement and the
-//! table that owns them.
+//! Routing agents: the trait an agent implements, and the table the BPA
+//! holds them in.
 //!
 //! An embedder implements [`Agent`] and hands the BPA a [`Factory`] for
 //! it. The BPA builds the agent from a [`Context`] carrying the [`Sink`]
-//! it pushes routes through, and `table::Table` owns it from there, until
-//! the agent unregisters or the BPA shuts down.
-
-use crate::async_trait;
+//! the agent pushes routes through, and owns it until the agent
+//! unregisters or the BPA shuts down.
 
 use super::Result;
+use crate::async_trait;
 
 mod factory;
 mod sink;
@@ -23,43 +22,48 @@ pub use self::static_agent::StaticAgent;
 /// A component that supplies routes to the BPA.
 ///
 /// An agent discovers or computes routes and pushes them into the BPA's
-/// routing information base through the [`Sink`] its [`Context`] carries:
-/// static configuration, a link-state protocol and neighbour discovery
+/// routing information base through the [`Sink`] in its [`Context`].
+/// Static configuration, a link-state protocol and neighbour discovery
 /// are all agents.
 ///
-/// Agents are purely push-based. The BPA never calls back to ask for
-/// work, unlike a [`Cla`](crate::cla::Cla), which is asked to forward, so
-/// the trait carries nothing but the lifecycle the BPA drives: the BPA
-/// builds the agent from a [`Factory`], owns it, brings it up with
-/// [`register`](Self::register) and takes it down with
-/// [`unregister`](Self::unregister), withdrawing every route the
-/// agent added.
+/// An agent is push-only. Unlike a [`Cla`](crate::cla::Cla), which is
+/// asked to forward, an agent is never called back for work, so the trait
+/// carries only the lifecycle the BPA drives: the BPA builds the agent
+/// from a [`Factory`], owns it, brings it up with
+/// [`register`](Self::register), and takes it down with
+/// [`unregister`](Self::unregister), withdrawing every route it added.
 #[async_trait]
 pub trait Agent: Send + Sync {
-    /// Brings the agent up: spawns tasks, installs its initial routes,
-    /// opens the sources it learns routes from.
+    /// Brings the agent up, spawning tasks, installing its initial routes
+    /// and opening the sources it learns routes from.
     ///
-    /// Called once, as the registration opens: at
-    /// [`Bpa::start`](crate::bpa::Bpa::start) for a declared agent,
-    /// after storage recovery, and at the registration call for any
-    /// other. An `Err` means the agent cannot run at all: the
-    /// registration is undone, and the error reaches whoever asked for
-    /// it.
+    /// Called once, when the registration opens. For an agent declared on
+    /// the [`BpaBuilder`](crate::builder::BpaBuilder) that is during
+    /// [`Bpa::start`](crate::bpa::Bpa::start), after storage recovery.
     ///
-    /// The default implementation does nothing, for an agent that is live
-    /// from the moment it is built.
+    /// The default implementation does nothing, which suits an agent that
+    /// is live as soon as it is built.
+    ///
+    /// # Errors
+    ///
+    /// An error means the agent cannot run at all. The registration is
+    /// undone and the error is returned to the caller that asked for it.
     async fn register(&self) -> Result<()> {
         Ok(())
     }
 
-    /// Takes the agent down: stops background tasks, releases resources.
+    /// Takes the agent down, stopping background tasks and releasing
+    /// resources.
     ///
     /// Called once, when the agent unregisters or the BPA shuts down. The
-    /// sink answers [`Error::Disconnected`] to everything by then, and the
-    /// agent's routes are withdrawn once this returns; an `Err` is logged
-    /// and teardown continues regardless.
+    /// sink already answers [`Error::Disconnected`], and the agent's
+    /// routes are withdrawn once this returns.
     ///
     /// The default implementation does nothing.
+    ///
+    /// # Errors
+    ///
+    /// An error is logged, and teardown continues.
     ///
     /// [`Error::Disconnected`]: crate::routing::Error::Disconnected
     async fn unregister(&self) -> Result<()> {

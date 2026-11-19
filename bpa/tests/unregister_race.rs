@@ -1,10 +1,12 @@
 //! CLA unregistration must close a peer's egress queues before sweeping
-//! them: the `ForwardPending`/`ForwardAckPending` resets inside the RIB
+//! them.
+//!
+//! The `ForwardPending` and `ForwardAckPending` resets inside the RIB
 //! withdrawal run once no new send can re-enter the queue, so a concurrent
 //! forward holding a pre-withdrawal RIB snapshot either lands before the
-//! sweep (and is swept) or bounces off the closed queue (and is parked
-//! back to `Waiting` by its caller) — never stranded in `ForwardPending`
-//! on a dead peer.
+//! sweep and is swept, or bounces off the closed queue and is parked back
+//! to `Waiting` by its caller. Neither leaves it stranded in
+//! `ForwardPending` on a dead peer.
 
 use core::num::NonZeroUsize;
 use std::{
@@ -314,10 +316,10 @@ fn build_bundle(source: &str, destination: &str) -> (Id, Bytes) {
     (bundle.primary.id, Bytes::from(data))
 }
 
-/// A forward that raced `unregister_cla` — its RIB snapshot taken before
-/// the withdrawal, its queue entry committed after the peer sweep ran —
-/// must not strand the bundle in `ForwardPending` on the dead peer: it
-/// ends in `Waiting`, recoverable by the next route event.
+/// A forward that raced `unregister_cla`, taking its RIB snapshot before
+/// the withdrawal and committing its queue entry after the peer sweep ran,
+/// must not strand the bundle in `ForwardPending` on the dead peer: it ends
+/// in `Waiting`, recoverable by the next route event.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn racing_forward_is_not_stranded_by_unregister() {
     let node_ids = NodeIds::try_from(
@@ -430,8 +432,8 @@ async fn racing_forward_is_not_stranded_by_unregister() {
         "the racing forward must have entered ForwardPending after the sweep"
     );
 
-    // Let unregister finish: close (already done, or about to happen —
-    // order under test), RIB withdrawal, second sweep.
+    // Let unregister finish: the close, whose order against the race is
+    // what this test pins, then the RIB withdrawal and the second sweep.
     gates.ack_release_tx.send(()).unwrap();
     unregister.await.unwrap();
 

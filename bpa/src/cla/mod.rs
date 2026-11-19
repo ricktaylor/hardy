@@ -19,7 +19,7 @@ pub use address::{Address, AddressType};
 pub use factory::{BoxFactory, Context, Factory, Request, Terms, factory_fn};
 pub use sink::Sink;
 
-/// A specialized `Result` type for CLA operations.
+/// A `Result` whose error type is this module's [`enum@Error`].
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// Errors that can occur during CLA operations.
@@ -29,8 +29,8 @@ pub enum Error {
     #[error("A CLA named {0} is already registered")]
     DuplicateName(String),
 
-    /// A CLA of this name is still unregistering. The name is released
-    /// once that completes, so the registration may be retried.
+    /// A CLA is still unregistering under this name. The name is released
+    /// when that completes, and the registration can be retried.
     #[error("The CLA named {0} is unregistering")]
     Unregistering(String),
 
@@ -38,35 +38,30 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
-    /// The bundle stream ended before its final segment: the producer went
-    /// away mid-bundle and the partial bytes are discarded.
+    /// The bundle stream ended before its final segment. The producer went
+    /// away mid-bundle, and the partial bytes are discarded.
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
-    /// The bundle exceeds a size limit. Raised at the ingress door when
-    /// a received stream grows past the BPA's `max_bundle_size`, and by
-    /// transport-backed sinks (e.g. gRPC) when a pre-flight size check
-    /// fails, instead of letting the oversized message break the
-    /// underlying stream. The fields are wire-size-domain `u64`; today
-    /// they carry in-memory byte counts.
+    /// The bundle exceeds a size limit: the BPA's `max_bundle_size` at
+    /// ingress, or a transport's own limit caught by a pre-flight check
+    /// rather than by breaking the underlying stream.
     #[error("Bundle too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: u64, max: u64 },
 
     /// A bundle stream completed with fewer bytes than its declared
-    /// `total_len`. A transport may frame the wire transfer from the
-    /// declared length before pulling the first segment, so a short
-    /// delivery is rejected rather than shorting the transfer on the wire.
-    /// The fields are wire-size-domain `u64`.
+    /// `total_len`. A transport may frame the wire transfer from that
+    /// length before pulling the first segment, so a short delivery is
+    /// rejected rather than shorting the transfer on the wire.
     #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
     PayloadUnderrun { size: u64, expected: u64 },
 
-    /// A stream declared a `total_len` too large to address in memory on
-    /// this target: no buffer can hold it, so the stream is rejected
-    /// before the first segment is pulled.
+    /// A stream declared a `total_len` that cannot be addressed in memory
+    /// on this target. No buffer can hold it, so the stream is rejected
+    /// before its first segment is pulled.
     #[error("declared length of {total_len} bytes is unaddressable on this target")]
     PayloadUnaddressable { total_len: u64 },
 
-    /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
@@ -90,17 +85,13 @@ impl From<BufferError> for Error {
 
 /// The result of a bundle forwarding attempt by a CLA.
 ///
-/// The variants encode who owns the transfer when `forward` returns, not
-/// merely success or failure. An *unreliable* convergence layer is
-/// fire-and-forget and answers terminally: [`Sent`](Self::Sent) is all it
-/// ever knows. [`Accepted`](Self::Accepted) exists only for *reliable*
-/// convergence layers that learn their peer's acceptance later: returning
-/// early frees the egress lane while that acknowledgement is in flight, so
-/// a session can pipeline many transfers concurrently. This deferred
-/// callback is the pipelining seam: a `forward` that awaited the final
-/// outcome would serialize every lane on a wire round-trip. Local delivery
-/// has no analogue of `Accepted` because delivery completes in-process,
-/// with no round-trip to wait out.
+/// The variants encode who owns the transfer once `forward` returns, not
+/// merely success or failure. An unreliable convergence layer is
+/// fire-and-forget, and [`Sent`](Self::Sent) is all it ever knows.
+/// [`Accepted`](Self::Accepted) is for reliable convergence layers that
+/// learn their peer's acceptance later: returning before the
+/// acknowledgement arrives frees the egress lane, so a session pipelines
+/// transfers instead of serializing each lane on a wire round-trip.
 pub enum ForwardOutcome {
     /// The bundle was sent, and no further outcome follows: the terminal,
     /// fire-and-forget answer of an unreliable convergence layer.
@@ -118,11 +109,11 @@ pub enum ForwardOutcome {
 /// The final outcome of a transfer previously answered
 /// [`ForwardOutcome::Accepted`].
 ///
-/// Today the outcome only resolves the retained bundle, but it is
-/// deliberately the peer-acceptance signal a future reliability /
-/// custody-transfer layer consumes, which is why reliable CLAs report it
-/// even though `Completed` and a fire-and-forget
-/// [`Sent`](ForwardOutcome::Sent) currently resolve identically.
+/// Today the outcome only resolves the retained bundle, but it is the
+/// peer-acceptance signal a reliability or custody-transfer layer would
+/// consume, which is why reliable CLAs report it even though `Completed`
+/// and a fire-and-forget [`Sent`](ForwardOutcome::Sent) currently resolve
+/// identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferOutcome {
     /// The bundle was handed to the far bundle node.
@@ -135,8 +126,8 @@ pub enum TransferOutcome {
     Failed,
 }
 
-/// The BPA's acceptance verdict for a received bundle: the return value
-/// of [`Sink::dispatch`], and its only carrier.
+/// The BPA's acceptance verdict for a received bundle, returned by
+/// [`Sink::dispatch`].
 ///
 /// Refusal is a normal protocol outcome, not an error: a CLA acts on it by
 /// withholding its transfer acknowledgement, and carries on. Faults that
@@ -145,13 +136,11 @@ pub enum TransferOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Acceptance {
     /// The BPA accepted the bundle: the CLA may acknowledge the transfer to
-    /// its peer. Acceptance includes internal disposal: a bundle that is
-    /// invalid, unwanted, or a duplicate is accepted and then dropped inside
-    /// the BPA (with status reports where requested). Refusal would invite
-    /// the previous node's custody/retransmission machinery to resend, and a
-    /// resend of invalid content is byte-identical and can never succeed,
-    /// so the first BPA to detect the problem accepts the bundle and
-    /// terminates it.
+    /// its peer. This covers bundles the BPA then disposes of internally as
+    /// invalid, unwanted or duplicate, with status reports where requested.
+    /// Refusing those would invite the previous node to retransmit, and a
+    /// resend of invalid content is byte-identical, so the first BPA to
+    /// detect the problem accepts the bundle and terminates it.
     Accepted,
     /// The BPA refused acceptance: the CLA must not acknowledge the
     /// transfer, leaving its peer responsible for the bundle. Refusal is
@@ -167,81 +156,85 @@ pub enum Acceptance {
 /// A CLA transmits and receives bundles over its own medium. The BPA
 /// builds it from a [`Factory`], owns it, and drives its lifecycle:
 /// [`register`](Self::register) opens the transport,
-/// [`forward`](Self::forward) carries bundles out, and
-/// [`unregister`](Self::unregister) closes everything again. Traffic
-/// in the other direction goes through the [`Sink`] the [`Context`]
-/// carries, which the CLA keeps for as long as it is attached.
+/// [`forward`](Self::forward) sends bundles, and
+/// [`unregister`](Self::unregister) closes the transport again. Received
+/// bundles and peer updates travel the other way, through the [`Sink`] in
+/// the [`Context`] the CLA was built from.
 ///
-/// A CLA is commonly paired with a
-/// [`FlowControllerFactory`](crate::policy::FlowControllerFactory), which
-/// adds rate limiting or prioritisation over the lanes the CLA declares.
+/// An embedder may pair a CLA with a
+/// [`FlowControllerFactory`](crate::policy::FlowControllerFactory) to rate
+/// limit or prioritise the lanes the CLA declares.
 #[async_trait]
 pub trait Cla: Send + Sync {
-    /// Brings the transport up: binds sockets, dials peers, spawns
-    /// listener tasks.
+    /// Brings the transport up, binding sockets, dialling peers and
+    /// spawning listener tasks.
     ///
-    /// Called once, as the registration opens: at
-    /// [`Bpa::start`](crate::bpa::Bpa::start) for a declared CLA, after
-    /// storage recovery, so a listener never races the consistency
-    /// check, and at the registration call for any other. An `Err`
-    /// means the CLA cannot run at all: the registration is undone, and
-    /// the error reaches whoever asked for it. A CLA that is merely
-    /// unreachable for now returns `Ok` and retries on its own.
+    /// Called once, when the registration opens. For a CLA declared on the
+    /// [`BpaBuilder`](crate::builder::BpaBuilder) that is during
+    /// [`Bpa::start`](crate::bpa::Bpa::start), after storage recovery, so a
+    /// listener never races the consistency check.
     ///
-    /// The default implementation does nothing, for a CLA that is live
-    /// from the moment it is built.
+    /// The default implementation does nothing, which suits a CLA that is
+    /// live as soon as it is built.
+    ///
+    /// # Errors
+    ///
+    /// An error means the CLA cannot run at all. The registration is undone
+    /// and the error is returned to the caller that asked for it. A CLA
+    /// that is only temporarily unreachable returns `Ok` and retries on its
+    /// own.
     async fn register(&self) -> Result<()> {
         Ok(())
     }
 
-    /// Takes the transport down: closes connections, stops background
-    /// tasks, releases resources.
+    /// Takes the transport down, closing connections, stopping background
+    /// tasks and releasing resources.
     ///
-    /// Called once, when the CLA unregisters or the BPA shuts down. The sink
-    /// is already dead by then, so nothing can be received or reported
-    /// from here; an `Err` is logged and teardown continues regardless.
+    /// Called once, when the CLA unregisters or the BPA shuts down. The
+    /// sink is already disconnected, so nothing can be received or reported
+    /// from here.
     ///
     /// The default implementation does nothing.
+    ///
+    /// # Errors
+    ///
+    /// An error is logged, and the teardown continues regardless.
     async fn unregister(&self) -> Result<()> {
         Ok(())
     }
 
-    /// Forwards a bundle, delivered as a stream of segments, to a specific CLA
-    /// address over a given lane.
+    /// Forwards a bundle to `cla_addr`, reading it from `stream` as a
+    /// sequence of segments.
     ///
-    /// Lane `None` requests a new lane from the infinite pool, the
-    /// default for CLAs that declare no lane limit, where every transfer
-    /// travels on its own fresh lane (a datagram CL). `Some(i)` directs
-    /// the transfer onto explicit lane `i`. As a safety net, a CLA that
-    /// declares explicit lanes but still receives `None` should pick a
-    /// lane arbitrarily (e.g. at random) rather than fail the transfer.
-    /// Mirroring [`Sink::dispatch`] on the egress side, the implementation
-    /// pulls [`Segment::Next`] items from `stream` until
-    /// [`Segment::Final`] (which may carry empty bytes) completes the
+    /// The implementation pulls [`Segment::Next`] items from `stream` until
+    /// a [`Segment::Final`], which may itself carry no bytes, completes the
+    /// transfer. An implementation that needs the whole bundle in memory
+    /// reads it with [`buffer_stream`](crate::stream::buffer_stream), whose
+    /// errors convert into this module's [`enum@Error`].
+    ///
+    /// `total_len` is the exact number of bundle bytes `stream` delivers,
+    /// for transports that announce a length up front, such as a TCPCLv4
+    /// XFER_SEGMENT. An implementation may frame the wire transfer from it
+    /// before pulling the first segment.
+    ///
+    /// `lane` is `None` for a transfer on a fresh lane of an unlimited
+    /// pool, which is what a CLA declaring no lane count always receives,
+    /// and `Some(i)` for a transfer on lane `i`. A CLA that declares a lane
+    /// count but receives `None` picks a lane itself rather than fail the
     /// transfer.
     ///
-    /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
-    /// before `Final` means the producer aborted the transfer: the CLA must
-    /// tear down without delivering a partial bundle to the peer, and must
-    /// not return `Ok`: a truncated transfer surfaced as success would let
-    /// the peer treat delivery as complete.
+    /// `bundle_id` correlates a deferred outcome: a CLA returning
+    /// [`ForwardOutcome::Accepted`] passes it back to
+    /// [`Sink::report_transfer`]. It is not data to transmit, and a CLA
+    /// that answers terminally may ignore it.
     ///
-    /// `total_len` is the exact number of bundle bytes the stream delivers,
-    /// the sum of all segment payload lengths. It is a framing hint for
-    /// transports that must announce a length up front (e.g. a TCPCLv4
-    /// XFER_SEGMENT length), carried as `u64` so it remains valid on
-    /// 32-bit targets. Producers must be exact: an implementation may frame
-    /// the wire transfer from it before pulling the first segment.
+    /// # Errors
     ///
-    /// `bundle_id` identifies the transfer if the CLA defers its outcome: a
-    /// CLA answering [`ForwardOutcome::Accepted`] echoes it back in
-    /// [`Sink::report_transfer`]. It is the correlation key, not data to
-    /// transmit; CLAs that answer terminally may ignore it, and no CLA needs
-    /// to parse the bundle to learn it.
-    ///
-    /// An implementation that needs the whole bundle in memory buffers the
-    /// stream with [`buffer_stream`](crate::stream::buffer_stream), whose
-    /// errors convert into this module's [`enum@Error`] via `?`.
+    /// A pull that returns `Err(`[`RecvError`](crate::stream::RecvError)`)`
+    /// before the final segment means the producer aborted the transfer.
+    /// The CLA must then abandon the transfer rather than deliver a partial
+    /// bundle, and must return an error: a truncation reported as success
+    /// would leave the peer treating the delivery as complete.
     async fn forward(
         &self,
         lane: Option<u32>,
@@ -252,34 +245,35 @@ pub trait Cla: Send + Sync {
     ) -> Result<ForwardOutcome>;
 }
 
-/// Somewhere a CLA can be registered: a local BPA, or a proxy standing in
-/// for a remote one.
+/// Something a CLA can be registered with: a local BPA, or a proxy for a
+/// remote one.
 ///
-/// This is the dyn-compatible half of the door, taking an erased
-/// [`BoxFactory`]. Callers use [`RegistrarExt::register_cla`] instead,
-/// which keeps the concrete component type and hands it back.
+/// This is the dyn-compatible trait, taking an erased [`BoxFactory`].
+/// Callers use [`RegistrarExt::register_cla`], which preserves the
+/// concrete component type.
 ///
-/// An `Ok` return means the factory was built and the CLA started; the
-/// registrar may not report success without having done both.
+/// An implementation returns `Ok` only once it has both built the factory
+/// and started the CLA.
 #[async_trait]
 pub trait Registrar: Send + Sync {
-    /// Builds the CLA `factory` makes, files it under `name`, and starts
+    /// Builds the CLA from `factory`, registers it under `name`, and starts
     /// it.
     async fn register_cla_boxed(&self, name: &str, factory: BoxFactory<'_>) -> Result<()>;
 }
 
-/// The typed [`Registrar`] door.
+/// The typed counterpart of [`Registrar`], implemented for every
+/// registrar.
 #[async_trait]
 pub trait RegistrarExt: Registrar {
-    /// Builds the CLA `factory` makes, files it under `name`, starts it,
-    /// and hands back the component the registrar now owns.
+    /// Builds the CLA from `factory`, registers it under `name`, starts it,
+    /// and returns the component.
     ///
-    /// The returned handle is for the embedder's own use: reconfiguring
-    /// the CLA, reading its statistics. Holding it does not keep the CLA
-    /// registered, and dropping it does not unregister it: the registrar
-    /// owns the CLA until it leaves through
-    /// [`Sink::unregister`] or the BPA
-    /// shuts down.
+    /// The returned handle is for the embedder's own use, such as
+    /// reconfiguring the CLA or reading its statistics. The registrar owns
+    /// the CLA until it is unregistered through
+    /// [`Sink::unregister`] or the BPA shuts
+    /// down, so holding the handle does not keep the CLA registered, and
+    /// dropping it does not unregister it.
     async fn register_cla<F: Factory>(&self, name: &str, factory: F) -> Result<Arc<F::Component>>;
 }
 
@@ -290,8 +284,8 @@ impl<T: Registrar + ?Sized> RegistrarExt for T {
         self.register_cla_boxed(name, BoxFactory::capturing(factory, &mut component))
             .await?;
 
-        // `Registrar`'s contract: an `Ok` return means the factory was
-        // built, and building it fills the slot.
+        // `Registrar` returns `Ok` only after building the factory, and
+        // building it fills the slot.
         Ok(component.expect("Registrar reported success without building the factory"))
     }
 }

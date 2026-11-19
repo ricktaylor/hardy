@@ -19,7 +19,8 @@ use hardy_cbor::decode::parse_exact;
 use trace_err::*;
 
 use super::{Command, payload};
-// Statistics for ping session, following IP ping conventions.
+
+// Counters and round-trip times, in the shape IP ping reports them.
 #[derive(Default, Clone)]
 pub struct Statistics {
     pub sent: u32,
@@ -88,7 +89,7 @@ struct PathHop {
 }
 
 // A hop on the return (Pong) path of one echo response bundle. The client never
-// sent the response, so there is no send time to measure against — the absolute
+// sent the response, so there is no send time to measure against: the absolute
 // report time is kept and rendered relative to the first report for that bundle.
 struct ReturnHop {
     node: Eid,
@@ -96,12 +97,11 @@ struct ReturnHop {
     report_time: time::OffsetDateTime,
 }
 
-// Shared mutable state protected by a single mutex.
 struct SharedState {
     sent_bundles: HashMap<Id, SentBundle>,
-    // Sequence number -> (send time, the payload bytes we sent). The send time
-    // drives the RTT calculation; the payload bytes are compared against the
-    // reflected payload for round-trip integrity.
+    // Keyed by sequence number. The send time drives the RTT calculation; the
+    // sent payload is compared against the reflected payload for round-trip
+    // integrity.
     expected_responses: HashMap<u32, (time::OffsetDateTime, Box<[u8]>)>,
     stats: Statistics,
     // Outbound (Ping) path hops, keyed by sequence number.
@@ -119,8 +119,6 @@ struct SharedState {
 }
 
 pub struct Service {
-    // Communication channel back to the BPA, for the service's whole
-    // active lifetime.
     sink: Arc<dyn raw::Sink>,
     local_node: NodeId,
     destination: Eid,
@@ -163,7 +161,7 @@ impl Service {
         })
     }
 
-    // Remove entries older than bundle lifetime to prevent unbounded memory growth.
+    // Removes entries older than the bundle lifetime, bounding memory growth.
     fn cleanup_expired(&self, now: time::OffsetDateTime) {
         let cutoff = now - self.lifetime;
         let mut expired = Vec::new();
@@ -186,15 +184,15 @@ impl Service {
         }
 
         // Once its tracking entries are gone, nothing can resolve an expired
-        // ping — a late reply or status report no longer matches anything — so
-        // resolve it here, or count-based termination would sit out the full
-        // wait timeout.
+        // ping: a late reply or status report no longer matches anything. It is
+        // resolved here, or count-based termination would sit out the full wait
+        // timeout.
         for seqno in expired {
             self.resolve(seqno);
         }
     }
 
-    // Print and clear the discovered outbound (Ping) path for a sequence number.
+    // Prints and clears the discovered outbound (Ping) path for a sequence number.
     fn print_path(&self, seqno: u32) {
         let hops = self
             .state
@@ -242,7 +240,6 @@ impl Service {
         println!("  path: {}", segments.join(" -> "));
     }
 
-    // Get a copy of the current statistics.
     pub fn statistics(&self) -> Statistics {
         self.state
             .lock()
@@ -251,7 +248,7 @@ impl Service {
             .clone()
     }
 
-    // Print summary statistics in IP ping format.
+    // Prints summary statistics in IP ping format.
     //
     // Takes the snapshot the caller also derives the exit code from, so that a
     // response arriving mid-teardown cannot make the two disagree.
@@ -289,8 +286,8 @@ impl Service {
             );
         }
 
-        // Last-seen info for lost bundles — those with outbound status reports
-        // but no reply.
+        // Last-seen information for lost bundles: those with outbound status
+        // reports but no reply.
         let mut lost_seqnos: Vec<_> = state
             .path_hops
             .keys()
@@ -365,7 +362,6 @@ impl Service {
             eprintln!("Sending ping {seq_no}...");
         }
 
-        // Record send time immediately before the actual send for accurate RTT
         let send_time = time::OffsetDateTime::now_utc();
 
         let id = self
@@ -389,7 +385,6 @@ impl Service {
             state.stats.sent += 1;
         }
 
-        // Periodically clean up expired entries to bound memory usage
         self.cleanup_expired(send_time);
 
         Ok(())
@@ -429,14 +424,12 @@ impl Service {
         }
     }
 
-    // Whether a status report was sourced by this client's own node.
     fn is_local_report(&self, report_source: &Eid) -> bool {
         report_source
             .to_node_id()
             .is_ok_and(|node| node == self.local_node)
     }
 
-    // Handle an incoming status report (administrative record).
     fn handle_status_report(&self, payload_data: &[u8], report_source: &Eid) {
         use hardy_bpv7::status_report::ReasonCode;
 
@@ -445,12 +438,13 @@ impl Service {
             _ => return,
         };
 
-        // A status report identifies its subject only by bundle-id (source +
-        // creation timestamp) — there is no echoed sequence number. Classify by
-        // subject: a forward-leg ("Ping") report is about one of our own request
-        // bundles (known id -> seqno); a return-leg ("Pong") report is about an
-        // echo response bundle (source == the echo endpoint) and cannot be tied
-        // to a sequence number, so it is grouped per response bundle-id.
+        // A status report identifies its subject only by bundle-id (source plus
+        // creation timestamp), with no echoed sequence number. Classification
+        // goes by subject: a forward-leg ("Ping") report is about one of this
+        // client's own request bundles (known id -> seqno); a return-leg ("Pong")
+        // report is about an echo response bundle (source == the echo endpoint)
+        // and cannot be tied to a sequence number, so it is grouped per response
+        // bundle-id.
         enum Leg {
             Forward {
                 seqno: u32,
@@ -559,8 +553,8 @@ impl Service {
 // Endpoint-identity comparison for parsed EIDs. Structural `Eid` equality
 // keeps the legacy two-element and three-element `ipn` encodings of the same
 // endpoint (RFC 9758) as distinct variants; comparing (node-id, service)
-// collapses that. Anything else that differs — including dtn demux strings —
-// is a genuinely different endpoint and does not match.
+// collapses that. Anything else that differs, including dtn demux strings, is a
+// genuinely different endpoint and does not match.
 fn same_endpoint(a: &Eid, b: &Eid) -> bool {
     a == b
         || match (a.to_node_id(), b.to_node_id()) {
@@ -605,7 +599,6 @@ impl raw::Service for Service {
     ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
 
-        // Record receive time immediately for accurate RTT
         let receive_time = time::OffsetDateTime::now_utc();
 
         // Parse the bundle structurally (the client does not use BPSec).
@@ -617,7 +610,6 @@ impl raw::Service for Service {
             }
         };
 
-        // Extract the payload block contents.
         let Some(payload_data) = bundle.blocks.get(&1).and_then(|b| b.payload(&data)) else {
             eprintln!("Bundle has no payload");
             return Ok(());
@@ -630,7 +622,7 @@ impl raw::Service for Service {
             return Ok(());
         }
 
-        // A ping response must be sourced by the echo endpoint we pinged.
+        // A ping response must be sourced by the endpoint that was pinged.
         if !same_endpoint(&bundle.primary.id.source, &self.destination) {
             eprintln!(
                 "Ignoring bundle from unexpected source EID '{}'",
@@ -639,7 +631,7 @@ impl raw::Service for Service {
             return Ok(());
         }
 
-        // Parse our sequence number out of the reflected payload.
+        // The sequence number comes back in the reflected payload.
         let payload = match payload::Payload::parse(payload_data) {
             Ok(p) => p,
             Err(e) => {
@@ -648,8 +640,8 @@ impl raw::Service for Service {
             }
         };
 
-        // Look up the request we sent for this sequence number: the send time
-        // (for RTT) and the payload we sent (for the integrity check).
+        // The recorded request for this sequence number holds the send time
+        // (for the RTT) and the sent payload (for the integrity check).
         let expected = self
             .state
             .lock()
@@ -664,12 +656,12 @@ impl raw::Service for Service {
             return Ok(());
         };
 
-        // Integrity: the echo reflects the payload byte-for-byte, so the
-        // returned payload must equal what we sent. No BPSec required, and this
+        // The echo reflects the payload byte for byte, so the returned payload
+        // must equal the one that was sent. No BPSec is required, so the check
         // works against any conformant echo.
         if payload_data != sent_payload.as_ref() {
             eprintln!(
-                "WARNING: Ping {} payload mismatch — response was modified in transit!",
+                "WARNING: Ping {} payload mismatch, response was modified in transit!",
                 payload.seqno
             );
             self.state
@@ -681,8 +673,9 @@ impl raw::Service for Service {
             return Ok(());
         }
 
-        // Calculate RTT using LOCAL timestamps (not payload timestamps) to avoid
-        // clock synchronization issues between nodes.
+        // The round-trip time comes from local timestamps, not the payload
+        // timestamps, so it does not depend on clocks being synchronized
+        // between nodes.
         if let Ok(rtt) = (receive_time - sent_time).try_into() {
             {
                 let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
@@ -706,7 +699,6 @@ impl raw::Service for Service {
             );
         }
 
-        // This ping is resolved; release its permit for count-based termination.
         self.resolve(payload.seqno);
         Ok(())
     }
@@ -719,7 +711,8 @@ impl raw::Service for Service {
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Status reports arrive via deliver when report_to = service EID
+        // Status reports reach this client through `deliver`, since its pings
+        // name the service endpoint as the report-to EID.
     }
 }
 

@@ -87,11 +87,10 @@ impl Sink {
 
 #[async_trait]
 impl hardy_bpa::service::raw::Sink for Sink {
-    // INTERIM BUFFERING: the wire has no streamed Send message yet, so the
-    // segment stream is accumulated (bounded by the transport cap) and sent
-    // as one unary ServiceSendRequest. This is a deliberate stepping stone
-    // toward the full streaming pipeline (chunked wire messages are the
-    // blocker); see bpa/docs/streaming_pipeline_design.md.
+    // The wire carries no streamed Send message, so the segment stream is
+    // accumulated, bounded by the transport cap, and sent as one unary
+    // ServiceSendRequest. See bpa/docs/streaming_pipeline_design.md for the
+    // chunked form this is a step towards.
     async fn send(
         &self,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
@@ -197,10 +196,10 @@ impl ProxyHandler for Handler {
     }
 }
 
-/// Register a low-level Service with the BPA via gRPC.
+/// Registers a raw service with the BPA over gRPC.
 ///
-/// This connects to the BPA's Service gRPC endpoint and establishes a
-/// bidirectional streaming connection for the service lifecycle.
+/// The bidirectional stream to the BPA's Service endpoint stays open for
+/// the service's lifetime, and closing it unregisters the service.
 pub async fn register_raw_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
@@ -215,10 +214,8 @@ pub async fn register_raw_service(
         .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
         .max_decoding_message_size(crate::MAX_MESSAGE_SIZE);
 
-    // Create a channel for sending messages to the service.
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
 
-    // Call the service's streaming method
     let mut channel_receiver = svc_client
         .register(tokio_stream::wrappers::ReceiverStream::new(rx))
         .await
@@ -228,7 +225,6 @@ pub async fn register_raw_service(
         })?
         .into_inner();
 
-    // Send the initial registration message.
     let response = match RpcProxy::send(
         &mut channel_sender,
         &mut channel_receiver,

@@ -17,7 +17,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 
-// Both subsystems name their typed door `Registrar`, so each is
+// Both subsystems name their registration trait `Registrar`, so each is
 // aliased to the subsystem it belongs to.
 use hardy_bpa::{
     cla::{Registrar as ClaRegistrar, RegistrarExt as _},
@@ -36,12 +36,13 @@ mod service;
 
 pub use config::{Config, Tunnel};
 
-/// BIBE tunnel endpoint manager.
+/// A BIBE tunnel endpoint.
 ///
-/// Provides Bundle-in-Bundle Encapsulation for tunneling bundles
-/// through intermediate networks. Uses a hybrid architecture:
-/// - CLA for encapsulation (via `forward()`)
-/// - Service for decapsulation (via `deliver()`)
+/// Bundle-in-Bundle Encapsulation tunnels bundles through intermediate
+/// networks as two BPA components: a CLA that encapsulates in
+/// [`forward`](hardy_bpa::cla::Cla::forward), and a service that
+/// decapsulates in
+/// [`deliver`](hardy_bpa::service::raw::Service::deliver).
 pub struct Bibe {
     cla: Arc<BibeCla>,
     decap_service: Arc<DecapService>,
@@ -101,28 +102,25 @@ impl Bibe {
         self.decap_service.unregister().await;
     }
 
-    /// Register a tunnel destination (creates virtual peer).
+    /// Registers a tunnel destination as a peer of the CLA.
     ///
-    /// This registers a "virtual peer" with the CLA, enabling routes
-    /// to use `via <tunnel_id>` to tunnel traffic through BIBE.
-    ///
-    /// The `tunnel_id` NodeId becomes routable, and bundles forwarded to it
-    /// will be encapsulated with `decap_endpoint` as the outer destination.
+    /// `tunnel_id` becomes routable, so a route may carry traffic through
+    /// the tunnel with `via <tunnel_id>`, and a bundle forwarded to it is
+    /// encapsulated with `decap_endpoint` as the outer destination.
     ///
     /// # Example
+    ///
     /// ```ignore
-    /// // Register tunnel
     /// bibe.add_tunnel(
     ///     NodeId::new("dtn://tunnel1"),
     ///     Eid::new("ipn:100.12")
     /// ).await?;
-    ///
-    /// // Now routes can use: ipn:200.* via dtn://tunnel1
+    /// // ipn:200.* via dtn://tunnel1 now resolves through the tunnel.
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns an error if the BPA refuses the virtual peer.
+    /// Returns an error if the BPA refuses the peer.
     pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<(), Error> {
         self.cla.add_tunnel(tunnel_id, decap_endpoint).await
     }

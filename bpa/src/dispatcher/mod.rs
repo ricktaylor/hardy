@@ -19,18 +19,18 @@ mod restart;
 mod validate;
 
 // The default bound on a single reassembled bundle. Streaming producers
-// dissolved the transport-level caps that used to bound ingress implicitly,
-// so the concat chokepoint enforces one; sized generously above the old
-// 16 MiB wire cap to leave room for large ADUs. The cap is admission
-// policy, and the end-state default is "no policy" (`None`) — this default
-// exists only while ingress accumulates whole bundles in memory.
+// carry no transport-level cap to bound ingress implicitly, so the concat
+// point enforces one, sized above the 16 MiB wire cap to leave room for
+// large ADUs. The cap is admission policy whose end state is no policy at
+// all, `None`, and this default exists only while ingress accumulates whole
+// bundles in memory.
 const DEFAULT_MAX_BUNDLE_SIZE: NonZeroU64 = NonZeroU64::new(64 * 1024 * 1024).unwrap();
 
-// The allocator's per-allocation limit (`isize::MAX` bytes) is the largest
+// The allocator's per-allocation limit of `isize::MAX` bytes is the largest
 // bound a single in-memory accumulation can reach, so any configured cap is
 // clamped to it once, at construction. The clamp buys two invariants: the
-// advertised and enforced values are the same number by construction, and
-// narrowing the cap into the `usize` domain cannot fail.
+// advertised and the enforced value are the same number, and narrowing the
+// cap into the `usize` domain cannot fail.
 const ADDRESSABLE_CAP: NonZeroU64 = NonZeroU64::new(isize::MAX as u64).unwrap();
 
 /// The dispatcher's plain configuration values, gathered by the builder.
@@ -39,43 +39,46 @@ pub struct Config {
     pub poll_channel_depth: NonZeroUsize,
     pub processing_pool_size: NonZeroUsize,
     pub max_bundle_size: Option<NonZeroU64>,
-    /// Pre-drain gate: require primary-block integrity protection
-    /// (RFC 9171 §4.3.1).
+    /// Whether a received bundle must carry integrity protection over its
+    /// primary block (RFC 9171 Section 4.3.1), checked before the drain.
     pub primary_block_integrity: bool,
-    /// Pre-drain gate: require a Bundle Age block on clockless bundles
-    /// (RFC 9171 §4.4.2).
+    /// Whether a received bundle with no clock in its creation timestamp
+    /// must carry a Bundle Age block (RFC 9171 Section 4.4.2), checked
+    /// before the drain.
     pub bundle_age_required: bool,
     /// Peers whose next hop requires legacy 2-element IPN EID encoding in
     /// the per-hop rewrite stage.
     pub ipn_legacy_peers: Vec<EidPattern>,
 }
 
-/// The resolution of a hand-off offer: every exit of `offer_to_cla` and
-/// `offer_to_service` is one of these variants, consumed exactly once by
-/// `Dispatcher::resolve_offer`. `ForwardAckPending`/`DeliveryAckPending`
-/// have no storage poller and the reaper defers their expiry, so a claim an
-/// offer left unresolved would be a bundle invisible until restart — this
-/// return type makes that unwritable.
+/// The resolution of a hand-off offer.
+///
+/// Every exit of `offer_to_cla` and `offer_to_service` is one of these
+/// variants, consumed exactly once by `Dispatcher::resolve_offer`.
+/// `ForwardAckPending` and `DeliveryAckPending` have no storage poller and
+/// the reaper defers their expiry, so a claim an offer left unresolved
+/// would be a bundle invisible until restart, which this return type makes
+/// unwritable.
 #[must_use = "a hand-off claim must be resolved"]
 enum OfferOutcome {
-    /// The hand-off completed: the bundle left the node (transfer) or was
-    /// consumed by the service (delivery).
+    /// The hand-off completed, the bundle having left the node on a
+    /// transfer or been consumed by the service on a delivery.
     Completed(bundle::Bundle),
-    /// Terminal failure: drop with the reason (reported), or delete
-    /// silently when the filter gave none.
+    /// A terminal failure: dropped and reported with the reason, or
+    /// deleted silently where the filter gave none.
     Dropped(bundle::Bundle, Option<ReasonCode>),
     /// Park for a future opportunity, closing the park-vs-poll window
     /// against the routing snapshot captured when the flight began.
     Parked(bundle::Bundle, bundle::BundleStatus, routing::RibSnapshot),
-    /// Deliberate detach: the CLA owns the transfer (`Accepted`) and
-    /// resolves the claim later via `transfer_outcome`.
+    /// The CLA owns the transfer, having `Accepted` it, and resolves the
+    /// claim later through `transfer_outcome`.
     Detached(bundle::Bundle),
     /// Re-enter dispatch for a fresh routing decision.
     Redispatch(bundle::Bundle),
 }
 
-/// Which hand-off produced an [`OfferOutcome`] — completion reports and
-/// counters differ.
+/// Which hand-off produced an [`OfferOutcome`], whose completion reports
+/// and counters differ.
 enum OfferKind {
     Forward,
     Delivery,
@@ -90,10 +93,8 @@ pub(crate) struct Dispatcher {
     filters: FilterChains,
     clas: hardy_async::sync::spin::Once<Arc<Table>>,
 
-    // Dispatch queue
     dispatch_tx: storage::channel::Sender,
 
-    // Config options
     status_reports: bool,
     node_ids: Arc<node_ids::NodeIds>,
     poll_channel_depth: usize,
@@ -104,14 +105,14 @@ pub(crate) struct Dispatcher {
 }
 
 impl Dispatcher {
-    /// Construct the dispatcher and return it with a deferred-start closure
-    /// for the dispatch-queue consumer.
+    /// Constructs the dispatcher, returning it with a closure that starts
+    /// the dispatch-queue consumer.
     ///
-    /// The closure demands the CLA table by value and wires it before
+    /// The closure takes the CLA table by value and wires it before
     /// spawning the consumer, because the dispatch channel's storage poller
     /// recovers persisted `DispatchPending` bundles as soon as the consumer
-    /// drains them, and processing one dereferences the table. It owns
-    /// the channel receiver, so a second start path cannot exist.
+    /// drains them, and processing one dereferences the table. It owns the
+    /// channel receiver, so a second start path cannot exist.
     pub fn new(
         config: Config,
         node_ids: Arc<node_ids::NodeIds>,
@@ -126,10 +127,10 @@ impl Dispatcher {
 
         let poll_channel_depth_usize: usize = config.poll_channel_depth.into();
 
-        // Create the dispatch queue channel. DispatchPending marks "queued":
-        // the consumer claims each bundle to Dispatching on dequeue, so the
-        // channel's storage poller (which recovers by this status) can never
-        // re-queue a bundle that is already being processed.
+        // `DispatchPending` is the queued status: the consumer claims each
+        // bundle to `Dispatching` on dequeue, so the channel's storage
+        // poller, which recovers by this status, can never re-queue a bundle
+        // that is already being processed.
         let (dispatch_tx, dispatch_rx) = store.channel(
             bundle::BundleStatus::DispatchPending,
             poll_channel_depth_usize,
@@ -147,8 +148,8 @@ impl Dispatcher {
             status_reports: config.status_reports,
             node_ids,
             poll_channel_depth: poll_channel_depth_usize,
-            // Interim: an unset cap takes the private default while ingress
-            // buffers in memory; streaming makes "no policy" the default.
+            // An unset cap takes the interim default while ingress buffers
+            // in memory. Streaming makes no policy the default.
             max_bundle_size: Some(
                 config
                     .max_bundle_size
@@ -170,13 +171,13 @@ impl Dispatcher {
         })
     }
 
-    // The dispatch size-cap policy, folded into the effective value
-    // settled with each CLA at attachment; `None` = no policy.
+    // The size-cap policy, negotiated with each CLA at registration into
+    // the value both enforce. `None` is no policy.
     pub(crate) fn max_bundle_size(&self) -> Option<NonZeroU64> {
         self.max_bundle_size
     }
 
-    // The cap in the wire domain, where declared lengths are compared: no
+    // The cap in the wire domain, where declared lengths are compared. No
     // policy leaves only the allocator's addressable bound, and any
     // configured cap was clamped to it at construction.
     fn max_bundle_size_wire(&self) -> u64 {
@@ -185,17 +186,19 @@ impl Dispatcher {
 
     // The cap as an in-memory accumulation bound: the wire cap, which the
     // construction-time clamp guarantees fits a `usize`.
-    // TODO: interim seam — the streaming pipeline derives the whole-bundle
-    // length in the u64 domain and spools payloads to storage, removing this
-    // usize-domain bound entirely (see docs/streaming_pipeline_design.md).
+    //
+    // TODO: the streaming pipeline derives the whole-bundle length in the
+    // `u64` domain and spools payloads to storage, removing this
+    // `usize`-domain bound entirely (see docs/streaming_pipeline_design.md).
     fn max_bundle_size_mem(&self) -> usize {
         usize::try_from(self.max_bundle_size_wire())
             .trace_expect("cap clamped to the addressable bound at construction")
     }
 
     fn clas(&self) -> &Arc<Table> {
-        // Other readers (poll_waiting, driven from Rib::start) cannot be
-        // proven wired by the type system; this expect is the backstop.
+        // The other readers, `poll_waiting` among them, driven from
+        // `Rib::start`, cannot be proven wired by the type system, and this
+        // expect is the backstop.
         self.clas.get().trace_expect("CLA table not initialized")
     }
 
@@ -205,10 +208,11 @@ impl Dispatcher {
         self.tasks.shutdown().await;
     }
 
-    /// Load bundle data, dropping the bundle with `DepletedStorage` if the
-    /// data is missing and the bundle has not yet expired. Expired-and-missing
-    /// bundles are left for the reaper to handle (it will drop them with
-    /// `LifetimeExpired`).
+    /// Loads a bundle's data, dropping the bundle with `DepletedStorage`
+    /// where the data is missing and the bundle has not expired.
+    ///
+    /// A bundle both expired and missing is left to the reaper, which drops
+    /// it with `LifetimeExpired`.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn load_data_or_drop(&self, bundle: bundle::Bundle) -> Option<(bundle::Bundle, Bytes)> {
         let storage_name = bundle
@@ -221,7 +225,8 @@ impl Dispatcher {
             Some(data) => Some((bundle, data)),
             None => {
                 if !bundle.has_expired() {
-                    // Bundle data was deleted while queued - not reaped
+                    // The data was deleted while the bundle was queued,
+                    // rather than reaped.
                     self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
                 }
                 None
@@ -231,11 +236,11 @@ impl Dispatcher {
 
     // Every drop is a terminal resolution, claimed with a conditional
     // tombstone. Callers own their bundle through the pipeline's claim
-    // discipline, but the reaper expires bundles regardless of owner, so
-    // any drop can race it, and it races them. Losing the claim means
-    // another resolver's deletion report has gone out; this one stays
-    // silent rather than contradict it. Callers therefore pass a bundle
-    // whose metadata is already stored, with a current status snapshot.
+    // discipline, but the reaper expires bundles whoever owns them, so any
+    // drop can race it and it races them. Losing the claim means another
+    // resolver's deletion report has gone out, and this one stays silent
+    // rather than contradict it. Callers therefore pass a bundle whose
+    // metadata is already stored, with a current status snapshot.
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: ReasonCode) {
         if !self.store.tombstone_if(&bundle).await {
@@ -250,25 +255,26 @@ impl Dispatcher {
         self.delete_bundle(bundle).await
     }
 
-    /// Park a claimed bundle for a future opportunity, closing the
-    /// park-vs-poll window.
+    /// Parks a claimed bundle for a future opportunity, closing the window
+    /// against a concurrent poll.
     ///
-    /// The park is a conditional swap: the reaper or a sweep can resolve the
-    /// bundle at any await, and a park must never resurrect a tombstone. On
-    /// a win, if the route table changed while the bundle was in flight
-    /// (`seen` is captured when the flight begins), the event's poll took
-    /// its snapshot before this park was visible and cannot have seen the
-    /// bundle — so re-enter dispatch once instead of sleeping. Re-dispatch
-    /// only fires when the table actually changed, so a deterministic
-    /// failure cannot spin; and a racing poll that *did* see the park
-    /// arbitrates through the claim-back CAS, so exactly one side proceeds.
+    /// The park is a conditional swap, because the reaper or a sweep can
+    /// resolve the bundle at any await and a park must never resurrect a
+    /// tombstone. On a win, if the route table changed while the bundle was
+    /// in flight, `seen` being captured when the flight begins, the event's
+    /// poll took its snapshot before this park was visible and cannot have
+    /// seen the bundle, so the bundle re-enters dispatch once rather than
+    /// sleeping. Re-dispatch fires only where the table did change, so a
+    /// deterministic failure cannot spin, and a racing poll that did see
+    /// the park arbitrates through the claim-back swap, so exactly one side
+    /// proceeds.
     ///
     /// A re-dispatch discards the in-hand copy and re-enters from the
-    /// persisted representation: parks persist status only, and a failure
-    /// exit may hand in a bundle carrying in-memory rewrites (hop count,
-    /// filter mutations) whose block extents no longer index the stored
-    /// bytes. Reloading here keeps that invariant in one place instead of
-    /// at every caller's exit.
+    /// persisted representation. Parks persist the status only, and a
+    /// failure exit may hand in a bundle carrying in-memory rewrites, of
+    /// the hop count or from a filter, whose block extents no longer index
+    /// the stored bytes. Reloading here keeps that invariant in one place
+    /// rather than at every caller's exit.
     pub async fn park_bundle(
         &self,
         mut bundle: bundle::Bundle,
@@ -287,8 +293,9 @@ impl Dispatcher {
                 .await
         {
             let Some(bundle) = self.store.get_metadata(bundle.id()).await else {
-                // Someone resolved the bundle after the swap (e.g. the
-                // reaper dropped it as expired); their resolution stands.
+                // Another resolver took the bundle after the swap, the
+                // reaper dropping it as expired for instance, and its
+                // resolution stands.
                 debug!("Re-dispatch lost the bundle to a concurrent resolution");
                 return;
             };
@@ -301,7 +308,6 @@ impl Dispatcher {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     async fn delete_bundle(&self, bundle: bundle::Bundle) {
-        // Delete the bundle from the bundle store
         if let Some(storage_name) = &bundle.metadata.storage_name {
             self.store.delete_data(storage_name).await;
         }
@@ -310,16 +316,16 @@ impl Dispatcher {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
     }
 
-    /// Resolve a hand-off offer's outcome — the single consumer of
+    /// Resolves a hand-off offer's outcome, as the single consumer of
     /// [`OfferOutcome`], shared by forwarding and delivery.
     async fn resolve_offer(&self, kind: OfferKind, outcome: OfferOutcome) {
         match outcome {
             OfferOutcome::Completed(bundle) => {
-                // The terminal claim is a conditional tombstone: a
-                // concurrent resolver (a peer sweep mid-transfer, a restart
-                // re-park) may have got there first, and losing the claim
-                // means its resolution has gone out — this one stays silent
-                // rather than contradict it.
+                // The terminal claim is a conditional tombstone. Another
+                // resolver, a peer sweep mid-transfer or a restart re-park,
+                // may have got there first, and losing the claim means its
+                // resolution has gone out, so this one stays silent rather
+                // than contradict it.
                 if !self.store.tombstone_if(&bundle).await {
                     debug!(
                         "Hand-off completion for {} lost the resolution race, ignored",
@@ -337,8 +343,7 @@ impl Dispatcher {
                         self.report_bundle_delivery(&bundle).await;
                     }
                 }
-                // Not drop_bundle(): a completed hand-off is not a
-                // 'dropped bundle'.
+                // Not `drop_bundle`, a completed hand-off being no drop.
                 self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
                     .await;
                 self.delete_bundle(bundle).await
@@ -350,21 +355,22 @@ impl Dispatcher {
             }
             OfferOutcome::Detached(bundle) => {
                 // The counterparty owns the hand-off and resolves the claim
-                // later (`transfer_outcome`). The watch stays armed even
-                // though the expiry pass defers this status: if a peer
-                // sweep parks the bundle before its expiry, the live entry
-                // still reaps it promptly.
+                // later, through `transfer_outcome`. The watch stays armed
+                // even though the expiry pass defers this status, so that a
+                // peer sweep that parks the bundle before its expiry leaves
+                // a live entry the reaper acts on promptly.
                 self.store.watch_bundle(bundle).await
             }
             OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
         }
     }
 
-    /// Create a per-service delivery channel: the hybrid storage channel
-    /// whose target status is `DeliverPending { service }`. The channel's
-    /// creation-time poll recovers any bundle already persisted in that
-    /// status for this EID. The sender becomes the `Service`'s constructor
-    /// argument; the receiver goes to
+    /// Creates a per-service delivery channel, the storage channel whose
+    /// target status is `DeliverPending { service }`.
+    ///
+    /// The channel's creation-time poll recovers any bundle already
+    /// persisted in that status for this EID. The sender becomes the
+    /// `Service`'s constructor argument, and the receiver goes to
     /// [`start_delivery_queue`](Self::start_delivery_queue) once the
     /// service is published.
     pub fn new_delivery_channel(
@@ -382,9 +388,11 @@ impl Dispatcher {
         )
     }
 
-    /// Spawn a published service's delivery consumer. Mirrors the per-peer
-    /// egress queues (`cla::peers`), including their serialization: one
-    /// delivery at a time per service, in queue order.
+    /// Spawns a published service's delivery consumer.
+    ///
+    /// It follows the per-peer egress queues of `cla::peers`, their
+    /// serialization included: one delivery at a time per service, in queue
+    /// order.
     pub fn start_delivery_queue(self: &Arc<Self>, service: Arc<service::table::Record>) {
         let dispatcher = self.clone();
         hardy_async::spawn!(self.tasks, "delivery_queue_poller", async move {
@@ -408,10 +416,10 @@ impl Dispatcher {
             },
             async {
                 while let Ok(mut bundle) = rx.recv().await {
-                    // Claim the bundle out of WaitingForService: overlapping
-                    // polls (a re-registering service) or a concurrent cancel
-                    // must not dispatch — and potentially deliver — the same
-                    // bundle twice
+                    // Claim the bundle out of `WaitingForService`, so that
+                    // overlapping polls, from a service registering again,
+                    // or a concurrent cancel cannot dispatch, and perhaps
+                    // deliver, the same bundle twice.
                     if !dispatcher
                         .store
                         .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
@@ -441,15 +449,15 @@ impl Dispatcher {
         self.key_provider.key_source(bundle, data)
     }
 
-    // Applies the §E block removals the ingress gate deferred (RFC 9172
-    // §5.1.1 failure-drops and honoured `delete_block_on_failure` unknowns)
-    // to a bundle's wire form for one output attempt, ahead of the door's
-    // filter chain; the stored bundle keeps the blocks. The rebuilt block map
-    // replaces the record's, so the pair stays consistent (the primary is
-    // never replaced). Nothing scheduled costs one branch. bpv7's cascade
-    // retains, rather than fails on, a removal it cannot complete for want of
-    // a key; the bytes were validated at ingress, so any failure here is a
-    // BPA bug or storage corruption, and fatal.
+    // Applies the block removals ingress deferred, the failure-drops of RFC
+    // 9172 Section 5.1.1 and the honoured `delete_block_on_failure`
+    // unknowns, to a bundle's wire form for one output attempt, ahead of
+    // that output's filter chain. The stored bundle keeps the blocks. The
+    // rebuilt block map replaces the record's, so the pair stays consistent,
+    // the primary never being replaced. Nothing scheduled costs one branch.
+    // bpv7's cascade retains, rather than fails on, a removal it cannot
+    // complete for want of a key, and the bytes were validated at ingress,
+    // so any failure here is a BPA bug or storage corruption, and fatal.
     fn strip_removed_blocks(&self, bundle: &mut bundle::Bundle, data: Bytes) -> Bytes {
         use hardy_bpv7::bpsec::edit::BPSecEditor;
 

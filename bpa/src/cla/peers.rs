@@ -15,24 +15,26 @@ use crate::{
 };
 
 // The table is behind a spin lock. Every critical section is an O(1) lookup
-// or insert with nothing awaited, blocked or iterated inside it, so the lock
-// is never held long enough to repay an OS rwlock's park — and the read side
-// is the hot forwarding path.
+// or insert, awaiting, blocking and iterating nothing, so the lock is never
+// held long enough to repay an OS rwlock's park, and the read side is the
+// hot forwarding path.
 
 pub struct Peer {
-    // One poller per policy queue, indexed by the queue index — queue 0
-    // always exists (`FlowControllerFactory::queue_count` is non-zero).
+    // One poller per policy queue, indexed by the queue index. Queue 0
+    // always exists, `FlowControllerFactory::queue_count` being non-zero.
     queues: Vec<Sender>,
-    // This peer's controller: owns the queue assignment (`queue_for`), so
-    // the hot forwarding path touches no shared policy state.
+    // This peer's controller owns the queue assignment, through
+    // `queue_for`, so the hot forwarding path touches no shared policy
+    // state.
     controller: Arc<dyn FlowController>,
 }
 
 impl Peer {
-    /// Builds the peer complete — controller and per-queue pollers — and
-    /// returns it ready to forward. Publication into the [`PeerTable`]
-    /// happens strictly after construction ([`PeerTable::publish`]), so a
-    /// `Peer` that is reachable is a `Peer` that works: there is no
+    /// Builds the peer, controller and per-queue pollers together, ready
+    /// to forward.
+    ///
+    /// [`PeerTable::publish`] publishes it only after construction
+    /// returns, so a reachable `Peer` is a working one and there is no
     /// half-built state to guard against.
     pub async fn start(
         poll_channel_depth: usize,
@@ -78,9 +80,9 @@ impl Peer {
         peer: u32,
         queue: u32,
     ) -> Sender {
-        // The channel key is the queue's identity; the adjacency is
-        // per-bundle payload, so the key carries a placeholder never
-        // matched (see BundleStatus::same_queue) and never stored.
+        // The channel key is the queue's identity, and the adjacency is
+        // per-bundle payload, so the key carries a placeholder that is
+        // never matched, see `BundleStatus::same_queue`, and never stored.
         let (tx, rx) = store.channel(
             BundleStatus::ForwardPending {
                 peer,
@@ -109,18 +111,18 @@ impl Peer {
         reason = "Err(bundle) hands ownership back to the caller; boxing it to shrink the Err variant would allocate on every call"
     )]
     pub async fn forward(&self, next_hop: Eid, bundle: Bundle) -> core::result::Result<(), Bundle> {
-        // The per-peer controller owns the queue assignment; nothing on
+        // The per-peer controller owns the queue assignment, so nothing on
         // this path touches shared policy state.
         let queue = self.controller.queue_for();
-        // An out-of-range index is a policy bug: clamp to queue 0, which
+        // An out-of-range index is a policy bug, clamped to queue 0, which
         // always exists.
         let queue = self.queues.get(queue as usize).unwrap_or_else(|| {
             warn!("Egress policy classified a bundle into out-of-range queue {queue}");
             &self.queues[0]
         });
 
-        // The full assignment record: this queue's identity (which the
-        // selection above may have fallen back on) plus the resolved
+        // The full assignment record, this queue's identity, which the
+        // selection above may have fallen back on, plus the resolved
         // adjacency, so the decision survives the channel's storage spill.
         let BundleStatus::ForwardPending { peer, queue: q, .. } = queue.queue_status() else {
             unreachable!("Egress queue with a non-ForwardPending target status")
@@ -147,11 +149,11 @@ impl Peer {
 #[derive(Default)]
 struct PeerTableInner {
     peers: HashMap<u32, Arc<Peer>>,
-    // Ids minted by `reserve` but not yet published. Cleared by the
-    // `Reservation` — `publish` (the normal path) or its `Drop` (an
-    // abandoned claim); `remove` never touches it, so a concurrent removal
-    // cannot let `reserve` re-mint an id whose peer is still
-    // mid-construction.
+    // Ids minted by `reserve` but not yet published. The `Reservation`
+    // clears them, through `publish` or, for an abandoned claim, its
+    // `Drop`. `remove` never touches this set, so a concurrent removal
+    // cannot let `reserve` re-mint an id whose peer is still under
+    // construction.
     reserved: HashSet<u32>,
     next: u32,
 }
@@ -167,9 +169,10 @@ impl PeerTable {
         }
     }
 
-    /// Mint a fresh peer id without publishing anything: the returned
-    /// [`Reservation`] holds the id against reuse until
-    /// [`publish`](Reservation::publish) consumes it, or releases it on
+    /// Mints a fresh peer id without publishing anything.
+    ///
+    /// The returned [`Reservation`] holds the id against reuse until
+    /// [`publish`](Reservation::publish) consumes it, and releases it on
     /// drop if the claim is abandoned before a peer is built.
     pub fn reserve(&self) -> Reservation<'_> {
         let mut inner = self.inner.write();
@@ -213,11 +216,12 @@ impl PeerTable {
     }
 }
 
-/// A reserved peer id: released exactly once — by
-/// [`publish`](Self::publish) when the peer is built, or automatically on
-/// drop (including unwind) when the claim is abandoned. Publishing consumes
-/// the reservation, so a double publish or use-after-publish does not
-/// compile.
+/// A reserved peer id, released exactly once.
+///
+/// [`publish`](Self::publish) releases it once the peer is built, and a
+/// drop, an unwind included, releases an abandoned claim. Publishing
+/// consumes the reservation, so publishing twice, or using it afterwards,
+/// does not compile.
 #[must_use = "an unused reservation releases its id immediately"]
 pub struct Reservation<'a> {
     table: &'a PeerTable,
@@ -231,8 +235,8 @@ impl Reservation<'_> {
         self.id
     }
 
-    /// Publish a fully-constructed peer under the reserved id — the only
-    /// way a peer becomes reachable, and it is complete by construction.
+    /// Publishes a constructed peer under the reserved id, the only way a
+    /// peer becomes reachable.
     pub fn publish(mut self, peer: Arc<Peer>) {
         let mut inner = self.table.inner.write();
         inner.reserved.remove(&self.id);

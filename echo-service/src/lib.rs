@@ -1,17 +1,11 @@
-/*!
-Bundle echo service for the Hardy BPA.
-
-Implements a simple echo (ping) service: for each received bundle it builds a
-fresh response bundle that reflects the payload back to the sender, conforming
-to the BPv7 Echo Service specification (draft-taylor-dtn-echo-service). The
-response is a freshly-sourced bundle (new creation timestamp) sourced from the
-pinged endpoint and addressed to the request's source; only the payload is
-reflected. The response is submitted to the BPA for normal forwarding.
-
-# Key types
-
-- [`EchoService`] — the service implementation, one instance per registered endpoint.
-*/
+//! Bundle echo service for the Hardy BPA, per the BPv7 Echo Service
+//! specification (draft-taylor-dtn-echo-service).
+//!
+//! [`EchoService`], one instance per registered endpoint, answers each
+//! received bundle with a fresh response: a new creation timestamp, the
+//! pinged endpoint as its source, the request's source as its destination,
+//! and the request's payload reflected. The response goes to the BPA for
+//! ordinary forwarding.
 
 use std::sync::Arc;
 
@@ -63,9 +57,9 @@ impl EchoService {
             return Ok(());
         };
 
-        // When a Response Is Sent: do not respond to a bundle with no return
-        // path (null source), nor to an administrative record (which would risk
-        // reflecting status reports and bundle loops).
+        // No response goes to a bundle with no return path, its source
+        // null, nor to an administrative record, which would risk
+        // reflecting status reports and looping bundles.
         if bundle.primary.id.source.is_null() {
             debug!("Not echoing bundle from the null endpoint");
             return Ok(());
@@ -134,7 +128,8 @@ impl EchoService {
 
 #[async_trait]
 impl raw::Service for EchoService {
-    /// No-op; the echo service does not act on status reports.
+    /// Discards the notification: the echo service does not act on status
+    /// reports.
     async fn report_status(
         &self,
         _bundle_id: &Id,
@@ -143,14 +138,13 @@ impl raw::Service for EchoService {
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Do nothing
     }
 
-    // INTERIM BUFFERING: the echo service parses the whole request bundle
-    // with a whole-buffer codec, so it assembles the stream in memory via
-    // `stream::buffer_stream` before reflecting the payload. This is a
-    // deliberate stepping stone toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md.
+    // The echo service parses the whole request bundle with a whole-buffer
+    // codec, so `stream::buffer_stream` assembles the stream in memory
+    // before the payload is reflected. See
+    // bpa/docs/streaming_pipeline_design.md for the streaming form this is
+    // a step towards.
     async fn deliver(
         &self,
         _bundle_id: &Id,
@@ -171,12 +165,12 @@ fn requested_status_reports(flags: &Flags) -> bool {
         || flags.delete_report_requested
 }
 
-// The response bundle's processing control flags, derived from the request per
-// draft-taylor-dtn-echo-service: reflect "bundle must not be fragmented", and —
-// when the request asked for status reports — mirror its status-report-request
-// flags and the "status time requested in reports" flag. Every other flag
-// (notably administrative-record, fragment, and application-acknowledgement)
-// takes the node-sourced default.
+// The response bundle's processing control flags, derived from the request
+// per draft-taylor-dtn-echo-service: "bundle must not be fragmented" is
+// reflected, and a request that asked for status reports also has its
+// status-report-request flags and its "status time requested in reports"
+// flag mirrored. Every other flag, administrative-record, fragment and
+// application-acknowledgement among them, takes the node-sourced default.
 fn response_flags(request: &Flags) -> Flags {
     let mut flags = Flags {
         do_not_fragment: request.do_not_fragment,

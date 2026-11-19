@@ -63,7 +63,6 @@ impl cla::Cla for Cla {
     async fn register(&self) -> ClaResult<()> {
         info!("CLA starting, node IDs: {:?}", self.node_ids);
 
-        // Register static peer if configured
         if let (Some(peer_addr), Some(peer_node)) = (&self.config.peer, &self.config.peer_node) {
             if let Ok(addr) = peer_addr.parse::<std::net::SocketAddr>() {
                 if let Ok(node_id) = peer_node.parse::<NodeId>() {
@@ -81,7 +80,6 @@ impl cla::Cla for Cla {
             }
         }
 
-        // Start listener if address is configured
         if let Some(address) = self.config.address {
             let listener = listen::Listener {
                 address,
@@ -103,11 +101,10 @@ impl cla::Cla for Cla {
         Ok(())
     }
 
-    // INTERIM BUFFERING: MTCP frames the whole bundle as one CBOR byte
-    // string, so the stream is assembled in memory via
-    // `stream::buffer_stream` before framing. This is a deliberate stepping
-    // stone toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md.
+    // MTCP frames the whole bundle as one CBOR byte string, so the stream
+    // is assembled in memory with `stream::buffer_stream` before framing.
+    // See bpa/docs/streaming_pipeline_design.md for the chunked form this
+    // is a step towards.
     async fn forward(
         &self,
         _lane: Option<u32>,

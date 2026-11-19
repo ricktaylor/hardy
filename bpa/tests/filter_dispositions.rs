@@ -1,12 +1,13 @@
-//! Filter hooks through the real pipeline: what the dispatcher does with each
-//! filter outcome — the Ingress, Originate and Deliver rows of the
-//! disposition table in the `filter` module docs (nothing at Egress drops a
-//! bundle) — the per-hop writes that follow the Egress Rewriters, and an
-//! annotation slot carried across the store. Stored bytes that do not decode
-//! are fatal, so the unit tests pin them: a panic inside a running BPA aborts
-//! the test process.
+//! Filter hooks through the real pipeline.
 //!
-//! A correct Rewriter meets a call-time refusal — never the fail-stop — on a
+//! Covers the dispatcher's handling of each filter outcome, the Ingress,
+//! Originate and Deliver rows of the disposition table in the `filter`
+//! module docs, since nothing at Egress drops a bundle; the per-hop writes
+//! that follow the Egress Rewriters; and an annotation slot carried across
+//! the store. Stored bytes that do not decode are fatal, so the unit tests
+//! pin them: a panic inside a running BPA aborts the test process.
+//!
+//! A correct Rewriter meets a call-time refusal, not the fail-stop, on a
 //! bundle whose primary block forbids its edit: the flags are the sender's
 //! choice, so an abort there would hand any peer a node-kill.
 
@@ -66,7 +67,7 @@ const SOURCE: &str = "ipn:0.3.1";
 const REMOTE: &str = "ipn:0.2.99";
 const LOCAL: &str = "ipn:0.1.42";
 
-// What an insert that asks for a status report on failure came to.
+// The outcome of an insert that asks for a status report on failure.
 #[derive(Debug, PartialEq)]
 enum InsertOutcome {
     Inserted,
@@ -82,7 +83,7 @@ struct FlaggedInserter {
     outcomes: Arc<Mutex<Vec<InsertOutcome>>>,
 }
 
-// Requests a status report on failure — as bpv7's own
+// Requests a status report on failure, as bpv7's own
 // `Builder::with_hop_count` flags its block.
 fn report_on_failure() -> BlockFlags {
     BlockFlags {
@@ -108,7 +109,7 @@ impl Rewriter for FlaggedInserter {
 }
 
 // Drops the bundles addressed to `destination` with `reason`, signalling each
-// drop; passes everything else — the status reports it causes included.
+// drop; passes everything else, the status reports it causes included.
 struct DestinationDropper {
     destination: Eid,
     reason: Option<ReasonCode>,
@@ -403,7 +404,7 @@ fn node(node_number: u32) -> NodeId {
 }
 
 // Builds and starts `builder` as ipn:0.1, with a CLA whose one peer serves
-// ipn:0.2 and ipn:0.3 — the route out for forwarded bundles and for the
+// ipn:0.2 and ipn:0.3: the route out for forwarded bundles and for the
 // reports to the source alike.
 async fn setup(builder: BpaBuilder) -> (Bpa, Arc<CapturingCla>, flume::Receiver<Bytes>) {
     let node_ids = NodeIds::try_from([node(1)].as_slice()).unwrap();
@@ -554,8 +555,8 @@ async fn dropping_setup(
     (bpa, cla, forwarded_rx, dropped_rx, storage, metadata)
 }
 
-/// CRIT-1 at Egress: a transit bundle with only `is_admin_record` set — no
-/// local registration involved — forbids the Rewriter's flag. The insert is
+/// CRIT-1 at Egress: a transit bundle with only `is_admin_record` set, no
+/// local registration involved, forbids the Rewriter's flag. The insert is
 /// refused with the parser's error and the bundle is forwarded unedited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_rewriter_meets_a_refusal_on_an_admin_record() {
@@ -609,7 +610,8 @@ async fn deliver_rewriter_meets_a_refusal_on_a_null_source() {
     arrive(&cla, SOURCE, BundleFlags::default(), LOCAL).await;
     assert!(next_carries_inserted(&delivered_rx).await);
 
-    // A null source must also forbid fragmentation (RFC 9171 §4.2.3-4).
+    // A null source must also forbid fragmentation (RFC 9171 Section 4.2.3,
+    // item 4).
     let anonymous = BundleFlags {
         do_not_fragment: true,
         ..Default::default()
@@ -788,8 +790,8 @@ fn reception_and_deletion_requested() -> BundleFlags {
     }
 }
 
-/// Ingress `Drop(Some(reason))`: disposed of at the pre-drain gate — the
-/// arrival is never stored — with one combined reception + deletion report
+/// Ingress `Drop(Some(reason))`: disposed of at the pre-drain gate, so the
+/// arrival is never stored, with one combined reception and deletion report
 /// carrying the filter's reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_drop_with_a_reason_reports_before_storing() {
@@ -933,8 +935,7 @@ async fn ingress_slot_reaches_egress_across_the_store() {
 
 /// `report_on_failure`'s bit carried in the raw `unrecognised` mask is the
 /// flag it encodes: on an anonymous bundle the insert is refused like the
-/// named flag, and the bundle is delivered unedited — never the abort an
-/// unmasked encoder once produced.
+/// named flag, and the bundle is delivered unedited rather than aborting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deliver_rewriter_meets_a_refusal_on_the_raw_report_bit() {
     let outcomes = Arc::new(Mutex::new(Vec::new()));
@@ -969,7 +970,7 @@ async fn deliver_rewriter_meets_a_refusal_on_the_raw_report_bit() {
     );
 }
 
-// What an Ingress Verifier finds of the payload: available or not.
+// Records whether an Ingress Verifier finds the payload available.
 struct PayloadWitness {
     available_tx: flume::Sender<bool>,
 }
@@ -1050,7 +1051,7 @@ async fn ingress_reads_the_payload_whenever_resident() {
     bpa.shutdown().await;
 }
 
-// What an Ingress Classifier finds of the payload through its peek.
+// Records the payload an Ingress Classifier sees through its peek.
 struct PeekWitness {
     peek_tx: flume::Sender<Option<Vec<u8>>>,
 }
@@ -1085,8 +1086,8 @@ async fn arrive_peeked(
     found
 }
 
-// Sends `stream`, carrying `data`, through the raw originate door. Returns
-// what the witness found, once the bundle is forwarded with its payload as
+// Sends `stream`, carrying `data`, through `raw::Sink::send`. Returns what
+// the witness found, once the bundle is forwarded with its payload as
 // sent.
 async fn send_peeked(
     service: &CapturingService,
@@ -1453,8 +1454,9 @@ async fn originate_reads_the_payload_whenever_resident() {
 }
 
 /// An Originate Classifier reads the payload's first bytes through its
-/// declared peek at the raw door, as at the Ingress gate: the door holds them
-/// though the payload is still arriving. With no peek declared, it holds none.
+/// declared peek on a raw send, as at the Ingress gate: the peek is held
+/// though the payload is still arriving. With no peek declared, nothing is
+/// held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_originate_classifier_reads_its_declared_peek() {
     let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
@@ -1514,12 +1516,12 @@ async fn an_originate_classifier_reads_its_declared_peek() {
     }
 }
 
-/// An Originate Classifier reads its declared peek at the ADU doors too: the
-/// streamed door holds the service's first payload bytes before the gate, and the
-/// resident door's payload is a one-segment stream. The bytes are the service's
-/// own plaintext, which the Originate chain may read.
+/// An Originate Classifier reads its declared peek on an ADU send too:
+/// `send_streamed` holds the service's first payload bytes before the gate,
+/// and `send`'s resident payload is a one-segment stream. The bytes are the
+/// service's own plaintext, which the Originate chain may read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_adu_doors_hold_the_declared_peek() {
+async fn the_adu_sends_hold_the_declared_peek() {
     let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
 
     for peek in [PEEK, 0] {
@@ -1571,7 +1573,7 @@ async fn the_adu_doors_hold_the_declared_peek() {
         assert_eq!(
             found.as_slice(),
             &payload[..held],
-            "the streamed door's peek is the service's first {held} bytes"
+            "the streamed send's peek is the service's first {held} bytes"
         );
         assert_forwarded(next(&forwarded_rx).await);
 
@@ -1587,7 +1589,7 @@ async fn the_adu_doors_hold_the_declared_peek() {
         assert_eq!(
             next(&peek_rx).await.as_deref(),
             Some(&payload[..held]),
-            "the resident door's payload is one segment: a declared peek holds all of it"
+            "the resident send's payload is one segment: a declared peek holds all of it"
         );
         assert_forwarded(next(&forwarded_rx).await);
 

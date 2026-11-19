@@ -1,7 +1,7 @@
 //! Routing Agent client proxy tests (RTE-CLI-01 through RTE-CLI-04).
 //!
-//! Verify the routing agent client correctly maps Rust trait calls
-//! to routing.proto messages via the gRPC proxy.
+//! The routing agent client maps its Rust trait calls onto routing.proto
+//! messages, across the gRPC proxy.
 
 mod common;
 
@@ -53,7 +53,6 @@ async fn rte_cli_01_registration() {
         "agent should receive at least one node ID"
     );
 
-    // Clean up
     agent.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -83,7 +82,6 @@ async fn rte_cli_02_add_route() {
 
     assert!(added, "route should be newly added");
 
-    // Clean up
     agent.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -113,7 +111,6 @@ async fn rte_cli_03_remove_route() {
 
     assert!(removed, "route should be removed");
 
-    // Clean up
     agent.sink.unregister().await;
     server_tasks.shutdown().await;
 }
@@ -149,7 +146,6 @@ async fn rte_cli_04_refused_registration_reports_its_status() {
         .expect("the refusal should carry the BPA's status");
     assert_eq!(status.code(), tonic::Code::AlreadyExists);
 
-    // Clean up
     agent.sink.unregister().await;
     server_tasks.shutdown().await;
 }
