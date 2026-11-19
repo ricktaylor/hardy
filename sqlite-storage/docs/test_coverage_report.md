@@ -26,9 +26,9 @@ The `MetadataStorage` trait contract is verified by the shared storage harness (
 
 All 16 pass. No failures or skips.
 
-### Backend-specific tests (`migrate.rs`, `storage.rs`)
+### Backend-specific tests (`migrate.rs`, `storage.rs`, `writer.rs`, `readers.rs`)
 
-10 unit tests covering all 6 planned scenarios (SQL-01..06).
+14 unit tests covering all 10 planned scenarios (SQL-01..10).
 
 | Test Function | Plan Ref | Scope |
 | :--- | :--- | :--- |
@@ -42,6 +42,10 @@ All 16 pass. No failures or skips.
 | `test_concurrency_no_sqlite_busy` | SQL-04 | 10 concurrent writers, all succeed |
 | `test_corrupt_data_does_not_panic` | SQL-05 | Corrupt blob: get() errors, confirm_exists() tombstones |
 | `test_waiting_queue_invalidation` | SQL-06 | Status change clears waiting queue |
+| `a_failing_write_rolls_back_alone` | SQL-07 | A failing write in a batch rolls back alone |
+| `a_failed_commit_fails_its_whole_batch` | SQL-08 | A failed commit fails every write in the batch |
+| `an_abandoned_write_is_not_run` | SQL-09 | A dropped caller's write is skipped |
+| `a_reader_refuses_to_write` | SQL-10 | Reader connections are query-only |
 
 ## 3. Coverage vs Plan
 
@@ -52,8 +56,8 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 | `PLAN-STORE-01` Suite A (META-01..04, 15, 17) | CRUD & tombstone semantics | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite B (META-06..10, 14) | Polling & ordering | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite C (META-05, 11..13, 16) | State transitions & bulk ops | 5 | 5 | Complete |
-| `PLAN-SQLITE-01` §4 (SQL-01..06) | Backend-specific | 6 | 6 | Complete (10 tests) |
-| **Total** | | **23** | **23** | **100%** |
+| `PLAN-SQLITE-01` §4 (SQL-01..10) | Backend-specific | 10 | 10 | Complete (14 tests) |
+| **Total** | | **27** | **27** | **100%** |
 
 ## 4. Line Coverage
 
@@ -73,4 +77,4 @@ Unit tests (10) exercise migration logic, configuration, concurrency, corrupt da
 
 ## 5. Conclusion
 
-27 tests (17 integration + 10 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic and tamper detection, concurrent writer safety, corrupt data resilience, configuration, and waiting queue cache correctness.
+31 tests (17 integration + 14 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic and tamper detection, concurrent writer safety, batched-write isolation and commit-failure reporting, query-only readers, corrupt data resilience, configuration, and waiting queue cache correctness.
