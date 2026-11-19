@@ -8,6 +8,7 @@ use tracing::{error, info};
 mod config;
 mod contacts;
 mod cron;
+mod duration;
 mod parser;
 mod scheduler;
 mod server;

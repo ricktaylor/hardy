@@ -1,9 +1,12 @@
-use std::num::NonZeroU8;
+use std::{num::NonZeroU8, time::Duration};
 
-use super::*;
 use hardy_bpv7::eid::{Eid, NodeId};
 use rand::RngExt;
 
+use self::duration::parse_duration;
+use super::*;
+
+mod duration;
 mod exec;
 mod payload;
 mod service;
@@ -59,21 +62,21 @@ pub struct Command {
     #[arg(short, long)]
     count: Option<u32>,
 
-    /// Interval between pings
-    #[arg(short, long, default_value = "1s")]
-    interval: humantime::Duration,
+    /// Interval between pings (e.g. `500ms`, `2s`)
+    #[arg(short, long, default_value = "1s", value_parser = parse_duration)]
+    interval: Duration,
 
     /// Target bundle size in bytes (for MTU testing)
     #[arg(short, long)]
     size: Option<usize>,
 
-    /// Total time limit for the session
-    #[arg(short = 'w', long)]
-    timeout: Option<humantime::Duration>,
+    /// Total time limit for the session (e.g. `30s`, `5m`)
+    #[arg(short = 'w', long, value_parser = parse_duration)]
+    timeout: Option<Duration>,
 
-    /// Time to wait for responses after last ping
-    #[arg(short = 'W', long)]
-    wait: Option<humantime::Duration>,
+    /// Time to wait for responses after last ping (e.g. `10s`)
+    #[arg(short = 'W', long, value_parser = parse_duration)]
+    wait: Option<Duration>,
 
     /// Only show summary statistics
     #[arg(short, long)]
@@ -87,9 +90,9 @@ pub struct Command {
     #[arg(short = 't', long)]
     ttl: Option<NonZeroU8>,
 
-    /// Bundle lifetime
-    #[arg(long)]
-    lifetime: Option<humantime::Duration>,
+    /// Bundle lifetime (e.g. `1h`, `2d`)
+    #[arg(long, value_parser = parse_duration)]
+    lifetime: Option<Duration>,
 
     /// Disable CRC on payload block only (for DTNME compatibility)
     ///
@@ -140,28 +143,21 @@ pub struct Command {
 }
 
 impl Command {
-    pub fn lifetime(&self) -> std::time::Duration {
-        self.lifetime.map_or_else(
-            || {
-                // Calculate lifetime from session parameters if not explicitly specified
-                let interval: std::time::Duration = self.interval.into();
+    pub fn lifetime(&self) -> Duration {
+        self.lifetime.unwrap_or_else(|| {
+            // Calculate lifetime from session parameters if not explicitly specified
+            // Wait time after sending (default to one interval if not specified)
+            let wait_time = self.wait.unwrap_or(self.interval);
 
-                // Wait time after sending (default to one interval if not specified)
-                let wait_time = self.wait.map(|w| *w).unwrap_or(interval);
-
-                if let Some(count) = self.count {
-                    // Finite mode: lifetime = time to send all + wait time
-                    interval.saturating_mul(count) + wait_time
-                } else {
-                    // Infinite mode: use timeout if set, otherwise default to 5 minutes
-                    // This covers the common case of Ctrl+C'ing after a few pings
-                    self.timeout
-                        .map(|t| *t)
-                        .unwrap_or(std::time::Duration::from_secs(300))
-                }
-            },
-            |l| l.into(),
-        )
+            if let Some(count) = self.count {
+                // Finite mode: lifetime = time to send all + wait time
+                self.interval.saturating_mul(count) + wait_time
+            } else {
+                // Infinite mode: use timeout if set, otherwise default to 5 minutes
+                // This covers the common case of Ctrl+C'ing after a few pings
+                self.timeout.unwrap_or(Duration::from_secs(300))
+            }
+        })
     }
 
     pub fn node_id(&self) -> anyhow::Result<NodeId> {

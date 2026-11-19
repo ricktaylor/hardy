@@ -83,6 +83,8 @@ and shortcuts (`@daily`, `@hourly`, `@weekly`, `@monthly`, `@yearly`).
 - `bandwidth <rate>` — expected bandwidth with SI suffix: `256K`, `1M`,
   `10G`, `1T`, `256Kbps`, `10Gbps`, or bare number (bps)
 - `delay <dur>` — expected one-way delay: `500ms`, `1s`, `250us`
+
+A `duration` or `delay` value is a number and a unit, from nanoseconds to weeks (`250us`, `90m`, `4h30m`, `2d`). Days and weeks count as 24 hours and 7 days; months and years have no fixed length and are refused.
 - `priority <n>` — route priority (lower = checked first)
 
 ### Additional Fields

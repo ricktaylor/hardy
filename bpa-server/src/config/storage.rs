@@ -9,7 +9,7 @@ use hardy_s3_storage::{MultipartThreshold, PartSize};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "postgres-storage")]
-use super::NonZeroDuration;
+use super::duration::NonZeroDuration;
 
 // The `type: "sqlite"` metadata backend schema: absent keys defer to the
 // backend's own defaults (the platform cache directory, `metadata.db`).
@@ -43,14 +43,14 @@ pub struct PostgresConfig {
     pub min_connections: Option<u32>,
 
     // How long to wait when acquiring a connection before returning an
-    // error; a humantime string (e.g. `30s`), greater than zero.
+    // error; a duration string (e.g. `30s`), greater than zero.
     pub connect_timeout: Option<NonZeroDuration>,
 
     // How long a connection may sit idle before it is closed and removed
-    // from the pool; a humantime string (e.g. `10m`), greater than zero.
+    // from the pool; a duration string (e.g. `10m`), greater than zero.
     pub idle_timeout: Option<NonZeroDuration>,
 
-    // Maximum lifetime of a pooled connection; a humantime string (e.g.
+    // Maximum lifetime of a pooled connection; a duration string (e.g.
     // `30m`), greater than zero.
     pub max_lifetime: Option<NonZeroDuration>,
 

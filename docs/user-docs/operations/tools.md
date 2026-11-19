@@ -44,6 +44,8 @@ bp ping [OPTIONS] DESTINATION [PEER]
 
 ### Core Options
 
+*DUR* is a number and a unit, from nanoseconds to weeks: `500ms`, `2s`, `1h 30m`, `2d`. Days and weeks count as 24 hours and 7 days; months and years have no fixed length and are refused.
+
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-c`, `--count` *N* | Stop after sending *N* pings. | Continuous |

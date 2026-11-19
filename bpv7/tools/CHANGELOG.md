@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- `create --lifetime` and `update-primary --lifetime` are parsed with `jiff`, replacing the unmaintained `humantime`. Days and weeks count as 24-hour multiples; months and years, which have no fixed length, are refused (`--lifetime 1year` is now an error; write `365d`). `inspect` prints the lifetime and bundle age as whole days plus the rest balanced up to hours (`1d`, `30d`, `2d 16m 40s`), not humantime's `1day`, `30days` or `1month`.
+
 ### Fixed
 - `inspect` lists a non-fragment bundle's primary flags: every flag after "Is a fragment", and the report-to note, sat inside the fragment check, so only a fragment's flags were printed. The note that status time is requested without reports now appears only when the bundle requests no status report at all, not whenever one of the four is unrequested.
 

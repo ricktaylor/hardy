@@ -180,13 +180,13 @@ action, not a scheduling concept. `drop` is supported as an explicit
 policy override (e.g. maintenance windows) because DTN's default
 no-route behaviour is wait/store, not drop.
 
-### Bandwidth and delay as SI/humantime values
+### Bandwidth and delay as SI and duration values
 
 Link properties use human-readable units rather than raw numbers:
 `bandwidth 10G` instead of `bps 10000000000`, and `delay 500ms` instead
 of `delay 500000`. Bandwidth accepts SI suffixes (`K`, `M`, `G`, `T`,
-with optional `bps` suffix, case-insensitive). Delay uses the
-`humantime` format (`500ms`, `1s`, `250us`). Both are stored internally
+with optional `bps` suffix, case-insensitive). Delay uses a duration
+string (`500ms`, `1s`, `250us`). Both are stored internally
 as raw values (u64 bps, u32 microseconds) matching the proto and YANG
 model.
 
