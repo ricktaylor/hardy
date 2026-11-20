@@ -86,8 +86,8 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | Backend | Suite | Setup | Feature flag |
 | :--- | :--- | :--- | :--- |
 | Memory | MetadataStorage | `memory_meta_setup` | default |
-| SQLite | MetadataStorage + META-05 | `sqlite_meta_setup` | default |
-| PostgreSQL | MetadataStorage + META-05 | `postgres_meta_setup` (async) | `postgres` |
+| SQLite | MetadataStorage + META-05, META-13 | `sqlite_meta_setup` | default |
+| PostgreSQL | MetadataStorage + META-05, META-13 | `postgres_meta_setup` (async) | `postgres` |
 | Memory | BundleStorage | `memory_blob_setup` | default |
 | Local disk | BundleStorage | `localdisk_blob_setup` | default |
 | S3/MinIO | BundleStorage | `s3_blob_setup` (async) | `s3` |
@@ -128,7 +128,7 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | **META-05** | **Confirm Exists (Recovery)** | _Persistent backends only._<br>1. Insert bundle A.<br>2. Call `start_recovery()` (marks A unconfirmed).<br>3. Call `confirm_exists(A)`.<br>4. Call `confirm_exists(B)` (never inserted).<br>5. Call `remove_unconfirmed(tx)`. | 1. Step 3 returns `Some(metadata)`.<br>2. Step 4 returns `None`.<br>3. Step 5 removes nothing (A was confirmed).<br>4. `get(A)` still returns `Some`. |
 | **META-11** | **Reset Peer Queue** | 1. Insert Bundle A (Status=`ForwardPending { peer: 100, queue: 0 }`).<br>2. Insert Bundle B (Status=`ForwardPending { peer: 200, queue: 0 }`).<br>3. Call `reset_peer_queue(100)`. | 1. `reset_peer_queue` returns `true`.<br>2. Bundle A status becomes `Waiting`.<br>3. Bundle B status remains `ForwardPending`. |
 | **META-12** | **Recovery** | 1. Call `start_recovery()`. | 1. Returns `()` (No panic/error). |
-| **META-13** | **Remove Unconfirmed** | 1. Insert Bundle A.<br>2. Call `remove_unconfirmed(tx)`. | 1. Returns `Ok`.<br>2. `tx` receives bundles (if implementation supports unconfirmed state). |
+| **META-13** | **Remove Unconfirmed** | _Persistent backends only._<br>1. Insert bundles A and B.<br>2. Call `start_recovery()` (marks both unconfirmed).<br>3. Call `confirm_exists(B)`.<br>4. Call `remove_unconfirmed(tx)`.<br>5. Repeat steps 2–4. | 1. Step 4 sends A, and only A, to `tx`.<br>2. `get(A)` returns `None`; `get(B)` still returns `Some`.<br>3. The repeat sends nothing (A is gone for good). |
 | **META-16** | **Reset Service Queue** | 1. Insert Bundle A (Status=`DeliverPending { service: S1 }`).<br>2. Insert Bundle B (Status=`DeliveryAckPending { service: S1 }`).<br>3. Insert Bundle C (Status=`DeliverPending { service: S2 }`).<br>4. Call `reset_service_queue(S1)`. | 1. Returns 1 (only the queued bundle).<br>2. Bundle A becomes `WaitingForService { service: S1 }` and polls via `poll_service_waiting(S1)`.<br>3. Bundles B and C untouched.<br>4. A second sweep returns 0. |
 
 ## 5. Bundle Storage Suites
@@ -176,7 +176,7 @@ Each backend crate's `docs/TODO.md` tracks its own test gaps. These are areas wh
 1. Add the crate dependency to `Cargo.toml` (optionally feature-gated).
 2. Add a setup function in `src/lib.rs` returning `(Guard, Arc<dyn Trait>)`.
 3. Register it in `tests/storage_harness.rs` using the appropriate macro.
-4. If the backend is persistent, add a separate `meta_05_confirm_exists` test (not included in the macro suites — it only applies to backends that survive process restart).
+4. If the backend is persistent, add separate `meta_05_confirm_exists` and `meta_13_remove_unconfirmed` tests (not included in the macro suites — they only apply to backends that survive process restart).
 5. Create backend-specific tests in the backend's own crate for areas listed in §6.2.
 
 ## 8. Running
