@@ -18,21 +18,23 @@ use std::{
     path::Path,
     sync::mpsc::{Receiver, Sender, TryRecvError, channel},
 };
+#[cfg(test)]
+use std::{sync::mpsc::RecvTimeoutError, time::Duration};
 
 use rusqlite::{
     Connection, ErrorCode, MAIN_DB, OpenFlags, Result as SqliteResult, wal::CheckpointMode,
 };
 use trace_err::*;
-use tracing::debug;
+use tracing::{debug, warn};
 
-use super::thread::Worker;
+use super::thread::JoinOnDrop;
 
 // When checkpoints run, in WAL frames. A frame is one page: 4 KiB at
 // SQLite's default page size.
 #[derive(Clone, Copy)]
 struct Thresholds {
     // The uncopied frames at which a cycle is requested.
-    cycle: u32,
+    start: u32,
     // The WAL size above which the writer finishes a cycle itself, so that
     // the WAL restarts. Below it the WAL is left to grow, and the writer
     // never pauses for a checkpoint.
@@ -47,21 +49,21 @@ struct Thresholds {
 // A cycle per 4 MiB written, a WAL that restarts once past 32 MiB, and one
 // that never much exceeds 64 MiB.
 const THRESHOLDS: Thresholds = Thresholds {
-    cycle: 1000,
+    start: 1000,
     restart: 8000,
     limit: 16000,
 };
 
 // Above the restart bound, a cycle keeps making passes until the writer is
 // this few frames ahead: what is left is what the writer copies itself.
-const CAUGHT_UP_FRAMES: u32 = 64;
+const SLACK_FRAMES: u32 = 64;
 
 // The most passes one cycle makes while chasing the writer.
 const MAX_PASSES: usize = 8;
 
 // The checkpoint thread stops only when its `Checkpointer` drops, and a
 // panic on it aborts the process, so the writer never finds it gone.
-const STOPPED: &str = "The metadata checkpoint thread has stopped";
+const STOPPED_MESSAGE: &str = "The metadata checkpoint thread has stopped";
 
 // Where the checkpoint thread is with the cycle last requested of it.
 enum Cycle {
@@ -76,12 +78,16 @@ enum Cycle {
 pub struct Checkpointer {
     cycle: Cycle,
     thresholds: Thresholds,
+    // The WAL is at or past the limit and has not restarted since: the
+    // bound is not holding, and the operator has been told once.
+    over_limit: bool,
     // Declared before `_thread`: closing this channel stops the thread,
     // which is then joined.
     wake: Sender<()>,
     cycled: Receiver<()>,
-    _thread: Worker,
-    // How many times the writer has blocked on a cycle.
+    _thread: JoinOnDrop,
+    // How many times the writer has set out to wait for a cycle: counted
+    // as it starts waiting, whether or not the cycle had already finished.
     #[cfg(test)]
     waits: u32,
 }
@@ -91,16 +97,20 @@ impl Checkpointer {
     // has open: turns off SQLite's own checkpoints at its commits, and
     // starts the checkpoint thread.
     pub fn start(writer: &Connection, path: &Path) -> SqliteResult<Self> {
-        Self::start_with(writer, path, THRESHOLDS)
+        Self::start_with_thresholds(writer, path, THRESHOLDS)
     }
 
-    fn start_with(writer: &Connection, path: &Path, thresholds: Thresholds) -> SqliteResult<Self> {
+    fn start_with_thresholds(
+        writer: &Connection,
+        path: &Path,
+        thresholds: Thresholds,
+    ) -> SqliteResult<Self> {
         writer.execute_batch("PRAGMA wal_autocheckpoint = 0;")?;
 
         let conn = open(path)?;
         let (wake, woken) = channel();
         let (done, cycled) = channel();
-        let thread = Worker::spawn("sqlite-checkpoint", move || {
+        let thread = JoinOnDrop::spawn("sqlite-checkpoint", move || {
             run(conn, woken, done, thresholds.restart);
         })
         .trace_expect("Failed to spawn the metadata checkpoint thread");
@@ -108,6 +118,7 @@ impl Checkpointer {
         Ok(Self {
             cycle: Cycle::Idle,
             thresholds,
+            over_limit: false,
             wake,
             cycled,
             _thread: thread,
@@ -118,57 +129,102 @@ impl Checkpointer {
 
     // Called by the writer between transactions, with its own connection.
     pub fn after_commit(&mut self, writer: &Connection) {
-        let Some((frames, copied)) = settled(wal(writer), "Failed to read the metadata WAL's size")
+        let Some(wal) = defer_if_busy(wal_size(writer), "Failed to read the metadata WAL's size")
         else {
             return;
         };
 
+        self.note_limit(wal.frames);
         if matches!(self.cycle, Cycle::Running) {
-            self.cycle = self.poll_cycle(frames >= self.thresholds.limit);
+            self.cycle = if wal.frames >= self.thresholds.limit {
+                self.wait_for_cycle()
+            } else {
+                self.try_cycle()
+            };
         }
         match self.cycle {
             Cycle::Running => {}
             Cycle::Completed => {
                 self.cycle = Cycle::Idle;
-                if frames >= self.thresholds.restart {
-                    finish(writer);
+                if wal.frames >= self.thresholds.restart {
+                    try_finish(writer);
                 }
             }
             Cycle::Idle => {
-                if frames - copied >= self.thresholds.cycle {
-                    self.wake.send(()).trace_expect(STOPPED);
+                if wal.uncopied() >= self.thresholds.start {
+                    self.wake.send(()).trace_expect(STOPPED_MESSAGE);
                     self.cycle = Cycle::Running;
                 }
             }
         }
     }
 
-    // Where the running cycle has got to, waiting for it to complete if
-    // `wait`.
-    fn poll_cycle(&mut self, wait: bool) -> Cycle {
-        let cycled = if wait {
-            #[cfg(test)]
-            {
-                self.waits += 1;
-            }
-            self.cycled.recv().map_err(Into::into)
-        } else {
-            self.cycled.try_recv()
-        };
-        match cycled {
-            Ok(()) => Cycle::Completed,
-            Err(TryRecvError::Empty) => Cycle::Running,
-            Err(e @ TryRecvError::Disconnected) => Err(e).trace_expect(STOPPED),
+    // Warns once when the WAL reaches the limit, which the writer's wait
+    // for each cycle should prevent: it means checkpoints are not copying
+    // the WAL, because another process keeps winning the checkpoint lock or
+    // a reader is holding an old snapshot open. Each one is otherwise logged
+    // only at debug level, as a lock race.
+    fn note_limit(&mut self, frames: u32) {
+        if frames < self.thresholds.limit {
+            self.over_limit = false;
+        } else if !self.over_limit {
+            self.over_limit = true;
+            warn!(
+                "Metadata WAL has reached {frames} pages, past its limit of {}: checkpoints are not keeping up",
+                self.thresholds.limit
+            );
         }
     }
+
+    // Where the running cycle has got to, without waiting for it.
+    fn try_cycle(&self) -> Cycle {
+        cycle_state(self.cycled.try_recv())
+    }
+
+    // Waits for the running cycle to complete.
+    fn wait_for_cycle(&mut self) -> Cycle {
+        #[cfg(test)]
+        {
+            self.waits += 1;
+        }
+        cycle_state(block_on_cycle(&self.cycled))
+    }
+}
+
+// The cycle's state, given what the checkpoint thread has reported.
+fn cycle_state(reported: Result<(), TryRecvError>) -> Cycle {
+    match reported {
+        Ok(()) => Cycle::Completed,
+        Err(TryRecvError::Empty) => Cycle::Running,
+        Err(e @ TryRecvError::Disconnected) => Err(e).trace_expect(STOPPED_MESSAGE),
+    }
+}
+
+// Blocks until the checkpoint thread reports its cycle complete.
+#[cfg(not(test))]
+fn block_on_cycle(cycled: &Receiver<()>) -> Result<(), TryRecvError> {
+    cycled.recv().map_err(Into::into)
+}
+
+// As in production, but a checkpoint thread that never completes its cycle
+// fails the test instead of hanging the suite: the timeout only bounds a
+// regression.
+#[cfg(test)]
+fn block_on_cycle(cycled: &Receiver<()>) -> Result<(), TryRecvError> {
+    cycled
+        .recv_timeout(Duration::from_secs(30))
+        .map_err(|e| match e {
+            RecvTimeoutError::Timeout => panic!("the checkpoint thread never completed its cycle"),
+            RecvTimeoutError::Disconnected => TryRecvError::Disconnected,
+        })
 }
 
 // Copies what the background passes left, on the writer's own connection
 // and between its transactions. With the whole WAL copied, the writer's
 // next transaction restarts it from its beginning.
-fn finish(writer: &Connection) {
+fn try_finish(writer: &Connection) {
     // Deferred, the WAL keeps growing until a later finish succeeds.
-    _ = settled(pass(writer), "Metadata checkpoint failed on the writer");
+    _ = defer_if_busy(pass(writer), "Metadata checkpoint failed on the writer");
 }
 
 // What a checkpoint step returned, or `None` if it only lost a race for one
@@ -178,7 +234,7 @@ fn finish(writer: &Connection) {
 // on a checkpoint to be handed the error, and a sync that failed cannot be
 // retried safely, because the kernel may have dropped the pages it could
 // not write. So the failure is fatal here: the panic aborts the process.
-fn settled<T>(step: SqliteResult<T>, failure: &str) -> Option<T> {
+fn defer_if_busy<T>(step: SqliteResult<T>, failure: &str) -> Option<T> {
     match step {
         Ok(value) => Some(value),
         Err(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) => {
@@ -208,7 +264,7 @@ fn run(conn: Connection, woken: Receiver<()>, done: Sender<()>, restart: u32) {
         // A cycle deferred by a lock race, such as reading the WAL's header
         // during a commit, is asked for again after the writer's next
         // batch, while enough of the WAL is uncopied.
-        _ = settled(cycle(&conn, restart), "Metadata checkpoint failed");
+        _ = defer_if_busy(cycle(&conn, restart), "Metadata checkpoint failed");
         if done.send(()).is_err() {
             break;
         }
@@ -228,12 +284,11 @@ fn cycle(conn: &Connection, restart: u32) -> SqliteResult<()> {
         // which a pass racing the writer does not. Syncing here is what
         // leaves the writer's finishing pass little to flush.
         os::sync(conn)?;
-        let (frames, copied) = wal(conn)?;
-        let uncopied = frames - copied;
-        if frames < restart || uncopied <= CAUGHT_UP_FRAMES || uncopied >= remainder {
+        let wal = wal_size(conn)?;
+        if wal.frames < restart || wal.uncopied() <= SLACK_FRAMES || wal.uncopied() >= remainder {
             break;
         }
-        remainder = uncopied;
+        remainder = wal.uncopied();
     }
     Ok(())
 }
@@ -245,13 +300,30 @@ fn pass(conn: &Connection) -> SqliteResult<()> {
     Ok(())
 }
 
-// The frames in the WAL, and how many of them have been copied into the
-// database file. Reads the WAL's own counters, and copies nothing.
-fn wal(conn: &Connection) -> SqliteResult<(u32, u32)> {
+// The WAL's size in frames, and how much of it is in the database file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WalSize {
+    frames: u32,
+    // At most `frames`.
+    copied: u32,
+}
+
+impl WalSize {
+    // The frames not yet copied into the database file.
+    fn uncopied(self) -> u32 {
+        self.frames - self.copied
+    }
+}
+
+// Reads the WAL's own counters, and copies nothing.
+fn wal_size(conn: &Connection) -> SqliteResult<WalSize> {
     let (frames, copied) = conn.wal_checkpoint_v2(Some(MAIN_DB), CheckpointMode::NOOP)?;
     // Both are -1 unless the database is in WAL mode.
     let frames = frames.try_into().unwrap_or(0);
-    Ok((frames, copied.try_into().unwrap_or(0).min(frames)))
+    Ok(WalSize {
+        frames,
+        copied: copied.try_into().unwrap_or(0).min(frames),
+    })
 }
 
 // Syncing a database file through the file object SQLite holds open for it.
@@ -259,6 +331,10 @@ fn wal(conn: &Connection) -> SqliteResult<(u32, u32)> {
 // A second handle on the file, opened here, would not do: closing any
 // descriptor of a file releases every POSIX lock the process holds on it,
 // SQLite's own among them.
+//
+// rusqlite's safe `Connection::file_control` takes a closed enum with no
+// variant for `SQLITE_FCNTL_FILE_POINTER`, so the file object is reached
+// through the C API. `check` repeats rusqlite's own, which is not exported.
 mod os {
     use std::{ffi::c_void, ptr::null_mut};
 
@@ -308,7 +384,7 @@ mod os {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::path::PathBuf;
 
     use rusqlite::{
         Error as SqliteError,
@@ -317,12 +393,12 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::thread::tests::{assert_aborts, await_abort};
+    use crate::thread::tests::{assert_aborts, test_path, wait_for_abort};
 
     // Thresholds no test's writes reach, for a test to lower the ones it
     // is about.
     const NEVER: Thresholds = Thresholds {
-        cycle: u32::MAX,
+        start: u32::MAX,
         restart: u32::MAX,
         limit: u32::MAX,
     };
@@ -379,17 +455,25 @@ mod tests {
     #[test]
     fn a_cycle_copies_the_wal_in_the_background() {
         let (_dir, path, conn) = database();
-        let thresholds = Thresholds { cycle: 8, ..NEVER };
-        let mut checkpointer = Checkpointer::start_with(&conn, &path, thresholds).unwrap();
+        let thresholds = Thresholds { start: 8, ..NEVER };
+        let mut checkpointer =
+            Checkpointer::start_with_thresholds(&conn, &path, thresholds).unwrap();
 
         write(&conn, 16);
-        let (frames, copied) = wal(&conn).unwrap();
+        let wal = wal_size(&conn).unwrap();
+        let (frames, copied) = (wal.frames, wal.copied);
         assert!(frames >= 16);
         assert_eq!(copied, 0);
 
         checkpointer.after_commit(&conn);
         checkpointer.settle();
-        assert_eq!(wal(&conn).unwrap(), (frames, frames));
+        assert_eq!(
+            wal_size(&conn).unwrap(),
+            WalSize {
+                frames,
+                copied: frames
+            }
+        );
     }
 
     // Short of the cycle threshold nothing is copied: SQLite's own
@@ -397,12 +481,13 @@ mod tests {
     #[test]
     fn the_wal_is_left_alone_below_the_cycle_threshold() {
         let (_dir, path, conn) = database();
-        let mut checkpointer = Checkpointer::start_with(&conn, &path, NEVER).unwrap();
+        let mut checkpointer = Checkpointer::start_with_thresholds(&conn, &path, NEVER).unwrap();
 
         write(&conn, 1200);
         checkpointer.after_commit(&conn);
         checkpointer.settle();
-        let (frames, copied) = wal(&conn).unwrap();
+        let wal = wal_size(&conn).unwrap();
+        let (frames, copied) = (wal.frames, wal.copied);
         assert!(frames >= 1200);
         assert_eq!(copied, 0);
     }
@@ -414,29 +499,36 @@ mod tests {
     fn the_writer_finishes_a_cycle_past_the_restart_bound() {
         let (_dir, path, conn) = database();
         let thresholds = Thresholds {
-            cycle: 8,
+            start: 8,
             restart: 24,
             ..NEVER
         };
-        let mut checkpointer = Checkpointer::start_with(&conn, &path, thresholds).unwrap();
+        let mut checkpointer =
+            Checkpointer::start_with_thresholds(&conn, &path, thresholds).unwrap();
 
         write(&conn, 16);
         let snapshot = reader(&path);
         write(&conn, 16);
-        let (frames, _) = wal(&conn).unwrap();
+        let frames = wal_size(&conn).unwrap().frames;
 
         // The cycle stops at the reader's snapshot.
         checkpointer.after_commit(&conn);
         checkpointer.settle();
-        let (_, copied) = wal(&conn).unwrap();
+        let copied = wal_size(&conn).unwrap().copied;
         assert!(copied < frames);
         drop(snapshot);
 
         checkpointer.after_commit(&conn);
-        assert_eq!(wal(&conn).unwrap(), (frames, frames));
+        assert_eq!(
+            wal_size(&conn).unwrap(),
+            WalSize {
+                frames,
+                copied: frames
+            }
+        );
 
         write(&conn, 1);
-        let (restarted, _) = wal(&conn).unwrap();
+        let restarted = wal_size(&conn).unwrap().frames;
         assert!(restarted < frames);
     }
 
@@ -445,22 +537,23 @@ mod tests {
     #[test]
     fn the_writer_leaves_the_remainder_below_the_restart_bound() {
         let (_dir, path, conn) = database();
-        let thresholds = Thresholds { cycle: 64, ..NEVER };
-        let mut checkpointer = Checkpointer::start_with(&conn, &path, thresholds).unwrap();
+        let thresholds = Thresholds { start: 64, ..NEVER };
+        let mut checkpointer =
+            Checkpointer::start_with_thresholds(&conn, &path, thresholds).unwrap();
 
         write(&conn, 64);
         let snapshot = reader(&path);
         write(&conn, 16);
-        let (frames, _) = wal(&conn).unwrap();
+        let frames = wal_size(&conn).unwrap().frames;
 
         checkpointer.after_commit(&conn);
         checkpointer.settle();
-        let (_, copied) = wal(&conn).unwrap();
+        let copied = wal_size(&conn).unwrap().copied;
         assert!(copied < frames);
         drop(snapshot);
 
         checkpointer.after_commit(&conn);
-        assert_eq!(wal(&conn).unwrap(), (frames, copied));
+        assert_eq!(wal_size(&conn).unwrap(), WalSize { frames, copied });
     }
 
     // At the limit the writer waits for the cycle in flight, and returns
@@ -469,14 +562,15 @@ mod tests {
     fn the_writer_waits_for_the_cycle_at_the_limit() {
         let (_dir, path, conn) = database();
         let thresholds = Thresholds {
-            cycle: 8,
+            start: 8,
             restart: 8,
             limit: 8,
         };
-        let mut checkpointer = Checkpointer::start_with(&conn, &path, thresholds).unwrap();
+        let mut checkpointer =
+            Checkpointer::start_with_thresholds(&conn, &path, thresholds).unwrap();
 
         write(&conn, 16);
-        let (frames, _) = wal(&conn).unwrap();
+        let frames = wal_size(&conn).unwrap().frames;
         // Requests the cycle.
         checkpointer.after_commit(&conn);
         assert_eq!(checkpointer.waits, 0);
@@ -485,7 +579,13 @@ mod tests {
         checkpointer.after_commit(&conn);
         assert_eq!(checkpointer.waits, 1);
         assert!(matches!(checkpointer.cycle, Cycle::Idle));
-        assert_eq!(wal(&conn).unwrap(), (frames, frames));
+        assert_eq!(
+            wal_size(&conn).unwrap(),
+            WalSize {
+                frames,
+                copied: frames
+            }
+        );
     }
 
     // Short of the limit the writer never waits for a cycle: it carries on
@@ -493,13 +593,37 @@ mod tests {
     #[test]
     fn the_writer_carries_on_below_the_limit() {
         let (_dir, path, conn) = database();
-        let thresholds = Thresholds { cycle: 8, ..NEVER };
-        let mut checkpointer = Checkpointer::start_with(&conn, &path, thresholds).unwrap();
+        let thresholds = Thresholds { start: 8, ..NEVER };
+        let mut checkpointer =
+            Checkpointer::start_with_thresholds(&conn, &path, thresholds).unwrap();
 
         write(&conn, 16);
         checkpointer.after_commit(&conn);
         checkpointer.after_commit(&conn);
         assert_eq!(checkpointer.waits, 0);
+    }
+
+    // Reaching the limit is noted once, and cleared once the WAL is back
+    // under it, so a WAL that stays past the limit warns once, not on every
+    // batch.
+    #[test]
+    fn the_limit_is_noted_once_until_the_wal_shrinks() {
+        let (_dir, path, conn) = database();
+        let thresholds = Thresholds {
+            limit: 100,
+            ..NEVER
+        };
+        let mut checkpointer =
+            Checkpointer::start_with_thresholds(&conn, &path, thresholds).unwrap();
+
+        checkpointer.note_limit(99);
+        assert!(!checkpointer.over_limit);
+        checkpointer.note_limit(100);
+        assert!(checkpointer.over_limit);
+        checkpointer.note_limit(150);
+        assert!(checkpointer.over_limit);
+        checkpointer.note_limit(10);
+        assert!(!checkpointer.over_limit);
     }
 
     #[test]
@@ -512,7 +636,7 @@ mod tests {
     #[test]
     fn a_busy_checkpoint_step_is_deferred() {
         let busy = SqliteError::SqliteFailure(SqliteCode::new(SQLITE_BUSY), None);
-        assert_eq!(settled::<()>(Err(busy), "a checkpoint step"), None);
+        assert_eq!(defer_if_busy::<()>(Err(busy), "a checkpoint step"), None);
     }
 
     // A checkpoint that fails for any other reason takes the process down.
@@ -520,18 +644,16 @@ mod tests {
     // no file to sync, so its first cycle fails.
     #[test]
     fn a_failed_checkpoint_aborts_the_process() {
-        assert_aborts(
-            "checkpoint::tests::a_failed_checkpoint_aborts_the_process",
-            || {
-                let (_dir, _path, conn) = database();
-                let thresholds = Thresholds { cycle: 8, ..NEVER };
-                let mut checkpointer =
-                    Checkpointer::start_with(&conn, Path::new(":memory:"), thresholds).unwrap();
+        assert_aborts(test_path!(a_failed_checkpoint_aborts_the_process), || {
+            let (_dir, _path, conn) = database();
+            let thresholds = Thresholds { start: 8, ..NEVER };
+            let mut checkpointer =
+                Checkpointer::start_with_thresholds(&conn, Path::new(":memory:"), thresholds)
+                    .unwrap();
 
-                write(&conn, 16);
-                checkpointer.after_commit(&conn);
-                await_abort();
-            },
-        );
+            write(&conn, 16);
+            checkpointer.after_commit(&conn);
+            wait_for_abort();
+        });
     }
 }

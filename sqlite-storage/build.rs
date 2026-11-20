@@ -41,13 +41,13 @@ fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         in_buf.read_to_end(&mut data)?;
         write!(
             out,
-            "({seq}isize,r###\"{}\"###,\"{}\",",
+            "Migration {{ seq: {seq}isize, file_name: r###\"{}\"###, hash: \"{}\", sql: ",
             file_path.to_string_lossy(),
             BASE64_URL_SAFE_NO_PAD.encode(sha1::Sha1::digest(&data))
         )?;
         out.write_all("r###\"".as_bytes())?;
         out.write_all(&data)?;
-        out.write_all("\"###),\n".as_bytes())?;
+        out.write_all("\"### },\n".as_bytes())?;
     }
     out.write_all(b"]")?;
     Ok(())

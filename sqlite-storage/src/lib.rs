@@ -15,7 +15,7 @@ protocol (mark-unconfirmed / confirm / sweep).
 
 mod checkpoint;
 mod migrate;
-mod readers;
+mod reader_pool;
 mod storage;
 mod thread;
 mod writer;

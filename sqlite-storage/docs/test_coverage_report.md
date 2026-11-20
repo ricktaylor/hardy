@@ -26,9 +26,9 @@ The `MetadataStorage` trait contract is verified by the shared storage harness (
 
 All 16 pass. No failures or skips.
 
-### Backend-specific tests (`migrate.rs`, `storage.rs`, `writer.rs`, `readers.rs`, `checkpoint.rs`, `thread.rs`)
+### Backend-specific tests (`migrate.rs`, `storage.rs`, `writer.rs`, `reader_pool.rs`, `checkpoint.rs`, `thread.rs`)
 
-42 unit tests. 34 cover the 23 planned scenarios (SQL-01..23); the other 8 pin the status encoding and the queue-poll query plans, which the plan does not list as scenarios.
+43 unit tests. 35 cover the 23 planned scenarios (SQL-01..23); the other 8 pin the status encoding and the queue-poll query plans, which the plan does not list as scenarios.
 
 | Test Function | Plan Ref | Scope |
 | :--- | :--- | :--- |
@@ -52,6 +52,7 @@ All 16 pass. No failures or skips.
 | `the_writer_leaves_the_remainder_below_the_restart_bound` | SQL-14 | No writer checkpoint below the restart bound |
 | `the_writer_waits_for_the_cycle_at_the_limit` | SQL-15 | The writer waits at the WAL size limit |
 | `the_writer_carries_on_below_the_limit` | SQL-15 | The writer does not wait below the limit |
+| `the_limit_is_noted_once_until_the_wal_shrinks` | SQL-15 | Reaching the limit warns once |
 | `the_database_file_syncs_through_its_own_handle` | SQL-16 | The database file syncs through SQLite's handle |
 | `test_tombstones_leave_the_secondary_indexes` | SQL-17 | A tombstone leaves both secondary indexes |
 | `poll_expiry_plan_uses_the_live_row_index` | SQL-18 | The expiry poll is served by the live-row index |
@@ -84,7 +85,7 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 | `PLAN-STORE-01` Suite A (META-01..04, 15, 17) | CRUD & tombstone semantics | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite B (META-06..10, 14) | Polling & ordering | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite C (META-05, 11..13, 16) | State transitions & bulk ops | 5 | 5 | Complete |
-| `PLAN-SQLITE-01` §4 (SQL-01..23) | Backend-specific | 23 | 23 | Complete (34 tests) |
+| `PLAN-SQLITE-01` §4 (SQL-01..23) | Backend-specific | 23 | 23 | Complete (35 tests) |
 | **Total** | | **40** | **40** | **100%** |
 
 ## 4. Line Coverage
@@ -101,8 +102,8 @@ lcov --summary lcov.info
   functions..: 83.1% (374 of 450 functions)
 ```
 
-The 42 unit tests exercise the writer thread, the checkpoint thread, the readers, migrations, the status encoding and the trait methods that have backend-specific tests. The lines left uncovered are mostly `MetadataStorage` methods exercised only by the generic storage harness (16 tests), which runs in a separate crate and is not captured by `llvm-cov`. The function-coverage figure varies with monomorphisation counting; line coverage is the reliable signal.
+The 43 unit tests exercise the writer thread, the checkpoint thread, the readers, migrations, the status encoding and the trait methods that have backend-specific tests. The lines left uncovered are mostly `MetadataStorage` methods exercised only by the generic storage harness (16 tests), which runs in a separate crate and is not captured by `llvm-cov`. The function-coverage figure varies with monomorphisation counting; line coverage is the reliable signal.
 
 ## 5. Conclusion
 
-58 tests (16 integration + 42 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic, tamper detection and the upgrade of an existing store; concurrent writer safety; batched-write isolation, commit failure and a batch that loses its transaction; the abort when a store thread panics or a checkpoint fails; query-only readers; background checkpoints and the WAL's restart and size limit; the live-row indexes; corrupt data resilience; configuration; and waiting queue cache correctness.
+59 tests (16 integration + 43 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic, tamper detection and the upgrade of an existing store; concurrent writer safety; batched-write isolation, commit failure and a batch that loses its transaction; the abort when a store thread panics or a checkpoint fails; query-only readers; background checkpoints and the WAL's restart and size limit; the live-row indexes; corrupt data resilience; configuration; and waiting queue cache correctness.

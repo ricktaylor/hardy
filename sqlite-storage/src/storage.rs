@@ -21,7 +21,7 @@ use trace_err::*;
 use tracing::instrument;
 use tracing::{debug, error, info, warn};
 
-use super::{migrate::migrate, readers::Readers, writer::Writer};
+use super::{migrate::migrate, reader_pool::ReaderPool, writer::Writer};
 
 // Filename of the SQLite database.
 const DEFAULT_DB_NAME: &str = "metadata.db";
@@ -54,7 +54,7 @@ fn default_db_dir() -> PathBuf {
 /// status columns for efficient status-based queries.
 pub struct SqliteStorage {
     writer: Writer,
-    readers: Arc<Readers>,
+    readers: Arc<ReaderPool>,
 }
 
 impl SqliteStorage {
@@ -81,7 +81,7 @@ impl SqliteStorage {
 
         Self {
             writer: Writer::new(open_writer(&path, upgrade), &path),
-            readers: Arc::new(Readers::new(path)),
+            readers: Arc::new(ReaderPool::new(path)),
         }
     }
 

@@ -62,7 +62,7 @@ The status is encoded as a numeric code with parameters rather than as a string 
 
 Deleting a bundle leaves a tombstone: the row stays, with its bundle and status columns set to NULL, so that its bundle ID still refuses a replay. Tombstones outnumber live bundles on any node that has been running for a while, and no query looks for one by expiry or by status. The two secondary indexes are therefore partial indexes, which hold an entry only for a row that satisfies a condition: the expiry index holds rows with a bundle, and the status index holds rows with a status. The row's own `bundle_id` uniqueness index still covers every row.
 
-This matters on the write path. A bundle's last write turns its row into a tombstone, and with full indexes that write also moved the row's status entry into the run of NULLs at the front of the status index and kept its expiry entry for ever. With partial indexes it removes both entries, so the indexes stay the size of the live backlog instead of growing with every bundle the node has ever handled. In a local benchmark a bundle's lifetime wrote about half as many pages to the WAL. It matters to the reaper too: its expiry poll reads the expiry index from the front, and no longer walks every tombstone older than the first live bundle.
+This matters on the write path. A bundle's last write turns its row into a tombstone, and with full indexes that write also moved the row's status entry into the run of NULLs at the front of the status index and kept its expiry entry for ever. With partial indexes it removes both entries, so the indexes stay the size of the live backlog instead of growing with every bundle the node has ever handled. That, not the count of index operations per write, is what moves the throughput: in a local benchmark a bundle's lifetime wrote about half as many pages to the WAL, because each index page it touched was in a smaller index. It matters to the reaper too: its expiry poll reads the expiry index from the front, and no longer walks every tombstone older than the first live bundle.
 
 SQLite uses a partial index only for a query whose own conditions imply the index's. The expiry poll and the recovery scan state `bundle IS NOT NULL` outright, and every status-keyed query compares `status_code` with `=`, which a NULL never satisfies. A test pins the expiry poll's query plan, alongside the existing one for the queue polls, so that a change to either query that loses its index fails the build.
 
@@ -105,7 +105,7 @@ Two things a background checkpoint cannot do are left to the writer, at threshol
 
 The database file is synced through the file handle SQLite already holds, reached with `sqlite3_file_control`. Opening a second handle to sync is not an option on POSIX systems: closing any descriptor of a file releases every lock the process holds on that file, including the ones SQLite relies on. That call is the crate's one use of `unsafe`.
 
-The trade-off is disk space and recovery time: the WAL holds up to about 64 MiB instead of about 4 MiB, and the next open after a crash replays whatever it holds.
+The trade-off is disk space and recovery time: the WAL holds up to about 64 MiB instead of about 4 MiB, while no reader holds an old snapshot open, and the next open after a crash replays whatever it holds. If the WAL does pass the limit, the store logs a warning once.
 
 Rejected alternatives:
 
@@ -116,7 +116,7 @@ Rejected alternatives:
 
 The store's threads have no caller to hand a failure to, so a failure on one of them ends the process. This is the rule `hardy-async`'s task pools apply to a panicking task, for the same reason: a broken invariant or failed infrastructure is not something a graceful shutdown gets past.
 
-- **A panic on the writer thread, on the checkpoint thread, or in a read** aborts the process. Without this, a panic on the writer thread would leave the process running while every later write failed, and a panic in a read would reach only the one caller waiting on it.
+- **A panic on the writer thread, on the checkpoint thread, or in a read** aborts the process. Without this, a panic on the writer thread would leave the process running while every later write failed, and a panic in a read would reach only the one caller waiting on it. The abort comes once the panic has unwound to the top of the thread, so for that interval the writer thread's queued writes, and any that arrive meanwhile, are failed as the store shutting down; the BPA treats that as fatal too, so either way the process ends.
 - **A checkpoint that fails** panics its thread, and so aborts. No caller waits on a checkpoint, and a sync that failed cannot simply be retried: the operating system may have discarded the pages it could not write. The one exception is a checkpoint step that loses a race for one of the WAL's locks, which is not a failure; it is left for the writer's next batch.
 - **A write that fails** is returned to its caller, as before, with its whole batch if SQLite rolled the transaction back. The BPA treats any storage error as fatal, so this too ends the process, by way of the caller.
 
