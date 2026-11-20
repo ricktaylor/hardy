@@ -21,7 +21,7 @@ use std::{mem, path::Path, sync::Arc};
 
 use hardy_bpa::storage::Result as StorageResult;
 use rusqlite::{
-    Connection, Error as SqliteError,
+    Connection, Error as SqliteError, Transaction, TransactionBehavior,
     ffi::{Error as SqliteCode, SQLITE_ABORT, SQLITE_MISUSE},
 };
 use thiserror::Error;
@@ -31,13 +31,13 @@ use tokio::sync::{
 };
 use trace_err::*;
 
-use super::{checkpoint::Checkpointer, thread::Worker};
+use super::{checkpoint::Checkpointer, thread::JoinOnDrop};
 
 // The most writes one transaction commits. Every caller in a batch waits
 // for the batch's commit, so the cap bounds how many writes the first
 // waits on. It bounds their number, not their cost: a write that sweeps
 // many rows, such as a peer queue's reset, holds up the rest of its batch.
-const MAX_BATCH: usize = 64;
+const MAX_BATCH_SIZE: usize = 64;
 
 /// Why a write has no result of its own to report.
 #[derive(Debug, Error)]
@@ -49,9 +49,10 @@ pub enum Error {
     #[error("Metadata write transaction failed: {0}")]
     Transaction(#[source] Arc<SqliteError>),
 
-    /// The writer thread has stopped: the store is shutting down. A panic
-    /// on the writer thread never gets this far, because it aborts the
-    /// process.
+    /// The writer thread has stopped: the store is shutting down, or the
+    /// writer thread has panicked and the process is about to abort. The
+    /// panic unwinds the thread before its guard aborts, so writes that
+    /// were queued, or arrive meanwhile, are answered with this first.
     #[error("Metadata writer thread has stopped")]
     Stopped,
 }
@@ -60,7 +61,7 @@ pub struct Writer {
     // Declared before `_thread`: fields drop in declaration order, so the
     // queue closes, and the thread finishes and exits, before it is joined.
     queue: UnboundedSender<Box<dyn Job>>,
-    _thread: Worker,
+    _thread: JoinOnDrop,
 }
 
 impl Writer {
@@ -70,7 +71,7 @@ impl Writer {
         let checkpointer = Checkpointer::start(&conn, path)
             .trace_expect("Failed to start the metadata checkpoint thread");
         let (queue, jobs) = unbounded_channel();
-        let thread = Worker::spawn("sqlite-writer", move || serve(conn, jobs, checkpointer))
+        let thread = JoinOnDrop::spawn("sqlite-writer", move || serve(conn, jobs, checkpointer))
             .trace_expect("Failed to spawn the metadata writer thread");
         Self {
             queue,
@@ -102,21 +103,22 @@ type BatchResult = Result<(), Arc<SqliteError>>;
 
 // A queued write, type-erased so one queue carries every result type.
 trait Job: Send {
-    // Runs the write in its own savepoint, holding its result for `answer`.
-    // Returns the write's error if it left `conn` without a transaction:
-    // SQLite rolled the whole batch back, not just this write.
-    fn run(&mut self, conn: &Connection) -> Option<SqliteError>;
+    // Runs the write in its own savepoint, holding its result for `reply`.
+    // Fails if the write left the batch without its transaction: SQLite
+    // rolled the whole batch back, not just this write. The write's own
+    // failure is not this function's: it is held for the reply.
+    fn run(&mut self, transaction: &mut Transaction<'_>) -> Result<(), SqliteError>;
 
-    // Answers the caller once the write's batch has resolved: with the
+    // Replies to the caller once the write's batch has resolved: with the
     // write's own result if the batch committed, else with the batch's
     // failure.
-    fn answer(self: Box<Self>, batch: &BatchResult);
+    fn reply(self: Box<Self>, batch: &BatchResult);
 }
 
 // How far a queued write has got.
 enum Stage<F, R> {
     Queued(F),
-    Ran(StorageResult<R>),
+    Done(StorageResult<R>),
     // Not run: the caller had gone before the write's turn, or the batch
     // lost its transaction first.
     Skipped,
@@ -133,25 +135,27 @@ where
     F: FnOnce(&Connection) -> StorageResult<R> + Send + 'static,
     R: Send + 'static,
 {
-    fn run(&mut self, conn: &Connection) -> Option<SqliteError> {
+    fn run(&mut self, transaction: &mut Transaction<'_>) -> Result<(), SqliteError> {
         let Stage::Queued(write) = mem::replace(&mut self.stage, Stage::Skipped) else {
-            return None;
+            return Ok(());
         };
         // A caller whose future dropped before its write's turn is not
         // written for: nobody would act on the result.
         if self.reply.is_closed() {
-            return None;
+            return Ok(());
         }
-        let result = atomically(conn, write);
-        let lost = conn.is_autocommit().then(|| transaction_lost(&result));
-        self.stage = Stage::Ran(result);
-        lost
+        let result = with_savepoint(transaction, write);
+        let lost = transaction
+            .is_autocommit()
+            .then(|| transaction_lost(&result));
+        self.stage = Stage::Done(result);
+        lost.map_or(Ok(()), Err)
     }
 
-    fn answer(self: Box<Self>, batch: &BatchResult) {
+    fn reply(self: Box<Self>, batch: &BatchResult) {
         let result = match (batch, self.stage) {
             (Err(e), _) => Err(Error::Transaction(e.clone()).into()),
-            (Ok(()), Stage::Ran(result)) => result,
+            (Ok(()), Stage::Done(result)) => result,
             (Ok(()), Stage::Queued(_) | Stage::Skipped) => return,
         };
         _ = self.reply.send(result);
@@ -182,15 +186,15 @@ fn transaction_lost<R>(result: &StorageResult<R>) -> SqliteError {
 // The writer thread: commits whatever has queued as one batch, until the
 // store drops and the queue closes.
 fn serve(
-    conn: Connection,
+    mut conn: Connection,
     mut jobs: UnboundedReceiver<Box<dyn Job>>,
     mut checkpointer: Checkpointer,
 ) {
-    let mut batch = Vec::with_capacity(MAX_BATCH);
-    while jobs.blocking_recv_many(&mut batch, MAX_BATCH) > 0 {
-        let committed = run_batch(&conn, &mut batch);
+    let mut batch = Vec::with_capacity(MAX_BATCH_SIZE);
+    while jobs.blocking_recv_many(&mut batch, MAX_BATCH_SIZE) > 0 {
+        let committed = run_batch(&mut conn, &mut batch);
         for job in batch.drain(..) {
-            job.answer(&committed);
+            job.reply(&committed);
         }
         // Once the batch's callers are answered: a checkpoint here holds up
         // only the writes still queued.
@@ -199,41 +203,32 @@ fn serve(
 }
 
 // Runs a batch of writes in one transaction, returning how it resolved.
-fn run_batch(conn: &Connection, batch: &mut [Box<dyn Job>]) -> BatchResult {
-    conn.execute_batch("BEGIN IMMEDIATE")?;
+// Dropped without committing, the transaction rolls back, unless SQLite
+// has already rolled it back: a commit that fails cannot leave it open for
+// the next batch to join, and a batch that stops early needs no cleanup.
+fn run_batch(conn: &mut Connection, batch: &mut [Box<dyn Job>]) -> BatchResult {
+    let mut transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for job in batch {
-        if let Some(lost) = job.run(conn) {
-            // SQLite has rolled the batch back. A write run now would
-            // commit on its own, outside any batch, so none is.
-            return Err(lost.into());
-        }
+        // On a lost transaction, SQLite has rolled the batch back. A write
+        // run now would commit on its own, outside any batch, so none is.
+        job.run(&mut transaction)?;
     }
-    conn.execute_batch("COMMIT").map_err(|e| {
-        // A commit that fails can leave the transaction open; the next
-        // batch must not join it.
-        if !conn.is_autocommit() {
-            _ = conn.execute_batch("ROLLBACK");
-        }
-        e.into()
-    })
+    Ok(transaction.commit()?)
 }
 
 // Runs `write` in its own savepoint, so a failing write rolls back alone
-// and the rest of its batch still commits.
-fn atomically<F, R>(conn: &Connection, write: F) -> StorageResult<R>
+// and the rest of its batch still commits. Dropped without being released,
+// the savepoint rolls back. If SQLite has rolled the whole transaction back
+// instead, there is nothing left to roll back to, and the caller, finding
+// the transaction gone, stops the batch.
+fn with_savepoint<F, R>(transaction: &mut Transaction<'_>, write: F) -> StorageResult<R>
 where
     F: FnOnce(&Connection) -> StorageResult<R>,
 {
-    conn.execute_batch("SAVEPOINT write")?;
-    let result = write(conn);
-    if result.is_err() {
-        // Fails only if SQLite has already rolled the whole transaction
-        // back, which the caller checks for.
-        _ = conn.execute_batch("ROLLBACK TO write");
-    }
-    // Likewise: with no transaction left there is no savepoint to release.
-    _ = conn.execute_batch("RELEASE write");
-    result
+    let savepoint = transaction.savepoint()?;
+    let result = write(&savepoint)?;
+    savepoint.commit()?;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -250,7 +245,7 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::thread::tests::{assert_aborts, await_abort};
+    use crate::thread::tests::{assert_aborts, test_path, wait_for_abort};
 
     // A writer over a scratch database: `rows` takes plain inserts, and
     // `refs` holds a deferred foreign key, checked only at commit.
@@ -278,7 +273,7 @@ mod tests {
     }
 
     async fn ids(writer: &Writer) -> Vec<i64> {
-        answered(writer.write(|conn| {
+        within_timeout(writer.write(|conn| {
             conn.prepare("SELECT id FROM rows ORDER BY id")?
                 .query_map([], |row| row.get(0))?
                 .collect::<Result<_, _>>()
@@ -291,7 +286,7 @@ mod tests {
     // Awaits something the writer thread answers. A writer that never
     // answers would hang the suite, so the wait fails instead: the timeout
     // only bounds a regression.
-    async fn answered<F: Future>(waiting: F) -> F::Output {
+    async fn within_timeout<F: Future>(waiting: F) -> F::Output {
         timeout(Duration::from_secs(30), waiting)
             .await
             .expect("the writer thread never answered")
@@ -320,7 +315,7 @@ mod tests {
             Ok(())
         }));
         enqueue(held.as_mut());
-        answered(running).await.unwrap();
+        within_timeout(running).await.unwrap();
         (held, release)
     }
 
@@ -342,11 +337,11 @@ mod tests {
         enqueue(last.as_mut());
 
         release.send(()).unwrap();
-        answered(held).await.unwrap();
-        answered(first).await.unwrap();
-        answered(last).await.unwrap();
+        within_timeout(held).await.unwrap();
+        within_timeout(first).await.unwrap();
+        within_timeout(last).await.unwrap();
         // The write's own failure, not its batch's.
-        let error = answered(failing).await.unwrap_err();
+        let error = within_timeout(failing).await.unwrap_err();
         assert_eq!(
             error
                 .downcast_ref::<SqliteError>()
@@ -373,8 +368,11 @@ mod tests {
         enqueue(dangling.as_mut());
 
         release.send(()).unwrap();
-        answered(held).await.unwrap();
-        for result in [answered(inserted).await, answered(dangling).await] {
+        within_timeout(held).await.unwrap();
+        for result in [
+            within_timeout(inserted).await,
+            within_timeout(dangling).await,
+        ] {
             let error = result.unwrap_err();
             let Some(Error::Transaction(e)) = error.downcast_ref::<Error>() else {
                 panic!("expected the batch's failure, got {error:?}");
@@ -395,7 +393,7 @@ mod tests {
         drop(abandoned);
 
         release.send(()).unwrap();
-        answered(held).await.unwrap();
+        within_timeout(held).await.unwrap();
         assert_eq!(ids(&writer).await, Vec::<i64>::new());
     }
 
@@ -434,11 +432,11 @@ mod tests {
         enqueue(after.as_mut());
 
         release.send(()).unwrap();
-        answered(held).await.unwrap();
+        within_timeout(held).await.unwrap();
         for result in [
-            answered(before).await,
-            answered(filling).await,
-            answered(after).await,
+            within_timeout(before).await,
+            within_timeout(filling).await,
+            within_timeout(after).await,
         ] {
             let error = result.unwrap_err();
             let Some(Error::Transaction(e)) = error.downcast_ref::<Error>() else {
@@ -449,7 +447,7 @@ mod tests {
         assert_eq!(ids(&writer).await, Vec::<i64>::new());
 
         // The writer carries on, in a transaction of its own.
-        answered(writer.write(|conn| insert(conn, 4)))
+        within_timeout(writer.write(|conn| insert(conn, 4)))
             .await
             .unwrap();
         assert_eq!(ids(&writer).await, [4]);
@@ -459,17 +457,13 @@ mod tests {
     // not carry on, answering every later write with an error.
     #[test]
     fn a_panicking_write_aborts_the_process() {
-        assert_aborts(
-            "writer::tests::a_panicking_write_aborts_the_process",
-            || {
-                let (_dir, writer) = open();
-                let mut write =
-                    pin!(writer.write(|_| -> StorageResult<()> {
-                        panic!("the write failed an invariant")
-                    }));
-                enqueue(write.as_mut());
-                await_abort();
-            },
-        );
+        assert_aborts(test_path!(a_panicking_write_aborts_the_process), || {
+            let (_dir, writer) = open();
+            let mut write = pin!(
+                writer.write(|_| -> StorageResult<()> { panic!("the write failed an invariant") })
+            );
+            enqueue(write.as_mut());
+            wait_for_abort();
+        });
     }
 }

@@ -22,8 +22,14 @@ pub enum Error {
     UpdateRequired,
 }
 
-// A migration: its sequence number, file name, content hash and SQL.
-type Migration = (isize, &'static str, &'static str, &'static str);
+// A schema migration, embedded at build time from a file in `schemas/`.
+struct Migration {
+    seq: isize,
+    file_name: &'static str,
+    // The base64 SHA-1 of `sql`, recorded by the database when it runs.
+    hash: &'static str,
+    sql: &'static str,
+}
 
 // Every migration, in sequence order, generated from `schemas/` at build
 // time.
@@ -75,11 +81,11 @@ fn migrate_to(
 
         let mut query = trans
             .prepare(r"INSERT INTO temp.schema_check (seq_no,file_name,hash) VALUES (?1,?2,?3)")?;
-        for (seq, file_name, hash, _) in migrations {
-            if *seq > current_max {
+        for migration in migrations {
+            if migration.seq > current_max {
                 break;
             }
-            query.execute((seq, file_name, hash))?;
+            query.execute((migration.seq, migration.file_name, migration.hash))?;
             next += 1;
         }
 
@@ -139,9 +145,15 @@ fn migrate_to(
     if next < migrations.len() {
         if upgrade {
             // Now run any new migrations
-            for (seq, file_name, hash, migration) in migrations[next..].iter() {
+            for Migration {
+                seq,
+                file_name,
+                hash,
+                sql,
+            } in &migrations[next..]
+            {
                 // Run the migration
-                trans.execute_batch(migration)?;
+                trans.execute_batch(sql)?;
 
                 // Update the metadata
                 trans.execute(r"INSERT INTO schema_versions (seq_no,file_name,hash,timestamp) VALUES (?1,?2,?3,datetime('now'))",(seq, file_name, hash))?;
@@ -322,7 +334,7 @@ mod tests {
 
         migrate(&mut conn, true).unwrap();
 
-        let all: Vec<isize> = MIGRATIONS.iter().map(|m| m.0).collect();
+        let all: Vec<isize> = MIGRATIONS.iter().map(|m| m.seq).collect();
         assert_eq!(applied(&conn), all);
         // The newest migration reshapes the indexes on `bundles`, so having
         // run shows in the schema as well as in the record.
@@ -337,7 +349,7 @@ mod tests {
 
         migrate(&mut conn, true).unwrap();
 
-        let all: Vec<isize> = MIGRATIONS.iter().map(|m| m.0).collect();
+        let all: Vec<isize> = MIGRATIONS.iter().map(|m| m.seq).collect();
         assert_eq!(applied(&conn), all);
     }
 

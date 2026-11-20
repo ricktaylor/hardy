@@ -1,6 +1,10 @@
-//! The metadata store's readers: a bounded pool of query-only connections,
+//! The metadata store's reader pool: a bounded pool of query-only connections,
 //! each read running on the blocking thread pool so that a slow query never
 //! stalls an async worker.
+//!
+//! The pool is a semaphore over a list of idle connections, rather than a
+//! pooling crate: the workspace uses none, and this is all a pool of
+//! blocking connections needs here.
 
 use std::{
     num::NonZeroUsize,
@@ -14,9 +18,9 @@ use rusqlite::{Connection, OpenFlags, vtab::array::load_module};
 use tokio::{sync::Semaphore, task::spawn_blocking};
 use trace_err::*;
 
-use super::thread::AbortOnPanic;
+use super::thread::AbortOnPanicGuard;
 
-pub struct Readers {
+pub struct ReaderPool {
     path: PathBuf,
     idle: Mutex<Vec<Connection>>,
     // One permit per connection the pool may hold: a read waits for a
@@ -24,7 +28,7 @@ pub struct Readers {
     permits: Arc<Semaphore>,
 }
 
-impl Readers {
+impl ReaderPool {
     // A pool of up to one reader per hardware thread over the database at
     // `path`, each opened on first use.
     pub fn new(path: PathBuf) -> Self {
@@ -45,21 +49,22 @@ impl Readers {
         R: Send + 'static,
     {
         let permit = self.permits.clone().acquire_owned().await?;
-        let readers = self.clone();
+        let pool = self.clone();
         spawn_blocking(move || {
             // The runtime would otherwise catch a panic here and hand it
             // to the one caller awaiting this read.
-            let _fatal = AbortOnPanic("sqlite read");
-            let conn = readers.take()?;
+            let _guard = AbortOnPanicGuard::new("sqlite read");
+            let conn = pool.acquire()?;
             let result = read(&conn);
-            readers.put(conn);
+            pool.release(conn);
             drop(permit);
             result
         })
         .await?
     }
 
-    fn take(&self) -> StorageResult<Connection> {
+    // A pooled connection, or a new one if every pooled one is in use.
+    fn acquire(&self) -> StorageResult<Connection> {
         let idle = self
             .idle
             .lock()
@@ -68,7 +73,8 @@ impl Readers {
         idle.map_or_else(|| self.open(), Ok)
     }
 
-    fn put(&self, conn: Connection) {
+    // Returns a connection to the pool.
+    fn release(&self, conn: Connection) {
         self.idle
             .lock()
             .trace_expect("Failed to lock the reader pool")
@@ -99,7 +105,7 @@ mod tests {
     use tokio::runtime::Builder;
 
     use super::*;
-    use crate::thread::tests::assert_aborts;
+    use crate::thread::tests::{assert_aborts, test_path};
 
     // A reader refuses to write, so a write routed through the readers
     // fails loudly rather than racing the writer thread.
@@ -111,9 +117,9 @@ mod tests {
             .unwrap()
             .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE rows (id INTEGER);")
             .unwrap();
-        let readers = Arc::new(Readers::new(path));
+        let pool = Arc::new(ReaderPool::new(path));
 
-        let error = readers
+        let error = pool
             .read(|conn| {
                 conn.execute("INSERT INTO rows (id) VALUES (1)", [])?;
                 Ok(())
@@ -133,22 +139,18 @@ mod tests {
     // to the read's one caller.
     #[test]
     fn a_panicking_read_aborts_the_process() {
-        assert_aborts(
-            "readers::tests::a_panicking_read_aborts_the_process",
-            || {
-                let dir = tempdir().unwrap();
-                let path = dir.path().join("test.db");
-                Connection::open(&path)
-                    .unwrap()
-                    .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE rows (id INTEGER);")
-                    .unwrap();
-                let readers = Arc::new(Readers::new(path));
-                let runtime = Builder::new_current_thread().build().unwrap();
-                _ = runtime.block_on(
-                    readers
-                        .read(|_| -> StorageResult<()> { panic!("the read failed an invariant") }),
-                );
-            },
-        );
+        assert_aborts(test_path!(a_panicking_read_aborts_the_process), || {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("test.db");
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE rows (id INTEGER);")
+                .unwrap();
+            let pool = Arc::new(ReaderPool::new(path));
+            let runtime = Builder::new_current_thread().build().unwrap();
+            _ = runtime.block_on(
+                pool.read(|_| -> StorageResult<()> { panic!("the read failed an invariant") }),
+            );
+        });
     }
 }
