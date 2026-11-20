@@ -6,15 +6,29 @@ Hardy is designed to recover gracefully from crashes, power failures, and unexpe
 
 Hardy separates **metadata storage** (bundle state, timestamps, status) from **bundle data storage** (the raw bytes). These two stores can become inconsistent if the process crashes between writing to one and the other.
 
-On every startup, Hardy runs a three-phase recovery protocol to bring them back into sync:
+Recovery runs only when the server is started with `--recover-store` (`-r`). It is a three-phase protocol that brings the two stores back into sync:
 
 1. **Mark** -- all metadata entries are marked as _unconfirmed_.
 2. **Confirm** -- the bundle data store is walked. For each bundle found, the corresponding metadata entry is confirmed.
 3. **Cleanup** -- any metadata entry still unconfirmed is deleted, because its bundle data is missing.
 
-After recovery completes, every metadata entry is guaranteed to have matching bundle data. The server then begins normal operation.
+Recovery also picks up the bundles that were in progress when the server stopped. A bundle that was being processed is processed again. A bundle that was queued for a peer or a service, or part-way through a transfer or a delivery, goes back to waiting for a route or for its service. When recovery completes, every metadata entry has matching bundle data, and only then does the server start its CLAs and services. It logs `Starting store consistency check...` as it begins and `Store consistency check completed` when it ends.
 
-This protocol is idempotent. If the server crashes during recovery itself, the next startup will simply run the protocol again from the beginning.
+This protocol is idempotent. If the server crashes during recovery itself, starting it again with `--recover-store` runs the protocol again from the beginning.
+
+### When to Use `--recover-store`
+
+Start the server with `--recover-store` after any stop that was not an orderly shutdown (SIGTERM or Ctrl+C): a crash, a kill, or a power loss. Use it too after restoring a store from a backup or editing one by hand.
+
+Without it, the server starts on whatever the crash left in its stores:
+
+- **Bundle data saved without its metadata** stays in the bundle store. It is never forwarded, and nothing deletes it.
+- **Metadata whose data is gone** stays until the server next tries to forward or deliver the bundle, when it drops the bundle and reports it deleted, or until the bundle expires.
+- **Bundles in progress** keep the state they were in. A bundle that was being processed waits until it expires. Peers are numbered afresh each time the server starts, so a bundle queued for a peer can be sent to a different one, or wait until it expires. A bundle part-way through a transfer or a delivery may never be retried, and does not expire.
+
+A supervisor that restarts the server after a crash (a systemd unit, a Docker Compose `restart:` policy) starts it the same way every time, so a supervised server recovers from a crash only if `--recover-store` is in its command line. In Docker Compose, add `-r` to the service's `command:`.
+
+Recovery reads every stored bundle, so it lengthens the start in proportion to the size of the store. With the local disk backend it also depends on the system clock being right: see the recovery walk below.
 
 ## Bundle Data Backends
 
@@ -24,35 +38,38 @@ The local disk backend stores each bundle as a file on the filesystem.
 
 **Save operation:**
 
-Saving a bundle is a six-step process designed so that a crash at any point leaves the system in a recoverable state:
+With `fsync` enabled (the default), saving a bundle is a five-step process designed so that a crash at any point leaves the system in a recoverable state:
 
-1. Create a 0-byte placeholder file with a unique random name.
-2. Rename the placeholder to a `.tmp` extension.
-3. Write the bundle data to the `.tmp` file.
-4. Sync the file data to disk (`fsync`).
-5. Rename the `.tmp` file to its final filename. This is an atomic operation on POSIX filesystems.
-6. Sync the parent directory to make the rename durable.
+1. Claim the bundle's final name by creating a 0-byte placeholder under a random name. The create fails if a file already has that name, and the save tries the next name.
+2. Write the bundle data to a `.tmp` file beside the placeholder.
+3. Sync the file data to disk (`fsync`).
+4. Rename the `.tmp` file over the placeholder. This is an atomic operation on POSIX filesystems.
+5. Sync the directory holding the file to make the rename durable.
+
+A save that fails part-way removes its placeholder and its `.tmp` file. With `fsync` disabled, the save is different: see the `fsync` option below.
 
 **What happens if the system crashes:**
 
 | Crash point | State on disk | What happens on restart |
 |---|---|---|
-| During steps 1-4 | A `.tmp` or 0-byte file exists | The file is detected and deleted during recovery |
-| After step 5, before step 6 | File has its final name but the directory is not synced | On most modern journaling filesystems the file will be visible. In rare cases it may be lost. |
-| After step 6 | File is fully durable | Nothing to do |
+| During steps 1-3 | A 0-byte placeholder, and perhaps a `.tmp` file, exist | The files are deleted the next time recovery runs |
+| After step 4, before step 5 | File has its final name but the directory is not synced | On most modern journaling filesystems the file will be visible. In rare cases it may be lost. |
+| After step 5 | File is fully durable | Nothing to do |
 
-If a crash occurs during any of the first four steps, the bundle data is lost but the metadata store will detect the missing bundle during the confirm phase and clean up its own entry. No manual intervention is needed.
+A crash during the first three steps loses that bundle's data, but no metadata refers to it yet: the server records a bundle only after its save has completed.
 
-**Recovery walk:** On startup, the store directory is walked. All `.tmp` files and 0-byte placeholders are deleted. Empty directories are removed. A timestamp fence ensures that files being written by concurrent operations are not accidentally deleted. Surviving files are reported to the metadata store for confirmation.
+**Recovery walk:** When recovery runs, the store directory is walked. All `.tmp` files and 0-byte placeholders are deleted. Empty directories are removed. A timestamp fence ensures that files being written by concurrent operations are not accidentally deleted. Surviving files are reported to the metadata store for confirmation.
+
+The fence compares each file's time with the system clock when the walk starts, and skips any file that is newer. If the clock has been set backwards since files were written, those files look new and are not reported: recovery removes their metadata entries and reports those bundles deleted, and leaves their data files on disk with no metadata. On a system with no battery-backed clock that starts at a fixed date, that is every bundle in the store. Make sure the clock is right before the server starts with `--recover-store`. Where `--recover-store` is in a supervisor's command line and the clock can be behind at boot, start the server only once the clock has been synchronised.
 
 **The `fsync` option:**
 
-- `fsync: true` (default): writes use `O_SYNC` and both file data and directory metadata are explicitly synced. This is the safest option.
-- `fsync: false`: no sync calls are made. The OS may buffer writes. A crash can lose data that has not yet been flushed to disk. Use this only when performance matters more than durability (e.g. in-memory tmpfs, or when bundles can be retransmitted).
+- `fsync: true` (default): the save above. The file data is synced before the rename, and the directory after it. This is the safest option.
+- `fsync: false`: the bundle is written straight to its final name through the file that claims it, with no `.tmp` file and no rename, and no sync calls are made. The OS may buffer writes. A crash can lose data that has not yet been flushed to disk, and can leave an empty or partly written file under a final name: recovery deletes an empty file, and deletes a file it cannot read as a bundle. Use this only when performance matters more than durability (e.g. in-memory tmpfs, or when bundles can be retransmitted).
 
 **Delete:** A single `remove_file` call. If the file is already gone, the error is ignored.
 
-**Operator actions:** None required. Recovery is fully automatic.
+**Operator actions:** Start the server with `--recover-store` after a crash, with the clock set correctly.
 
 ### S3
 
@@ -125,10 +142,7 @@ SQLite uses Write-Ahead Logging (WAL) mode. All writes are serialized through an
 | During `confirm_exists()` | Some bundles not yet confirmed | They remain in `unconfirmed_bundles` and will be cleaned up in the next cleanup phase |
 | During `remove_unconfirmed()` | Metadata may be deleted from the database while the bundle data still exists in the bundle store | The orphaned bundle data will be cleaned up on the next recovery walk |
 
-**Operator actions:** None required. You can also use the `--upgrade-store` and `--recover-store` CLI flags to upgrade or repair the SQLite database:
-
-- `--upgrade-store` (`-u`): upgrades the database schema to the current format.
-- `--recover-store` (`-r`): attempts to recover damaged records.
+**Operator actions:** Start the server with `--recover-store` (`-r`) after a crash: see [When to Use `--recover-store`](#when-to-use-recover-store). `--upgrade-store` (`-u`) upgrades the database schema to the current format.
 
 ### PostgreSQL
 
@@ -158,20 +172,20 @@ Same three-phase protocol as SQLite:
 
 Since metadata and bundle data live in separate stores, three inconsistent states are possible after a crash:
 
-**Metadata exists, bundle data missing** (crash after metadata insert but before bundle save completes):
+**Metadata exists, bundle data missing** (crash part-way through deleting a bundle, which removes the data before the metadata; or data lost from the bundle store):
 
 - The recovery walk does not find the bundle data.
 - The metadata entry stays unconfirmed.
-- The cleanup phase deletes the orphaned metadata.
+- The cleanup phase deletes the orphaned metadata, and the bundle is reported deleted.
 
 **Bundle data exists, metadata missing** (crash after bundle save but before metadata insert):
 
 - The recovery walk finds the bundle data.
 - `confirm_exists` finds no matching metadata.
-- The bundle data is reported as orphaned and deleted.
+- The bundle is processed again as if it had just been received, and the old copy of its data is deleted.
 
 **Both exist and are consistent:**
 
 - `confirm_exists` succeeds, the entry is removed from the unconfirmed set, and normal operation resumes.
 
-In all cases, no manual intervention is required. The recovery protocol handles every combination automatically.
+Recovery handles every combination without further action, once the server is started with `--recover-store`.
