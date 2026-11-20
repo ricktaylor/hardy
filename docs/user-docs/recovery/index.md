@@ -105,7 +105,7 @@ Incomplete multipart uploads are invisible to Hardy's recovery protocol and will
 
 ### SQLite
 
-SQLite uses Write-Ahead Logging (WAL) mode. All writes are serialized through an async mutex.
+SQLite uses Write-Ahead Logging (WAL) mode. All writes run on a single writer thread, which commits the writes that arrive together as one transaction. A write is reported as done only after its transaction has committed. If a write cannot be committed, or the writer fails, the node stops rather than carry on without its metadata store.
 
 **Insert:** A single `INSERT OR IGNORE` statement. If the process crashes before the transaction commits, SQLite's WAL recovery rolls it back and the bundle is not in the database. If it crashes after commit, the data is durable.
 

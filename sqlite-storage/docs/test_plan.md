@@ -8,7 +8,7 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#sqlite-storage-72) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
-| **Version** | 1.1 |
+| **Version** | 1.6 |
 
 ## 1. Introduction
 
@@ -45,6 +45,23 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-04** | **Concurrency (SQLITE_BUSY)** | `storage.rs` | 1. Spawn N concurrent async writers.<br>2. All insert different bundles. | No `SQLITE_BUSY` errors; all inserts succeed. |
 | **SQL-05** | **Corrupt data handling** | `storage.rs` | 1. Insert bundle via trait.<br>2. Manually corrupt row bytes in DB.<br>3. Call `get()`. | Graceful error or tombstone, not panic. |
 | **SQL-06** | **Waiting queue invalidation** | `storage.rs` | 1. Insert bundle (Status=`Waiting`).<br>2. Claim it to `Dispatching` via `swap_status()`.<br>3. Call `poll_waiting()`. | Bundle not returned (cache correctly invalidated). |
+| **SQL-07** | **Batched write isolation** | `writer.rs` | 1. Hold the writer thread inside one write.<br>2. Queue three writes, the middle one failing after its first statement.<br>3. Release the writer. | The failing write reports its own error and leaves no trace; the other two commit. |
+| **SQL-08** | **Batch commit failure** | `writer.rs` | 1. Hold the writer thread.<br>2. Queue a valid insert and a write that violates a deferred foreign key.<br>3. Release the writer. | Both writes report the batch's transaction failure; neither takes effect. |
+| **SQL-09** | **Abandoned write** | `writer.rs` | 1. Hold the writer thread.<br>2. Queue a write, then drop its caller.<br>3. Release the writer. | The write is never run. |
+| **SQL-10** | **Query-only readers** | `reader_pool.rs` | 1. Route an `INSERT` through the reader pool. | Fails with `SQLITE_READONLY`. |
+| **SQL-11** | **Background checkpoint** | `checkpoint.rs` | 1. Write past the cycle threshold.<br>2. Let the writer request a cycle.<br>3. Wait for the checkpoint thread. | The whole WAL is copied into the database file with no checkpoint on the writer. |
+| **SQL-12** | **No automatic checkpoint** | `checkpoint.rs` | 1. Write 1200 pages with the cycle threshold out of reach. | Nothing is copied: SQLite's own checkpoint at 1000 pages is off. |
+| **SQL-13** | **WAL restart** | `checkpoint.rs` | 1. Hold a reader's snapshot so the background cycle stops short.<br>2. Release it and pass the restart bound.<br>3. Write again. | The writer copies the remainder, and the next write restarts the WAL from its beginning. |
+| **SQL-14** | **No writer checkpoint below the restart bound** | `checkpoint.rs` | 1. As SQL-13, with the restart bound out of reach. | The writer copies nothing; the remainder waits for the next cycle. |
+| **SQL-15** | **WAL size limit** | `checkpoint.rs` | 1. Write past the limit and let the writer request a cycle.<br>2. Call the writer's checkpoint step again.<br>3. Repeat with the limit out of reach.<br>4. Report WAL sizes either side of the limit. | At the limit the writer blocks on the cycle once and returns with the whole WAL copied; below it the writer never blocks. Reaching the limit is noted once and cleared once the WAL is back under it. |
+| **SQL-16** | **Database file sync** | `checkpoint.rs` | 1. Sync the database file through SQLite's own file handle. | Succeeds. |
+| **SQL-17** | **Tombstones leave the indexes** | `storage.rs` | 1. Insert two bundles.<br>2. Tombstone one.<br>3. Count each secondary index's entries, and re-insert the tombstoned bundle. | Each index drops from two entries to one; the row stays and refuses the replay. |
+| **SQL-18** | **Expiry poll plan** | `storage.rs` | 1. `EXPLAIN QUERY PLAN` the expiry poll's SQL. | A search of `idx_bundles_expiry`, with no table scan and no sort. |
+| **SQL-19** | **Secondary index set** | `storage.rs` | 1. List the indexes on `bundles`. | Exactly the two live-row indexes, both partial. |
+| **SQL-20** | **Batch loses its transaction** | `writer.rs` | 1. Cap the database's size.<br>2. Queue a small write, a write that fills the database, and another small write.<br>3. Release the writer. | All three report the batch's failure with `SQLITE_FULL`; no row is written; the writer's next write succeeds. |
+| **SQL-21** | **Upgrade of an existing store** | `migrate.rs` | 1. Migrate a store with all but the newest migration (and, separately, with only the first).<br>2. Reopen with `upgrade`.<br>3. Reopen a store one behind without `upgrade`. | Every pending migration runs and is recorded, and the newest one's schema change is present; without `upgrade` the store is refused with `UpdateRequired` and left unchanged. |
+| **SQL-22** | **Abort on a store thread's panic** | `thread.rs`, `writer.rs`, `reader_pool.rs` | In a child process:<br>1. Panic on a worker thread.<br>2. Panic inside a write.<br>3. Panic inside a read. | Each child is killed by `SIGABRT`. A worker whose work returns is joined without aborting. |
+| **SQL-23** | **Failed checkpoint** | `checkpoint.rs` | 1. Give a step the `SQLITE_BUSY` error.<br>2. In a child process, run a cycle on a connection whose database has no file to sync. | The busy step is deferred; the failed cycle aborts the child. |
 
 ## 5. Execution
 
