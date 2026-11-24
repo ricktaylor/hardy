@@ -31,7 +31,10 @@ The `storage-tests` crate is a **generic integration harness** that verifies eve
 | [**REQ-9**](../../../docs/requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage) | Support for S3 (Bundle Storage). | Verified by running suite against `s3-storage`. |
 | [**7.2.1**](../../../docs/requirements.md#sqlite-storage-72) | Store/Retrieve metadata. | Covered by **Suite A (Metadata CRUD)**. |
 | [**7.1.1**](../../../docs/requirements.md#local-disk-storage-71) | Store/Retrieve payloads. | Covered by **Suite D (Bundle CRUD)**. |
-| [**7.1.3**](../../../docs/requirements.md#local-disk-storage-71) | Configurable discard policy. | Covered by **Suite B (Polling)**. |
+| [**7.3.5**](../../../docs/requirements.md#storage-and-recovery-73) | Waiting bundles held in storage and recovered in order. | Covered by **Suite B (Polling)**. |
+| [**7.3.1**](../../../docs/requirements.md#storage-and-recovery-73) | Bundle and metadata storage selectable independently. | The metadata and bundle suites run separately against every metadata and every bundle backend (§3.5). |
+| [**7.3.3**](../../../docs/requirements.md#storage-and-recovery-73) | Recovery reconciles the two stores. | META-12, META-13, BLOB-04 (the backend half); the BPA's reconciliation is in `bpa/src/storage/recover.rs`. |
+| [**6.1.17**](../../../docs/requirements.md#routing-61) | A bundle with no route waits; one for an unregistered local service waits for it. | META-06, META-14 (the waiting queues the BPA re-polls). |
 
 ## 3. Harness Architecture
 

@@ -31,6 +31,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
  | ----- | ----- | ----- |
 | **6.1.1** | The EID pattern parsing functionality shall correctly parse the textual representation of `ipn` and `dtn` patterns. | Sec 3 (Syntax) |
 | **6.1.2** | The EID pattern parsing functionality shall provide a function to determine if a particular EID and EID pattern match. | Sec 4 (Matching) |
+| **6.1.11** | Optional `dtn` scheme EID patterns (`dtn-pat-item` feature). Verified by `tests/patterns.rs::dtn_glob_match`, `dtn_glob_authority_case_insensitive`. | draft-sipos-dtn-eid-pattern-02 (DTN items deferred by the WG) |
 
 ## 3. Unit Test Cases
 

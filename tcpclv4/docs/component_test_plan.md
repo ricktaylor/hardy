@@ -45,7 +45,7 @@ These scenarios verify RFC 9174 protocol logic. All are covered by interop testi
 | **TCP-04** | **Keepalive** | 3.1.10 | Interop: long-running tests |
 | **TCP-05** | **TLS Handshake (Default)** | 3.1.7, 3.1.8 | Interop: TLS-capable peers |
 | **TCP-06** | **TLS Disabled** | 3.1.8 | Interop: `--no-tls` configuration |
-| **TCP-07** | **Connection Pooling** | 3.1.3 | Interop: multi-ping connection reuse |
+| **TCP-07** | **Connection Pooling** | — (REQ-13) | Interop: multi-ping connection reuse |
 | **TCP-08** | **Protocol Error** | — | Fuzz: adversarial byte streams (bad magic, invalid messages, truncated frames) |
 | **TCP-09** | **TLS Entity ID** | 3.1.9 | Interop: TLS peers with certificate validation |
 | **TCP-10** | **Session Extensions** | 3.1.6 | Interop: passively exercised (peers send extensions) |

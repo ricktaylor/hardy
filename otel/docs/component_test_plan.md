@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Functional Area** | Observability (OTLP Export) |
 | **Module** | `hardy-otel` |
-| **Requirements Ref** | [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools) |
+| **Requirements Ref** | [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools); LLR 19.1.1 (OTEL-03), 19.1.2 (OTEL-01), 19.1.3 (OTEL-02) |
 | **Test Suite ID** | `COMP-OTEL-01` |
 | **Version** | 1.0 |
 

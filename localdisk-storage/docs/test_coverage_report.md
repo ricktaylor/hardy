@@ -15,7 +15,8 @@ The `BundleStorage` trait contract is verified by the shared storage harness (5 
 | :--- | :--- | :--- | :--- |
 | 7.1 | Bundle storage | **Pass** | BLOB-01..04 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §5) |
 | 7.1.1 | Configurable storage location | **Pass** | LD-01 (`test_configuration_custom_store_dir`) |
-| 7.1.2 | Configurable maximum size | **Not tested** | Not planned (enforcement is in BPA, not backend) |
+| 7.1.2 | Withdrawn in requirements 1.3 (capacity moves to the BPA, LLR 7.3.7) | — | — |
+| 7.3.8 | No partial bundle treated as complete after a crash | **Pass** (this backend) | `test_atomic_save_no_tmp_residue`, `test_failed_atomic_save_leaves_nothing_behind` |
 | 7.3 | Recovery after restart | **Pass** | BLOB-04 (recovery scan) + LD-02 (cleanup of .tmp, zero-byte, empty dirs) |
 
 ## 2. Test Inventory

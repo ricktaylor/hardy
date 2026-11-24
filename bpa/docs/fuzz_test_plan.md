@@ -26,7 +26,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | [**REQ-14**](../../docs/requirements.md#req-14-reliability) | Fuzz testing of all external APIs (Ingress/Egress). |
 | [**1.1.33**](../../docs/requirements.md#bpv7-bundle-processing-11) | Bundle Expiry (Time-to-Live processing). |
 | [**1.1.34**](../../docs/requirements.md#bpv7-bundle-processing-11) | Hop Count limit enforcement. |
-| **1.1.50** | Status Report generation (triggered by `Action::Drop` routes in harness). |
+| [**1.2.3**](../../docs/requirements.md#bundle-pipeline-12) | Status Report generation on rejection (triggered by `Action::Drop` routes in harness). |
 | [**6.1.7**](../../docs/requirements.md#routing-61) | Routing logic (Discard/Forward decisions). |
 | [**6.1.8**](../../docs/requirements.md#routing-61) | Bundle Reflection logic (triggered by `Action::Reflect` routes in harness). |
 

@@ -21,7 +21,8 @@ Trait-level contract testing (save, load, delete, recovery scan) is covered by t
 | LLR ID | Description | Verified By |
 | :--- | :--- | :--- |
 | **7.1.1** | Configurable location for Local Disk bundle storage | LD-01 |
-| **7.1.2** | Configurable maximum total size for Local Disk storage | LD-05 |
+| **7.1.2** | Withdrawn in requirements 1.3 (capacity moves to the BPA, LLR 7.3.7) | — |
+| **7.3.8** | A failed or interrupted write never leaves a partial bundle treated as complete | LD-04, LD-05, LD-09 |
 | **7.1** | Store/retrieve bundles | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite D (BLOB-01..04) |
 | **7.3** | Recovery after restart | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) BLOB-04 |
 

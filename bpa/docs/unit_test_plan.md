@@ -22,12 +22,39 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | ----- | ----- |
 | [**1.1.30**](../../docs/requirements.md#bpv7-bundle-processing-11) | Processing must enforce bundle rewriting rules when discarding unrecognised blocks. |
 | [**1.1.33**](../../docs/requirements.md#bpv7-bundle-processing-11) | Processing must use Bundle Age block for expiry if Creation Time is zero. |
-| [**2.1.2**](../../docs/requirements.md#bpsec-21---optional-for-initial-development) | Correctly remove BPSec target info when targeted block is removed. |
-| [**2.1.3**](../../docs/requirements.md#bpsec-21---optional-for-initial-development) | Validate that Fragmented bundles do NOT contain BPSec extension blocks. |
+| [**2.1.2**](../../docs/requirements.md#bpsec-21) | Correctly remove BPSec target info when targeted block is removed. |
+| [**2.1.3**](../../docs/requirements.md#bpsec-21) | Refuse to add BPSec blocks to a fragment. |
 | [**6.1.1**](../../docs/requirements.md#eid-patterns-61) | Correctly parse textual representation of `ipn` and `dtn` EID patterns. |
 | [**6.1.9**](../../docs/requirements.md#routing-61) | Provide mechanism to prioritise routing rules. |
 | [**6.1.10**](../../docs/requirements.md#routing-61) | Implement Equal Cost Multi-Path (ECMP). |
-| [**7.1.3**](../../docs/requirements.md#local-disk-storage-71) | Configurable discard policy (FIFO/Priority) when storage full. |
+| [**7.3.6**](../../docs/requirements.md#storage-and-recovery-73) | In-memory backend capacity and eviction order. |
+
+The following requirements are also verified by existing tests in this crate that this plan's scenarios do not yet describe. Unless another path is given, tests are in `tests/pipeline.rs`.
+
+| LLR ID | Description | Verified By |
+| ----- | ----- | ----- |
+| [**1.2.1**](../../docs/requirements.md#bundle-pipeline-12) | Rejected bundles are never stored. | `early_route_drop_never_awaits_the_payload`, `duplicate_arrival_never_awaits_the_payload`, `gate_reports_hop_exhaustion_but_not_expiry` |
+| [**1.2.2**](../../docs/requirements.md#bundle-pipeline-12) | Truncated or oversized bundles refused without a report. | `cla_streamed_ingress_truncation_is_refused`, `an_abandoned_short_transfer_is_refused_and_unreported`, `ingress_size_cap_refuses_oversized_bundle` |
+| [**1.2.3**](../../docs/requirements.md#bundle-pipeline-12) | Combined reception and deletion report on rejection. | `header_failure_reports_reception_then_deletion`, `drain_failure_reports_reception_then_deletion`, `step4_block_flag_alone_forces_reception_report` |
+| [**1.2.5**](../../docs/requirements.md#bundle-pipeline-12) | Expiry in storage deletes with a report. | `src/dispatcher/forward.rs::expired_queued_bundle_is_never_offered`; `tests/on_deliver.rs::deferred_delivery_expires_honestly`, `expiry_mid_delivery_resolves_once` |
+| [**1.2.6**](../../docs/requirements.md#bundle-pipeline-12) | Originated bundles validated and filtered like received ones. | `raw_originate_rejects_a_fragment`, `originate_route_drop_never_awaits_the_payload`; `tests/filter_dispositions.rs::an_originate_classifier_reads_its_declared_peek` |
+| [**1.2.7**](../../docs/requirements.md#bundle-pipeline-12) | ADU reassembly for local delivery. | `src/storage/adu_reassembly.rs::reassemble_basic_happy_path` and the `reassemble_rejects_*` cases |
+| [**1.3.1**](../../docs/requirements.md#bundle-filters-13) | Filter hooks at Ingress, Originate, Egress and Deliver. | `src/filter/engine.rs` tests; `tests/filter_dispositions.rs` |
+| [**1.3.2**](../../docs/requirements.md#bundle-filters-13) | Verifiers drop with a reason. | `tests/filter_dispositions.rs::ingress_drop_with_a_reason_reports_before_storing`, `deliver_drop_with_a_reason_reports_once` |
+| [**1.3.3**](../../docs/requirements.md#bundle-filters-13) | Classifiers drop or annotate; annotations persist. | `src/filter/engine.rs::classifier_sees_preceding_deltas_and_result_persists`; `classifier_route_key_drives_the_lookup` |
+| [**1.3.4**](../../docs/requirements.md#bundle-filters-13) | Rewriters add, replace and remove extension blocks. | `tests/filter_dispositions.rs::egress_rewriter_meets_a_refusal_on_an_admin_record`; `bpv7/tests/editor.rs::extension_editor_materialises_inserts_and_skips_untouched` |
+| [**1.3.5**](../../docs/requirements.md#bundle-filters-13) | Filters read blocks and a bounded payload prefix. | `tests/filter_dispositions.rs::an_ingress_classifier_reads_its_declared_peek` |
+| [**2.1.6**](../../docs/requirements.md#bpsec-21) | Integrator-supplied key material. | Key-provider fixtures in `tests/forward.rs` and `tests/pipeline.rs` |
+| [**2.1.7**](../../docs/requirements.md#bpsec-21) | Keyless forwarding; Bundle Age liveness rule. | `tests/forward.rs::keyless_relay_forwards_a_signed_then_encrypted_bundle`, `keyless_relay_forwards_an_encrypted_hop_count_unchanged`; `src/bundle/parse.rs::nokey_hop_count_passes_ingress_unread` |
+| [**2.1.8**](../../docs/requirements.md#bpsec-21) | Verify on reception; RFC 9172 §5.1.1 failure handling. | `src/dispatcher/validate.rs::deferred_bib_verifies_over_stream`, `deferred_bib_tamper_fails` |
+| [**2.1.9**](../../docs/requirements.md#bpsec-21) | Decrypted payload never exposed to filters. | `tests/filter_dispositions.rs::an_encrypted_payload_has_no_peek` |
+| [**6.1.13**](../../docs/requirements.md#cla-apis-61) | Failed transfer returns to routing. | `deferred_outcome_completed_resolves`, `deferred_outcome_failed_redispatches`, `deferred_outcome_peer_removal_resolves_unknown` |
+| [**6.1.14**](../../docs/requirements.md#cla-apis-61) | CLA told of acceptance or refusal. | `cla_streamed_ingress_truncation_is_refused`, `cla_segmented_without_final_is_refused` |
+| [**6.1.17**](../../docs/requirements.md#routing-61) | No route means wait, not drop. | `forward_failure_park_recheck_redispatches`, `a_keyed_local_destination_waits_for_its_key_route` |
+| [**7.3.2**](../../docs/requirements.md#storage-and-recovery-73) | Stored bundles resume after restart. | `src/dispatcher/restart.rs::restart_requeues_dispatch_pending_bundle`, `restart_reparks_delivery_statuses`, `restart_resets_ack_pending_transfer` |
+| [**13.1.1**](../../docs/requirements.md#egress-scheduling-131) | Selectable scheduling policy. | Custom `FlowControllerFactory` fixture in `tests/pipeline.rs` |
+| [**13.1.2**](../../docs/requirements.md#egress-scheduling-131) | FIFO per peer by default. | `src/policy/mod.rs::null_policy_is_one_total_queue` |
+| [**13.1.3**](../../docs/requirements.md#egress-scheduling-131) | Scheduler never drops a bundle. | `src/storage/channel.rs::test_hysteresis_recovery` |
 
 ## 3. Unit Test Cases
 
@@ -182,7 +209,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Unreadable Hop Count** | A Hop Count block this node has no key for passes the header pass unread: its increment is a SHOULD (RFC 9171 §4.4.3), so it is not liveness-critical. | `src/bundle/parse.rs` | Bundle with a BCB-encrypted Hop Count, no keys | Accepted; no cached hop count; the block is kept. |
 | **Corrupt Hop Count** | A Hop Count block whose ciphertext fails authentication is scheduled for removal with its BCB (RFC 9172 §5.1.1). | `src/bundle/parse.rs` | Bundle with a tampered BCB-encrypted Hop Count | Accepted; the block scheduled for removal; reception report `FailureDropped`. |
 
-**Note (Rev 3):** Fragment Security (LLR 2.1.3) is a sender constraint enforced by `bpv7/src/bpsec/signer.rs:75` — not a BPA-level validation. Target Cleanup (LLR 2.1.2) is verified by the bpv7 unit tests (`test_bib_removal_and_readd`, `test_bcb_without_bib_removal`). Both scenarios are covered by the bpv7 test suite ([`UTP-BPSEC-01`](../../bpv7/docs/unit_test_plan_bpsec.md)); no separate BPA tests are required.
+**Note:** Fragment Security (LLR 2.1.3) is a constraint on adding BPSec blocks, enforced by the bpv7 `Signer` and `Encryptor` (`FragmentedBundle`) and verified by `tests/bpsec` PICS item 56; the BPA additionally rejects a service-originated fragment (`tests/pipeline.rs::raw_originate_rejects_a_fragment`). Target Cleanup (LLR 2.1.2) is verified by the bpv7 unit tests (`test_bib_removal_and_readd`, `test_bcb_without_bib_removal`). Both scenarios are covered by the bpv7 test suite ([`UTP-BPSEC-01`](../../bpv7/docs/unit_test_plan_bpsec.md)); no separate BPA tests are required.
 
 ### 3.13 Bundle Manipulation (Canonicalization)
 
