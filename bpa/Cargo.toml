@@ -30,6 +30,7 @@ std = [
     "serde?/std",
     "base64?/std",
     "foldhash/std",
+    "metrics/metrics",
 ]
 instrument = ["tracing/attributes"]
 

@@ -2158,7 +2158,7 @@ name = "hardy-otel"
 version = "0.2.0"
 dependencies = [
  "dashmap",
- "hardy-metrics",
+ "metrics",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
