@@ -16,8 +16,8 @@ This report maps every requirement from [requirements.md](requirements.md) to im
   * 9 Partial
   * 1 Not started
 * 168 LLRs
-  * 124 Done
-  * 3 Implemented, not yet traced to a test
+  * 125 Done
+  * 2 Implemented, not yet traced to a test
   * 6 Withdrawn
   * 35 Not implemented
 * Gaps and implementation status detailed in [§4](#4-gaps)
@@ -173,7 +173,7 @@ Implementing crate: `bpv7`, [coverage report](../bpv7/docs/test_coverage_report.
 | **1.1.17** | Bundle validity indication | Done |
 | **1.1.18** | Tolerance of unrecognised but correctly encoded flags/type identifiers | Done |
 | **1.1.19** | Parse and validate RFC 9171 extension blocks | Done |
-| **1.1.20** | Parse and validate extension blocks when specification is available | Done |
+| **1.1.20** | Parse and validate extension blocks when specification is available | Done (BIB and BCB validation: `bpv7/tests/parse.rs` `asb_*_rejected`, `bcb_targeting_*_rejected`) |
 | **1.1.21** | Parse and validate all CRC values | Done |
 | **1.1.22** | Support all RFC 9171 CRC types | Done |
 | **1.1.23** | 3-element CBOR encoding of `ipn` scheme EIDs (RFC 9758) | Done |
@@ -293,11 +293,11 @@ Implementing crate: `tcpclv4`, [coverage report](../tcpclv4/docs/test_coverage_r
 
 ### Bundle-in-Bundle Encapsulation (4.5)
 
-Implementing crate: `bibe`
+Implementing crate: `bibe`, [test plan](../bibe/docs/test_plan.md)
 
 | LLR | Description | Status | Evidence |
 | :--- | :--- | :--- | :--- |
-| **4.5.1** | Bundle-in-Bundle Encapsulation | Done | `bibe/src/pdu.rs::test_encap_decap_round_trip` |
+| **4.5.1** | Bundle-in-Bundle Encapsulation | Done | `bibe/src/pdu.rs::test_encap_decap_round_trip` (PLAN-BIBE-01 BIBE-01); tunnel routing not yet tested (BIBE-07) |
 | **4.5.2** | Segmented Bundle-in-Bundle Encapsulation | Not implemented | — |
 | **4.5.3** | Inner bundle not lost on transient decapsulation failure | Not implemented | — |
 
@@ -381,7 +381,7 @@ Implementing crates: `bpa`, storage backends, [storage harness](../tests/storage
 | **7.3.1** | Bundle and metadata storage selectable independently | Done | Storage harness runs one suite against every backend |
 | **7.3.2** | Stored bundles resume after restart | Done | Storage harness META-12; `bpa/src/dispatcher/restart.rs` |
 | **7.3.3** | Recovery reconciles the two stores | Done | Storage harness META-12, META-13, BLOB-04 |
-| **7.3.4** | Recovery on operator request at start-up | Not Tested | `--recover-store` gates `Store::start`; no test drives the flag |
+| **7.3.4** | Recovery on operator request at start-up | Done | `bpa/src/dispatcher/restart.rs` tests start the BPA with recovery requested (`Bpa::start(true)`) and assert the recovered state; `--recover-store` maps to that flag |
 | **7.3.5** | Waiting limited by storage, not memory | Done | `bpa/src/storage/channel.rs::test_hysteresis_recovery`; storage harness META-06 |
 | **7.3.6** | In-memory backend capacity and eviction | Done | `bpa/src/storage/bundle_mem.rs::test_eviction_policy_lru`, `test_min_bundles_protection`; `metadata_mem.rs::expired_tombstone_evicted_before_live` |
 | **7.3.7** | BPA-level capacity and eviction order for any backend | Not implemented | — |
@@ -523,7 +523,7 @@ Verified by: the CI `no-std` job in `.github/workflows/rust.yml`
 | **6.1** Routing | 11 | 9 | 0 | 0 | 2 |
 | **7.1** Local Disk Storage | 3 | 1 | 0 | 2 | 0 |
 | **7.2** SQLite Storage | 2 | 2 | 0 | 0 | 0 |
-| **7.3** Storage and Recovery | 10 | 5 | 1 | 0 | 4 |
+| **7.3** Storage and Recovery | 10 | 6 | 0 | 0 | 4 |
 | **9.1** S3 Storage | 4 | 2 | 0 | 2 | 0 |
 | **13.1** Egress Scheduling | 6 | 3 | 0 | 0 | 3 |
 | **19.1** OpenTelemetry | 3 | 3 | 0 | 0 | 0 |
@@ -533,7 +533,7 @@ Verified by: the CI `no-std` job in `.github/workflows/rust.yml`
 | **21.2** Documentation | 3 | 3 | 0 | 0 | 0 |
 | **21.3** Issue Reporting and Tracking | 2 | 2 | 0 | 0 | 0 |
 | **22.1** Embedded Platforms | 4 | 2 | 0 | 0 | 2 |
-| **Total** | **168** | **124** | **3** | **6** | **35** |
+| **Total** | **168** | **125** | **2** | **6** | **35** |
 
 ## 4. Gaps
 
@@ -543,7 +543,6 @@ Verified by: the CI `no-std` job in `.github/workflows/rust.yml`
 | :--- | :--- |
 | 1.2.4 | Forwarding and delivery status reports have no test asserting the report content. |
 | 2.1.10 | No test asserts that `SecretBytes` redacts its `Debug` output. |
-| 7.3.4 | No test drives `--recover-store`. |
 
 ### 4.2. Not Implemented
 
@@ -570,4 +569,4 @@ Verified by: the CI `no-std` job in `.github/workflows/rust.yml`
 
 ## 5. Conclusion
 
-Core protocol compliance for RFC 9171 and RFC 9174 is satisfied; RFC 9172/9173 compliance (REQ-2) is Partial, because the BPA does not yet act as a BPSec security source at egress (LLR 2.1.11) and several RFC 9172 policy features are not implemented. REQ-5 (experimental convergence layers) is Partial: the BTP-U protocol engine is complete and traced to its draft, but there is no BTP-U convergence layer adaptor yet, and QUIC is not started. REQ-6 is Partial because contact bandwidth is recorded but not applied to forwarding. REQ-23 (framework APIs) is Partial: the extension points are public, versioned and published, but code examples and a developer guide are still to come. Of 168 LLRs, 124 are Done, 3 are implemented but not yet traced to a test, 6 are withdrawn, and 35 are not implemented. REQ-20 (interoperability) is Partial: 7 of the 8 listed implementations are verified, and Unibo-BP has no interop harness yet.
+Core protocol compliance for RFC 9171 and RFC 9174 is satisfied; RFC 9172/9173 compliance (REQ-2) is Partial, because the BPA does not yet act as a BPSec security source at egress (LLR 2.1.11) and several RFC 9172 policy features are not implemented. REQ-5 (experimental convergence layers) is Partial: the BTP-U protocol engine is complete and traced to its draft, but there is no BTP-U convergence layer adaptor yet, and QUIC is not started. REQ-6 is Partial because contact bandwidth is recorded but not applied to forwarding. REQ-23 (framework APIs) is Partial: the extension points are public, versioned and published, but code examples and a developer guide are still to come. Of 168 LLRs, 125 are Done, 2 are implemented but not yet traced to a test, 6 are withdrawn, and 35 are not implemented. REQ-20 (interoperability) is Partial: 7 of the 8 listed implementations are verified, and Unibo-BP has no interop harness yet.

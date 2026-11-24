@@ -36,6 +36,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | **7.2.2** | Configurable filesystem location for SQLite database. |
 | **6.1.5** | Routing information via a configuration file. Verified by the 15 parser tests in `src/static_routes/loader.rs` and `tests/test_static_routes.sh`. |
 | **6.1.19** | Static routes reloaded on file change, without a restart. Verified by `tests/test_static_routes.sh` (hot-reload, file restore). |
+| **6.1.20** | A routes file that fails to parse on reload leaves the existing routes in force. TODO (not implemented): extend `tests/test_static_routes.sh` to write a malformed file and check the previous routes still apply. |
 
 ## 3. Unit Test Cases
 

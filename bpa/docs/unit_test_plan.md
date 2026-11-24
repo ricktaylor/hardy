@@ -52,6 +52,7 @@ The following requirements are also verified by existing tests in this crate tha
 | [**6.1.14**](../../docs/requirements.md#cla-apis-61) | CLA told of acceptance or refusal. | `cla_streamed_ingress_truncation_is_refused`, `cla_segmented_without_final_is_refused` |
 | [**6.1.17**](../../docs/requirements.md#routing-61) | No route means wait, not drop. | `forward_failure_park_recheck_redispatches`, `a_keyed_local_destination_waits_for_its_key_route` |
 | [**7.3.2**](../../docs/requirements.md#storage-and-recovery-73) | Stored bundles resume after restart. | `src/dispatcher/restart.rs::restart_requeues_dispatch_pending_bundle`, `restart_reparks_delivery_statuses`, `restart_resets_ack_pending_transfer` |
+| [**7.3.4**](../../docs/requirements.md#storage-and-recovery-73) | Storage recovery runs when the operator requests it at start-up. | The same three `restart.rs` tests start the BPA with recovery requested (`Bpa::start(true)`) and assert the recovered state |
 | [**13.1.1**](../../docs/requirements.md#egress-scheduling-131) | Selectable scheduling policy. | Custom `FlowControllerFactory` fixture in `tests/pipeline.rs` |
 | [**13.1.2**](../../docs/requirements.md#egress-scheduling-131) | FIFO per peer by default. | `src/policy/mod.rs::null_policy_is_one_total_queue` |
 | [**13.1.3**](../../docs/requirements.md#egress-scheduling-131) | Scheduler never drops a bundle. | `src/storage/channel.rs::test_hysteresis_recovery` |
@@ -239,6 +240,35 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Editor Refusals** | The `ExtensionEditor`'s call-time refusals — BPSec-covered targets, the forbidden `report_on_failure` flag (RFC 9171 §4.2.3-4/-5), unrecognised CRC types, undecodable well-known bodies, reserved aliases — are bpv7's; the forbidden flag is also pinned end to end. | `bpv7/tests/editor.rs`, `tests/filter_dispositions.rs` | Done |
 | **Non-Resident Block** | A block beyond the resident bytes reads as `Availability::NotResident` through the `DecryptingReader`. | `bpv7/tests/reader.rs` | Done |
 | **Slot Names** | Same-named slots declared in different modules are distinct slots, each named by its declaring path. | `src/filter/slots/mod.rs` | Done |
+
+### 3.15 Requirements Not Yet Verified (TODO)
+
+*Objective: Record the scenarios that will verify the requirements this crate does not yet test. Some need the behaviour implemented first; the rest need only a test.*
+
+| Test Scenario | Description | Source File | Status |
+| ----- | ----- | ----- | ----- |
+| **Forwarding and Delivery Reports** (LLR 1.2.4) | A bundle requesting forwarding and delivery reports produces a status report asserting each, addressed to its report-to EID; a bundle not requesting them produces none. | TODO | Implemented; test missing |
+| **Bounded Per-Bundle Memory** (LLR 1.2.8) | A bundle much larger than available buffering is received, forwarded and delivered while peak memory stays within a fixed bound. | TODO | Not implemented |
+| **Bounded Reassembly** (LLR 1.2.9) | Overlapping fragments reassemble keeping the first bytes received; reassembly stops at the maximum bundle size; a fragment carrying a payload BIB is accepted and the reassembled payload verified. | TODO | Not implemented |
+| **Originate and Deliver Drop Reports** (LLR 1.2.10) | An Originate or Deliver filter drop produces the same reception and deletion reports as an ingress drop. | TODO | Not implemented |
+| **Re-classification on Filter Change** (LLR 1.3.6) | After the input filter configuration changes, a stored bundle is classified again before it is next routed; one a Verifier now drops gets a deletion report, not a reception report. | TODO | Not implemented |
+| **External Inspection** (LLR 1.3.7) | A bundle selected for inspection is released, optionally reclassified, or dropped with a reason, by the external component's verdict. | TODO | Not implemented |
+| **Security Source at Egress** (LLR 2.1.11) | With a security policy configured, originated and forwarded bundles leave carrying the BIBs and BCBs the policy requires; a waypoint the policy names as acceptor removes the operations it accepts. | TODO | Not implemented |
+| **Delivery After Key Arrival** (LLR 2.1.12) | A bundle at its destination with no decryption key waits, and is delivered once the key becomes available. | TODO | Not implemented |
+| **Bounded Payload Crypto** (LLR 2.1.13) | Encrypting or decrypting a large payload uses memory bounded independently of its size; tampered ciphertext is never delivered as complete. | TODO | Not implemented |
+| **Security Reason Codes** (LLR 2.1.14) | A bundle discarded by security processing produces a status report with the matching RFC 9172 reason code. | TODO | Not implemented |
+| **Configurable Security Policy** (LLR 2.1.15) | The configured policy governs the handling of a failed security operation and the treatment of a block that requires protection but has none. | TODO | Not implemented |
+| **EID Resolution** (LLR 6.1.4) | A node EID or name resolves to the CLA addresses at which that node can be reached, for example by DNS for TCPCLv4. | TODO | Not implemented |
+| **Adjacencies on Demand** (LLR 6.1.15) | Configured peers are connected at start and reconnected after a loss; a bundle routed to a node with no adjacency causes the node to be resolved and connected. | TODO | Not implemented |
+| **Unresolved Transfer** (LLR 6.1.16) | A transfer a CLA accepts but never resolves returns its bundle to routing, and the bundle expires with a status report if its lifetime ends first. | TODO | Not implemented |
+| **Multiple Routing Tables** (LLR 6.1.21) | A bundle is routed in the table chosen for it; a miss in that table waits rather than falling through. | TODO | Not implemented |
+| **BPA Capacity and Eviction** (LLR 7.3.7) | With a maximum stored total configured, storing past it evicts in the configured order, for each backend. | TODO | Not implemented |
+| **Automatic Recovery** (LLR 7.3.9) | After an unclean shutdown, recovery runs at start-up without being requested. | TODO | Not implemented |
+| **Recovery Reporting** (LLR 7.3.10) | Recovery reports why it ran, each finding and a summary; the check-only mode repairs nothing and exits with a status reflecting its findings. | TODO | Not implemented |
+| **Fair-Queuing Policy** (LLR 13.1.4) | The included fair-queuing policy shares a peer's transmission between competing flows and paces them. | TODO | Not implemented |
+| **Traffic Classes** (LLR 13.1.5) | Bundles assigned to different traffic classes receive their classes' scheduling; with none configured, every bundle is in the default class. | TODO | Not implemented |
+| **Contact Bandwidth** (LLR 13.1.6) | During a TVR contact, transmission to the peer is held to the contact's bandwidth. | TODO | Not implemented |
+| **Administrative Record Delivery** (LLR 18.2.5) | A component registered for an administrative record type receives the records of that type addressed to the node. | TODO | Not implemented |
 
 ## 4. Execution & Pass Criteria
 

@@ -36,6 +36,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | **1.1.31** | Parser must reject bundles whose CBOR encoding is not deterministic. | RFC 9171 Sec 4.1 |
 | **1.1.15** | Parser must indicate that the Primary Block is valid. | RFC 9171 Sec 4.2 |
 | **1.1.19** | Parser must parse/validate extension blocks specified in RFC 9171. | RFC 9171 Sec 4.4 |
+| **1.1.20** | Parser should validate extension blocks whose specification is available (the BPSec BIB and BCB). Verified by `tests/parse.rs` and `src/bpsec/parse.rs`: `asb_no_targets_rejected`, `asb_duplicate_target_rejected`, `asb_invalid_security_source_rejected`, `asb_mismatched_target_result_rejected`, `bcb_targeting_primary_block_rejected`, `bcb_targeting_payload_without_must_replicate_rejected`. | RFC 9172 Sec 3.6 |
 | **1.1.21** | Parser must parse and validate all CRC values. | RFC 9171 Sec 4.2 |
 | **1.1.22** | Parser must support all CRC types specified in RFC 9171. | RFC 9171 Sec 4.2 |
 | **1.1.23, 1.1.24** | Parser must support `ipn` scheme EIDs (2 and 3-element) and `dtn` scheme. | RFC 9171 Sec 4.2.5, RFC 9758 |

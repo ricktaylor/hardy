@@ -146,6 +146,8 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | **BLOB-02** | **Delete** | 1. Save bytes.<br>2. Call `delete(name)`.<br>3. Call `load(name)`. | 1. `delete` returns `Ok`.<br>2. `load` returns `None`. |
 | **BLOB-03** | **Missing Load** | 1. Call `load("non-existent")`. | 1. Returns `Ok(None)` (Not an error). |
 | **BLOB-04** | **Recovery Scan** | 1. Save Blob A.<br>2. Save Blob B.<br>3. Call `recover(tx)`. | 1. `tx` receives entries for A and B.<br>2. Entries contain correct storage name and timestamp (`RecoveryResponse = (Arc<str>, OffsetDateTime)`). |
+| **BLOB-05** | **Repeatable Load** | 1. Save bytes.<br>2. Call `load(name)` twice. | 1. Both loads return the same bytes. |
+| **BLOB-06** | **Interrupted Write** (LLR 7.3.8, TODO) | 1. Begin a save and abandon it before it completes.<br>2. Call `recover(tx)`. | 1. The abandoned bundle is not reported as stored.<br>2. A subsequent `load` of it returns `None`. |
 
 ## 6. Coverage Boundary
 

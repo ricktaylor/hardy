@@ -126,6 +126,16 @@ The following scenarios are verified by the unit tests located in `hardy-bpv7/sr
 | **Appendix A.3 (BCB)** | **BCB-AES-GCM Example 2**<br>Verify encryption using 256-bit key. | `src/bpsec/rfc9173/mod.rs` | Appx A.3 | Ciphertext matches `0x...` |
 | **Appendix A.4 (BCB)** | **BCB-AES-GCM Example 3**<br>Verify encryption with Additional Authenticated Data (AAD) or variant. | TODO | Appx A.4 | Ciphertext/Tag match RFC vectors. |
 
+### 3.8 Requirements Not Yet Verified (TODO)
+
+*Objective: Record the scenarios that will verify the requirements this crate does not yet test.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Key Material Hygiene** (LLR 2.1.10) | Formatting key material for logs or debug output never shows its bytes, and its memory is cleared when released. | TODO | A key held in `SecretBytes` | `Debug` output shows no key bytes |
+| **Erratum 9192 Primary-Block IPPT** (LLR 2.2.8) | A BIB over the primary block is computed from the bare primary block; one in the RFC 9173 Appendix A.3 form is still accepted, and logged, during the transition. | TODO | Erratum 9192 corrected vector; published A.3 bundle | Corrected MAC; A.3 bundle verifies through the fallback only |
+| **COSE Security Contexts** (LLR 2.1.16) | BIBs and BCBs using the BPSec COSE contexts are created and validated. | TODO | COSE context vectors, once the specification is stable | Operations verify |
+
 ## 4. Execution & Pass Criteria
 
 * **Command:** `cargo test -p hardy-bpv7 --lib`

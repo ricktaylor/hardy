@@ -9,11 +9,11 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-The `BundleStorage` trait contract is verified by the shared storage harness (5 tests, all pass; four are the scenarios `PLAN-STORE-01` lists, and `blob_05_repeatable_load` is in the harness but not yet in that plan). Recovery requirements are satisfied by the harness test exercising `BundleStorage::recover()` (BLOB-04) and the backend-specific recovery cleanup test (LD-02).
+The `BundleStorage` trait contract is verified by the shared storage harness (5 tests, all pass: BLOB-01 to BLOB-05 in `PLAN-STORE-01`). Recovery requirements are satisfied by the harness test exercising `BundleStorage::recover()` (BLOB-04) and the backend-specific recovery cleanup test (LD-02).
 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
-| 7.1 | Bundle storage | **Pass** | BLOB-01..04 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §5) |
+| 7.1 | Bundle storage | **Pass** | BLOB-01..05 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §5) |
 | 7.1.1 | Configurable storage location | **Pass** | LD-01 (`test_configuration_custom_store_dir`) |
 | 7.1.2 | Withdrawn in requirements 1.3 (capacity moves to the BPA, LLR 7.3.7) | — | — |
 | 7.3.8 | No partial bundle treated as complete after a crash | **Pass** (this backend) | `test_atomic_save_no_tmp_residue`, `test_failed_atomic_save_leaves_nothing_behind` |
@@ -55,9 +55,9 @@ Coverage is measured against [`PLAN-LD-01`](test_plan.md) (backend-specific) and
 
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| `PLAN-STORE-01` Suite D (BLOB-01..04) | BundleStorage trait contract | 4 | 4 | Complete |
+| `PLAN-STORE-01` Suite D (BLOB-01..05) | BundleStorage trait contract | 5 | 5 | Complete |
 | `PLAN-LD-01` §4 (LD-01..15) | Backend-specific | 15 | 15 | Complete |
-| **Total** | | **19** | **19** | **100%** |
+| **Total** | | **20** | **20** | **100%** |
 
 ## 4. Line Coverage
 

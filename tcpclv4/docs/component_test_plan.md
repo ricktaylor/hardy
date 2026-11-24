@@ -48,6 +48,8 @@ These scenarios verify RFC 9174 protocol logic. All are covered by interop testi
 | **TCP-07** | **Connection Pooling** | — (REQ-13) | Interop: multi-ping connection reuse |
 | **TCP-08** | **Protocol Error** | — | Fuzz: adversarial byte streams (bad magic, invalid messages, truncated frames) |
 | **TCP-09** | **TLS Entity ID** | 3.1.9 | Interop: TLS peers with certificate validation |
+| **TCP-10** | **Node ID Authentication** | 3.1.11 | TODO (not implemented): a peer whose SESS_INIT Node ID does not match its certificate's NODE-ID SAN is refused |
+| **TCP-11** | **Retransmittable Refusal** | 3.1.12 | TODO (not implemented): a transfer the BPA refuses as incomplete is answered with an XFER_REFUSE reason that permits retransmission |
 | **TCP-10** | **Session Extensions** | 3.1.6 | Interop: passively exercised (peers send extensions) |
 
 ## 5. Unit Test Coverage
