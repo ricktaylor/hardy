@@ -10,8 +10,7 @@ publish = false
 
 [features]
 default = []
-metrics = ["hardy-bpa/metrics", "hardy-tcpclv4/metrics"]
-otel = ["dep:hardy-otel", "metrics"]
+otel = ["dep:hardy-otel"]
 instrument = [
     "tracing/attributes",
     "hardy-bpa/instrument",
