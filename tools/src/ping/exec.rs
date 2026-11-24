@@ -1,6 +1,6 @@
 use hardy_bpa::bpa::BpaRegistration;
 
-use super::{duration::format_duration, *};
+use super::*;
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

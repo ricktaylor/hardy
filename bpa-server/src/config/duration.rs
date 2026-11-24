@@ -6,7 +6,10 @@ use core::{
 
 use jiff::{
     SpanRelativeTo,
-    fmt::friendly::{Designator, SpanParser, SpanPrinter},
+    fmt::{
+        StdFmtWrite,
+        friendly::{Designator, SpanParser, SpanPrinter},
+    },
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use thiserror::Error;
@@ -20,18 +23,15 @@ pub enum DurationError {
     )]
     CalendarUnit,
 
-    #[error("expected a number and a unit (e.g. `30s`, `10m`, `1h 30m`, `1d`)")]
-    Malformed,
-
-    #[error("a duration cannot be negative")]
-    Negative,
-
-    #[error("the duration is too large")]
-    TooLarge,
-
     #[error("a duration must be greater than zero")]
     Zero,
+
+    #[error(transparent)]
+    Jiff(#[from] jiff::Error),
 }
+
+static PARSER: SpanParser = SpanParser::new();
+static PRINTER: SpanPrinter = SpanPrinter::new().designator(Designator::HumanTime);
 
 // A positive duration, written in Jiff's friendly format (e.g. `30s`, `10m`,
 // `1h 30m`). Days and weeks count as 24-hour multiples.
@@ -52,24 +52,11 @@ impl FromStr for NonZeroDuration {
     type Err = DurationError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let span = SpanParser::new().parse_span(text).map_err(|e| {
-            if e.is_range() {
-                DurationError::TooLarge
-            } else {
-                DurationError::Malformed
-            }
-        })?;
+        let span = PARSER.parse_span(text)?;
         if span.get_years() != 0 || span.get_months() != 0 {
             return Err(DurationError::CalendarUnit);
         }
-        if span.is_negative() {
-            return Err(DurationError::Negative);
-        }
-        let duration: Duration = span
-            .to_duration(SpanRelativeTo::days_are_24_hours())
-            .ok()
-            .and_then(|signed| signed.try_into().ok())
-            .ok_or(DurationError::TooLarge)?;
+        let duration = Duration::try_from(span.to_duration(SpanRelativeTo::days_are_24_hours())?)?;
         Self::new(duration).ok_or(DurationError::Zero)
     }
 }
@@ -87,11 +74,9 @@ impl Display for NonZeroDuration {
             }
             f.write_str(" ")?;
         }
-        f.write_str(
-            &SpanPrinter::new()
-                .designator(Designator::HumanTime)
-                .unsigned_duration_to_string(&rest),
-        )
+        PRINTER
+            .print_unsigned_duration(&rest, StdFmtWrite(f))
+            .map_err(|_| fmt::Error)
     }
 }
 
@@ -147,7 +132,7 @@ mod tests {
         assert_eq!(duration.get(), Duration::from_secs(8 * SECS_PER_DAY));
     }
 
-    // A zero duration is refused as zero, not as malformed.
+    // A zero duration is refused as zero, not as a parse failure.
     #[test]
     fn zero_is_refused() {
         assert!(matches!(parse_err("0s"), DurationError::Zero));
@@ -164,21 +149,27 @@ mod tests {
         }
     }
 
-    // A number with no unit, or text with no number, is malformed.
+    // A number with no unit, or text with no number, is refused by jiff's
+    // parser and never reported as a range error.
     #[test]
-    fn missing_units_are_malformed() {
+    fn missing_units_are_refused() {
         for text in ["30", "ten minutes", ""] {
             assert!(
-                matches!(parse_err(text), DurationError::Malformed),
+                matches!(parse_err(text), DurationError::Jiff(e) if !e.is_range()),
                 "{text:?}"
             );
         }
     }
 
-    // A duration below zero, or beyond what a span can hold, is refused.
+    // A duration below zero, or beyond what a span can hold, is a range
+    // error.
     #[test]
     fn negative_and_oversized_durations_are_refused() {
-        assert!(matches!(parse_err("-5s"), DurationError::Negative));
-        assert!(matches!(parse_err("20000000w"), DurationError::TooLarge));
+        for text in ["-5s", "20000000w"] {
+            assert!(
+                matches!(parse_err(text), DurationError::Jiff(e) if e.is_range()),
+                "{text:?}"
+            );
+        }
     }
 }

@@ -3,7 +3,7 @@ use std::{num::NonZeroU8, time::Duration};
 use hardy_bpv7::eid::{Eid, NodeId};
 use rand::RngExt;
 
-use self::duration::parse_duration;
+use self::duration::{format_duration, parse_duration};
 use super::*;
 
 mod duration;

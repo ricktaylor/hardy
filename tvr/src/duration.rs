@@ -10,36 +10,22 @@ pub enum DurationError {
     )]
     CalendarUnit,
 
-    #[error("expected a number and a unit (e.g. `500ms`, `90m`, `4h30m`, `2d`)")]
-    Malformed,
-
-    #[error("a duration cannot be negative")]
-    Negative,
-
-    #[error("the duration is too large")]
-    TooLarge,
+    #[error(transparent)]
+    Jiff(#[from] jiff::Error),
 }
+
+static PARSER: SpanParser = SpanParser::new();
 
 // Parses a contact-plan duration in Jiff's friendly format (`90m`, `4h30m`,
 // `500ms`). Days and weeks count as 24-hour multiples.
 pub fn parse_duration(text: &str) -> Result<Duration, DurationError> {
-    let span = SpanParser::new().parse_span(text).map_err(|e| {
-        if e.is_range() {
-            DurationError::TooLarge
-        } else {
-            DurationError::Malformed
-        }
-    })?;
+    let span = PARSER.parse_span(text)?;
     if span.get_years() != 0 || span.get_months() != 0 {
         return Err(DurationError::CalendarUnit);
     }
-    if span.is_negative() {
-        return Err(DurationError::Negative);
-    }
-    span.to_duration(SpanRelativeTo::days_are_24_hours())
-        .ok()
-        .and_then(|signed| signed.try_into().ok())
-        .ok_or(DurationError::TooLarge)
+    Ok(Duration::try_from(
+        span.to_duration(SpanRelativeTo::days_are_24_hours())?,
+    )?)
 }
 
 #[cfg(test)]
@@ -67,27 +53,27 @@ mod tests {
         }
     }
 
-    // A number with no unit, or text with no number, is malformed.
+    // A number with no unit, or text with no number, is refused by jiff's
+    // parser and never reported as a range error.
     #[test]
-    fn missing_units_are_malformed() {
+    fn missing_units_are_refused() {
         for text in ["90", "ten minutes", ""] {
             assert!(
-                matches!(parse_duration(text), Err(DurationError::Malformed)),
+                matches!(parse_duration(text), Err(DurationError::Jiff(e)) if !e.is_range()),
                 "{text:?}"
             );
         }
     }
 
-    // A duration below zero, or beyond what a span can hold, is refused.
+    // A duration below zero, or beyond what a span can hold, is a range
+    // error.
     #[test]
     fn negative_and_oversized_durations_are_refused() {
-        assert!(matches!(
-            parse_duration("-5s"),
-            Err(DurationError::Negative)
-        ));
-        assert!(matches!(
-            parse_duration("20000000w"),
-            Err(DurationError::TooLarge)
-        ));
+        for text in ["-5s", "20000000w"] {
+            assert!(
+                matches!(parse_duration(text), Err(DurationError::Jiff(e)) if e.is_range()),
+                "{text:?}"
+            );
+        }
     }
 }

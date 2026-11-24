@@ -1,7 +1,7 @@
 use hardy_bpv7::{block, builder::Builder, crc::CrcType, hop_info::HopInfo};
 use hardy_cbor::{decode, encode};
 
-use super::{duration::format_duration, *};
+use super::*;
 
 // The echo-service draft defines no payload wire format — the echo reflects the
 // payload unchanged and never parses it (see draft-taylor-dtn-echo-service). This

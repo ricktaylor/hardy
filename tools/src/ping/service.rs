@@ -18,7 +18,7 @@ use hardy_bpv7::{
 use hardy_cbor::decode::parse_exact;
 use trace_err::*;
 
-use super::{Command, duration::format_duration, payload};
+use super::{Command, format_duration, payload};
 // Statistics for ping session, following IP ping conventions.
 #[derive(Default, Clone)]
 pub struct Statistics {

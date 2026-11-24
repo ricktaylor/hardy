@@ -1,8 +1,14 @@
-use core::time::Duration;
+use core::{
+    fmt::{self, Display, Formatter},
+    time::Duration,
+};
 
 use jiff::{
     SpanRelativeTo,
-    fmt::friendly::{Designator, SpanParser, SpanPrinter},
+    fmt::{
+        StdFmtWrite,
+        friendly::{Designator, SpanParser, SpanPrinter},
+    },
 };
 use thiserror::Error;
 
@@ -15,50 +21,49 @@ pub enum DurationError {
     )]
     CalendarUnit,
 
-    #[error("expected a number and a unit (e.g. `500ms`, `2s`, `1h 30m`, `1d`)")]
-    Malformed,
-
-    #[error("a duration cannot be negative")]
-    Negative,
-
-    #[error("the duration is too large")]
-    TooLarge,
+    #[error(transparent)]
+    Jiff(#[from] jiff::Error),
 }
+
+static PARSER: SpanParser = SpanParser::new();
+static PRINTER: SpanPrinter = SpanPrinter::new().designator(Designator::HumanTime);
 
 // Parses a duration argument in Jiff's friendly format (`500ms`, `1h 30m`,
 // `2 days`). Days and weeks count as 24-hour multiples.
 pub fn parse_duration(text: &str) -> Result<Duration, DurationError> {
-    let span = SpanParser::new().parse_span(text).map_err(|e| {
-        if e.is_range() {
-            DurationError::TooLarge
-        } else {
-            DurationError::Malformed
-        }
-    })?;
+    let span = PARSER.parse_span(text)?;
     if span.get_years() != 0 || span.get_months() != 0 {
         return Err(DurationError::CalendarUnit);
     }
-    if span.is_negative() {
-        return Err(DurationError::Negative);
-    }
-    span.to_duration(SpanRelativeTo::days_are_24_hours())
-        .ok()
-        .and_then(|signed| signed.try_into().ok())
-        .ok_or(DurationError::TooLarge)
+    Ok(Duration::try_from(
+        span.to_duration(SpanRelativeTo::days_are_24_hours())?,
+    )?)
 }
 
 // Formats a duration with whole days split out and the rest balanced up to
 // hours (`1m 30s`, `2ms 345us`, `1d 2h`). The `HumanTime` designators spell
 // microseconds as ASCII `us`, which the interop benchmark's RTT summary
 // parser reads.
-pub fn format_duration(duration: Duration) -> String {
-    let days = duration.as_secs() / SECS_PER_DAY;
-    let rest = Duration::new(duration.as_secs() % SECS_PER_DAY, duration.subsec_nanos());
-    let printer = SpanPrinter::new().designator(Designator::HumanTime);
-    match (days, rest.is_zero()) {
-        (0, _) => printer.unsigned_duration_to_string(&rest),
-        (_, true) => format!("{days}d"),
-        (_, false) => format!("{days}d {}", printer.unsigned_duration_to_string(&rest)),
+pub fn format_duration(duration: Duration) -> impl Display {
+    Formatted(duration)
+}
+
+struct Formatted(Duration);
+
+impl Display for Formatted {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let days = self.0.as_secs() / SECS_PER_DAY;
+        let rest = Duration::new(self.0.as_secs() % SECS_PER_DAY, self.0.subsec_nanos());
+        if days != 0 {
+            write!(f, "{days}d")?;
+            if rest.is_zero() {
+                return Ok(());
+            }
+            f.write_str(" ")?;
+        }
+        PRINTER
+            .print_unsigned_duration(&rest, StdFmtWrite(f))
+            .map_err(|_| fmt::Error)
     }
 }
 
@@ -90,28 +95,28 @@ mod tests {
         }
     }
 
-    // A number with no unit, or text with no number, is malformed.
+    // A number with no unit, or text with no number, is refused by jiff's
+    // parser and never reported as a range error.
     #[test]
-    fn missing_units_are_malformed() {
+    fn missing_units_are_refused() {
         for text in ["30", "ten minutes", ""] {
             assert!(
-                matches!(parse_duration(text), Err(DurationError::Malformed)),
+                matches!(parse_duration(text), Err(DurationError::Jiff(e)) if !e.is_range()),
                 "{text:?}"
             );
         }
     }
 
-    // A duration below zero, or beyond what a span can hold, is refused.
+    // A duration below zero, or beyond what a span can hold, is a range
+    // error.
     #[test]
     fn negative_and_oversized_durations_are_refused() {
-        assert!(matches!(
-            parse_duration("-5s"),
-            Err(DurationError::Negative)
-        ));
-        assert!(matches!(
-            parse_duration("20000000w"),
-            Err(DurationError::TooLarge)
-        ));
+        for text in ["-5s", "20000000w"] {
+            assert!(
+                matches!(parse_duration(text), Err(DurationError::Jiff(e)) if e.is_range()),
+                "{text:?}"
+            );
+        }
     }
 
     // Sub-millisecond parts print with ASCII `us`, whole days as a day count,
@@ -123,7 +128,7 @@ mod tests {
             (Duration::from_secs(SECS_PER_DAY + 7_200), "1d 2h"),
             (Duration::from_secs(5 * SECS_PER_DAY), "5d"),
         ] {
-            assert_eq!(format_duration(duration), text);
+            assert_eq!(format_duration(duration).to_string(), text);
             assert_eq!(parse_duration(text).unwrap(), duration);
         }
     }
