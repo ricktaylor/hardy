@@ -33,12 +33,14 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | :--- | :--- |
 | **3.1.5** | Allow configuration of default session parameters (Keepalive, Segment Size). |
 | **7.1.1** | Configurable location for Local Disk bundle storage. |
-| **7.1.2** | Configurable maximum total size for Local Disk storage. |
 | **7.2.2** | Configurable filesystem location for SQLite database. |
+| **6.1.5** | Routing information via a configuration file. Verified by the 15 parser tests in `src/static_routes/loader.rs` and `tests/test_static_routes.sh`. |
+| **6.1.19** | Static routes reloaded on file change, without a restart. Verified by `tests/test_static_routes.sh` (hot-reload, file restore). |
+| **6.1.20** | A routes file that fails to parse on reload leaves the existing routes in force. TODO (not implemented): extend `tests/test_static_routes.sh` to write a malformed file and check the previous routes still apply. |
 
 ## 3. Unit Test Cases
 
-### 3.1 Configuration Logic (LLR 3.1.5, 7.1.1, 7.1.2, 7.2.2)
+### 3.1 Configuration Logic (LLR 3.1.5, 7.1.1, 7.2.2)
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |

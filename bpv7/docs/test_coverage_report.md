@@ -9,13 +9,14 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-All LLRs assigned to this module pass (15 pass, 2 N/A).
+All LLRs assigned to this module pass (15 pass, 1 N/A, 1 withdrawn).
 
 | LLR | Feature | Result | Unit Test | CLI Test | Part 4 Ref |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1.1.1** | CCSDS Bundle Protocol compliance | Pass | `parse.rs::ccsds_compliance` | CLI CREATE + VALID suites | 1.2 |
 | **1.1.12** | Incomplete item detection | Pass | `parse.rs::truncated_bundle` | — | 1.2 |
-| **1.1.14** | Bundle rewriting indication | Pass | `parse.rs::non_canonical_rewriting_rejects_outer_tag` | REWRITE-01 | 1.2 |
+| **1.1.14** | Withdrawn in requirements 1.3: the parser never rewrites | — | — | — | — |
+| **1.1.31** | Non-canonical input rejected | Pass | `parse.rs::non_canonical_rewriting_rejects_outer_tag`, `block_gate_rejects_tag_head_as_not_canonical`, `eid.rs::non_shortest_scheme_uint_rejected` | — | 1.2 |
 | **1.1.15** | Primary block validation | Pass | `parse.rs::invalid_flags` | VALID-01 | 1.2 |
 | **1.1.19** | Extension block parsing | Pass | `parse.rs::extension_block_parsing` | EXT-02, EXT-05, add/remove-block | 1.2 |
 | **1.1.21** | CRC validation | Pass | `primary_block.rs::valid_crc`, `invalid_crc` | VALID-01 | 1.2 |
@@ -28,7 +29,7 @@ All LLRs assigned to this module pass (15 pass, 2 N/A).
 | **1.1.34** | Hop Count processing | Pass | `parse.rs::hop_count_extraction` | EXT-02 (add hop-count) | 1.2 |
 | **2.1.1** | BPSec integrity/confidentiality | Pass | 18 tests in `tests/rfc9173.rs` | SIGN + ENC suites (12 tests) | 2.3, 2.4 |
 | **2.1.2** | BPSec target cleanup | Pass | `test_bib_removal_and_readd`, `test_bcb_without_bib_removal` | remove-integrity, remove-encryption | 2.3 |
-| **2.1.3** | Fragment + BPSec rejection | N/A | Sender constraint: `signer.rs:75`. LLR to be corrected | — | 2.3 |
+| **2.1.3** | No BPSec blocks added to a fragment | Pass | `tests/bpsec/pics_default.rs::pics_56_1_cannot_add_bcb_to_fragment`, `pics_56_1b_cannot_add_bib_to_fragment` | — | 2.3 |
 | **2.2.1-3** | BIB-HMAC-SHA2 (256/384/512) | Pass | RFC 9173 Appendix A test vectors | SIGN-01 (SHA-256) | 2.4 |
 | **2.2.5-6** | BCB-AES-GCM (128/256) | Pass | RFC 9173 Appendix A test vectors | ENC-01 (AES-256) | 2.4 |
 | **2.2.4,7** | Key-wrap functions | Pass | `test_wrapped_key_sign_and_verify`, `test_wrapped_key_wrong_kek` | — | 2.4 |

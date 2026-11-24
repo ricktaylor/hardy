@@ -9,7 +9,7 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-No LLRs are assigned to this crate. BTP-U is a pre-standard IETF extension and falls under the REQ-4 goal, whose Part 4 profiles (4.1 to 4.10) do not include it; fuzzing is under REQ-14 (Part 4 ref 14.1). Verification is traced to the drafts instead:
+BTP-U is a pre-standard IETF convergence-layer protocol under REQ-5. LLRs 5.6.1 and 5.6.2 are verified by this crate's tests: 5.6.1 by the segmentation, reassembly, framing and message rows below, and 5.6.2 by the resource-limit and unrecognised-message rows. LLR 5.6.3 (a BTP-U convergence layer adaptor) is not in this crate and not yet implemented. Fuzzing is under REQ-14 (Part 4 ref 14.1). Detailed verification is traced to the drafts:
 
 | Draft Section | Feature | Result | Test | Plan Section |
 | :--- | :--- | :--- | :--- | :--- |

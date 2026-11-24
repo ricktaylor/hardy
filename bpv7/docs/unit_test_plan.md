@@ -33,13 +33,16 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
  | ----- | ----- | ----- |
 | **1.1.1** | Compliant with all mandatory requirements of CCSDS Bundle Protocol. | CCSDS 734.20-O-1 |
 | **1.1.12** | CBOR decoder must indicate if an incomplete item is found at end of buffer. | - |
-| **1.1.14** | Parser must indicate when bundle rewriting has occurred. | RFC 9171 Sec 5.6 |
+| **1.1.31** | Parser must reject bundles whose CBOR encoding is not deterministic. | RFC 9171 Sec 4.1 |
 | **1.1.15** | Parser must indicate that the Primary Block is valid. | RFC 9171 Sec 4.2 |
 | **1.1.19** | Parser must parse/validate extension blocks specified in RFC 9171. | RFC 9171 Sec 4.4 |
+| **1.1.20** | Parser should validate extension blocks whose specification is available (the BPSec BIB and BCB). Verified by `tests/parse.rs` and `src/bpsec/parse.rs`: `asb_no_targets_rejected`, `asb_duplicate_target_rejected`, `asb_invalid_security_source_rejected`, `asb_mismatched_target_result_rejected`, `bcb_targeting_primary_block_rejected`, `bcb_targeting_payload_without_must_replicate_rejected`. | RFC 9172 Sec 3.6 |
 | **1.1.21** | Parser must parse and validate all CRC values. | RFC 9171 Sec 4.2 |
 | **1.1.22** | Parser must support all CRC types specified in RFC 9171. | RFC 9171 Sec 4.2 |
 | **1.1.23, 1.1.24** | Parser must support `ipn` scheme EIDs (2 and 3-element) and `dtn` scheme. | RFC 9171 Sec 4.2.5, RFC 9758 |
 | **1.1.25** | Generator must create valid, canonical CBOR encoded bundles, including correct block ordering. | RFC 9171 Sec 4.1, 4.3 |
+| **1.1.26** | Generator must only include valid, canonical extension blocks. Verified by `tests/builder.rs::build_stream_output_parses_canonically`: the strict parser, which rejects non-canonical blocks, accepts the built bundle. | RFC 9171 Sec 4.1 |
+| **1.1.32** | Parser must report why each extension block is to be removed. Verified by `tests/checks.rs::classify_reports_the_facts_with_the_delete_verdict`, `classify_reports_the_security_facts_with_the_delete_verdict`. | RFC 9171 Sec 4.2.4; RFC 9172 Sec 5.1.1 |
 | **1.1.30** | Processing must enforce bundle rewriting rules when discarding unrecognised blocks. | RFC 9171 Sec 5.6 |
 | **1.1.33** | Processing must use Bundle Age block for expiry if Creation Time is zero. | RFC 9171 Sec 4.4.2 |
 | **1.1.34** | Processing must process and act on Hop Count extension block. | RFC 9171 Sec 4.4.3 |
@@ -78,15 +81,15 @@ The following scenarios are verified by the unit tests located in `bpv7/src/`.
 | **Builder Minimal** | Create a basic bundle (Source, Dest, Payload). | `src/builder.rs` | `Builder::new(...)` | Valid `Bundle` struct; `build()` succeeds. |
 | **Builder from Template** | Create a builder from a JSON template (Serde). | `src/builder.rs` | JSON Template | Valid `Builder`; `build()` succeeds. |
 
-### 3.3 Extension Blocks & Processing (LLR 1.1.14, 1.1.19, 1.1.30, 1.1.33, 1.1.34)
+### 3.3 Extension Blocks & Processing (LLR 1.1.19, 1.1.30, 1.1.31, 1.1.33, 1.1.34)
 
-*Objective: Verify parsing and processing logic for extension blocks and bundle rewriting.*
+*Objective: Verify parsing and processing logic for extension blocks, block removal, and the rejection of non-canonical input.*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
  | ----- | ----- | ----- | ----- | ----- |
 | **Bundle Age Expiry** | Verify rejection if Creation Time is zero and Bundle Age missing. (LLR 1.1.33) | TODO | Bundle (Time=0, No Age) | Error: `MissingBundleAge` |
 | **Hop Count** | Verify Hop Count parsing and limit checks. (LLR 1.1.34) | TODO | Bundle with HopCount | Parsed/Error if exceeded |
-| **Bundle Rewriting** | Verify successful bundle rewriting (e.g. reordering). (LLR 1.1.14) | TODO | Non-canonical Bundle | `RewrittenBundle::Rewritten` |
+| **Non-canonical Rejection** | Verify a bundle with non-deterministic CBOR is rejected, not rewritten. (LLR 1.1.31) | `tests/parse.rs` | Non-canonical Bundle | Error: `NotCanonical` |
 | **Extension Parsing** | Verify parsing of PreviousNode, BundleAge, HopCount. (LLR 1.1.19) | TODO | Bundle with Ext Blocks | Valid `Bundle` fields |
 | **Rewrite Rules** | Verify rewriting rules when discarding blocks. (LLR 1.1.30) | TODO | Bundle with Unknown Block | Rewritten Bundle |
 

@@ -19,6 +19,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | LLR ID | Description | Test Method |
 | :--- | :--- | :--- |
 | **19.2.1** | Rate-controlled bundle sending tool. | Interop test scripts. |
+| **19.2.2** | Report the response a remote service sends to a received bundle. | Interop test scripts: `bp ping` reports the echo service's reply. |
 | **19.2.3** | Round-trip time reporting (`bp ping`). | Interop test scripts. |
 | **19.2.4** | Tools do not rely on BPv7 status reports. | Design review (uses echo service, not status reports). |
 | **19.2.5** | Tools run without a local BPA. | Design review (standalone binary, connects via gRPC). |

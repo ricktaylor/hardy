@@ -37,6 +37,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | **1.1.10** | CBOR decoder must parse items within context of Maps/Arrays correctly. | RFC 8949 Sec 3.2 |
 | **1.1.11** | Decoder must support opportunistic parsing (try-parse). | - |
 | **1.1.12** | Decoder must indicate if an incomplete item is found. | - |
+| **1.1.13** | Must be suitable for embedded platforms (`no_std`). Verified by the CI `no-std` job, which builds the crate with `--no-default-features` for `thumbv7em-none-eabihf`. | - |
 
 ## 3. Unit Test Cases
 

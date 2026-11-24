@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | gRPC Proxy Implementation |
 | **Module** | `hardy-proto` (Client & Server Proxies) |
-| **Requirements Ref** | [REQ-18](../../docs/requirements.md#req-18-comprehensive-technical-documentation-and-examples) |
+| **Requirements Ref** | [REQ-18](../../docs/requirements.md#req-18-comprehensive-technical-documentation-and-examples), [LLR 18.2.x](../../docs/requirements.md#process-integration-apis-182), [LLR 6.1.x](../../docs/requirements.md#cla-apis-61) |
 | **Test Suite ID** | COMP-GRPC-01 |
 | **Version** | 1.1 |
 
@@ -24,6 +24,18 @@ This document details the component testing strategy for the Hardy gRPC proxy in
 
 * BPA-internal logic (RIB, dispatcher, storage).
 * Network transport reliability (TCP/IP).
+
+**Requirements verified:**
+
+| LLR ID | Description | Verified By |
+| :--- | :--- | :--- |
+| **18.2.1** | CLAs, services and routing agents attachable to a running BPA over gRPC, behaving as in-process | Suites 1 to 4 (`app_cli_01..06`, `cla_cli_01..05`, `svc_cli_01..05`, `rte_cli_01..03`) |
+| **18.2.2** | Application and Service APIs | Suite 1 (`app_cli_*`), Suite 3 (`svc_cli_*`) |
+| **18.2.3** | Registration and unregistration at runtime | Suite 6 (`life_01..06`) |
+| **6.1.6** | Runtime addition and removal of routes | Suite 4 (`rte_cli_02_add_route`, `rte_cli_03_remove_route`) |
+| **6.1.12** | CLAs report adjacent peers as they appear and disappear | Suite 2 (`cla_cli_01..05`) |
+| **6.1.18** | Routing agent API over gRPC | Suite 4 (`rte_cli_01..03`) |
+| **18.2.4** | gRPC clients authenticate before registering; credentials rotatable and revocable | TODO (not implemented): a client without a valid credential is refused; a client is refused an interface kind its identity does not permit; revoking a credential ends its sessions |
 
 ## 2. Test Architecture
 

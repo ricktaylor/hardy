@@ -9,13 +9,13 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-The `BundleStorage` trait contract is verified by the shared storage harness (4 tests, all pass when an S3-compatible endpoint is available). Recovery requirements are satisfied by the harness test exercising `BundleStorage::recover()` (BLOB-04), with the BPA's `storage/recover.rs` orchestrating trait methods during restart.
+The `BundleStorage` trait contract is verified by the shared storage harness (5 tests, all pass when an S3-compatible endpoint is available). Recovery requirements are satisfied by the harness test exercising `BundleStorage::recover()` (BLOB-04), with the BPA's `storage/recover.rs` orchestrating trait methods during restart.
 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
-| 9.1 | Bundle storage | **Pass** | BLOB-01..04 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §5) |
+| 9.1 | Bundle storage | **Pass** | BLOB-01..05 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §5) |
 | 9.1.1 | Configurable location/credentials | **Pass** | Harness setup ([`PLAN-S3-01`](test_plan.md) §5) — every run supplies the endpoint and credentials via configuration; CI runs against RustFS |
-| 9.1.2 | Configurable maximum total size | **Not tested** | Not planned |
+| 9.1.2 | Withdrawn in requirements 1.3 (capacity moves to the BPA, LLR 7.3.7) | — | — |
 | 9.1.4 | Common S3 APIs | **Pass** | By design (`aws-sdk-s3`) |
 | 9.2 | Recovery after restart | **Pass** | BLOB-04 (recovery scan) |
 
@@ -37,8 +37,8 @@ Coverage is measured against [`PLAN-S3-01`](test_plan.md) and [`PLAN-STORE-01`](
 
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| `PLAN-STORE-01` Suite D (BLOB-01..04) | BundleStorage trait contract | 4 | 4 | Complete |
-| **Total** | | **4** | **4** | **100%** |
+| `PLAN-STORE-01` Suite D (BLOB-01..05) | BundleStorage trait contract | 5 | 5 | Complete |
+| **Total** | | **5** | **5** | **100%** |
 
 ## 4. Line Coverage
 

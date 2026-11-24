@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Functional Area** | Contact Scheduling (gRPC Service, File Watcher, System Integration) |
 | **Module** | `hardy-tvr` |
-| **Requirements Ref** | [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) |
+| **Requirements Ref** | [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api) |
 | **Test Suite ID** | `COMP-TVR-01` |
 | **Version** | 1.0 |
 

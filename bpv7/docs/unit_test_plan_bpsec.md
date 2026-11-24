@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | Security (Integrity & Confidentiality) |
 | **Module** | `hardy-bpv7` (Security Submodule) |
-| **Requirements Ref** | [REQ-2](../../../docs/requirements.md#req-2-full-compliance-with-rfc9172-and-rfc9173), [LLR 2.x](../../../docs/requirements.md#bpsec-21---optional-for-initial-development) |
+| **Requirements Ref** | [REQ-2](../../../docs/requirements.md#req-2-full-compliance-with-rfc9172-and-rfc9173), [LLR 2.x](../../../docs/requirements.md#bpsec-21) |
 | **Standard Ref** | RFC 9172 (BPSec Core), RFC 9173 (BPSec Contexts) |
 | **Test Suite ID** | UTP-BPSEC-01 |
 | **Version** | 1.0 |
@@ -33,7 +33,10 @@ The following requirements from **[requirements.md](../../../docs/requirements.m
  | ----- | ----- | ----- |
 | **2.1.1** | Parser must identify BIB (Type 11) and BCB (Type 12) blocks. | RFC 9172 Sec 3.1 |
 | **2.1.2** | Correctly remove BPSec target info when targeted block is removed. | RFC 9172 Sec 3.2 |
-| **2.1.3** | Validate that Fragmented bundles do NOT contain BPSec extension blocks. | RFC 9172 Sec 3.8 |
+| **2.1.3** | Refuse to add a BIB or BCB to a bundle that is a fragment. | RFC 9172 Sec 5.2 |
+| **2.1.4** | Add BIBs over caller-selected targets as a security source. Verified by `tests/rfc9173.rs::test_sign_then_encrypt`, `test_sign_primary_block_with_crc`, and `tests/bpsec/tests/pics_default.rs::pics_2_1_source_sign_payload_and_bundle_age`. | RFC 9172 Sec 3.7 |
+| **2.1.5** | Add BCBs over caller-selected targets as a security source. Verified by `tests/bpsec/tests/pics_default.rs::pics_2_3_source_encrypt_payload_and_bundle_age` and `tests/rfc9173.rs::test_sign_then_encrypt`. | RFC 9172 Sec 3.8 |
+| **2.1.8** | Handle a target that fails verification per RFC 9172 §5.1.1. Verified by `tests/checks.rs::corrupt_covered_bib_is_failure_dropped`. | RFC 9172 Sec 5.1.1 |
 | **2.2.1** | Support BIB-HMAC-SHA2 context with 256-bit hash. | RFC 9173 Sec 3 |
 | **2.2.2** | Support BIB-HMAC-SHA2 context with 384-bit hash. | RFC 9173 Sec 3 |
 | **2.2.3** | Support BIB-HMAC-SHA2 context with 512-bit hash. | RFC 9173 Sec 3 |
@@ -110,7 +113,7 @@ The following scenarios are verified by the unit tests located in `hardy-bpv7/sr
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
 | **Target Removal** | Verify BPSec info is removed when target block is deleted. (LLR 2.1.2) | TODO | Bundle with BIB targeting deleted block | BIB removed/updated |
-| **Fragmentation Check** | Verify fragmented bundles cannot contain BPSec blocks. (LLR 2.1.3) | TODO | Fragmented Bundle + BIB | Error: `InvalidFlags` |
+| **Fragmentation Check** | Verify a BIB or BCB cannot be added to a fragment. (LLR 2.1.3) | `tests/bpsec/tests/pics_default.rs` | Fragmented Bundle | Error: `FragmentedBundle` |
 
 ### 3.7 RFC 9173 Appendix A Compliance (Standard Vectors)
 
@@ -122,6 +125,16 @@ The following scenarios are verified by the unit tests located in `hardy-bpv7/sr
 | **Appendix A.2 (BCB)** | **BCB-AES-GCM Example 1**<br>Verify encryption of payload matches RFC hex dump. | `src/bpsec/rfc9173/mod.rs` | Appx A.2 | Ciphertext matches `0x5468...`<br>Auth Tag matches `0x...` |
 | **Appendix A.3 (BCB)** | **BCB-AES-GCM Example 2**<br>Verify encryption using 256-bit key. | `src/bpsec/rfc9173/mod.rs` | Appx A.3 | Ciphertext matches `0x...` |
 | **Appendix A.4 (BCB)** | **BCB-AES-GCM Example 3**<br>Verify encryption with Additional Authenticated Data (AAD) or variant. | TODO | Appx A.4 | Ciphertext/Tag match RFC vectors. |
+
+### 3.8 Requirements Not Yet Verified (TODO)
+
+*Objective: Record the scenarios that will verify the requirements this crate does not yet test.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Key Material Hygiene** (LLR 2.1.10) | Formatting key material for logs or debug output never shows its bytes, and its memory is cleared when released. | TODO | A key held in `SecretBytes` | `Debug` output shows no key bytes |
+| **Erratum 9192 Primary-Block IPPT** (LLR 2.2.8) | A BIB over the primary block is computed from the bare primary block; one in the RFC 9173 Appendix A.3 form is still accepted, and logged, during the transition. | TODO | Erratum 9192 corrected vector; published A.3 bundle | Corrected MAC; A.3 bundle verifies through the fallback only |
+| **COSE Security Contexts** (LLR 2.1.16) | BIBs and BCBs using the BPSec COSE contexts are created and validated. | TODO | COSE context vectors, once the specification is stable | Operations verify |
 
 ## 4. Execution & Pass Criteria
 

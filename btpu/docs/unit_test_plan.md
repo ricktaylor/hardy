@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | Convergence Layer Protocol Engine |
 | **Module** | `hardy-btpu` |
-| **Requirements Ref** | [REQ-4](../../docs/requirements.md#req-4-alignment-with-on-going-dtn-standardisation), [REQ-14](../../docs/requirements.md#req-14-reliability) |
+| **Requirements Ref** | [REQ-5](../../docs/requirements.md#req-5-experimental-and-pre-standard-convergence-layer-protocols), [LLR 5.6.x](../../docs/requirements.md#btp-u-56), [REQ-14](../../docs/requirements.md#req-14-reliability), [REQ-22](../../docs/requirements.md#req-22-embedded-and-constrained-platform-support) |
 | **Standard Ref** | `draft-ietf-dtn-btpu-04`, `draft-ietf-dtn-btpu-fec-02` |
 | **Test Suite ID** | UTP-BTPU-01 |
 | **Version** | 1.1 |
@@ -31,12 +31,15 @@ No FEC scheme is implemented, so FEC coverage is limited to framing and the rece
 
 ## 2. Requirements Mapping
 
-No Low-Level Requirements are assigned to this crate in **[requirements.md](../../docs/requirements.md)**. BTP-U is a pre-standard IETF convergence-layer protocol, which places it under REQ-4; the requirements document's REQ-4 profiles (4.1 to 4.5) do not name it. Verification is therefore traced to the draft sections below, and the crate's reading of points the drafts leave open is recorded under Standards Compliance in [design.md](design.md).
+BTP-U is a pre-standard IETF convergence-layer protocol under REQ-5 of **[requirements.md](../../docs/requirements.md)**, whose LLRs 5.6.1 to 5.6.3 cover it. Detailed verification is traced to the draft sections below, and the crate's reading of points the drafts leave open is recorded under Standards Compliance in [design.md](design.md).
 
 | Ref | Description | Draft Reference |
  | ----- | ----- | ----- |
-| **REQ-4** | Alignment with on-going DTN standardisation: pre-standard extensions are verified by automated unit or component testing. | `draft-ietf-dtn-btpu-04` Sections 3 to 9, 12; `draft-ietf-dtn-btpu-fec-02` Section 3 |
+| **5.6.1** | Protocol engine, usable independently of the BPA, carrying bundles over link frames as the draft specifies. | `draft-ietf-dtn-btpu-04` Sections 3 to 9, 12; `draft-ietf-dtn-btpu-fec-02` Section 3 |
+| **5.6.2** | Receiver keeps working within its configured limits under malformed, repeated or flooding input. | Sections 7.3, 10 |
+| **5.6.3** | BTP-U convergence layer adaptor. | Not in this crate; no CLA exists yet |
 | **REQ-14** | Every external API is checked so that incorrect or malicious input does not cause a component to abort. | Sections 7.3, 10; see also [`FUZZ-BTPU-01`](fuzz_test_plan.md) |
+| **22.1.1, 22.1.2** | Builds without the standard library for 32-bit bare-metal targets, including one without atomic compare-and-swap. | CI `no-std` job |
 
 ## 3. Unit Test Cases
 

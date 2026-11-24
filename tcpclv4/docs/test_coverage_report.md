@@ -9,13 +9,13 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-All 10 Low-Level Requirements derived from REQ-3 are **verified** (10 pass, 0 N/A). Compliance is verified through interoperability testing ([`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md)) against 4 TCPCLv4 peer implementations.
+All 9 current Low-Level Requirements 3.1.1 to 3.1.10 derived from REQ-3 are **verified** (9 pass; 3.1.3 withdrawn in requirements 1.3). LLRs 3.1.11 and 3.1.12 are not yet implemented. Compliance is verified through interoperability testing ([`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md)) against 4 TCPCLv4 peer implementations.
 
 | LLR | Feature | Result | Test | Part 4 Ref |
 | :--- | :--- | :--- | :--- | :--- |
 | **3.1.1** | Active session establishment | Pass | Interop: Hardy initiates to dtn7-rs, HDTN, DTNME | 3.2 |
 | **3.1.2** | Passive session establishment | Pass | Interop: dtn7-rs, HDTN, DTNME initiate to Hardy | 3.2 |
-| **3.1.3** | Connection pooling | Pass | Interop: multi-ping (connection reuse) | 3.2 |
+| **3.1.3** | Withdrawn in requirements 1.3 (connection reuse serves REQ-13) | — | Connection reuse still exercised by interop multi-ping | — |
 | **3.1.4** | Local Node IDs in SESS_INIT | Pass | Interop: IPN node ID exchange with all peers | 3.2 |
 | **3.1.5** | Configurable session parameters | Pass | Interop: negotiated values with all peers | 3.2 |
 | **3.1.6** | Extension items in SESS_INIT | Pass | Interop: passively exercised | 3.2 |
@@ -70,7 +70,7 @@ All 10 scenarios are covered by interop testing (9) or fuzz testing (1). No dedi
 | TCP-04 | Keepalive | 3.1.10 | Interop (long-running tests) |
 | TCP-05 | TLS Handshake (Default) | 3.1.7, 3.1.8 | Interop (TLS-capable peers) |
 | TCP-06 | TLS Disabled | 3.1.8 | Interop (`--no-tls` config) |
-| TCP-07 | Connection Pooling | 3.1.3 | Interop (multi-ping reuse) |
+| TCP-07 | Connection Pooling | — (REQ-13) | Interop (multi-ping reuse) |
 | TCP-08 | Protocol Error | — | Fuzz (adversarial byte streams) |
 | TCP-09 | TLS Entity ID | 3.1.9 | Interop (TLS peers) |
 | TCP-10 | Session Extensions | 3.1.6 | Interop (passively exercised) |

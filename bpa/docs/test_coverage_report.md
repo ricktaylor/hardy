@@ -9,21 +9,21 @@
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-All LLRs assigned to this module pass (7 pass, 3 pass via bpv7, 1 N/A).
+All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 
 | LLR | Feature | Result | Test | Part 4 Ref |
 | :--- | :--- | :--- | :--- | :--- |
-| **1.1.30** | Rewriting rules for unknown blocks | Pass (bpv7) | `bpv7/parse.rs::unknown_block_discard` + CLI REWRITE-01. BPA delegates to parser | 1.2 |
-| **1.1.31** | Non-canonical rewriting | Pass (bpv7) | `bpv7/parse.rs::non_canonical_rewriting`. The BPA's ingress decode rejects non-canonical well-known extension-block bodies | 1.2 |
+| **1.1.30** | Removal of unknown blocks from forwarded and delivered copies | Pass | `tests/pipeline.rs::deferred_removal_applied_at_egress`, `deferred_removal_applied_at_delivery`; scheduling via `bpv7/checks.rs::unknown_block_discard` | 1.2 |
+| **1.1.31** | Non-canonical input rejected | Pass (bpv7) | `bpv7/parse.rs::non_canonical_rewriting_rejects_outer_tag`, `block_gate_rejects_tag_head_as_not_canonical`. The BPA's ingress decode rejects non-canonical well-known extension-block bodies | 1.2 |
 | **1.1.33** | Bundle Age for expiry calculation | Pass | `bundle/core.rs::test_age_fallback` (zero timestamp + age → creation time) | 1.2 |
 | **1.1.34** | Hop Count processing | Pass (bpv7) | `bpv7/parse.rs::hop_count_extraction`. BPA enforces in `dispatch.rs:249` + increments in `forward.rs:106` | 1.2 |
 | **2.1.1** | BPSec integrity/confidentiality | Pass (bpv7) | 16 unit tests in `bpv7/bpsec/rfc9173/test.rs` + 12 CLI tests | 2.3, 2.4 |
 | **2.1.2** | BPSec target cleanup | Pass (bpv7) | `bpv7/test_bib_removal_and_readd`, `test_bcb_without_bib_removal` | 2.3 |
-| **2.1.3** | Fragment + BPSec rejection | N/A | Sender constraint enforced by `bpv7/src/bpsec/signer.rs:75`. LLR to be corrected | 2.3 |
+| **2.1.3** | No BPSec blocks added to a fragment | Pass | `tests/bpsec/pics_default.rs::pics_56_1_cannot_add_bcb_to_fragment`, `pics_56_1b_cannot_add_bib_to_fragment`; `tests/pipeline.rs::raw_originate_rejects_a_fragment` | 2.3 |
 | **6.1.1** | EID pattern parsing | Pass (eid-patterns) | `str_tests::tests` — IPN + DTN parsing and matching | 6.6 |
 | **6.1.9** | Route prioritisation | Pass | `rib/route.rs::test_action_precedence`, `test_route_entry_sort` | 6.6 |
 | **6.1.10** | ECMP | Pass | `rib/find.rs::test_ecmp_hashing` | 6.6 |
-| **7.1.3** | Configurable discard policy | Pass | `storage/bundle_mem.rs::test_eviction_policy_fifo`, `test_min_bundles_protection` | 7.1 |
+| **7.3.6** | In-memory backend capacity and eviction | Pass | `storage/bundle_mem.rs::test_eviction_policy_lru`, `test_min_bundles_protection`; `storage/metadata_mem.rs::expired_tombstone_evicted_before_live` | 7.1 |
 
 ## 2. Test Inventory
 

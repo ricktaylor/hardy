@@ -31,7 +31,10 @@ The `storage-tests` crate is a **generic integration harness** that verifies eve
 | [**REQ-9**](../../../docs/requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage) | Support for S3 (Bundle Storage). | Verified by running suite against `s3-storage`. |
 | [**7.2.1**](../../../docs/requirements.md#sqlite-storage-72) | Store/Retrieve metadata. | Covered by **Suite A (Metadata CRUD)**. |
 | [**7.1.1**](../../../docs/requirements.md#local-disk-storage-71) | Store/Retrieve payloads. | Covered by **Suite D (Bundle CRUD)**. |
-| [**7.1.3**](../../../docs/requirements.md#local-disk-storage-71) | Configurable discard policy. | Covered by **Suite B (Polling)**. |
+| [**7.3.5**](../../../docs/requirements.md#storage-and-recovery-73) | Waiting bundles held in storage and recovered in order. | Covered by **Suite B (Polling)**. |
+| [**7.3.1**](../../../docs/requirements.md#storage-and-recovery-73) | Bundle and metadata storage selectable independently. | The metadata and bundle suites run separately against every metadata and every bundle backend (§3.5). |
+| [**7.3.3**](../../../docs/requirements.md#storage-and-recovery-73) | Recovery reconciles the two stores. | META-12, META-13, BLOB-04 (the backend half); the BPA's reconciliation is in `bpa/src/storage/recover.rs`. |
+| [**6.1.17**](../../../docs/requirements.md#routing-61) | A bundle with no route waits; one for an unregistered local service waits for it. | META-06, META-14 (the waiting queues the BPA re-polls). |
 
 ## 3. Harness Architecture
 
@@ -143,6 +146,8 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | **BLOB-02** | **Delete** | 1. Save bytes.<br>2. Call `delete(name)`.<br>3. Call `load(name)`. | 1. `delete` returns `Ok`.<br>2. `load` returns `None`. |
 | **BLOB-03** | **Missing Load** | 1. Call `load("non-existent")`. | 1. Returns `Ok(None)` (Not an error). |
 | **BLOB-04** | **Recovery Scan** | 1. Save Blob A.<br>2. Save Blob B.<br>3. Call `recover(tx)`. | 1. `tx` receives entries for A and B.<br>2. Entries contain correct storage name and timestamp (`RecoveryResponse = (Arc<str>, OffsetDateTime)`). |
+| **BLOB-05** | **Repeatable Load** | 1. Save bytes.<br>2. Call `load(name)` twice. | 1. Both loads return the same bytes. |
+| **BLOB-06** | **Interrupted Write** (LLR 7.3.8, TODO) | 1. Begin a save and abandon it before it completes.<br>2. Call `recover(tx)`. | 1. The abandoned bundle is not reported as stored.<br>2. A subsequent `load` of it returns `None`. |
 
 ## 6. Coverage Boundary
 
