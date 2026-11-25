@@ -319,6 +319,56 @@ flowchart TD
     Phase2 --> Phase3["Phase 3: metadata_storage_recovery()\nFor each still-unconfirmed metadata entry:\nReport deletion (data was lost)"]
 ```
 
+### Recovery on Demand (Proposal)
+
+Recovery runs only when the operator starts the server with `--recover-store`. A start without the flag runs none of the three phases, whatever state the last run left the stores in, so a node that crashes and is restarted by its supervisor carries on unchecked. This proposal makes recovery something the stores ask for.
+
+**Each store says, when it opens, whether its last run closed it in order.** Both storage traits gain the same pair: an answer returned when the store is opened, and a shutdown call. A backend records "closed in order" durably when the BPA calls its shutdown, and withdraws the record when it next opens, so the record is written twice a run and its absence at open means the last run ended some other way: a kill, a panic, a power loss. The absence asks for recovery whether or not anything was in flight. A run that ended without closing its stores has given no account of what it was doing, and checking is cheap beside being wrong. The opposite sense, a record made at open and withdrawn at close, is rejected: a store that has never held the record would read as closed in order and skip the recovery it most needs.
+
+**The BPA runs recovery when either store asks.** The three phases cross-check the two stores, so they run in full or not at all: bundle data with no metadata, and metadata with no data, are each found only by walking one store against the other. Recovery is skipped only when both stores answer that they closed in order. `--recover-store` becomes the way to force recovery whatever the stores answer, for a store restored from a backup or edited by hand, which no record made by the store can detect.
+
+**The BPA calls shutdown once it has stopped saving.** The call is the last step of the BPA's own shutdown, metadata store first, then bundle store. It is a trait method because the record must not be written by a run that is dying: writing it when the backend is dropped is rejected, since a drop runs while a panic unwinds. A backend whose shutdown is never called never has the record, and asks for recovery at every start, which costs time and is safe.
+
+**The record is each backend's own.** The traits fix what the answer means, not how it is kept:
+
+| Backend | How "closed in order" is kept |
+| --- | --- |
+| Local disk | An empty `.clean` file in the store directory (see the [localdisk-storage design](../../localdisk-storage/docs/design.md#recovery-independent-of-the-clock)) |
+| SQLite | A row in a one-row table, written in the shutdown transaction and deleted, in its own committed transaction, before the first write of the next run |
+| PostgreSQL | The same row. A database shared by several BPA instances needs one row per instance, keyed by an identity the instance keeps across restarts, which nothing provides today |
+| S3 | An object under the store's key prefix |
+| In-memory | Nothing to keep: the store is empty at every start, and answers that no recovery is needed |
+
+The SQLite and PostgreSQL row belongs with the node-state ledger of [`storage_consistency_updates.md`](storage_consistency_updates.md), which gives the metadata store a home for node-scoped facts and leaves open whether a clean-shutdown record ever crosses the trait. This proposal answers that: it does, as the answer at open.
+
+**Recovery reports what it found.** The model is `fsck`: a check that says why it ran, shows where it is, and ends with an account of what it found and what it did. Recovery logs that it has started and that it has finished, and nothing that adds up in between: the findings are separate warnings, and a metadata record whose data is gone is not logged at all. The proposal gives recovery four things to say, each at the default log level:
+
+- **Why it ran.** One line at the start: the bundle store or the metadata store was not closed in order, or the operator forced it.
+- **Where it is.** One line as each phase begins, and during the walk a count of the bundles checked so far, at intervals of time, not of bundles, so that a large store and a slow one both show progress.
+- **What it found.** Each finding logged once as it is met, naming the bundle or the stored file and the action taken.
+- **A summary.** One line at the end: the bundles checked, the count of each finding, and how long recovery took. A recovery that is stopped before it finishes says so, and says how far it got, where it ends without a word.
+
+Recovery distinguishes six findings, and the summary counts each on its own:
+
+| Finding | Meaning | Repair |
+| --- | --- | --- |
+| Valid | Data and metadata agree | Processing resumes from the recorded status |
+| Unrecorded data | A stored bundle with no metadata | The bundle is admitted as if just received |
+| Lost data | Metadata whose bundle data is gone | The metadata is removed and the bundle reported deleted |
+| Duplicate | A second stored copy of a recorded bundle | The spare copy is deleted |
+| Unreadable | Stored data that does not parse as a bundle | The data is deleted |
+| Leftover | A file an unfinished save left behind | The file is deleted |
+
+A stored file that is gone by the time recovery loads it is not a finding: its metadata, if it had any, stays unconfirmed and is counted as lost data in the third phase.
+
+Unrecorded data and lost data are opposite faults and share one counter, `bpa.restart.orphan`. The proposal gives each finding its own counter, so the metrics and the summary agree.
+
+**Recovery can check without repairing.** A check-only start, `--check-store`, runs the three phases, reports every finding and the summary, changes nothing in either store, and exits: the server does not go on to run. It answers the operator's question before a repair that deletes: the repair for lost data removes metadata and reports the bundle deleted, and the repairs for a duplicate, for unreadable data and for a leftover delete stored files. The exit status follows `fsck`: 0 where nothing was found, 1 where findings were reported, 2 where the check could not be completed. Checking only means the backends must be able to walk without cleaning, so the bundle store's recovery walk takes a flag for it, and a check-only start neither withdraws nor writes the "closed in order" record, leaving the next start to make its own decision. A check-only start that exits is rejected as a mode of the running server: a node that reports findings, repairs none, and then accepts bundles is running on a store it knows to be inconsistent.
+
+A repairing start has no exit status to give, since the server runs on. The summary line and the counters carry the outcome, and a recovery that cannot complete stops the server, as a failed storage operation does.
+
+**What is not reproduced.** `fsck` moves what it cannot place into `lost+found`; recovery deletes unreadable data and spare copies, and this proposal keeps that. A quarantine directory holds data nobody is obliged to look at, on a node whose storage is its scarce resource, and the check-only start is the way to see what would be deleted before it is. `fsck` also refuses a mounted filesystem. The BPA has the same rule in another form: it holds off CLAs and services until recovery has finished, so nothing arrives while the stores are being checked. Nothing stops two servers being started on one store, and a check run beside a live server would report its in-flight saves as leftovers; guarding against that is a lock on the store, which is outside this proposal.
+
 ## Crash Safety Properties
 
 1. **Atomic store**: Bundle data saved before metadata; cleanup on failure
