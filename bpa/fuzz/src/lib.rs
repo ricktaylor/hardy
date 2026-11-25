@@ -176,7 +176,7 @@ impl Msg {
                 .expect("Failed to register routing agent");
 
                 let service = Arc::new(service::PipeService::new());
-                bpa.register_service(hardy_bpv7::eid::Service::Ipn(1), service.clone())
+                bpa.register_application(hardy_bpv7::eid::Service::Ipn(1), service.clone())
                     .await
                     .expect("Failed to register service");
 

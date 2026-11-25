@@ -7,7 +7,7 @@
 use hardy_async::async_trait;
 use hardy_bpa::{
     cla, routing,
-    service::{self, SendOptions, Sink, raw},
+    service::{self, ApplicationSink, SendOptions, ServiceSink},
 };
 use hardy_bpv7::eid::NodeId;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -111,37 +111,7 @@ impl cla::Sink for MockClaSink {
     }
 }
 
-// ── raw::Sink ─────────────────────────────────────────────────────────
-
-pub struct MockRawServiceSink {
-    unregistered: AtomicBool,
-}
-
-impl MockRawServiceSink {
-    pub fn new() -> Self {
-        Self {
-            unregistered: AtomicBool::new(false),
-        }
-    }
-}
-
-#[async_trait]
-impl raw::Sink for MockRawServiceSink {
-    async fn unregister(&self) {
-        self.unregistered.store(true, Ordering::Relaxed);
-    }
-
-    async fn send(
-        &self,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> service::Result<hardy_bpv7::bundle::Id> {
-        Err(service::Error::Internal(
-            "mock sink: send not implemented".into(),
-        ))
-    }
-}
-
-// ── service::Sink ─────────────────────────────────────────────────────
+// ── ServiceSink ─────────────────────────────────────────────────────────
 
 pub struct MockServiceSink {
     unregistered: AtomicBool,
@@ -156,7 +126,37 @@ impl MockServiceSink {
 }
 
 #[async_trait]
-impl Sink for MockServiceSink {
+impl ServiceSink for MockServiceSink {
+    async fn unregister(&self) {
+        self.unregistered.store(true, Ordering::Relaxed);
+    }
+
+    async fn send(
+        &self,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+    ) -> service::Result<hardy_bpv7::bundle::Id> {
+        Err(service::Error::Internal(
+            "mock sink: send not implemented".into(),
+        ))
+    }
+}
+
+// ── service::ApplicationSink ─────────────────────────────────────────────────────
+
+pub struct MockApplicationSink {
+    unregistered: AtomicBool,
+}
+
+impl MockApplicationSink {
+    pub fn new() -> Self {
+        Self {
+            unregistered: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl ApplicationSink for MockApplicationSink {
     async fn unregister(&self) {
         self.unregistered.store(true, Ordering::Relaxed);
     }

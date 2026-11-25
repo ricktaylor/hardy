@@ -15,7 +15,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     cla,
     node_ids::NodeIds,
-    service::{self, StatusNotify, raw},
+    service::{self, Service, ServiceSink, StatusNotify},
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -23,7 +23,7 @@ use hardy_bpv7::{
     builder::Builder,
     bundle::{Flags, Id},
     creation_timestamp::CreationTimestamp,
-    eid::{Eid, IpnNodeId, NodeId, Service},
+    eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     parse::parse,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
@@ -40,7 +40,7 @@ enum Event {
 // ---------------------------------------------------------------------------
 
 struct CaptureService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     events_tx: flume::Sender<Event>,
 }
 
@@ -58,8 +58,8 @@ impl CaptureService {
 }
 
 #[async_trait]
-impl raw::Service for CaptureService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for CaptureService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -256,7 +256,7 @@ async fn expiry_mid_transfer_rig() -> (
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = CaptureService::new();
-    bpa.register_raw_service(Service::Ipn(9), reports.clone())
+    bpa.register_service(ServiceId::Ipn(9), reports.clone())
         .await
         .unwrap();
 
@@ -469,7 +469,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
     bpa.start(false).await;
 
     let (reports, reports_rx) = CaptureService::new();
-    bpa.register_raw_service(Service::Ipn(9), reports.clone())
+    bpa.register_service(ServiceId::Ipn(9), reports.clone())
         .await
         .unwrap();
 

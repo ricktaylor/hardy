@@ -22,7 +22,7 @@ impl Sink {
 
     /// The RIB this sink speaks for — [`Error::Disconnected`] once the BPA
     /// is gone, or the agent has unregistered.
-    fn connected(&self) -> Result<Arc<Rib>> {
+    fn rib(&self) -> Result<Arc<Rib>> {
         let rib = self.rib.upgrade().ok_or(Error::Disconnected)?;
         if rib.has_agent(&self.name) {
             Ok(rib)
@@ -48,7 +48,7 @@ impl super::Sink for Sink {
         action: RouteAction,
         priority: u32,
     ) -> Result<bool> {
-        self.connected()?
+        self.rib()?
             .add(pattern, self.name.clone(), action.into(), priority)
             .await
     }
@@ -60,7 +60,7 @@ impl super::Sink for Sink {
         priority: u32,
     ) -> Result<bool> {
         Ok(self
-            .connected()?
+            .rib()?
             .remove(pattern, &self.name, action.clone().into(), priority)
             .await)
     }

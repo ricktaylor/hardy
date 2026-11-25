@@ -120,6 +120,8 @@ fn build(&self) -> Arc<Registry> {
 
 The single sanctioned reason to keep a path qualified is a **name collision**: when two imports would introduce the same identifier (a `bpsec::Error` alongside a `cbor::Error`, or two `Config`s), import the more-central one plainly and disambiguate the other. Prefer aliasing (`use hardy_cbor::decode::Error as CborError;`) and use the alias; fall back to a bare qualified path (`hardy_cbor::decode::Error`) only where an alias reads worse at the point of use. Leave a one-line comment at the qualified use so the next reader knows the qualification is deliberate, not an un-hoisted import.
 
+**Use role-named items through their module.** Some items are named for the part they play in their module and are ambiguous on their own: `cla::Sink`, `routing::Sink`, `routing::Agent`, `cla::Address`. Import the module, not the item, and write the qualified name at the use site (`use hardy_bpa::cla;` … `Box<dyn cla::Sink>`). Inside the defining module, use the bare name. A module's `Error` and `Result` may be written the same way (`cla::Result<()>`). This is an exemption from the bare-name rule, so the qualified use needs no comment.
+
 Three constructs are exempt because they carry no import to hoist:
 
 - **Trait-method calls**: `value.method()` and the disambiguating `<Type as Trait>::method()`.

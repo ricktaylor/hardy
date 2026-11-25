@@ -16,7 +16,7 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     cla::{self, Cla, ClaInit},
-    service::{self, Service, Sink, StatusNotify},
+    service::{self, Application, ApplicationSink, StatusNotify},
     stream::{Receiver, Segment},
 };
 // `eid::Service` is the service number inside an EID, not the service
@@ -185,7 +185,7 @@ impl cla::Cla for BufferedCla {
 // ---------------------------------------------------------------------------
 
 struct SendOnlyService {
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ApplicationSink>>,
 }
 
 impl SendOnlyService {
@@ -197,8 +197,8 @@ impl SendOnlyService {
 }
 
 #[async_trait]
-impl Service for SendOnlyService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
+impl Application for SendOnlyService {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -313,7 +313,7 @@ async fn streaming_cla_receives_single_final_segment() {
 
     let service = SendOnlyService::new();
     let source_eid = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     let dest = originate(&service, b"Hello remote").await;
@@ -367,7 +367,7 @@ async fn buffered_cla_receives_whole_bundle() {
 
     let service = SendOnlyService::new();
     let source_eid = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     let dest = originate(&service, b"Hello adapter").await;
@@ -404,7 +404,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
         .unwrap();
 
     let service = SendOnlyService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     originate(&service, b"Try again").await;
@@ -608,7 +608,7 @@ async fn legacy_fixture(
 
     let service = SendOnlyService::new();
     let source_eid = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     (bpa, service, events_rx, source_eid)

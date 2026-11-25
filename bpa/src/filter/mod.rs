@@ -407,10 +407,10 @@ pub trait Classifier: Send + Sync {
 ///   (network-scoped — it writes extension blocks the next hops consume).
 /// - **Deliver**: strips transport-scoped extension blocks (network QoS,
 ///   custody — the "transport headers") before a bundle is handed to a local
-///   whole-bundle [`raw::Service`](crate::service::raw::Service), so the
+///   whole-bundle [`Service`](crate::service::Service), so the
 ///   service receives only content. The chain runs for every local
 ///   delivery, but only the whole-bundle path observes the rewritten
-///   blocks: a payload-only [`Service`](crate::service::Service) receives
+///   blocks: a payload-only [`Service`](crate::service::Application) receives
 ///   the decrypted payload alone, so a Rewriter's edits are invisible
 ///   there.
 ///
@@ -501,6 +501,6 @@ pub enum Boundary<'a> {
     },
     /// Stripping transport-scoped extension blocks before local delivery.
     /// Runs for every local delivery; the edits are observable only on the
-    /// whole-bundle [`raw::Service`](crate::service::raw::Service) path.
+    /// whole-bundle [`Service`](crate::service::Service) path.
     Deliver,
 }

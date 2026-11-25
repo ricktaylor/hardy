@@ -7,7 +7,7 @@ use hardy_bpv7::{
 };
 use tracing::{debug, error, info};
 
-// `cla::Cla` and `cla::Sink` are the traits this module's `Record` and
+// `cla::Cla` and `cla::Sink` are the traits this module's `Registration` and
 // `Sink` are built around, so both names are taken here; the two traits
 // stay module-qualified at their few use sites.
 use super::{
@@ -30,7 +30,7 @@ use crate::{
 // lookup or insert with nothing awaited, blocked or iterated inside it, so
 // the lock is never held long enough to repay an OS mutex's park.
 
-pub struct Record {
+pub struct Registration {
     pub cla: Arc<dyn cla::Cla>,
     pub policy: Arc<dyn FlowControllerFactory>,
     // Snapshotted from the `ClaInit` declarations at registration.
@@ -47,42 +47,42 @@ pub struct Record {
     peers: Mutex<HashMap<Address, (Vec<NodeId>, u32)>>,
 }
 
-impl PartialEq for Record {
+impl PartialEq for Registration {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
     }
 }
 
-impl Eq for Record {}
+impl Eq for Registration {}
 
-impl PartialOrd for Record {
+impl PartialOrd for Registration {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Record {
+impl Ord for Registration {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.name.cmp(&other.name)
     }
 }
 
-impl core::hash::Hash for Record {
+impl core::hash::Hash for Registration {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
 
-impl core::fmt::Debug for Record {
+impl core::fmt::Debug for Registration {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Record")
+        f.debug_struct("Registration")
             .field("name", &self.name)
             .field("peers", &self.peers)
             .finish_non_exhaustive()
     }
 }
 
-impl Record {
+impl Registration {
     // Whether `peer_id` is one of this CLA's peers — the ownership check for
     // deferred transfer outcomes.
     pub fn owns_peer(&self, peer_id: u32) -> bool {
@@ -90,7 +90,7 @@ impl Record {
     }
 }
 
-type RecordMap = HashMap<String, Arc<Record>>;
+type RecordMap = HashMap<String, Arc<Registration>>;
 
 // The back-edges are weak. `Bpa` owns the registry and the dispatcher for
 // the life of the BPA, so a strong edge would add no reachability — only a
@@ -98,7 +98,7 @@ type RecordMap = HashMap<String, Arc<Record>>;
 // drops. A failed upgrade is the condition the trait already names,
 // `Error::Disconnected`.
 struct Sink {
-    cla: Weak<Record>,
+    cla: Weak<Registration>,
     registry: Weak<ClaRegistry>,
     dispatcher: Weak<Dispatcher>,
 }
@@ -320,7 +320,7 @@ impl ClaRegistry {
             let Entry::Vacant(e) = clas.entry(name.clone()) else {
                 return Err(Error::AlreadyExists(name));
             };
-            e.insert(Arc::new(Record {
+            e.insert(Arc::new(Registration {
                 cancel: CancellationToken::new(),
                 cla,
                 lane_count: init.lane_count,
@@ -353,7 +353,7 @@ impl ClaRegistry {
         Ok(node_ids)
     }
 
-    async fn unregister(&self, cla: Arc<Record>) {
+    async fn unregister(&self, cla: Arc<Registration>) {
         let cla = self.clas.lock().remove(&*cla.name);
 
         if let Some(cla) = cla {
@@ -362,7 +362,7 @@ impl ClaRegistry {
         }
     }
 
-    async fn unregister_cla(&self, cla: Arc<Record>) {
+    async fn unregister_cla(&self, cla: Arc<Registration>) {
         // First: wake every in-flight stream of this registration.
         cla.cancel.cancel();
 
@@ -387,7 +387,7 @@ impl ClaRegistry {
 
     async fn add_peer(
         &self,
-        cla: Arc<Record>,
+        cla: Arc<Registration>,
         dispatcher: Arc<Dispatcher>,
         cla_addr: Address,
         node_ids: &[NodeId],
@@ -449,7 +449,7 @@ impl ClaRegistry {
         true
     }
 
-    async fn remove_peer(&self, cla: Arc<Record>, cla_addr: &Address) -> bool {
+    async fn remove_peer(&self, cla: Arc<Registration>, cla_addr: &Address) -> bool {
         let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };

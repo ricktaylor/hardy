@@ -17,10 +17,12 @@ use hardy_bpa::{
         slots::MetadataDelta,
     },
     node_ids::NodeIds,
-    // `routing::Sink` stays qualified: the bare `Sink` here is the service
-    // sink imported below.
+    // `routing::Sink` stays qualified, beside the two service sinks imported
+    // below.
     routing::{self, Agent, RouteAction, StaticAgent},
-    service::{self, SendOptions, Service, Sink, StatusNotify, raw},
+    service::{
+        self, Application, ApplicationSink, SendOptions, Service, ServiceSink, StatusNotify,
+    },
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -115,7 +117,7 @@ impl cla::Cla for PipelineCla {
 // ---------------------------------------------------------------------------
 
 struct TestService {
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ApplicationSink>>,
     received_tx: flume::Sender<(Eid, Bytes)>,
 }
 
@@ -133,8 +135,8 @@ impl TestService {
 }
 
 #[async_trait]
-impl Service for TestService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
+impl Application for TestService {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -170,7 +172,7 @@ impl Service for TestService {
 // ---------------------------------------------------------------------------
 
 struct EchoService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
 }
 
 impl EchoService {
@@ -182,8 +184,8 @@ impl EchoService {
 }
 
 #[async_trait]
-impl raw::Service for EchoService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for EchoService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -393,7 +395,7 @@ async fn service_to_cla_routing() {
     // Register a service to send from
     let (service, _service_rx) = TestService::new();
     let source_eid = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -535,7 +537,7 @@ async fn deferred_removal_applied_at_egress() {
 // A low-level (raw-bundle) service that captures each delivered bundle's
 // wire bytes.
 struct CapturingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     delivered_tx: flume::Sender<Bytes>,
 }
 
@@ -553,8 +555,8 @@ impl CapturingService {
 }
 
 #[async_trait]
-impl raw::Service for CapturingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for CapturingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
     async fn on_unregister(&self) {}
@@ -595,10 +597,7 @@ async fn deferred_removal_applied_at_delivery() {
     bpa.start(false).await;
 
     let (svc, delivered_rx) = CapturingService::new();
-    let endpoint = bpa
-        .register_raw_service(ServiceId::Ipn(7), svc)
-        .await
-        .unwrap();
+    let endpoint = bpa.register_service(ServiceId::Ipn(7), svc).await.unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
     bpa.register_cla(
@@ -842,10 +841,7 @@ async fn deferred_removal_precedes_the_deliver_chain() {
     bpa.start(false).await;
 
     let (svc, delivered_rx) = CapturingService::new();
-    let endpoint = bpa
-        .register_raw_service(ServiceId::Ipn(7), svc)
-        .await
-        .unwrap();
+    let endpoint = bpa.register_service(ServiceId::Ipn(7), svc).await.unwrap();
     let (cla, _forwarded_rx) = PipelineCla::new();
     bpa.register_cla(
         "test".to_string(),
@@ -908,9 +904,7 @@ async fn echo_round_trip() {
 
     // Register echo service on service number 7
     let echo = EchoService::new();
-    bpa.register_raw_service(ServiceId::Ipn(7), echo)
-        .await
-        .unwrap();
+    bpa.register_service(ServiceId::Ipn(7), echo).await.unwrap();
 
     // Register CLA with a peer for the "remote" node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -1000,7 +994,7 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
 
     // The service only captures its sink here; the test drives the sink itself.
     let svc = EchoService::new();
-    bpa.register_raw_service(ServiceId::Ipn(7), svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc.clone())
         .await
         .unwrap();
 
@@ -1291,7 +1285,7 @@ async fn local_delivery() {
 
     // Register a service on service number 42
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -1524,7 +1518,7 @@ async fn cla_streamed_ingress_delivers() {
     bpa.start(false).await;
 
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -1659,7 +1653,7 @@ async fn cla_streamed_ingress_truncation_is_refused() {
     bpa.start(false).await;
 
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -1719,7 +1713,7 @@ async fn abandoned_transfer_setup() -> (
     bpa.start(false).await;
 
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -1904,7 +1898,7 @@ async fn segmented_payload_local_delivery() {
     bpa.start(false).await;
 
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -1967,7 +1961,7 @@ async fn duplicate_arrival_never_awaits_the_payload() {
     bpa.start(false).await;
 
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -2071,7 +2065,7 @@ async fn segmented_gate_drops_before_draining_payload() {
     bpa.start(false).await;
 
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -3085,7 +3079,7 @@ async fn short_final_setup() -> (
         .unwrap();
     bpa.start(false).await;
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -3657,7 +3651,7 @@ async fn egress_filter_sees_consistent_extents() {
     // rewrite inserts one after the Rewriter's insert
     let (service, _service_rx) = TestService::new();
     let source = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     service
@@ -3776,7 +3770,7 @@ async fn classifier_route_key_drives_the_lookup() {
         .unwrap();
 
     let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     service
@@ -3902,7 +3896,7 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
 // ---------------------------------------------------------------------------
 
 struct FailingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ApplicationSink>>,
     /// Fires once on_deliver completes (after constructing the Err), so a
     /// waiter observes the point at which the dispatcher's Err-handling
     /// branch is about to run rather than the point at which it started.
@@ -3923,8 +3917,8 @@ impl FailingService {
 }
 
 #[async_trait]
-impl Service for FailingService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
+impl Application for FailingService {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -3970,13 +3964,13 @@ async fn dispatcher_handles_on_deliver_err() {
     bpa.start(false).await;
 
     let (sender, _sender_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(43), sender.clone())
+    bpa.register_application(ServiceId::Ipn(43), sender.clone())
         .await
         .unwrap();
 
     let (failing, completed_rx) = FailingService::new();
     let receiver_eid = bpa
-        .register_service(ServiceId::Ipn(42), failing.clone())
+        .register_application(ServiceId::Ipn(42), failing.clone())
         .await
         .unwrap();
 
@@ -4009,7 +4003,7 @@ async fn dispatcher_handles_on_deliver_err() {
     // after it, the bundle re-enters dispatch and reaches the new receiver.
     failing.sink.get().unwrap().unregister().await;
     let (receiver, received_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), receiver.clone())
+    bpa.register_application(ServiceId::Ipn(42), receiver.clone())
         .await
         .unwrap();
 
@@ -4472,7 +4466,7 @@ async fn forward_failure_park_recheck_redispatches() {
         .unwrap();
 
     let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(90), service.clone())
+    bpa.register_application(ServiceId::Ipn(90), service.clone())
         .await
         .unwrap();
     let id = service
@@ -4559,7 +4553,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         .unwrap();
 
     let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(91), service.clone())
+    bpa.register_application(ServiceId::Ipn(91), service.clone())
         .await
         .unwrap();
     let id = service
@@ -4650,7 +4644,7 @@ async fn gate_fixture(
     bpa.start(false).await;
 
     let (service, service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -5197,14 +5191,14 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
 /// A service whose status notifications block until the test releases
 /// them, announcing each as it begins.
 struct BlockingNotifyApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ApplicationSink>>,
     entered_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
 
 #[async_trait]
-impl Service for BlockingNotifyApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
+impl Application for BlockingNotifyApp {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -5253,7 +5247,7 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
 
     let (entered_tx, entered_rx) = flume::bounded(1);
     let (release_tx, release_rx) = flume::bounded(1);
-    bpa.register_service(
+    bpa.register_application(
         ServiceId::Ipn(42),
         Arc::new(BlockingNotifyApp {
             sink: hardy_async::sync::spin::Once::new(),
@@ -5407,7 +5401,7 @@ async fn originate_route_drop_never_awaits_the_payload() {
 async fn adu_originate_refuses_a_zero_lifetime() {
     let (bpa, _svc, forwarded_rx, _) = streamed_originate_setup().await;
     let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -5662,7 +5656,7 @@ async fn restart_setup(
         .unwrap();
     bpa.start(false).await;
     let svc = EchoService::new();
-    bpa.register_raw_service(ServiceId::Ipn(7), svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc.clone())
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -5793,11 +5787,11 @@ async fn oversized_originate_refuses_before_the_payload() {
     bpa.start(false).await;
 
     let svc = EchoService::new();
-    bpa.register_raw_service(ServiceId::Ipn(7), svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc.clone())
         .await
         .unwrap();
     let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -5875,7 +5869,7 @@ async fn adu_originate_refuses_headers_over_the_cap() {
 
     let (service, _service_rx) = TestService::new();
     let source = bpa
-        .register_service(ServiceId::Ipn(42), service.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     let destination: Eid = "ipn:0.2.1".parse().unwrap();
@@ -5985,7 +5979,7 @@ async fn configured_endpoints_activate_at_start() {
 }
 
 // ---------------------------------------------------------------------------
-// The streamed ADU door: Sink::send_streamed
+// The streamed ADU door: ApplicationSink::send_streamed
 // ---------------------------------------------------------------------------
 
 /// A payload streamed through `send_streamed` originates a bundle
@@ -6007,7 +6001,7 @@ async fn app_send_streamed_matches_whole_buffer_send() {
     bpa.start(false).await;
 
     let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
 
@@ -6129,7 +6123,7 @@ async fn app_send_streamed_producer_drop_cancels() {
     bpa.start(false).await;
 
     let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -6199,7 +6193,7 @@ async fn app_send_streamed_enforces_the_declared_length() {
     bpa.start(false).await;
 
     let (service, _service_rx) = TestService::new();
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -6296,7 +6290,7 @@ async fn app_send_streamed_default_buffers_and_delegates() {
     struct RecordingSink(flume::Sender<Bytes>);
 
     #[async_trait]
-    impl Sink for RecordingSink {
+    impl ApplicationSink for RecordingSink {
         async fn unregister(&self) {}
 
         async fn send(
@@ -6325,7 +6319,7 @@ async fn app_send_streamed_default_buffers_and_delegates() {
     }
     seg_tx.send(Segment::Final(Bytes::new())).await.unwrap();
     drop(seg_tx);
-    Sink::send_streamed(
+    ApplicationSink::send_streamed(
         &sink,
         "ipn:0.2.1".parse().unwrap(),
         payload.len() as u64,
@@ -6344,7 +6338,7 @@ async fn app_send_streamed_default_buffers_and_delegates() {
         .await
         .unwrap();
     drop(seg_tx);
-    let result = Sink::send_streamed(
+    let result = ApplicationSink::send_streamed(
         &sink,
         "ipn:0.2.1".parse().unwrap(),
         500,

@@ -15,7 +15,7 @@ use crate::{
     otel_metrics,
     policy::FlowControllerFactory,
     routing::{self, Agent, Rib},
-    service::{self, Service, raw, registry::ServiceRegistry},
+    service::{self, Application, Service, registry::ServiceRegistry},
     storage::store::Store,
 };
 
@@ -52,12 +52,12 @@ use crate::{
 ///
 /// ```ignore
 /// pub struct MyComponent {
-///     sink: spin::Once<Box<dyn Sink>>,
+///     sink: spin::Once<Box<dyn ApplicationSink>>,
 ///     // ... other fields
 /// }
 ///
 /// impl MyTrait for MyComponent {
-///     fn on_register(&self, sink: Box<dyn Sink>) {
+///     fn on_register(&self, sink: Box<dyn ApplicationSink>) {
 ///         // MUST store the sink - dropping it triggers unregistration
 ///         self.sink.set(sink);
 ///     }
@@ -124,8 +124,8 @@ use crate::{
 ///
 /// # For Service Implementors
 ///
-/// Services receive [`raw::Sink`] (whole bundles) or
-/// [`Sink`](service::Sink) (payloads only), provided in their respective
+/// Services receive [`service::ServiceSink`] (whole bundles) or
+/// [`service::ApplicationSink`] (payloads only), provided in their respective
 /// `on_register` methods.
 #[async_trait]
 pub trait BpaRegistration: Send + Sync {
@@ -160,32 +160,32 @@ pub trait BpaRegistration: Send + Sync {
 
     /// Registers a payload-only service with the BPA.
     ///
-    /// The service receives a [`Sink`](service::Sink) via
-    /// [`Service::on_register`].
+    /// The service receives a [`service::ApplicationSink`] via
+    /// [`Application::on_register`].
+    async fn register_application(
+        &self,
+        service_id: ServiceId,
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid>;
+
+    /// Registers a whole-bundle service with the BPA.
+    ///
+    /// The service receives a [`service::ServiceSink`] via
+    /// [`service::Application::on_register`].
     async fn register_service(
         &self,
         service_id: ServiceId,
         service: Arc<dyn Service>,
     ) -> service::Result<Eid>;
 
-    /// Registers a whole-bundle service with the BPA.
-    ///
-    /// The service receives a [`raw::Sink`] via
-    /// [`raw::Service::on_register`].
-    async fn register_raw_service(
-        &self,
-        service_id: ServiceId,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid>;
-
     /// Registers a payload-only service under a dynamically assigned service ID.
-    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid>;
+    async fn register_dynamic_application(
+        &self,
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid>;
 
     /// Registers a whole-bundle service under a dynamically assigned service ID.
-    async fn register_dynamic_raw_service(
-        &self,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid>;
+    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid>;
 
     /// Registers a routing agent with the BPA.
     ///
@@ -298,13 +298,13 @@ impl Bpa {
 #[async_trait]
 impl BpaRegistration for Bpa {
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_service(
+    async fn register_application(
         &self,
         service_id: ServiceId,
-        service: Arc<dyn Service>,
+        service: Arc<dyn Application>,
     ) -> service::Result<Eid> {
         self.service_registry
-            .register_service(
+            .register_application(
                 service_id,
                 service,
                 &self.node_ids,
@@ -315,13 +315,13 @@ impl BpaRegistration for Bpa {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_raw_service(
+    async fn register_service(
         &self,
         service_id: ServiceId,
-        service: Arc<dyn raw::Service>,
+        service: Arc<dyn Service>,
     ) -> service::Result<Eid> {
         self.service_registry
-            .register_raw_service(
+            .register_service(
                 service_id,
                 service,
                 &self.node_ids,
@@ -345,19 +345,19 @@ impl BpaRegistration for Bpa {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid> {
+    async fn register_dynamic_application(
+        &self,
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid> {
         self.service_registry
-            .register_dynamic_service(service, &self.node_ids, &self.rib, &self.dispatcher)
+            .register_dynamic_application(service, &self.node_ids, &self.rib, &self.dispatcher)
             .await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_dynamic_raw_service(
-        &self,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid> {
+    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid> {
         self.service_registry
-            .register_dynamic_raw_service(service, &self.node_ids, &self.rib, &self.dispatcher)
+            .register_dynamic_service(service, &self.node_ids, &self.rib, &self.dispatcher)
             .await
     }
 
@@ -387,7 +387,7 @@ mod tests {
     use super::*;
     use crate::{
         Bytes,
-        service::Sink,
+        service::ApplicationSink,
         stream::{Receiver, Segment},
     };
 
@@ -426,12 +426,12 @@ mod tests {
 
     /// Originates bundles; never has any delivered.
     struct SendOnlyService {
-        sink: Once<Box<dyn Sink>>,
+        sink: Once<Box<dyn ApplicationSink>>,
     }
 
     #[async_trait]
-    impl Service for SendOnlyService {
-        async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
+    impl Application for SendOnlyService {
+        async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
             self.sink.call_once(|| sink);
         }
 
@@ -490,7 +490,7 @@ mod tests {
             .unwrap();
 
         let service = Arc::new(SendOnlyService { sink: Once::new() });
-        bpa.register_service(ServiceId::Ipn(42), service.clone())
+        bpa.register_application(ServiceId::Ipn(42), service.clone())
             .await
             .unwrap();
 

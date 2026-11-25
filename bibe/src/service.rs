@@ -4,7 +4,7 @@ use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     async_trait,
     cla::Acceptance,
-    service::{self, StatusNotify, raw},
+    service::{self, Service, ServiceSink, StatusNotify},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -19,7 +19,7 @@ use crate::{cla::BibeCla, pdu};
 /// and re-injects it into the BPA via the CLA's dispatch method.
 pub struct DecapService {
     cla: Arc<BibeCla>,
-    sink: Once<Box<dyn raw::Sink>>,
+    sink: Once<Box<dyn ServiceSink>>,
 }
 
 impl DecapService {
@@ -40,8 +40,8 @@ impl DecapService {
 }
 
 #[async_trait]
-impl raw::Service for DecapService {
-    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for DecapService {
+    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
         debug!("BIBE DecapService registered at {endpoint}");
     }

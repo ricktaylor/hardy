@@ -33,7 +33,9 @@ use hardy_bpa::{
         pack::FilterPack, slots::MetadataDelta,
     },
     node_ids::NodeIds,
-    service::{self, SendOptions, Service, Sink, StatusNotify, raw},
+    service::{
+        self, Application, ApplicationSink, SendOptions, Service, ServiceSink, StatusNotify,
+    },
     storage::{
         BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
         Result as StorageResult,
@@ -300,12 +302,12 @@ impl Rewriter for SlotReader {
 // A service that only sends.
 struct SendingService {
     // Held: dropping the sink unregisters the service.
-    sink: hardy_async::sync::spin::Once<Box<dyn Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ApplicationSink>>,
 }
 
 #[async_trait]
-impl Service for SendingService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
+impl Application for SendingService {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -369,13 +371,13 @@ impl cla::Cla for CapturingCla {
 // A raw-bundle service: sees the rewritten extension blocks.
 struct CapturingService {
     // Held: dropping the sink unregisters the service.
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     delivered_tx: flume::Sender<Bytes>,
 }
 
 #[async_trait]
-impl raw::Service for CapturingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for CapturingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -452,7 +454,7 @@ async fn register_capturing_service(bpa: &Bpa) -> (Arc<CapturingService>, flume:
         sink: hardy_async::sync::spin::Once::new(),
         delivered_tx,
     });
-    bpa.register_raw_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_service(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     (service, delivered_rx)
@@ -779,7 +781,7 @@ async fn originate(bpa: &Bpa) -> service::Result<Id> {
     let service = Arc::new(SendingService {
         sink: hardy_async::sync::spin::Once::new(),
     });
-    bpa.register_service(ServiceId::Ipn(42), service.clone())
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
     let options = SendOptions {
@@ -1560,7 +1562,7 @@ async fn the_adu_doors_hold_the_declared_peek() {
         let service = Arc::new(SendingService {
             sink: hardy_async::sync::spin::Once::new(),
         });
-        bpa.register_service(ServiceId::Ipn(42), service.clone())
+        bpa.register_application(ServiceId::Ipn(42), service.clone())
             .await
             .unwrap();
         let sink = service.sink.get().unwrap();

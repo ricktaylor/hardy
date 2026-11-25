@@ -5,7 +5,7 @@ use hardy_async::sync::spin::Once;
 // so the BPA's own stays qualified.
 use hardy_bpa::{
     Bytes, async_trait,
-    service::{self, Service, Sink, StatusNotify},
+    service::{self, Application, ApplicationSink, StatusNotify},
     stream::{Receiver, Segment},
 };
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -47,7 +47,7 @@ pub struct Msg {
 }
 
 pub struct PipeService {
-    sink: Once<Box<dyn Sink>>,
+    sink: Once<Box<dyn ApplicationSink>>,
 }
 
 impl PipeService {
@@ -71,8 +71,8 @@ impl PipeService {
 }
 
 #[async_trait]
-impl Service for PipeService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn Sink>) {
+impl Application for PipeService {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
         self.sink.call_once(|| sink);
     }
 

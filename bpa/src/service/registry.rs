@@ -16,7 +16,7 @@ use tracing::{error, info};
 // This module's own `Sink` implements both service sink traits, so it takes
 // the bare name here; the traits stay module-qualified at their few use
 // sites.
-use super::{Error, Result, SendOptions, Service, StatusNotify, raw};
+use super::{Application, Error, Result, SendOptions, Service, ServiceSink, StatusNotify};
 use crate::{
     Arc, Bytes, HashMap, Weak,
     bundle::Bundle,
@@ -35,12 +35,12 @@ use crate::{
 /// Which of the two service contracts a registration was made against.
 pub enum Kind {
     /// A service that receives whole bundles.
-    Bundle(Arc<dyn raw::Service>),
+    Bundle(Arc<dyn Service>),
     /// A service that receives payloads only.
-    Payload(Arc<dyn Service>),
+    Payload(Arc<dyn Application>),
 }
 
-pub struct Record {
+pub struct Registration {
     pub kind: Kind,
     pub service_id: ServiceId,
     // Cancelled at unregistration; every in-flight stream of this
@@ -54,8 +54,8 @@ pub struct Record {
     tx: Sender,
 }
 
-impl Record {
-    /// The sole constructor: a reachable `Record` always carries its live
+impl Registration {
+    /// The sole constructor: a reachable `Registration` always carries its live
     /// delivery queue and its canonical registration EID, so no consumer
     /// can observe a half-built registration.
     pub fn new(kind: Kind, service_id: ServiceId, eid: Eid, tx: Sender) -> Arc<Self> {
@@ -111,35 +111,35 @@ impl Record {
     }
 }
 
-impl PartialEq for Record {
+impl PartialEq for Registration {
     fn eq(&self, other: &Self) -> bool {
         self.service_id == other.service_id
     }
 }
 
-impl Eq for Record {}
+impl Eq for Registration {}
 
-impl PartialOrd for Record {
+impl PartialOrd for Registration {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Record {
+impl Ord for Registration {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.service_id.cmp(&other.service_id)
     }
 }
 
-impl core::hash::Hash for Record {
+impl core::hash::Hash for Registration {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.service_id.hash(state);
     }
 }
 
-impl core::fmt::Debug for Record {
+impl core::fmt::Debug for Registration {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Record")
+        f.debug_struct("Registration")
             .field("eid", &self.service_id)
             .finish_non_exhaustive()
     }
@@ -152,7 +152,7 @@ impl core::fmt::Debug for Record {
 // and a cycle of `Arc`s never drops. A failed upgrade is the condition the
 // trait already names, `Error::Disconnected`.
 struct Sink {
-    record: Weak<Record>,
+    record: Weak<Registration>,
     /// Full EID for this service (pre-resolved at activation time)
     eid: Eid,
     registry: Weak<ServiceRegistry>,
@@ -174,7 +174,7 @@ impl Sink {
 }
 
 #[async_trait]
-impl raw::Sink for Sink {
+impl ServiceSink for Sink {
     async fn unregister(&self) {
         self.unregister_inner().await
     }
@@ -197,7 +197,7 @@ impl raw::Sink for Sink {
 }
 
 #[async_trait]
-impl service::Sink for Sink {
+impl service::ApplicationSink for Sink {
     async fn unregister(&self) {
         self.unregister_inner().await
     }
@@ -264,7 +264,7 @@ impl Drop for Sink {
     }
 }
 
-type ServiceMap = HashMap<ServiceId, Arc<Record>>;
+type ServiceMap = HashMap<ServiceId, Arc<Registration>>;
 
 pub struct ServiceRegistryBuilder {
     services: Vec<(ServiceId, Kind)>,
@@ -362,10 +362,10 @@ impl ServiceRegistry {
     }
 
     /// Registers a whole-bundle service under `service_id`.
-    pub async fn register_raw_service(
+    pub async fn register_service(
         self: &Arc<Self>,
         service_id: ServiceId,
-        service: Arc<dyn raw::Service>,
+        service: Arc<dyn Service>,
         node_ids: &NodeIds,
         rib: &Arc<Rib>,
         dispatcher: &Arc<Dispatcher>,
@@ -381,10 +381,10 @@ impl ServiceRegistry {
     }
 
     /// Registers a payload-only service under `service_id`.
-    pub async fn register_service(
+    pub async fn register_application(
         self: &Arc<Self>,
         service_id: ServiceId,
-        service: Arc<dyn Service>,
+        service: Arc<dyn Application>,
         node_ids: &NodeIds,
         rib: &Arc<Rib>,
         dispatcher: &Arc<Dispatcher>,
@@ -401,20 +401,6 @@ impl ServiceRegistry {
 
     /// Registers a whole-bundle service with a dynamically assigned IPN
     /// service number.
-    pub async fn register_dynamic_raw_service(
-        self: &Arc<Self>,
-        service: Arc<dyn raw::Service>,
-        node_ids: &NodeIds,
-        rib: &Arc<Rib>,
-        dispatcher: &Arc<Dispatcher>,
-    ) -> Result<Eid> {
-        let service_id = self.allocate_dynamic_id();
-        self.register_raw_service(service_id, service, node_ids, rib, dispatcher)
-            .await
-    }
-
-    /// Registers a payload-only service with a dynamically assigned IPN
-    /// service number.
     pub async fn register_dynamic_service(
         self: &Arc<Self>,
         service: Arc<dyn Service>,
@@ -424,6 +410,20 @@ impl ServiceRegistry {
     ) -> Result<Eid> {
         let service_id = self.allocate_dynamic_id();
         self.register_service(service_id, service, node_ids, rib, dispatcher)
+            .await
+    }
+
+    /// Registers a payload-only service with a dynamically assigned IPN
+    /// service number.
+    pub async fn register_dynamic_application(
+        self: &Arc<Self>,
+        service: Arc<dyn Application>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
+        dispatcher: &Arc<Dispatcher>,
+    ) -> Result<Eid> {
+        let service_id = self.allocate_dynamic_id();
+        self.register_application(service_id, service, node_ids, rib, dispatcher)
             .await
     }
 
@@ -452,7 +452,7 @@ impl ServiceRegistry {
         // channel's creation-time poll recovers any DeliverPending bundles
         // left over from a previous registration under the same EID.
         let (tx, rx) = dispatcher.new_delivery_channel(&eid);
-        let record = Record::new(kind, service_id.clone(), eid.clone(), tx);
+        let record = Registration::new(kind, service_id.clone(), eid.clone(), tx);
         {
             let mut services = self.services.lock();
             if services.contains_key(service_id) {
@@ -496,7 +496,7 @@ impl ServiceRegistry {
         Ok(eid)
     }
 
-    async fn unregister(&self, record: Arc<Record>, rib: &Arc<Rib>) -> Result<()> {
+    async fn unregister(&self, record: Arc<Registration>, rib: &Arc<Rib>) -> Result<()> {
         let record = self.services.lock().remove(&record.service_id);
 
         if let Some(record) = record {
@@ -506,7 +506,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn unregister_service(&self, record: Arc<Record>, rib: &Arc<Rib>) -> Result<()> {
+    async fn unregister_service(&self, record: Arc<Registration>, rib: &Arc<Rib>) -> Result<()> {
         // First: wake every in-flight stream of this registration.
         record.cancel.cancel();
 
@@ -538,7 +538,7 @@ mod tests {
     // A minimal payload-only service: registration-shape tests never
     // exercise delivery.
     struct PayloadService {
-        sink: Once<Box<dyn service::Sink>>,
+        sink: Once<Box<dyn service::ApplicationSink>>,
     }
 
     impl PayloadService {
@@ -548,8 +548,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl Service for PayloadService {
-        async fn on_register(&self, _source: &Eid, sink: Box<dyn service::Sink>) {
+    impl Application for PayloadService {
+        async fn on_register(&self, _source: &Eid, sink: Box<dyn service::ApplicationSink>) {
             self.sink.call_once(|| sink);
         }
         async fn on_unregister(&self) {}
@@ -583,11 +583,11 @@ mod tests {
         let svc_id = ServiceId::Ipn(42);
 
         let first = Arc::new(PayloadService::new());
-        let result = bpa.register_service(svc_id.clone(), first).await;
+        let result = bpa.register_application(svc_id.clone(), first).await;
         assert!(result.is_ok(), "First registration should succeed");
 
         let second = Arc::new(PayloadService::new());
-        let result = bpa.register_service(svc_id, second).await;
+        let result = bpa.register_application(svc_id, second).await;
         assert!(
             matches!(result, Err(Error::ServiceIdInUse(ref id)) if id == "42"),
             "Duplicate registration should return ServiceIdInUse, got: {result:?}"
@@ -606,7 +606,9 @@ mod tests {
         let svc_id = ServiceId::Ipn(99);
 
         let first = Arc::new(PayloadService::new());
-        let result = bpa.register_service(svc_id.clone(), first.clone()).await;
+        let result = bpa
+            .register_application(svc_id.clone(), first.clone())
+            .await;
         assert!(result.is_ok());
 
         first
@@ -617,7 +619,7 @@ mod tests {
             .await;
 
         let second = Arc::new(PayloadService::new());
-        let result = bpa.register_service(svc_id, second).await;
+        let result = bpa.register_application(svc_id, second).await;
         assert!(
             result.is_ok(),
             "Re-registration after cleanup should succeed, got: {result:?}"
@@ -630,8 +632,8 @@ mod tests {
     struct BundleService;
 
     #[async_trait]
-    impl raw::Service for BundleService {
-        async fn on_register(&self, _endpoint: &Eid, _sink: Box<dyn raw::Sink>) {}
+    impl Service for BundleService {
+        async fn on_register(&self, _endpoint: &Eid, _sink: Box<dyn ServiceSink>) {}
 
         async fn on_unregister(&self) {}
 

@@ -3,6 +3,7 @@
 use hardy_bpv7::editor::Error as EditorError;
 
 use super::*;
+use crate::cla::registry::Registration;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
@@ -183,7 +184,7 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     pub async fn transfer_outcome(
         &self,
-        cla: &cla::registry::Record,
+        cla: &Registration,
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: cla::TransferOutcome,
     ) {

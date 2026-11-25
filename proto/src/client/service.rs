@@ -2,7 +2,7 @@ use super::*;
 use proto::service::*;
 
 async fn receive(
-    service: &dyn hardy_bpa::service::raw::Service,
+    service: &dyn hardy_bpa::service::Service,
     mut request: ServiceReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
     let expiry = request
@@ -25,7 +25,7 @@ async fn receive(
 }
 
 async fn status_notify(
-    service: &dyn hardy_bpa::service::raw::Service,
+    service: &dyn hardy_bpa::service::Service,
     request: StatusNotifyRequest,
 ) -> Result<(), tonic::Status> {
     let timestamp = request
@@ -82,7 +82,7 @@ impl Sink {
 }
 
 #[async_trait]
-impl hardy_bpa::service::raw::Sink for Sink {
+impl hardy_bpa::service::ServiceSink for Sink {
     // INTERIM BUFFERING: the wire has no streamed Send message yet, so the
     // segment stream is accumulated (bounded by the transport cap) and sent
     // as one unary ServiceSendRequest. This is a deliberate stepping stone
@@ -132,7 +132,7 @@ impl hardy_bpa::service::raw::Sink for Sink {
 }
 
 struct Handler {
-    service: Weak<dyn hardy_bpa::service::raw::Service>,
+    service: Weak<dyn hardy_bpa::service::Service>,
 }
 
 #[async_trait]
@@ -184,10 +184,10 @@ impl ProxyHandler for Handler {
 ///
 /// This connects to the BPA's Service gRPC endpoint and establishes a
 /// bidirectional streaming connection for the service lifecycle.
-pub async fn register_raw_service(
+pub async fn register_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
-    service: Arc<dyn hardy_bpa::service::raw::Service>,
+    service: Arc<dyn hardy_bpa::service::Service>,
 ) -> hardy_bpa::service::Result<eid::Eid> {
     let mut svc_client = service_client::ServiceClient::connect(grpc_addr.clone())
         .await

@@ -2,7 +2,7 @@ use super::*;
 use proto::service::*;
 
 async fn receive(
-    service: &dyn hardy_bpa::service::Service,
+    service: &dyn hardy_bpa::service::Application,
     mut request: AppReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
     let expiry = request
@@ -32,7 +32,7 @@ async fn receive(
 }
 
 async fn status_notify(
-    service: &dyn hardy_bpa::service::Service,
+    service: &dyn hardy_bpa::service::Application,
     request: StatusNotifyRequest,
 ) -> Result<(), tonic::Status> {
     let timestamp = request
@@ -86,7 +86,7 @@ impl Sink {
 }
 
 #[async_trait]
-impl hardy_bpa::service::Sink for Sink {
+impl hardy_bpa::service::ApplicationSink for Sink {
     async fn send(
         &self,
         destination: eid::Eid,
@@ -165,7 +165,7 @@ impl hardy_bpa::service::Sink for Sink {
 }
 
 struct Handler {
-    service: Weak<dyn hardy_bpa::service::Service>,
+    service: Weak<dyn hardy_bpa::service::Application>,
 }
 
 #[async_trait]
@@ -213,10 +213,10 @@ impl ProxyHandler for Handler {
     }
 }
 
-pub async fn register_service(
+pub async fn register_application(
     grpc_addr: String,
     service_id: Option<eid::Service>,
-    service: Arc<dyn hardy_bpa::service::Service>,
+    service: Arc<dyn hardy_bpa::service::Application>,
 ) -> hardy_bpa::service::Result<eid::Eid> {
     let mut app_client = application_client::ApplicationClient::connect(grpc_addr.clone())
         .await

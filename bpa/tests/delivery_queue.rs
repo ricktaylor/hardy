@@ -13,7 +13,7 @@ use hardy_bpa::{
     bundle::{Bundle, BundleMetadata, BundleStatus},
     cla,
     node_ids::NodeIds,
-    service::{self, StatusNotify, raw},
+    service::{self, Service, ServiceSink, StatusNotify},
     storage::{self, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, Sender},
 };
@@ -21,14 +21,14 @@ use hardy_bpv7::{
     builder::Builder,
     bundle::Id,
     creation_timestamp::CreationTimestamp,
-    eid::{Eid, IpnNodeId, NodeId, Service},
+    eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     status_report::ReasonCode,
 };
 
 /// Records each delivered bundle id; holds the first delivery open until
 /// the release sender fires (or is dropped).
 struct HoldService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     delivered_tx: flume::Sender<Id>,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
@@ -59,8 +59,8 @@ impl HoldService {
 }
 
 #[async_trait]
-impl raw::Service for HoldService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for HoldService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -169,7 +169,7 @@ async fn unregister_sweeps_queued_deliveries() {
 
     let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
     let (svc_a, delivered_a_rx, started_rx, release_tx) = HoldService::new();
-    bpa.register_raw_service(Service::Ipn(7), svc_a.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc_a.clone())
         .await
         .unwrap();
 
@@ -257,7 +257,7 @@ async fn unregister_sweeps_queued_deliveries() {
     // A later registration on the same EID recovers the swept bundle.
     let (svc_b, delivered_b_rx, _started_b_rx, release_b_tx) = HoldService::new();
     drop(release_b_tx); // complete deliveries immediately
-    bpa.register_raw_service(Service::Ipn(7), svc_b.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc_b.clone())
         .await
         .unwrap();
     let delivered = tokio::time::timeout(
@@ -463,7 +463,7 @@ async fn registration_does_not_await_the_post_registration_poll() {
     drop(svc_release_tx); // complete deliveries immediately
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        bpa.register_raw_service(Service::Ipn(9), svc.clone()),
+        bpa.register_service(ServiceId::Ipn(9), svc.clone()),
     )
     .await
     .expect("registration awaited the parked poll — the spawn regressed")

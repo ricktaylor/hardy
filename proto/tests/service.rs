@@ -8,7 +8,7 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::service::{StatusNotify, raw};
+use hardy_bpa::service::{Service, ServiceSink, StatusNotify};
 use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ struct MockService {
     registered: AtomicBool,
     received: AtomicBool,
     status_notified: AtomicBool,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn raw::Sink>>>,
+    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn ServiceSink>>>,
 }
 
 impl MockService {
@@ -32,14 +32,14 @@ impl MockService {
         }
     }
 
-    fn take_sink(&self) -> Option<Box<dyn raw::Sink>> {
+    fn take_sink(&self) -> Option<Box<dyn ServiceSink>> {
         self.sink.lock().take()
     }
 }
 
 #[async_trait]
-impl raw::Service for MockService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for MockService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         *self.sink.lock() = Some(sink);
         self.registered.store(true, Ordering::Relaxed);
     }
@@ -79,7 +79,7 @@ async fn svc_cli_01_registration() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let endpoint: Eid = remote_bpa
-        .register_raw_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
@@ -103,7 +103,7 @@ async fn svc_cli_02_send_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_raw_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
@@ -130,7 +130,7 @@ async fn svc_cli_03_receive_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_raw_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
@@ -138,7 +138,7 @@ async fn svc_cli_03_receive_bundle() {
 
     // BPA pushes a bundle via the server-side Service proxy
     let server_service = bpa
-        .last_raw_service
+        .last_service
         .lock()
         .clone()
         .expect("BPA should have the server-side service");
@@ -173,14 +173,14 @@ async fn svc_cli_04_status_notify() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_raw_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
     assert!(!service.status_notified.load(Ordering::Relaxed));
 
     let server_service = bpa
-        .last_raw_service
+        .last_service
         .lock()
         .clone()
         .expect("BPA should have the server-side service");
@@ -216,13 +216,13 @@ async fn svc_cli_04_status_notify() {
 // A service that replies from inside `on_deliver`, the shape echo-service
 // and any request/reply service uses.
 struct ReplyingService {
-    sink: hardy_async::sync::spin::Mutex<Option<Arc<dyn raw::Sink>>>,
+    sink: hardy_async::sync::spin::Mutex<Option<Arc<dyn ServiceSink>>>,
     replied: Arc<AtomicUsize>,
 }
 
 #[async_trait]
-impl raw::Service for ReplyingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for ReplyingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         *self.sink.lock() = Some(Arc::from(sink));
     }
 
@@ -274,12 +274,12 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
     });
     let remote_bpa = RemoteBpa::new(grpc_addr);
     remote_bpa
-        .register_raw_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
     let server_service = bpa
-        .last_raw_service
+        .last_service
         .lock()
         .clone()
         .expect("BPA should have the server-side service");

@@ -148,7 +148,7 @@ mod tests {
     use crate::{
         bpa::{Bpa, BpaRegistration},
         cla::ClaInit,
-        service::raw,
+        service::{Service, ServiceSink},
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
@@ -484,13 +484,13 @@ mod tests {
     // bundle id.
     struct CapturingService {
         // Retained: dropping the sink unregisters the service.
-        sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+        sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
         delivered_tx: flume::Sender<Id>,
     }
 
     #[async_trait]
-    impl raw::Service for CapturingService {
-        async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+    impl Service for CapturingService {
+        async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
             self.sink.call_once(|| sink);
         }
 
@@ -609,7 +609,7 @@ mod tests {
 
         // The service registers: its WaitingForService poll delivers both.
         let (delivered_tx, delivered_rx) = flume::bounded(16);
-        bpa.register_raw_service(
+        bpa.register_service(
             ServiceId::Ipn(7),
             Arc::new(CapturingService {
                 sink: hardy_async::sync::spin::Once::new(),

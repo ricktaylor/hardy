@@ -11,7 +11,7 @@ use hardy_async::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::{
     cla, routing,
-    service::{self, SendOptions, Service, Sink, raw},
+    service::{self, Application, ApplicationSink, SendOptions, Service, ServiceSink},
 };
 // `eid::Service` is the service number inside an EID, not the service
 // trait registered here; it is aliased to the word the code already uses
@@ -36,8 +36,8 @@ pub struct MockBpa {
     pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::Agent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
     pub last_cla_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockClaSink>>>,
-    pub last_raw_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn raw::Service>>>,
     pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn Service>>>,
+    pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn Application>>>,
 }
 
 impl MockBpa {
@@ -50,8 +50,8 @@ impl MockBpa {
             last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
             last_cla: hardy_async::sync::spin::Mutex::new(None),
             last_cla_sink: hardy_async::sync::spin::Mutex::new(None),
-            last_raw_service: hardy_async::sync::spin::Mutex::new(None),
             last_service: hardy_async::sync::spin::Mutex::new(None),
+            last_application: hardy_async::sync::spin::Mutex::new(None),
         }
     }
 
@@ -97,20 +97,6 @@ impl BpaRegistration for MockBpa {
         Ok(self.node_ids.clone())
     }
 
-    async fn register_raw_service(
-        &self,
-        _service_id: ServiceId,
-        service: Arc<dyn raw::Service>,
-    ) -> service::Result<Eid> {
-        let endpoint: Eid = "ipn:1.42".parse().unwrap();
-        let sink = Arc::new(MockRawServiceSink::new());
-        *self.last_raw_service.lock() = Some(service.clone());
-        service
-            .on_register(&endpoint, Box::new(RawServiceSinkWrapper(sink)))
-            .await;
-        Ok(endpoint)
-    }
-
     async fn register_service(
         &self,
         _service_id: ServiceId,
@@ -125,15 +111,29 @@ impl BpaRegistration for MockBpa {
         Ok(endpoint)
     }
 
-    async fn register_dynamic_raw_service(
+    async fn register_application(
         &self,
-        service: Arc<dyn raw::Service>,
+        _service_id: ServiceId,
+        service: Arc<dyn Application>,
     ) -> service::Result<Eid> {
-        self.register_raw_service(ServiceId::Ipn(0), service).await
+        let endpoint: Eid = "ipn:1.42".parse().unwrap();
+        let sink = Arc::new(MockApplicationSink::new());
+        *self.last_application.lock() = Some(service.clone());
+        service
+            .on_register(&endpoint, Box::new(ApplicationSinkWrapper(sink)))
+            .await;
+        Ok(endpoint)
     }
 
     async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid> {
         self.register_service(ServiceId::Ipn(0), service).await
+    }
+
+    async fn register_dynamic_application(
+        &self,
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid> {
+        self.register_application(ServiceId::Ipn(0), service).await
     }
 
     async fn register_routing_agent(
@@ -157,8 +157,8 @@ impl BpaRegistration for MockBpa {
 
 struct RoutingSinkWrapper(Arc<MockRoutingSink>);
 struct ClaSinkWrapper(Arc<MockClaSink>);
-struct RawServiceSinkWrapper(Arc<MockRawServiceSink>);
 struct ServiceSinkWrapper(Arc<MockServiceSink>);
+struct ApplicationSinkWrapper(Arc<MockApplicationSink>);
 
 #[async_trait]
 impl routing::Sink for RoutingSinkWrapper {
@@ -212,7 +212,7 @@ impl cla::Sink for ClaSinkWrapper {
 }
 
 #[async_trait]
-impl raw::Sink for RawServiceSinkWrapper {
+impl ServiceSink for ServiceSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }
@@ -225,7 +225,7 @@ impl raw::Sink for RawServiceSinkWrapper {
 }
 
 #[async_trait]
-impl Sink for ServiceSinkWrapper {
+impl ApplicationSink for ApplicationSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }

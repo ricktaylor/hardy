@@ -1,7 +1,7 @@
 use super::*;
 use proto::service::*;
 
-type Sink = Arc<dyn hardy_bpa::service::raw::Sink>;
+type Sink = Arc<dyn hardy_bpa::service::ServiceSink>;
 
 struct LowLevelService {
     sink: Mutex<Option<Sink>>,
@@ -58,11 +58,11 @@ impl LowLevelService {
 }
 
 #[async_trait]
-impl hardy_bpa::service::raw::Service for LowLevelService {
+impl hardy_bpa::service::Service for LowLevelService {
     async fn on_register(
         &self,
         _endpoint: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::service::raw::Sink>,
+        sink: Box<dyn hardy_bpa::service::ServiceSink>,
     ) {
         *self.sink.lock() = Some(Arc::from(sink));
     }
@@ -239,7 +239,7 @@ async fn run_service_session(
                     })
                     .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
                 let endpoint_id = bpa
-                    .register_raw_service(service_id, svc.clone())
+                    .register_service(service_id, svc.clone())
                     .await
                     .map(|endpoint_id| endpoint_id.to_string())
                     .map_err(|e| tonic::Status::from_error(e.into()))?;

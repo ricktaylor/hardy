@@ -2,7 +2,7 @@ use hardy_async::{TaskPool, sync::spin::RwLock};
 use hardy_bpv7::eid::Eid;
 use tracing::warn;
 
-use super::{Address, queue, registry};
+use super::{Address, queue, registry::Registration};
 use crate::{
     Arc, HashMap, HashSet,
     bundle::{Bundle, BundleStatus},
@@ -36,7 +36,7 @@ impl Peer {
     /// half-built state to guard against.
     pub async fn start(
         poll_channel_depth: usize,
-        cla: Arc<registry::Record>,
+        cla: Arc<Registration>,
         peer: u32,
         cla_addr: Address,
         store: Arc<Store>,

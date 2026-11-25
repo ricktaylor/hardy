@@ -16,7 +16,7 @@ reflected. The response is submitted to the BPA for normal forwarding.
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     async_trait,
-    service::{self, StatusNotify, raw},
+    service::{self, Service, ServiceSink, StatusNotify},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
@@ -35,7 +35,7 @@ use tracing::{debug, warn};
 /// it to the BPA. This is the DTN equivalent of ICMP echo (ping).
 pub struct EchoService {
     /// Communication channel back to the BPA, set once during registration.
-    sink: Once<Box<dyn raw::Sink>>,
+    sink: Once<Box<dyn ServiceSink>>,
 }
 
 impl Default for EchoService {
@@ -140,9 +140,9 @@ impl EchoService {
 }
 
 #[async_trait]
-impl raw::Service for EchoService {
+impl Service for EchoService {
     /// Stores the BPA sink for later use when echoing bundles.
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn raw::Sink>) {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 

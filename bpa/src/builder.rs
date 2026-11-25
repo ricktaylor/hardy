@@ -17,7 +17,7 @@ use crate::{
     policy::FlowControllerFactory,
     routing::{Agent, RibBuilder},
     service::{
-        Service, raw,
+        Application, Service,
         registry::{Kind, ServiceRegistryBuilder},
     },
     storage::{
@@ -183,16 +183,16 @@ impl BpaBuilder {
 
     /// Registers a payload-only service, to be initialized when the BPA
     /// is built.
-    pub fn service(mut self, service: Arc<dyn Service>, service_id: ServiceId) -> Self {
+    pub fn application(mut self, application: Arc<dyn Application>, service_id: ServiceId) -> Self {
         self.service_registry_builder
-            .insert(service_id, Kind::Payload(service))
+            .insert(service_id, Kind::Payload(application))
             .expect("Failed to register service");
         self
     }
 
     /// Registers a whole-bundle service, to be initialized when the BPA
     /// is built.
-    pub fn raw_service(mut self, service: Arc<dyn raw::Service>, service_id: ServiceId) -> Self {
+    pub fn service(mut self, service: Arc<dyn Service>, service_id: ServiceId) -> Self {
         self.service_registry_builder
             .insert(service_id, Kind::Bundle(service))
             .expect("Failed to register service");

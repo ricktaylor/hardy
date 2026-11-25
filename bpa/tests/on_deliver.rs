@@ -8,7 +8,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     cla,
     node_ids::NodeIds,
-    service::{self, StatusNotify, raw},
+    service::{self, Service, ServiceSink, StatusNotify},
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -16,7 +16,7 @@ use hardy_bpv7::{
     builder::Builder,
     bundle::{Flags, Id},
     creation_timestamp::CreationTimestamp,
-    eid::{Eid, IpnNodeId, NodeId, Service},
+    eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     parse::parse,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
@@ -48,7 +48,7 @@ enum Event {
 
 /// Consumes the stream segment by segment, recording every segment it pulls.
 struct StreamingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     events_tx: flume::Sender<Event>,
     /// When set, every `on_deliver` call fails without pulling.
     failing: AtomicBool,
@@ -69,8 +69,8 @@ impl StreamingService {
 }
 
 #[async_trait]
-impl raw::Service for StreamingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for StreamingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -123,7 +123,7 @@ impl raw::Service for StreamingService {
 /// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
 /// — the shape every whole-buffer service takes on the streamed-only door.
 struct BufferedService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     events_tx: flume::Sender<Event>,
 }
 
@@ -141,8 +141,8 @@ impl BufferedService {
 }
 
 #[async_trait]
-impl raw::Service for BufferedService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for BufferedService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -177,7 +177,7 @@ impl raw::Service for BufferedService {
 /// and completes `Ok` or defers with an error: a delivery deliberately
 /// still in flight across the bundle's expiry.
 struct HoldingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     failing: bool,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
@@ -201,8 +201,8 @@ impl HoldingService {
 }
 
 #[async_trait]
-impl raw::Service for HoldingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for HoldingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -391,7 +391,7 @@ async fn streaming_service_receives_single_final_segment() {
     bpa.start(false).await;
 
     let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc.clone())
         .await
         .unwrap();
 
@@ -458,7 +458,7 @@ async fn buffered_service_receives_whole_bundle() {
     let (bpa, _inbound) = bpa_with_inbound(b"pong").await;
 
     let (svc, events_rx) = BufferedService::new();
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc.clone())
         .await
         .unwrap();
 
@@ -482,7 +482,7 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     let (bpa, _inbound) = bpa_with_inbound(b"park me").await;
 
     let (failing_svc, failing_rx) = StreamingService::new(true);
-    bpa.register_raw_service(Service::Ipn(7), failing_svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), failing_svc.clone())
         .await
         .unwrap();
     assert!(matches!(recv_event(&failing_rx, 5).await, Event::Failed));
@@ -496,7 +496,7 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     // dispatch and reaches the new service. The timeout only bounds a
     // regression.
     let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc.clone())
         .await
         .unwrap();
     let Event::Streamed { segments, .. } = recv_event(&events_rx, 10).await else {
@@ -566,7 +566,7 @@ async fn expiry_mid_delivery_rig(
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = StreamingService::new(false);
-    bpa.register_raw_service(Service::Ipn(9), reports.clone())
+    bpa.register_service(ServiceId::Ipn(9), reports.clone())
         .await
         .unwrap();
 
@@ -574,7 +574,7 @@ async fn expiry_mid_delivery_rig(
     // WaitingForService — which is also what places it on the reaper's
     // expiry watch list.
     let (failing_svc, failing_rx) = StreamingService::new(true);
-    bpa.register_raw_service(Service::Ipn(7), failing_svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), failing_svc.clone())
         .await
         .unwrap();
 
@@ -613,7 +613,7 @@ async fn expiry_mid_delivery_rig(
     // the bundle's expiry.
     failing_svc.sink.get().unwrap().unregister().await;
     let (svc, started_rx, release_tx) = HoldingService::new(holding_fails);
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc.clone())
         .await
         .unwrap();
 
@@ -763,7 +763,7 @@ async fn buffering_service_concats_multi_segment_stream() {
     let (head, tail) = (data.slice(..10), data.slice(10..));
     let mut rx = feed(vec![Segment::Next(head), Segment::Final(tail)]).await;
 
-    raw::Service::on_deliver(
+    Service::on_deliver(
         &*svc,
         &bundle_id_of(&data),
         expiry(),
@@ -791,7 +791,7 @@ async fn buffering_service_is_zero_copy_for_single_final() {
     );
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    raw::Service::on_deliver(
+    Service::on_deliver(
         &*svc,
         &bundle_id_of(&data),
         expiry(),
@@ -820,7 +820,7 @@ async fn buffering_service_truncated_stream_is_cancelled() {
     );
     let mut rx = feed(vec![Segment::Next(data.slice(..4))]).await;
 
-    let Err(err) = raw::Service::on_deliver(
+    let Err(err) = Service::on_deliver(
         &*svc,
         &bundle_id_of(&data),
         expiry(),
@@ -848,7 +848,7 @@ async fn buffering_service_rejects_under_delivering_stream() {
     let short = data.slice(..data.len() - 1);
     let mut rx = feed(vec![Segment::Final(short.clone())]).await;
 
-    let Err(err) = raw::Service::on_deliver(
+    let Err(err) = Service::on_deliver(
         &*svc,
         &bundle_id_of(&data),
         expiry(),
@@ -878,8 +878,7 @@ async fn buffering_service_rejects_stream_exceeding_total_len() {
     );
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    let Err(err) =
-        raw::Service::on_deliver(&*svc, &bundle_id_of(&data), expiry(), 4, &mut rx).await
+    let Err(err) = Service::on_deliver(&*svc, &bundle_id_of(&data), expiry(), 4, &mut rx).await
     else {
         panic!("Expected an oversize stream to fail");
     };

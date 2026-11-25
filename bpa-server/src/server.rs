@@ -231,7 +231,7 @@ impl BpaServer {
                     } else {
                         for service_id in services {
                             builder = builder
-                                .raw_service(Arc::new(EchoService::new()), service_id);
+                                .service(Arc::new(EchoService::new()), service_id);
                         }
                     }
                 }

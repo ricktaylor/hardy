@@ -19,7 +19,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     bundle::{Bundle, BundleMetadata, BundleStatus},
     node_ids::NodeIds,
-    service::{self, StatusNotify, raw},
+    service::{self, Service, ServiceSink, StatusNotify},
     storage::{self, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, SendError, Sender},
 };
@@ -27,7 +27,7 @@ use hardy_bpv7::{
     builder::Builder,
     bundle::Id,
     creation_timestamp::CreationTimestamp,
-    eid::{Eid, IpnNodeId, NodeId, Service},
+    eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     status_report::ReasonCode,
 };
 
@@ -209,7 +209,7 @@ impl MetadataStorage for InjectingStorage {
 /// Holds each delivery open until the release sender is dropped, so the
 /// bundle under test stays in flight while the poller injects its duplicate.
 struct CountingHoldService {
-    sink: hardy_async::sync::spin::Once<Box<dyn raw::Sink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     deliveries: AtomicUsize,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
@@ -233,8 +233,8 @@ impl CountingHoldService {
 }
 
 #[async_trait]
-impl raw::Service for CountingHoldService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn raw::Sink>) {
+impl Service for CountingHoldService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         // Retain the sink: dropping it unregisters the service.
         self.sink.call_once(|| sink);
     }
@@ -309,7 +309,7 @@ async fn stale_poller_duplicate_never_redelivers() {
     // the service pushes them through `dispatch_bundle` into the queue.
     let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
     drop(originator_release_tx);
-    bpa.register_raw_service(Service::Ipn(9), originator.clone())
+    bpa.register_service(ServiceId::Ipn(9), originator.clone())
         .await
         .unwrap();
 
@@ -345,7 +345,7 @@ async fn stale_poller_duplicate_never_redelivers() {
     // the arm signal, keeping the fast path closed. (Every timeout below
     // only bounds a regression.)
     let (svc, started_rx, release_tx) = CountingHoldService::new();
-    bpa.register_raw_service(Service::Ipn(7), svc.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc.clone())
         .await
         .unwrap();
     tokio::time::timeout(tokio::time::Duration::from_secs(10), queued_rx.recv_async())
@@ -381,7 +381,7 @@ async fn stale_poller_duplicate_never_redelivers() {
     // joins the processing pool.
     let (marker_svc, marker_started_rx, marker_release_tx) = CountingHoldService::new();
     drop(marker_release_tx);
-    bpa.register_raw_service(Service::Ipn(8), marker_svc.clone())
+    bpa.register_service(ServiceId::Ipn(8), marker_svc.clone())
         .await
         .unwrap();
     tokio::time::timeout(
@@ -574,7 +574,7 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // into the queue.
     let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
     drop(originator_release_tx);
-    bpa.register_raw_service(Service::Ipn(9), originator.clone())
+    bpa.register_service(ServiceId::Ipn(9), originator.clone())
         .await
         .unwrap();
 
@@ -609,7 +609,7 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // service queues A, whose dequeue claim parks at the gate.
     let (svc_a, a_started_rx, a_release_tx) = CountingHoldService::new();
     drop(a_release_tx);
-    bpa.register_raw_service(Service::Ipn(7), svc_a.clone())
+    bpa.register_service(ServiceId::Ipn(7), svc_a.clone())
         .await
         .unwrap();
     tokio::time::timeout(
@@ -626,7 +626,7 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // A.)
     let (svc_b, b_started_rx, b_release_tx) = CountingHoldService::new();
     drop(b_release_tx);
-    bpa.register_raw_service(Service::Ipn(8), svc_b.clone())
+    bpa.register_service(ServiceId::Ipn(8), svc_b.clone())
         .await
         .unwrap();
     tokio::time::timeout(

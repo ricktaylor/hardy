@@ -9,11 +9,11 @@ use hardy_bpv7::{
 };
 
 use super::*;
-use crate::service::registry::{Kind, Record};
+use crate::service::registry::{Kind, Registration};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
-    pub(super) async fn deliver_bundle(&self, record: Arc<Record>, bundle: bundle::Bundle) {
+    pub(super) async fn deliver_bundle(&self, record: Arc<Registration>, bundle: bundle::Bundle) {
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
@@ -73,7 +73,7 @@ impl Dispatcher {
     /// caller resolves, so the claim cannot dangle.
     async fn offer_to_service(
         &self,
-        record: Arc<Record>,
+        record: Arc<Registration>,
         service_eid: Eid,
         mut bundle: bundle::Bundle,
         data: Bytes,

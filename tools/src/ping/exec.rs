@@ -307,9 +307,9 @@ async fn exec_inner(
     service: alloc::sync::Arc<service::Service>,
 ) -> anyhow::Result<()> {
     if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
-        bpa.register_raw_service(service_id, service.clone()).await
+        bpa.register_service(service_id, service.clone()).await
     } else {
-        bpa.register_dynamic_raw_service(service.clone()).await
+        bpa.register_dynamic_service(service.clone()).await
     }
     .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 
