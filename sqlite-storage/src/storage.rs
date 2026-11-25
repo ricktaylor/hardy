@@ -49,9 +49,16 @@ fn default_db_dir() -> PathBuf {
 ///
 /// Every write runs on one dedicated writer thread, which batches whatever
 /// has queued into a single transaction; reads run on a bounded pool of
-/// connections on the blocking thread pool, so no SQLite call stalls an
-/// async worker. Bundle metadata is stored as JSON blobs alongside typed
-/// status columns for efficient status-based queries.
+/// connections on the blocking thread pool, so no SQLite call made through
+/// the trait stalls an async worker. Bundle metadata is stored as JSON
+/// blobs alongside typed status columns for efficient status-based queries.
+///
+/// Opening and dropping the store block the calling thread. [`new`] opens
+/// the database and applies any pending migration, and dropping the store
+/// waits for the writes already queued to commit and for a final
+/// checkpoint of the write-ahead log.
+///
+/// [`new`]: SqliteStorage::new
 pub struct SqliteStorage {
     writer: Writer,
     readers: Arc<ReaderPool>,
@@ -80,7 +87,7 @@ impl SqliteStorage {
         info!("Using database: {}", path.display());
 
         Self {
-            writer: Writer::new(open_writer(&path, upgrade), &path),
+            writer: Writer::new(open_write_connection(&path, upgrade), &path),
             readers: Arc::new(ReaderPool::new(path)),
         }
     }
@@ -104,7 +111,7 @@ impl SqliteStorage {
 
 // Opens the store's writing connection, creating the database if it does
 // not exist (which forces `upgrade`), and migrates it to the latest schema.
-fn open_writer(path: &Path, mut upgrade: bool) -> Connection {
+fn open_write_connection(path: &Path, mut upgrade: bool) -> Connection {
     // Attempt to open existing database first
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let mut connection = match Connection::open_with_flags(path, flags) {

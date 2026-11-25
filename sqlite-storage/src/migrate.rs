@@ -37,12 +37,12 @@ const MIGRATIONS: &[Migration] = &include!(concat!(env!("OUT_DIR"), "/migrations
 
 #[cfg_attr(feature = "instrument", instrument(skip(conn)))]
 pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Error> {
-    migrate_to(conn, MIGRATIONS, upgrade)
+    migrate_with(conn, MIGRATIONS, upgrade)
 }
 
 // Brings the database to the schema `migrations` ends at: checks the ones
 // it has already had against the list, then applies the rest if `upgrade`.
-fn migrate_to(
+fn migrate_with(
     conn: &mut rusqlite::Connection,
     migrations: &[Migration],
     upgrade: bool,
@@ -171,7 +171,7 @@ fn migrate_to(
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, MIGRATIONS, migrate, migrate_to};
+    use super::{Error, MIGRATIONS, migrate, migrate_with};
 
     fn open_memory_db() -> rusqlite::Connection {
         rusqlite::Connection::open_in_memory().unwrap()
@@ -320,7 +320,7 @@ mod tests {
     fn store_behind_by(pending: usize) -> rusqlite::Connection {
         let mut conn = open_memory_db();
         let earlier = &MIGRATIONS[..MIGRATIONS.len() - pending];
-        migrate_to(&mut conn, earlier, true).unwrap();
+        migrate_with(&mut conn, earlier, true).unwrap();
         assert_eq!(applied(&conn).len(), earlier.len());
         conn
     }

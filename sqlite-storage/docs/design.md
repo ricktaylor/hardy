@@ -28,7 +28,7 @@ flowchart LR
     writer & readers & checkpoint --> sqlite["SQLite (WAL mode)"]
 ```
 
-Bundle metadata is serialised as JSON and stored alongside indexed columns that enable efficient querying without deserialising every row. Every write runs on a single dedicated writer thread that owns the only writing connection; reads run on a bounded pool of query-only connections on Tokio's blocking thread pool; and a checkpoint thread copies the write-ahead log into the database file. No SQLite call runs on an async worker thread.
+Bundle metadata is serialised as JSON and stored alongside indexed columns that enable efficient querying without deserialising every row. Every write runs on a single dedicated writer thread that owns the only writing connection; reads run on a bounded pool of query-only connections on Tokio's blocking thread pool; and a checkpoint thread copies the write-ahead log into the database file. Once the store is open, no SQLite call runs on an async worker thread. Opening and dropping it are the exceptions: `SqliteStorage::new` opens the database and applies any pending migration on the calling thread, and dropping the store blocks while the writer thread commits what is queued, runs a final checkpoint and is joined.
 
 ## Key Design Decisions
 
@@ -80,7 +80,7 @@ SQLite allows one writer at a time, so writes must be serialised somewhere. They
 
 Running the writes on their own thread keeps them off Tokio's async workers. A SQLite write is blocking I/O, and on a worker thread it would stall every task scheduled there.
 
-The writer batches without a timer. It blocks until a write arrives, then takes whatever else has queued meanwhile (up to 64 writes) and runs the batch in one transaction, with each write in its own savepoint. An idle store therefore commits each write on its own with no added latency, while under load the batches grow by themselves and the per-transaction cost is shared. The savepoints keep each write atomic and independent: a write that fails rolls back alone and the rest of the batch commits. Every caller is answered only after its batch's commit has resolved, so no caller acts on a write that did not commit, and if the commit itself fails, every write in the batch reports the failure. A write whose caller has already gone by the time its turn comes is skipped.
+The writer batches without a timer. It blocks until a write arrives, then takes whatever else has queued meanwhile (up to 64 writes) and runs the batch in one transaction, with each write in its own savepoint. An idle store therefore commits each write on its own with no added latency, while under load the batches grow by themselves and the per-transaction cost is shared. The savepoints keep each write atomic and independent: a write that fails rolls back alone and the rest of the batch commits. Every caller is answered only after its batch's commit has completed, so no caller acts on a write that did not commit, and if the commit itself fails, every write in the batch reports the failure. A write whose caller has already gone by the time its turn comes is skipped.
 
 Not every failure stops at a savepoint. On a full disk, an I/O error or an out-of-memory condition, SQLite rolls back the whole transaction, not just the statement that failed. The writer checks for this after each write. If the transaction has gone, the batch stops there and every write in it fails with the error that caused it, including the writes that had already succeeded, because none of them took effect. No later write in the batch is run: with no transaction around it, it would commit on its own while its caller was told the batch had failed.
 
@@ -96,7 +96,7 @@ Rejected alternatives:
 
 Under `synchronous = NORMAL` a commit only appends to the WAL; the fsyncs happen at a checkpoint, which copies the WAL's pages into the database file and syncs it. SQLite's default runs the checkpoint inside whichever commit takes the WAL past 1000 pages, so the writer stops for it, and every write queued behind it waits: on the order of 20 ms, several times a second under load.
 
-The store turns that default off. Between batches the writer reads how much of the WAL has not been copied, and once that passes 1000 pages (4 MiB) it wakes a checkpoint thread. That thread has its own connection. It copies the WAL in passive checkpoints, which never wait for the writer or for a reader, and then syncs the database file. The writer carries on committing throughout.
+The store turns that default off. Between batches the writer reads the WAL's backlog, the pages no checkpoint has yet copied, and once that passes 1000 pages (4 MiB) it wakes a checkpoint thread. That thread has its own connection. It copies the WAL in passive checkpoints, which never wait for the writer or for a reader, and syncs the database file after each one that copied anything. The writer carries on committing throughout.
 
 Two things a background checkpoint cannot do are left to the writer, at thresholds chosen so that they are rare:
 
@@ -104,6 +104,8 @@ Two things a background checkpoint cannot do are left to the writer, at threshol
 - **Bounding the WAL.** A writer faster than the checkpoint thread would grow the WAL without limit. At 16000 pages (64 MiB) the writer waits for the checkpoint in flight before taking its next batch, which holds the write rate to the checkpoint rate. This is reached only at sustained saturation, where the wait is on the order of 100 ms: longer than any single pause under SQLite's default, but with far fewer writes delayed overall. The limit holds the WAL to about 64 MiB only while no reader keeps a snapshot open, because a checkpoint cannot copy past the oldest snapshot still in use. No read holds one across calls: each runs in its own implicit transaction, and the polls page with a cursor.
 
 The database file is synced through the file handle SQLite already holds, reached with `sqlite3_file_control`. Opening a second handle to sync is not an option on POSIX systems: closing any descriptor of a file releases every lock the process holds on that file, including the ones SQLite relies on. That call is the crate's one use of `unsafe`.
+
+When the store closes, the writer thread stops the checkpoint thread and copies what is left of the WAL itself, once its last batch has committed. SQLite would otherwise checkpoint as the last connection closes, and with the pool's readers still open after the writer that would be a reader, on whichever thread dropped the store.
 
 The trade-off is disk space and recovery time: the WAL holds up to about 64 MiB instead of about 4 MiB, while no reader holds an old snapshot open, and the next open after a crash replays whatever it holds. If the WAL does pass the limit, the store logs a warning once.
 
@@ -118,7 +120,7 @@ The store's threads have no caller to hand a failure to, so a failure on one of 
 
 - **A panic on the writer thread, on the checkpoint thread, or in a read** aborts the process. Without this, a panic on the writer thread would leave the process running while every later write failed, and a panic in a read would reach only the one caller waiting on it. The abort comes once the panic has unwound to the top of the thread, so for that interval the writer thread's queued writes, and any that arrive meanwhile, are failed as the store shutting down; the BPA treats that as fatal too, so either way the process ends.
 - **A checkpoint that fails** panics its thread, and so aborts. No caller waits on a checkpoint, and a sync that failed cannot simply be retried: the operating system may have discarded the pages it could not write. The one exception is a checkpoint step that loses a race for one of the WAL's locks, which is not a failure; it is left for the writer's next batch.
-- **A write that fails** is returned to its caller, as before, with its whole batch if SQLite rolled the transaction back. The BPA treats any storage error as fatal, so this too ends the process, by way of the caller.
+- **A write that fails** is returned to its caller, as before, with its whole batch if SQLite rolled the transaction back. The BPA's write paths treat a storage error as fatal, so this too ends the process, by way of the caller. A few callers only log it and carry on: the reaper's expiry poll and its `get`, ADU reassembly's fragment poll, and the store's own `start_recovery`, as on the other backends.
 
 One consequence of batching is that a failed commit fails up to 64 callers at once, where each write used to fail alone. Since any one of those failures is fatal to the BPA, the outcome is the same.
 

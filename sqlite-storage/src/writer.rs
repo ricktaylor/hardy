@@ -4,7 +4,7 @@
 //! Writes queue to the thread and run in arrival order. Whatever has queued
 //! while the thread was busy commits as one batch, in a single transaction,
 //! with each write in its own savepoint: a failing write rolls back alone,
-//! and every caller is answered only once its batch's commit has resolved,
+//! and every caller is answered only once its batch's commit has completed,
 //! so no caller acts on a write that did not commit. An idle store commits
 //! each write on its own, with no batching delay; under load the batches
 //! grow by themselves.
@@ -39,20 +39,21 @@ use super::{checkpoint::Checkpointer, thread::JoinOnDrop};
 // many rows, such as a peer queue's reset, holds up the rest of its batch.
 const MAX_BATCH_SIZE: usize = 64;
 
-/// Why a write has no result of its own to report.
+// Why a write has no result of its own to report. Callers see it only
+// through the storage error's `Display`: the type is not exported.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The write's batch lost its transaction, so none of the batch's
-    /// writes took effect: the transaction failed to begin or to commit, or
-    /// SQLite rolled it back when one of the writes failed. Shared, because
-    /// every caller in the batch is answered with the same failure.
+    // The write's batch lost its transaction, so none of the batch's writes
+    // took effect: the transaction failed to begin or to commit, or SQLite
+    // rolled it back when one of the writes failed. Shared, because every
+    // caller in the batch is answered with the same failure.
     #[error("Metadata write transaction failed: {0}")]
     Transaction(#[source] Arc<SqliteError>),
 
-    /// The writer thread has stopped: the store is shutting down, or the
-    /// writer thread has panicked and the process is about to abort. The
-    /// panic unwinds the thread before its guard aborts, so writes that
-    /// were queued, or arrive meanwhile, are answered with this first.
+    // The writer thread has stopped: the store is shutting down, or the
+    // writer thread has panicked and the process is about to abort. The
+    // panic unwinds the thread before its guard aborts, so writes that were
+    // queued, or arrive meanwhile, are answered with this first.
     #[error("Metadata writer thread has stopped")]
     Stopped,
 }
@@ -60,6 +61,8 @@ pub enum Error {
 pub struct Writer {
     // Declared before `_thread`: fields drop in declaration order, so the
     // queue closes, and the thread finishes and exits, before it is joined.
+    // Dropping a `Writer` therefore blocks until the writes already queued
+    // have committed and the WAL has been checkpointed.
     queue: UnboundedSender<Box<dyn Job>>,
     _thread: JoinOnDrop,
 }
@@ -71,7 +74,7 @@ impl Writer {
         let checkpointer = Checkpointer::start(&conn, path)
             .trace_expect("Failed to start the metadata checkpoint thread");
         let (queue, jobs) = unbounded_channel();
-        let thread = JoinOnDrop::spawn("sqlite-writer", move || serve(conn, jobs, checkpointer))
+        let thread = JoinOnDrop::spawn("sqlite-writer", move || run(conn, jobs, checkpointer))
             .trace_expect("Failed to spawn the metadata writer thread");
         Self {
             queue,
@@ -82,6 +85,10 @@ impl Writer {
     // Queues `write` to run atomically on the writer thread: its statements
     // commit together or not at all. Every caller awaits its own reply, so
     // the queue holds at most one write per caller and needs no bound.
+    //
+    // Dropping the returned future cancels the write only until the writer
+    // thread starts it. A write already running commits with its batch, and
+    // its result is discarded.
     pub async fn write<F, R>(&self, write: F) -> StorageResult<R>
     where
         F: FnOnce(&Connection) -> StorageResult<R> + Send + 'static,
@@ -98,7 +105,7 @@ impl Writer {
     }
 }
 
-// How a batch's transaction resolved.
+// How a batch's transaction ended.
 type BatchResult = Result<(), Arc<SqliteError>>;
 
 // A queued write, type-erased so one queue carries every result type.
@@ -109,7 +116,7 @@ trait Job: Send {
     // failure is not this function's: it is held for the reply.
     fn run(&mut self, transaction: &mut Transaction<'_>) -> Result<(), SqliteError>;
 
-    // Replies to the caller once the write's batch has resolved: with the
+    // Replies to the caller once the write's batch has completed: with the
     // write's own result if the batch committed, else with the batch's
     // failure.
     fn reply(self: Box<Self>, batch: &BatchResult);
@@ -184,8 +191,8 @@ fn transaction_lost<R>(result: &StorageResult<R>) -> SqliteError {
 }
 
 // The writer thread: commits whatever has queued as one batch, until the
-// store drops and the queue closes.
-fn serve(
+// store drops and the queue closes, then checkpoints the WAL.
+fn run(
     mut conn: Connection,
     mut jobs: UnboundedReceiver<Box<dyn Job>>,
     mut checkpointer: Checkpointer,
@@ -200,9 +207,10 @@ fn serve(
         // only the writes still queued.
         checkpointer.after_commit(&conn);
     }
+    checkpointer.stop(&conn);
 }
 
-// Runs a batch of writes in one transaction, returning how it resolved.
+// Runs a batch of writes in one transaction, returning how it ended.
 // Dropped without committing, the transaction rolls back, unless SQLite
 // has already rolled it back: a commit that fails cannot leave it open for
 // the next batch to join, and a batch that stops early needs no cleanup.
@@ -247,8 +255,9 @@ mod tests {
     use super::*;
     use crate::thread::tests::{assert_aborts, test_path, wait_for_abort};
 
-    // A writer over a scratch database: `rows` takes plain inserts, and
-    // `refs` holds a deferred foreign key, checked only at commit.
+    // A writer over a scratch database in WAL mode, as the store's is:
+    // `rows` takes plain inserts, and `refs` holds a deferred foreign key,
+    // checked only at commit.
     fn open() -> (TempDir, Writer) {
         let (dir, path, conn) = database();
         (dir, Writer::new(conn, &path))
@@ -259,7 +268,8 @@ mod tests {
         let path = dir.path().join("test.db");
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
-            "PRAGMA foreign_keys = ON;
+            "PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
             CREATE TABLE rows (id INTEGER PRIMARY KEY, filler BLOB);
             CREATE TABLE refs (row INTEGER REFERENCES rows(id) DEFERRABLE INITIALLY DEFERRED);",
         )

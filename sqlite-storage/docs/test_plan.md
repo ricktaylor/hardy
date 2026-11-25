@@ -61,7 +61,7 @@ Persistence across restart (META-05) is explicitly tested — the harness insert
 | **SQL-20** | **Batch loses its transaction** | `writer.rs` | 1. Cap the database's size.<br>2. Queue a small write, a write that fills the database, and another small write.<br>3. Release the writer. | All three report the batch's failure with `SQLITE_FULL`; no row is written; the writer's next write succeeds. |
 | **SQL-21** | **Upgrade of an existing store** | `migrate.rs` | 1. Migrate a store with all but the newest migration (and, separately, with only the first).<br>2. Reopen with `upgrade`.<br>3. Reopen a store one behind without `upgrade`. | Every pending migration runs and is recorded, and the newest one's schema change is present; without `upgrade` the store is refused with `UpdateRequired` and left unchanged. |
 | **SQL-22** | **Abort on a store thread's panic** | `thread.rs`, `writer.rs`, `reader_pool.rs` | In a child process:<br>1. Panic on a worker thread.<br>2. Panic inside a write.<br>3. Panic inside a read. | Each child is killed by `SIGABRT`. A worker whose work returns is joined without aborting. |
-| **SQL-23** | **Failed checkpoint** | `checkpoint.rs` | 1. Give a step the `SQLITE_BUSY` error.<br>2. In a child process, run a cycle on a connection whose database has no file to sync. | The busy step is deferred; the failed cycle aborts the child. |
+| **SQL-23** | **Failed checkpoint** | `checkpoint.rs` | 1. Give a step the `SQLITE_BUSY` error.<br>2. In a child process, run a cycle on a connection that opened the database read-only. | The busy step is deferred; the failed cycle aborts the child. |
 
 ## 5. Execution
 

@@ -82,11 +82,11 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| `PLAN-STORE-01` Suite A (META-01..04, 15, 17) | CRUD & tombstone semantics | 6 | 6 | Complete |
+| `PLAN-STORE-01` Suite A (META-01..04, 15) | CRUD & tombstone semantics | 5 | 5 | Complete |
 | `PLAN-STORE-01` Suite B (META-06..10, 14) | Polling & ordering | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite C (META-05, 11..13, 16) | State transitions & bulk ops | 5 | 5 | Complete |
 | `PLAN-SQLITE-01` §4 (SQL-01..23) | Backend-specific | 23 | 23 | Complete (35 tests) |
-| **Total** | | **40** | **40** | **100%** |
+| **Total** | | **39** | **39** | **100%** |
 
 ## 4. Line Coverage
 

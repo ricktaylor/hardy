@@ -2,9 +2,7 @@
 //! each read running on the blocking thread pool so that a slow query never
 //! stalls an async worker.
 //!
-//! The pool is a semaphore over a list of idle connections, rather than a
-//! pooling crate: the workspace uses none, and this is all a pool of
-//! blocking connections needs here.
+//! The pool is a semaphore over a list of idle connections.
 
 use std::{
     num::NonZeroUsize,
