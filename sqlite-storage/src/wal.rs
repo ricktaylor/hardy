@@ -12,6 +12,8 @@ use rusqlite::{
     wal::CheckpointMode,
 };
 
+use super::retry::RETRY;
+
 // Above the restart bound, a cycle keeps making passes until the writer is
 // this few frames ahead: what is left is what the writer copies itself.
 const SLACK_FRAMES: u32 = 64;
@@ -37,7 +39,7 @@ pub fn open(path: &Path) -> SqliteResult<Connection> {
 // writer is about to copy the remainder itself, the cycle repeats for as
 // long as that shrinks the remainder: a writer that outruns the passes is
 // not chased.
-pub fn cycle(conn: &Connection, restart: u32) -> SqliteResult<()> {
+fn cycle(conn: &Connection, restart: u32) -> SqliteResult<()> {
     let mut checkpointed = wal_size(conn)?.checkpointed;
     let mut remainder = u32::MAX;
     for _ in 0..MAX_PASSES {
@@ -57,6 +59,12 @@ pub fn cycle(conn: &Connection, restart: u32) -> SqliteResult<()> {
         remainder = wal.backlog();
     }
     Ok(())
+}
+
+// Runs a cycle, and runs it again while it fails in a way that may clear,
+// until the retry policy gives up.
+pub fn retry_cycle(conn: &Connection, restart: u32) -> SqliteResult<()> {
+    RETRY.run("Metadata checkpoint", || cycle(conn, restart))
 }
 
 // One passive pass: copies what it can without waiting for the writer or
@@ -147,6 +155,29 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::retry::is_recoverable;
+
+    // The checkpoint thread runs a cycle again while it fails in a way that
+    // may clear, and returns the failure once the retry policy gives up. A
+    // read-only connection fails every pass with an I/O error.
+    #[test]
+    fn a_failing_cycle_is_retried_until_the_policy_gives_up() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+            PRAGMA wal_autocheckpoint = 0;
+            CREATE TABLE rows (id INTEGER PRIMARY KEY);
+            INSERT INTO rows DEFAULT VALUES;",
+        )
+        .unwrap();
+        let read_only = open(Path::new(&format!("file:{}?mode=ro", path.display()))).unwrap();
+
+        let error = retry_cycle(&read_only, u32::MAX).unwrap_err();
+        assert!(is_recoverable(&error), "{error}");
+        assert_eq!(wal_size(&conn).unwrap().checkpointed, 0);
+    }
 
     #[test]
     fn the_database_file_syncs_through_its_own_handle() {

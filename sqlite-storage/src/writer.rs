@@ -11,9 +11,9 @@
 //!
 //! Some failures do not stop at a savepoint: on a full disk or an I/O
 //! error, SQLite rolls the whole transaction back. The batch then stops
-//! where it is. A failure that may clear by itself, such as a full disk or
-//! a lock held by another process, rolls the batch back and runs it again,
-//! writes and all, until the retry policy gives up. Then, or at once for a
+//! where it is. A failure that may clear by itself, such as a full disk,
+//! rolls the batch back and runs it again, writes and all, until the retry
+//! policy gives up. Then, or at once for a
 //! failure that will not clear, every write in the batch fails, the ones
 //! that had already succeeded included, because none of them took effect.
 //!
@@ -221,9 +221,7 @@ fn run(
     let mut batch = Vec::with_capacity(MAX_BATCH_SIZE);
     while jobs.blocking_recv_many(&mut batch, MAX_BATCH_SIZE) > 0 {
         let committed = RETRY
-            .run("Metadata write batch", is_recoverable, || {
-                run_batch(&mut conn, &mut batch)
-            })
+            .run("Metadata write batch", || run_batch(&mut conn, &mut batch))
             .map_err(Arc::new);
         for job in batch.drain(..) {
             job.reply(&committed);

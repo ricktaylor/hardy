@@ -26,9 +26,9 @@ use trace_err::*;
 use tracing::{debug, warn};
 
 use super::{
-    retry::{RETRY, is_busy, is_recoverable},
+    retry::{is_busy, is_recoverable},
     thread::JoinOnDrop,
-    wal::{cycle, open, pass, wal_size},
+    wal::{open, pass, retry_cycle, wal_size},
 };
 
 // When checkpoints run, in WAL frames. A frame is one page: 4 KiB at
@@ -135,7 +135,7 @@ impl Checkpointer {
 
     // Called by the writer between transactions, with its own connection.
     pub fn after_commit(&mut self, writer: &Connection) {
-        let Some(wal) = defer_if_busy("Reading the metadata WAL's size", || wal_size(writer))
+        let Some(wal) = defer_if_transient("Reading the metadata WAL's size", wal_size(writer))
         else {
             return;
         };
@@ -225,21 +225,41 @@ fn cycle_state(reported: Result<(), TryRecvError>) -> Cycle {
 // next transaction restarts it from its beginning.
 fn try_finish(writer: &Connection) {
     // Deferred, the WAL keeps growing until a later finish succeeds.
-    _ = defer_if_busy("Metadata checkpoint on the writer", || pass(writer));
+    _ = defer_if_transient("Metadata checkpoint on the writer", pass(writer));
 }
 
-// Runs a checkpoint step, `what`, and returns what it returned, or `None`
-// if it only lost a race for one of the WAL's locks: the step is then left
-// for a later batch.
+// What a checkpoint step the writer ran returned, or `None` if it lost a
+// race for one of the WAL's locks or failed in a way that may clear: the
+// step is then left for a later batch, and the writer is not held up
+// retrying it. The checkpoint thread retries the cycles it runs, and the
+// writer waits on those at the limit, so a failure that persists still
+// stops the process there.
 //
-// A step that fails in another way that may clear, such as a full disk, is
-// run again under the retry policy. A failure that will not clear, or that
-// outlasts the retries, is fatal: no caller is waiting on a checkpoint to
-// be handed the error, and a sync that failed cannot be retried safely,
+// A failure that will not clear is fatal, as in `defer_if_busy`.
+fn defer_if_transient<T>(what: &str, step: SqliteResult<T>) -> Option<T> {
+    match step {
+        Ok(value) => Some(value),
+        Err(e) if is_busy(&e) => {
+            debug!("{what} deferred: {e}");
+            None
+        }
+        Err(e) if is_recoverable(&e) => {
+            warn!("{what} deferred: {e}");
+            None
+        }
+        Err(e) => Some(Err(e).trace_expect(&format!("{what} failed"))),
+    }
+}
+
+// What a checkpoint step returned, or `None` if it lost a race for one of
+// the WAL's locks: the step is then left for a later batch.
+//
+// Any other failure is fatal: no caller is waiting on a checkpoint to be
+// handed the error, and a sync that failed cannot be retried safely,
 // because the kernel may have dropped the pages it could not write. The
 // panic aborts the process.
-fn defer_if_busy<T>(what: &str, step: impl FnMut() -> SqliteResult<T>) -> Option<T> {
-    match RETRY.run(what, |e| !is_busy(e) && is_recoverable(e), step) {
+fn defer_if_busy<T>(what: &str, step: SqliteResult<T>) -> Option<T> {
+    match step {
         Ok(value) => Some(value),
         Err(e) if is_busy(&e) => {
             debug!("{what} deferred: {e}");
@@ -255,7 +275,7 @@ fn run(conn: Connection, woken: Receiver<()>, done: Sender<()>, restart: u32) {
         // A cycle deferred by a lock race, such as reading the WAL's header
         // during a commit, is asked for again after the writer's next
         // batch, while the backlog is large enough.
-        _ = defer_if_busy("Metadata checkpoint", || cycle(&conn, restart));
+        _ = defer_if_busy("Metadata checkpoint", retry_cycle(&conn, restart));
         if done.send(()).is_err() {
             break;
         }
@@ -268,7 +288,7 @@ mod tests {
 
     use rusqlite::{
         Error as SqliteError,
-        ffi::{Error as SqliteCode, SQLITE_BUSY, SQLITE_IOERR_WRITE},
+        ffi::{Error as SqliteCode, SQLITE_BUSY, SQLITE_IOERR_FSYNC, SQLITE_IOERR_WRITE},
     };
     use tempfile::{TempDir, tempdir};
 
@@ -519,32 +539,30 @@ mod tests {
         SqliteError::SqliteFailure(SqliteCode::new(code), None)
     }
 
-    // A step that only lost a race for one of the WAL's locks is deferred,
-    // not retried.
+    // A step that only lost a race for one of the WAL's locks is deferred.
     #[test]
     fn a_busy_checkpoint_step_is_deferred() {
-        let mut runs = 0;
-        let step = || -> SqliteResult<()> {
-            runs += 1;
-            Err(failure(SQLITE_BUSY))
-        };
-        assert_eq!(defer_if_busy("a checkpoint step", step), None);
-        assert_eq!(runs, 1);
+        let busy = Err::<(), _>(failure(SQLITE_BUSY));
+        assert_eq!(defer_if_busy("a checkpoint step", busy), None);
     }
 
-    // A step whose failure clears is run again, and its result returned.
+    // On the writer, a step that may clear is deferred, not retried, so the
+    // writer is not held up; one that will not clear is fatal.
     #[test]
-    fn a_checkpoint_step_that_fails_then_clears_is_retried() {
-        let mut runs = 0;
-        let step = || {
-            runs += 1;
-            if runs == 1 {
-                Err(failure(SQLITE_IOERR_WRITE))
-            } else {
-                Ok(runs)
-            }
-        };
-        assert_eq!(defer_if_busy("a checkpoint step", step), Some(2));
+    fn the_writer_defers_a_checkpoint_step_that_may_clear() {
+        for code in [SQLITE_BUSY, SQLITE_IOERR_WRITE] {
+            assert_eq!(
+                defer_if_transient("a step", Err::<(), _>(failure(code))),
+                None
+            );
+        }
+        assert_eq!(defer_if_transient("a step", Ok(1)), Some(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "a step failed")]
+    fn the_writer_fails_on_a_checkpoint_step_that_will_not_clear() {
+        defer_if_transient("a step", Err::<(), _>(failure(SQLITE_IOERR_FSYNC)));
     }
 
     // A checkpoint that keeps failing takes the process down once its
