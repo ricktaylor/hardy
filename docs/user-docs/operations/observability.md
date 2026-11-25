@@ -107,7 +107,7 @@ Metrics are exported every 60 seconds to the collector.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `bpa.rib.agents` | gauge | | Registered routing agents |
+| `bpa.routing.agents` | gauge | | Registered routing agents |
 | `bpa.rib.entries` | gauge | `source` | Route entries by source agent |
 
 #### Storage Cache

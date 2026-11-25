@@ -141,13 +141,14 @@ impl Dispatcher {
 mod tests {
     use hardy_bpv7::{
         bundle::Id,
-        eid::{Eid, IpnNodeId, NodeId},
+        eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     };
 
     use super::*;
     use crate::{
-        bpa::{Bpa, BpaRegistration},
-        cla::ClaInit,
+        bpa::Bpa,
+        cla::{Context, Factory, RegistrarExt, Request, factory_fn},
+        service::{RegistrarExt as ServiceRegistrarExt, raw},
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
@@ -156,33 +157,37 @@ mod tests {
     };
 
     struct RecordingCla {
-        sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+        sink: Arc<dyn cla::Sink>,
         offers_tx: flume::Sender<Id>,
+    }
+
+    impl RecordingCla {
+        fn factory() -> (impl Factory<Component = Self>, flume::Receiver<Id>) {
+            let (offers_tx, offers_rx) = flume::bounded(16);
+            (
+                factory_fn(Request::default(), move |cx: Context| {
+                    Ok(Arc::new(Self {
+                        sink: cx.sink,
+                        offers_tx,
+                    }))
+                }),
+                offers_rx,
+            )
+        }
     }
 
     #[async_trait]
     impl cla::Cla for RecordingCla {
-        async fn on_register(
-            &self,
-            sink: Box<dyn cla::Sink>,
-            _node_ids: &[NodeId],
-            _max_bundle_size: Option<NonZeroU64>,
-        ) {
-            self.sink.call_once(|| sink);
-        }
-
-        async fn on_unregister(&self) {}
-
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
+        ) -> cla::Result<cla::ForwardOutcome> {
             let _ = self.offers_tx.send(bundle_id.clone());
-            Ok(cla::ForwardBundleResult::Sent)
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 
@@ -334,10 +339,8 @@ mod tests {
             .node_ids(node_ids)
             .metadata_storage(metadata_store.clone())
             .bundle_storage(data_store)
-            .build()
-            .await
-            .unwrap();
-        bpa.start(true).await;
+            .build();
+        bpa.start(true).await.unwrap();
 
         // start(true) awaits recovery to completion, so the reset is
         // visible the moment it returns — no wait is involved.
@@ -353,24 +356,11 @@ mod tests {
         );
 
         // A route to the destination appears; the bundle is re-offered
-        let (offers_tx, offers_rx) = flume::bounded(16);
-        let cla = Arc::new(RecordingCla {
-            sink: hardy_async::sync::spin::Once::new(),
-            offers_tx,
-        });
-        bpa.register_cla(
-            "recording-2".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
-        .await
-        .unwrap();
+        let (factory, offers_rx) = RecordingCla::factory();
+        let cla = bpa.register_cla("recording-2", factory).await.unwrap();
         cla.sink
-            .get()
-            .unwrap()
             .add_peer(
-                cla::ClaAddress::Private("peer-2".as_bytes().into()),
+                cla::Address::Private("peer-2".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 2,
@@ -435,32 +425,17 @@ mod tests {
             .node_ids(node_ids)
             .metadata_storage(metadata_store.clone())
             .bundle_storage(data_store)
-            .build()
-            .await
-            .unwrap();
-        bpa.start(true).await;
+            .build();
+        bpa.start(true).await.unwrap();
 
         // A route to the destination: the recovered bundle is dispatched to
         // it, whether recovery raced ahead of the peer (parked Waiting, then
         // re-dispatched on the route event) or found it in place.
-        let (offers_tx, offers_rx) = flume::bounded(16);
-        let cla = Arc::new(RecordingCla {
-            sink: hardy_async::sync::spin::Once::new(),
-            offers_tx,
-        });
-        bpa.register_cla(
-            "recording-3".to_string(),
-            cla.clone(),
-            None,
-            ClaInit::default(),
-        )
-        .await
-        .unwrap();
+        let (factory, offers_rx) = RecordingCla::factory();
+        let cla = bpa.register_cla("recording-3", factory).await.unwrap();
         cla.sink
-            .get()
-            .unwrap()
             .add_peer(
-                cla::ClaAddress::Private("peer-3".as_bytes().into()),
+                cla::Address::Private("peer-3".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 2,
@@ -482,26 +457,24 @@ mod tests {
     // A local delivery service that drains each delivery and records the
     // bundle id.
     struct CapturingService {
-        // Retained: dropping the sink unregisters the service.
-        sink: hardy_async::sync::spin::Once<Box<dyn crate::services::ServiceSink>>,
         delivered_tx: flume::Sender<Id>,
     }
 
-    #[async_trait]
-    impl crate::services::Service for CapturingService {
-        async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn crate::services::ServiceSink>) {
-            self.sink.call_once(|| sink);
+    impl CapturingService {
+        fn factory(delivered_tx: flume::Sender<Id>) -> impl raw::Factory<Component = Self> {
+            raw::factory_fn(move |_| Ok(Arc::new(Self { delivered_tx })))
         }
+    }
 
-        async fn on_unregister(&self) {}
-
-        async fn on_deliver(
+    #[async_trait]
+    impl raw::Service for CapturingService {
+        async fn deliver(
             &self,
             bundle_id: &Id,
             _expiry: time::OffsetDateTime,
             _total_len: u64,
             stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-        ) -> crate::services::Result<()> {
+        ) -> crate::service::Result<()> {
             loop {
                 match stream.recv().await {
                     Ok(crate::stream::Segment::Final(_)) | Err(_) => break,
@@ -512,11 +485,11 @@ mod tests {
             Ok(())
         }
 
-        async fn on_status_notify(
+        async fn report_status(
             &self,
             _bundle_id: &Id,
             _from: &Eid,
-            _kind: crate::services::StatusNotify,
+            _kind: crate::service::StatusNotify,
             _reason: hardy_bpv7::status_report::ReasonCode,
             _timestamp: Option<time::OffsetDateTime>,
         ) {
@@ -533,7 +506,7 @@ mod tests {
         let data_store = Arc::new(BundleMemStorage::new(None, None));
 
         // Seed the stores as an unclean stop would leave them: one bundle
-        // still queued in its delivery channel, one mid-on_deliver.
+        // still queued in its delivery channel, one mid-delivery.
         let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
         let mut ids = Vec::new();
         for (i, status) in [
@@ -584,10 +557,8 @@ mod tests {
             .node_ids(node_ids)
             .metadata_storage(metadata_store.clone())
             .bundle_storage(data_store)
-            .build()
-            .await
-            .unwrap();
-        bpa.start(true).await;
+            .build();
+        bpa.start(true).await.unwrap();
 
         // start(true) awaits recovery to completion, so both re-parks are
         // visible the moment it returns — no wait is involved.
@@ -608,12 +579,9 @@ mod tests {
 
         // The service registers: its WaitingForService poll delivers both.
         let (delivered_tx, delivered_rx) = flume::bounded(16);
-        bpa.register_service(
-            hardy_bpv7::eid::Service::Ipn(7),
-            Arc::new(CapturingService {
-                sink: hardy_async::sync::spin::Once::new(),
-                delivered_tx,
-            }),
+        bpa.register_raw_service(
+            Some(ServiceId::Ipn(7)),
+            CapturingService::factory(delivered_tx),
         )
         .await
         .unwrap();

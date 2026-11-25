@@ -8,16 +8,19 @@ use core::{
     time::Duration,
 };
 use hardy_bpa::{
-    Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
-    cla,
+    Bytes,
+    async_trait,
+    bpa::Bpa,
+    cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     filter::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, pack::FilterPack,
         slots::MetadataDelta,
     },
     node_ids::NodeIds,
-    routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
-    services,
+    // `routing::Sink` stays qualified: the bare `Sink` here is the service
+    // sink imported below.
+    routing::{self, Agent, RegistrarExt as _, RouteAction, StaticAgent},
+    service::{self, RegistrarExt as _, SendOptions, Service, Sink, StatusNotify, raw},
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -29,9 +32,10 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     dtn_time::DtnTime,
     editor::{Chunk, Editor},
-    eid::{
-        Service, {Eid, IpnNodeId, NodeId},
-    },
+    // `eid::Service` is the service number inside an EID, not the service
+    // trait registered here; it is aliased to the word the code already uses
+    // for it.
+    eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     hop_info::HopInfo,
     parse::{Parsed, parse},
     reader::Availability,
@@ -62,17 +66,19 @@ use std::{
 };
 
 struct PipelineCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     forwarded_tx: flume::Sender<Bytes>,
 }
 
 impl PipelineCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Bytes>) {
+    fn factory() -> (impl Factory<Component = Self>, flume::Receiver<Bytes>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                forwarded_tx: tx,
+            factory_fn(Request::default(), |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    forwarded_tx: tx,
+                }))
             }),
             rx,
         )
@@ -81,47 +87,47 @@ impl PipelineCla {
 
 #[async_trait]
 impl cla::Cla for PipelineCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         total_len: u64,
         stream: &mut dyn Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let bundle = buffer_stream(stream, total_len).await?;
         let _ = self.forwarded_tx.send(bundle);
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Test Application — receives delivered bundles via a channel
+// Test service — receives delivered bundles via a channel
 // ---------------------------------------------------------------------------
 
-struct TestApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+struct TestService {
+    sink: Arc<dyn Sink>,
+    /// The endpoint the BPA settled on, and the source of every bundle
+    /// this service originates.
+    endpoint: Eid,
     received_tx: flume::Sender<(Eid, Bytes)>,
 }
 
-impl TestApp {
-    fn new() -> (Arc<Self>, flume::Receiver<(Eid, Bytes)>) {
+impl TestService {
+    // `Context` and `factory_fn` name the CLA's here, so the service's
+    // namesakes are qualified.
+    fn factory() -> (
+        impl service::Factory<Component = Self>,
+        flume::Receiver<(Eid, Bytes)>,
+    ) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                received_tx: tx,
+            service::factory_fn(move |cx: service::Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    endpoint: cx.endpoint,
+                    received_tx: tx,
+                }))
             }),
             rx,
         )
@@ -129,32 +135,26 @@ impl TestApp {
 }
 
 #[async_trait]
-impl services::Application for TestApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl Service for TestService {
+    async fn deliver(
         &self,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let payload = buffer_stream(stream, total_len).await?;
         self.received_tx
             .send((bundle_id.source.clone(), payload))
-            .map_err(|e| services::Error::Internal(e.into()))
+            .map_err(|e| service::Error::Internal(e.into()))
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -166,37 +166,25 @@ impl services::Application for TestApp {
 // ---------------------------------------------------------------------------
 
 struct EchoService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    sink: Arc<dyn raw::Sink>,
 }
 
 impl EchoService {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
-        })
+    fn factory() -> impl raw::Factory<Component = Self> {
+        raw::factory_fn(|cx: raw::Context| Ok(Arc::new(Self { sink: cx.sink })))
     }
 }
 
 #[async_trait]
-impl services::Service for EchoService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl raw::Service for EchoService {
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
-        let Some(sink) = self.sink.get() else {
-            return Ok(());
-        };
-
         let Ok(Parsed {
             data, bundle: raw, ..
         }) = parse(data)
@@ -215,14 +203,14 @@ impl services::Service for EchoService {
         };
 
         let mut reply = Chunk::flatten_bytes(chunks, data);
-        sink.send(&mut reply).await.map(|_| ())
+        self.sink.send(&mut reply).await.map(|_| ())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -234,17 +222,22 @@ impl services::Service for EchoService {
 // ---------------------------------------------------------------------------
 
 struct TimedCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     arrival_tx: flume::Sender<tokio::time::Instant>,
 }
 
 impl TimedCla {
-    fn new() -> (Arc<Self>, flume::Receiver<tokio::time::Instant>) {
+    fn factory() -> (
+        impl Factory<Component = Self>,
+        flume::Receiver<tokio::time::Instant>,
+    ) {
         let (tx, rx) = flume::bounded(4096);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                arrival_tx: tx,
+            factory_fn(Request::default(), move |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    arrival_tx: tx,
+                }))
             }),
             rx,
         )
@@ -253,27 +246,16 @@ impl TimedCla {
 
 #[async_trait]
 impl cla::Cla for TimedCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.arrival_tx.send(tokio::time::Instant::now());
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -353,51 +335,39 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-01: App-to-CLA Routing
+// INT-BPA-01: Service-to-CLA Routing
 // ---------------------------------------------------------------------------
 
 /// A locally-originated bundle addressed to a remote node is forwarded
 /// to the correct CLA peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn app_to_cla_routing() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
+async fn service_to_cla_routing() {
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, &[remote_node])
-        .await
-        .unwrap();
+    cla.sink.add_peer(peer_addr, &[remote_node]).await.unwrap();
 
-    // Register an application to send from
-    let (app, _app_rx) = TestApp::new();
-    let source_eid = bpa
-        .register_application(Service::Ipn(42), app.clone())
+    // Register a service to send from
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
+    let source_eid = service.endpoint.clone();
 
     // Send a bundle to the remote node
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
-    app.sink
-        .get()
-        .unwrap()
+    service
+        .sink
         .send(
             dest.clone(),
             Bytes::from_static(b"Hello remote"),
@@ -441,29 +411,17 @@ async fn deferred_removal_applied_at_egress() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, &[remote])
-        .await
-        .unwrap();
+    cla.sink.add_peer(peer_addr, &[remote]).await.unwrap();
 
     // Craft a bundle to the remote node carrying an unrecognised block (type
     // 999, block 2) flagged delete_block_on_failure, inserted between the
@@ -498,8 +456,6 @@ async fn deferred_removal_applied_at_egress() {
 
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut inbound.clone())
             .await
             .unwrap(),
@@ -530,17 +486,21 @@ async fn deferred_removal_applied_at_egress() {
 // A low-level (raw-bundle) service that captures each delivered bundle's
 // wire bytes.
 struct CapturingService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    /// The endpoint the BPA settled on, which delivered bundles are
+    /// addressed to.
+    endpoint: Eid,
     delivered_tx: flume::Sender<Bytes>,
 }
 
 impl CapturingService {
-    fn new() -> (Arc<Self>, flume::Receiver<Bytes>) {
+    fn factory() -> (impl raw::Factory<Component = Self>, flume::Receiver<Bytes>) {
         let (delivered_tx, rx) = flume::unbounded();
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                delivered_tx,
+            raw::factory_fn(move |cx: raw::Context| {
+                Ok(Arc::new(Self {
+                    endpoint: cx.endpoint,
+                    delivered_tx,
+                }))
             }),
             rx,
         )
@@ -548,27 +508,24 @@ impl CapturingService {
 }
 
 #[async_trait]
-impl services::Service for CapturingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
-        self.sink.call_once(|| sink);
-    }
-    async fn on_unregister(&self) {}
-    async fn on_deliver(
+impl raw::Service for CapturingService {
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
         let _ = self.delivered_tx.send(data);
         Ok(())
     }
-    async fn on_status_notify(
+
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -586,21 +543,19 @@ async fn deferred_removal_applied_at_delivery() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (svc, delivered_rx) = CapturingService::new();
-    let endpoint = bpa.register_service(Service::Ipn(7), svc).await.unwrap();
+    let (factory, delivered_rx) = CapturingService::factory();
+    let endpoint = bpa
+        .register_raw_service(Some(ServiceId::Ipn(7)), factory)
+        .await
+        .unwrap()
+        .endpoint
+        .clone();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     // A bundle to the local service, carrying an unrecognised block (type
     // 999, block 2) flagged delete_block_on_failure.
@@ -623,8 +578,6 @@ async fn deferred_removal_applied_at_delivery() {
 
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut inbound.clone())
             .await
             .unwrap(),
@@ -741,28 +694,14 @@ async fn deferred_removal_precedes_the_egress_rewriters() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder()
-        .node_ids(node_ids)
-        .add_filters(pack)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -778,8 +717,6 @@ async fn deferred_removal_precedes_the_egress_rewriters() {
     ));
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut inbound.clone())
             .await
             .unwrap(),
@@ -825,25 +762,18 @@ async fn deferred_removal_precedes_the_deliver_chain() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder()
-        .node_ids(node_ids)
-        .add_filters(pack)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
-    let (svc, delivered_rx) = CapturingService::new();
-    let endpoint = bpa.register_service(Service::Ipn(7), svc).await.unwrap();
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (factory, delivered_rx) = CapturingService::factory();
+    let endpoint = bpa
+        .register_raw_service(Some(ServiceId::Ipn(7)), factory)
+        .await
+        .unwrap()
+        .endpoint
+        .clone();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     let inbound = with_deletable_unknown(&build_bundle(
         &"ipn:0.9.1".parse().unwrap(),
@@ -852,8 +782,6 @@ async fn deferred_removal_precedes_the_deliver_chain() {
     ));
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut inbound.clone())
             .await
             .unwrap(),
@@ -892,32 +820,24 @@ async fn echo_round_trip() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     // Register echo service on service number 7
-    let echo = EchoService::new();
-    bpa.register_service(Service::Ipn(7), echo).await.unwrap();
+    bpa.register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
+        .await
+        .unwrap();
 
     // Register CLA with a peer for the "remote" node (ipn:0.2)
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -930,8 +850,6 @@ async fn echo_round_trip() {
     // Dispatch it as if received from the CLA
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -982,33 +900,24 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     // The service only captures its sink here; the test drives the sink itself.
-    let svc = EchoService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    let svc = bpa
+        .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
         .unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -1039,13 +948,7 @@ async fn service_streamed_originate_forwards() {
         .unwrap();
     drop(tx);
 
-    let id = svc
-        .sink
-        .get()
-        .unwrap()
-        .send(&mut rx)
-        .await
-        .expect("streamed send failed");
+    let id = svc.sink.send(&mut rx).await.expect("streamed send failed");
     assert_eq!(id.source, source_eid);
 
     // Event-driven wait; the timeout only bounds a regression.
@@ -1079,10 +982,10 @@ async fn service_streamed_cancel_stores_nothing() {
         .unwrap();
     drop(tx); // no Final — the producer aborts
 
-    let result = svc.sink.get().unwrap().send(&mut rx).await;
+    let result = svc.sink.send(&mut rx).await;
     assert!(matches!(
         result,
-        Err(hardy_bpa::services::Error::StreamCancelled)
+        Err(hardy_bpa::service::Error::StreamCancelled)
     ));
 
     // Nothing was originated: no forward may arrive.
@@ -1119,7 +1022,7 @@ async fn service_unregister_cancels_parked_send() {
 
     let parked = {
         let svc = svc.clone();
-        tokio::spawn(async move { svc.sink.get().unwrap().send(&mut rx).await })
+        tokio::spawn(async move { svc.sink.send(&mut rx).await })
     };
 
     // Let the consumer enter the stream and park on the second pull.
@@ -1127,7 +1030,7 @@ async fn service_unregister_cancels_parked_send() {
     // dedicated pipeline de-flake pass (see bpa/docs/TODO.md).
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    svc.sink.get().unwrap().unregister().await;
+    svc.sink.unregister().await;
 
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
         .await
@@ -1135,7 +1038,7 @@ async fn service_unregister_cancels_parked_send() {
         .expect("task panicked");
     assert!(matches!(
         result,
-        Err(hardy_bpa::services::Error::StreamCancelled)
+        Err(hardy_bpa::service::Error::StreamCancelled)
     ));
     drop(tx);
 
@@ -1156,10 +1059,10 @@ async fn service_streamed_send_rejects_spoofed_source() {
     tx.send(Segment::Final(data)).await.unwrap();
     drop(tx);
 
-    let result = svc.sink.get().unwrap().send(&mut rx).await;
+    let result = svc.sink.send(&mut rx).await;
     assert!(matches!(
         result,
-        Err(hardy_bpa::services::Error::InvalidDestination(_))
+        Err(hardy_bpa::service::Error::InvalidDestination(_))
     ));
 
     bpa.shutdown().await;
@@ -1177,8 +1080,6 @@ async fn originate_raw_and_forward(
     tx.send(Segment::Final(data)).await.unwrap();
     drop(tx);
     svc.sink
-        .get()
-        .unwrap()
         .send(&mut rx)
         .await
         .expect("origination admits the bundle");
@@ -1263,8 +1164,8 @@ async fn service_streamed_send_accepts_an_undecryptable_hop_count() {
 // INT-BPA-03: Local Delivery
 // ---------------------------------------------------------------------------
 
-/// A bundle dispatched via CLA addressed to a local application is
-/// delivered to that application's on_deliver callback.
+/// A bundle dispatched via CLA addressed to a local service is
+/// delivered to that service's `deliver` door.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_delivery() {
     let node_id = IpnNodeId {
@@ -1273,46 +1174,34 @@ async fn local_delivery() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    // Register an application on service number 42
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    // Register a service on service number 42
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
     // Register CLA (needed for dispatch)
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    // Build an inbound bundle addressed to our local application
+    // Build an inbound bundle addressed to our local service
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let mut inbound = build_bundle(&remote_source, &local_dest, b"Hello local");
 
     // Dispatch via CLA
     assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut inbound)
-            .await
-            .unwrap(),
+        cla.sink.dispatch(None, None, &mut inbound).await.unwrap(),
         cla::Acceptance::Accepted
     );
 
-    // Application should receive the payload
+    // The service should receive the payload
     let (source, payload) =
         // Event-driven wait; the timeout only bounds a regression.
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), service_rx.recv_async())
             .await
             .expect("Timeout waiting for local delivery")
             .expect("Channel closed");
@@ -1386,31 +1275,20 @@ async fn reception_report_carries_unknown_security_operation() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Register CLA with a peer for the remote node (ipn:0.2) — the route for
     // both the forwarded bundle and the reception report (report-to defaults
     // to the source).
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -1430,8 +1308,6 @@ async fn reception_report_carries_unknown_security_operation() {
 
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -1498,7 +1374,7 @@ async fn reception_report_carries_unknown_security_operation() {
 
 /// A bundle dispatched through `Sink::dispatch` in several segments
 /// ingresses identically to the whole-buffer `dispatch`: the reassembled
-/// bundle reaches its local application.
+/// bundle reaches its local service.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_streamed_ingress_delivers() {
     let node_id = IpnNodeId {
@@ -1507,23 +1383,16 @@ async fn cla_streamed_ingress_delivers() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1547,19 +1416,14 @@ async fn cla_streamed_ingress_delivers() {
     });
 
     assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut rx)
-            .await
-            .unwrap(),
+        cla.sink.dispatch(None, None, &mut rx).await.unwrap(),
         cla::Acceptance::Accepted
     );
     producer.await.unwrap();
 
     let (source, payload) =
         // Event-driven wait; the timeout only bounds a regression.
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), service_rx.recv_async())
             .await
             .expect("Timeout waiting for streamed delivery")
             .expect("Channel closed");
@@ -1580,18 +1444,11 @@ async fn cla_unregister_cancels_parked_stream() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     // A producer that sends one segment then stalls — the sender stays
     // alive throughout, so only registration teardown can end the stream.
@@ -1608,7 +1465,7 @@ async fn cla_unregister_cancels_parked_stream() {
 
     let parked = {
         let cla = cla.clone();
-        tokio::spawn(async move { cla.sink.get().unwrap().dispatch(None, None, &mut rx).await })
+        tokio::spawn(async move { cla.sink.dispatch(None, None, &mut rx).await })
     };
 
     // Let the consumer enter the stream and park on the second pull.
@@ -1616,7 +1473,7 @@ async fn cla_unregister_cancels_parked_stream() {
     // dedicated pipeline de-flake pass (see bpa/docs/TODO.md).
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    cla.sink.get().unwrap().unregister().await;
+    cla.sink.unregister().await;
 
     // The parked pull must fail promptly — the assertion is event-driven;
     // the timeout only bounds a regression. The teardown is reported as the
@@ -1642,23 +1499,16 @@ async fn cla_streamed_ingress_truncation_is_refused() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1670,26 +1520,29 @@ async fn cla_streamed_ingress_truncation_is_refused() {
         .unwrap();
     drop(tx); // no Final
 
-    let result = cla.sink.get().unwrap().dispatch(None, None, &mut rx).await;
+    let result = cla.sink.dispatch(None, None, &mut rx).await;
     assert!(matches!(result, Ok(cla::Acceptance::Refused)));
 
     // Known test-guide deviation (quiet-window absence assert):
     // scheduled for the dedicated pipeline de-flake pass (see bpa/docs/TODO.md).
     assert!(
-        tokio::time::timeout(tokio::time::Duration::from_millis(500), app_rx.recv_async())
-            .await
-            .is_err(),
+        tokio::time::timeout(
+            tokio::time::Duration::from_millis(500),
+            service_rx.recv_async()
+        )
+        .await
+        .is_err(),
         "truncated stream must not deliver"
     );
 
     bpa.shutdown().await;
 }
 
-// A CLA-door node with an application on ipn:0.1.42, for the abandoned
-// transfer tests: the BPA, the application's delivery receiver, and the CLA.
+// A CLA-door node with a service on ipn:0.1.42, for the abandoned
+// transfer tests: the BPA, the service's delivery receiver, and the CLA.
 async fn abandoned_transfer_setup() -> (
     Bpa,
-    Arc<TestApp>,
+    Arc<TestService>,
     flume::Receiver<(Eid, Bytes)>,
     Arc<PipelineCla>,
 ) {
@@ -1699,25 +1552,19 @@ async fn abandoned_transfer_setup() -> (
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    (bpa, app, app_rx, cla)
+    (bpa, service, service_rx, cla)
 }
 
 // Sends `segments` (no `Final` among them), drops the producer, and returns
@@ -1731,12 +1578,7 @@ async fn dispatch_abandoned(cla: &PipelineCla, segments: Vec<Segment>) -> cla::A
     }
     drop(tx); // no Final
 
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut rx)
-        .await
-        .unwrap()
+    cla.sink.dispatch(None, None, &mut rx).await.unwrap()
 }
 
 /// A whole bundle sent in `Segment::Next` whose producer then dies before
@@ -1744,7 +1586,7 @@ async fn dispatch_abandoned(cla: &PipelineCla, segments: Vec<Segment>) -> cla::A
 /// its transfer ack) and nothing is delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_complete_at_head_without_final_is_refused() {
-    let (bpa, _app, app_rx, cla) = abandoned_transfer_setup().await;
+    let (bpa, _app, service_rx, cla) = abandoned_transfer_setup().await;
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1757,7 +1599,10 @@ async fn cla_complete_at_head_without_final_is_refused() {
 
     // The completed shutdown is the barrier proving nothing was delivered.
     bpa.shutdown().await;
-    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+    assert!(
+        service_rx.is_empty(),
+        "an abandoned transfer must not deliver"
+    );
 }
 
 /// The same for a bundle segmented past its outer break: the
@@ -1765,7 +1610,7 @@ async fn cla_complete_at_head_without_final_is_refused() {
 /// the transfer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_segmented_without_final_is_refused() {
-    let (bpa, _app, app_rx, cla) = abandoned_transfer_setup().await;
+    let (bpa, _app, service_rx, cla) = abandoned_transfer_setup().await;
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1783,7 +1628,10 @@ async fn cla_segmented_without_final_is_refused() {
 
     // The completed shutdown is the barrier proving nothing was delivered.
     bpa.shutdown().await;
-    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+    assert!(
+        service_rx.is_empty(),
+        "an abandoned transfer must not deliver"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1878,23 +1726,16 @@ async fn segmented_payload_local_delivery() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1904,18 +1745,13 @@ async fn segmented_payload_local_delivery() {
     // Deliver the bundle as a stream of 1000-byte segments (forces Partial).
     let mut stream = SegmentReceiver::new(&inbound, 1000);
     assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut stream)
-            .await
-            .unwrap(),
+        cla.sink.dispatch(None, None, &mut stream).await.unwrap(),
         cla::Acceptance::Accepted
     );
 
     let (source, delivered) =
         // Event-driven wait; the timeout only bounds a regression.
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), service_rx.recv_async())
             .await
             .expect("Timeout waiting for streamed local delivery")
             .expect("Channel closed");
@@ -1941,23 +1777,16 @@ async fn duplicate_arrival_never_awaits_the_payload() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1969,16 +1798,11 @@ async fn duplicate_arrival_never_awaits_the_payload() {
     // but the probe answers from the cached id, not the record's state).
     let mut stream = SegmentReceiver::new(&inbound, 1000);
     assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut stream)
-            .await
-            .unwrap(),
+        cla.sink.dispatch(None, None, &mut stream).await.unwrap(),
         cla::Acceptance::Accepted
     );
     // Event-driven wait; the timeout only bounds a regression.
-    tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), service_rx.recv_async())
         .await
         .expect("Timeout waiting for first delivery")
         .expect("Channel closed");
@@ -1990,7 +1814,7 @@ async fn duplicate_arrival_never_awaits_the_payload() {
     let mut replay = ParkedReceiver::new(&inbound, 1000, 3);
     let acceptance = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        cla.sink.get().unwrap().dispatch(None, None, &mut replay),
+        cla.sink.dispatch(None, None, &mut replay),
     )
     .await
     .expect("Timeout: the duplicate arrival awaited its parked payload")
@@ -2003,7 +1827,7 @@ async fn duplicate_arrival_never_awaits_the_payload() {
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
-    assert!(app_rx.is_empty(), "the duplicate must not deliver");
+    assert!(service_rx.is_empty(), "the duplicate must not deliver");
 }
 
 // A bundle whose creation time + lifetime is already in the past — expired on
@@ -2045,24 +1869,17 @@ async fn segmented_gate_drops_before_draining_payload() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let sink = || cla.sink.get().unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let sink = || cla.sink.clone();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -2109,13 +1926,13 @@ async fn segmented_gate_drops_before_draining_payload() {
 
     let (_src, delivered) =
         // Event-driven wait; the timeout only bounds a regression.
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), service_rx.recv_async())
             .await
             .expect("Timeout waiting for the valid control bundle")
             .expect("Channel closed");
     assert_eq!(delivered.as_ref(), payload.as_slice());
     assert!(
-        app_rx.is_empty(),
+        service_rx.is_empty(),
         "neither gated bundle should have been delivered"
     );
 
@@ -2140,30 +1957,19 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
     // A CLA with a peer for the remote node — the route for the reports
     // (report-to defaults to the source).
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -2189,8 +1995,6 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     let mut inbound = Bytes::from(data);
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -2239,8 +2043,6 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     let mut inbound = Bytes::from(data);
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -2273,30 +2075,19 @@ async fn drain_failure_reports_reception_then_deletion() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
     // A CLA with a peer for the remote node — the route for the reports
     // (report-to defaults to the source).
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -2325,8 +2116,6 @@ async fn drain_failure_reports_reception_then_deletion() {
     let mut stream = SegmentReceiver::new(&data, 1000);
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut stream)
             .await
             .unwrap(),
@@ -2391,30 +2180,19 @@ async fn header_failure_reports_reception_then_deletion() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
     // A CLA with a peer for the remote node — the route for the reports
     // (report-to defaults to the source).
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -2452,8 +2230,6 @@ async fn header_failure_reports_reception_then_deletion() {
 
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -2518,28 +2294,17 @@ async fn step4_block_flag_report_survives_delete_bundle() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -2569,8 +2334,6 @@ async fn step4_block_flag_report_survives_delete_bundle() {
 
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -2631,28 +2394,17 @@ async fn reception_only_reject_carries_step4_reason() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -2693,8 +2445,6 @@ async fn reception_only_reject_carries_step4_reason() {
 
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -2756,28 +2506,17 @@ async fn step4_block_flag_alone_forces_reception_report() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -2806,8 +2545,6 @@ async fn step4_block_flag_alone_forces_reception_report() {
 
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -2880,28 +2617,17 @@ async fn step4_forced_report_suppressed_for_null_report_to() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -2932,8 +2658,6 @@ async fn step4_forced_report_suppressed_for_null_report_to() {
 
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&remote_node), None, &mut inbound)
             .await
             .unwrap(),
@@ -2994,7 +2718,7 @@ async fn a_final_short_within_one_parser_chunk_is_reported() {
 // reception: refused, so the peer may resend, and never reported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_abandoned_short_transfer_is_refused_and_unreported() {
-    let (bpa, _app, app_rx, cla, forwarded_rx) = short_final_setup().await;
+    let (bpa, _app, service_rx, cla, forwarded_rx) = short_final_setup().await;
     let segments = short_bundle()
         .chunks(1000)
         .map(|chunk| Segment::Next(Bytes::copy_from_slice(chunk)))
@@ -3006,14 +2730,17 @@ async fn an_abandoned_short_transfer_is_refused_and_unreported() {
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
-    assert!(app_rx.is_empty(), "an abandoned transfer must not deliver");
+    assert!(
+        service_rx.is_empty(),
+        "an abandoned transfer must not deliver"
+    );
     assert!(
         forwarded_rx.is_empty(),
         "an abandoned transfer is never reported"
     );
 }
 
-// A bundle from the remote source to the local application, requesting
+// A bundle from the remote source to the local service, requesting
 // reception and deletion reports.
 fn reporting_bundle(payload_len: usize) -> Bytes {
     let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
@@ -3035,11 +2762,11 @@ fn short_bundle() -> Bytes {
 }
 
 // A node that observes how a short transfer ends: status reports on, the
-// local application registered, and a peer for the remote source's node —
+// local service registered, and a peer for the remote source's node —
 // the route for the reports (report-to defaults to the source).
 async fn short_final_setup() -> (
     Bpa,
-    Arc<TestApp>,
+    Arc<TestService>,
     flume::Receiver<(Eid, Bytes)>,
     Arc<PipelineCla>,
     flume::Receiver<Bytes>,
@@ -3055,37 +2782,27 @@ async fn short_final_setup() -> (
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
+        .build();
+    bpa.start(false).await.unwrap();
+    let (factory, service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
-    bpa.start(false).await;
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
-        .await
-        .unwrap();
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             from_ref(&remote_node),
         )
         .await
         .unwrap();
-    (bpa, app, app_rx, cla, forwarded_rx)
+    (bpa, service, service_rx, cla, forwarded_rx)
 }
 
 // Dispatches `short` in `chunk`-byte segments ending in a `Final` (a single
@@ -3102,13 +2819,13 @@ async fn assert_short_final_is_reported(short: Bytes, chunk: Option<usize>) {
 async fn assert_rejected_with_one_report(stream: &mut SegmentReceiver) {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
 
-    let (bpa, _app, app_rx, cla, forwarded_rx) = short_final_setup().await;
+    let (bpa, _app, service_rx, cla, forwarded_rx) = short_final_setup().await;
 
     // The timeout only bounds a regression: a `Final` handed to the payload
     // drain after the header pass took it would await an exhausted stream.
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        cla.sink.get().unwrap().dispatch(None, None, stream),
+        cla.sink.dispatch(None, None, stream),
     )
     .await
     .expect("a complete transfer must not hang the ingress task");
@@ -3149,7 +2866,7 @@ async fn assert_rejected_with_one_report(stream: &mut SegmentReceiver) {
         "exactly one report leaves the node"
     );
     assert!(
-        app_rx.is_empty(),
+        service_rx.is_empty(),
         "the invalid bundle must not be delivered"
     );
 }
@@ -3201,27 +2918,13 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
             .max_bundle_size(NonZeroU64::new(256).unwrap())
-            .build()
-            .await
-            .unwrap();
-        bpa.start(false).await;
-        let (cla, _fwd) = PipelineCla::new();
-        bpa.register_cla(
-            "test".to_string(),
-            cla.clone(),
-            None,
-            cla::ClaInit::default(),
-        )
-        .await
-        .unwrap();
+            .build();
+        bpa.start(false).await.unwrap();
+        let (cla, _fwd) = PipelineCla::factory();
+        let cla = bpa.register_cla("test", cla).await.unwrap();
         let mut stream = SegmentReceiver::new(&inbound, 1000);
         assert_eq!(
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(None, None, &mut stream)
-                .await
-                .unwrap(),
+            cla.sink.dispatch(None, None, &mut stream).await.unwrap(),
             cla::Acceptance::Refused,
             "header-phase over-cap must be refused"
         );
@@ -3236,24 +2939,15 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
             .max_bundle_size(NonZeroU64::new(10_000).unwrap())
-            .build()
-            .await
-            .unwrap();
-        bpa.start(false).await;
-        let (cla, _fwd) = PipelineCla::new();
-        bpa.register_cla(
-            "test".to_string(),
-            cla.clone(),
-            None,
-            cla::ClaInit::default(),
-        )
-        .await
-        .unwrap();
+            .build();
+        bpa.start(false).await.unwrap();
+        let (cla, _fwd) = PipelineCla::factory();
+        let cla = bpa.register_cla("test", cla).await.unwrap();
         let mut stream = ParkedReceiver::new(&inbound, 1000, 3);
         assert_eq!(
             tokio::time::timeout(
                 tokio::time::Duration::from_secs(5),
-                cla.sink.get().unwrap().dispatch(None, None, &mut stream)
+                cla.sink.dispatch(None, None, &mut stream)
             )
             .await
             .expect("Timeout: the declared over-cap refusal must not wait for the payload")
@@ -3279,17 +2973,10 @@ async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
-    let (cla, _fwd) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
+    let (cla, _fwd) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     // A built bundle with its payload block replaced by a CRC-32 payload
     // header (`86 01 01 04 02 5b` + an 8-byte length) whose extent ends at
@@ -3318,7 +3005,7 @@ async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
     assert_eq!(
         tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
-            cla.sink.get().unwrap().dispatch(None, None, &mut stream)
+            cla.sink.dispatch(None, None, &mut stream)
         )
         .await
         .expect("Timeout: the rejection must not wait for the payload")
@@ -3344,27 +3031,18 @@ async fn throughput() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, arrival_rx) = TimedCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -3384,12 +3062,7 @@ async fn throughput() {
     // Warm up
     for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
         assert_eq!(
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(None, None, &mut bundle)
-                .await
-                .unwrap(),
+            cla.sink.dispatch(None, None, &mut bundle).await.unwrap(),
             cla::Acceptance::Accepted
         );
         // Event-driven wait; the timeout only bounds a regression.
@@ -3405,12 +3078,7 @@ async fn throughput() {
     let mut last_arrival = start;
     for (i, mut bundle) in test_bundles.into_iter().enumerate() {
         assert_eq!(
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(None, None, &mut bundle)
-                .await
-                .unwrap(),
+            cla.sink.dispatch(None, None, &mut bundle).await.unwrap(),
             cla::Acceptance::Accepted
         );
         last_arrival =
@@ -3451,27 +3119,18 @@ async fn forwarding_latency() {
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, arrival_rx) = TimedCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -3491,12 +3150,7 @@ async fn forwarding_latency() {
     // Warm up
     for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
         assert_eq!(
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(None, None, &mut bundle)
-                .await
-                .unwrap(),
+            cla.sink.dispatch(None, None, &mut bundle).await.unwrap(),
             cla::Acceptance::Accepted
         );
         // Event-driven wait; the timeout only bounds a regression.
@@ -3514,12 +3168,7 @@ async fn forwarding_latency() {
     for (i, mut bundle) in test_bundles.into_iter().enumerate() {
         let dispatched = tokio::time::Instant::now();
         assert_eq!(
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(None, None, &mut bundle)
-                .await
-                .unwrap(),
+            cla.sink.dispatch(None, None, &mut bundle).await.unwrap(),
             cla::Acceptance::Accepted
         );
         let arrived =
@@ -3601,43 +3250,31 @@ async fn egress_filter_sees_consistent_extents() {
             mismatch: mismatch.clone(),
         },
     );
-    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, &[remote_node])
-        .await
-        .unwrap();
+    cla.sink.add_peer(peer_addr, &[remote_node]).await.unwrap();
 
-    // Register an application and send a bundle to the remote node — a
+    // Register a service and send a bundle to the remote node — a
     // locally-originated bundle has no Previous Node block, so the per-hop
     // rewrite inserts one after the Rewriter's insert
-    let (app, _app_rx) = TestApp::new();
-    let source = bpa
-        .register_application(Service::Ipn(42), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
-    app.sink
-        .get()
-        .unwrap()
+    let source = service.endpoint.clone();
+    service
+        .sink
         .send(
             "ipn:0.2.99".parse().unwrap(),
             Bytes::from_static(b"Hello remote"),
@@ -3722,40 +3359,31 @@ impl Classifier for KeyingClassifier {
 async fn classifier_route_key_drives_the_lookup() {
     let mut pack = FilterPack::new("test");
     pack.originate_classifier("keyer", KeyingClassifier);
-    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
     // A peer exists for ipn:0.2 only; ipn:0.3 has no route.
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[remote_node],
         )
         .await
         .unwrap();
 
-    let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
-    app.sink
-        .get()
-        .unwrap()
+    service
+        .sink
         .send(
             "ipn:0.3.99".parse().unwrap(),
             Bytes::from_static(b"Keyed onward"),
@@ -3807,23 +3435,11 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
     .unwrap();
     let mut pack = FilterPack::new("test");
     pack.ingress_classifier("keyer", LocalKeyingClassifier);
-    let bpa = Bpa::builder()
-        .node_ids(node_ids)
-        .add_filters(pack)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).add_filters(pack).build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     // A fresh arrival executes its routing decision before the CLA's
     // dispatch returns, so the bundle has parked once it does: nothing
@@ -3834,8 +3450,6 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
         .expect("Failed to build bundle");
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut Bytes::from(data))
             .await
             .unwrap(),
@@ -3844,10 +3458,8 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
 
     // The key's route appears.
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -3871,24 +3483,30 @@ async fn a_keyed_local_destination_waits_for_its_key_route() {
 }
 
 // ---------------------------------------------------------------------------
-// Failing Application — always returns Err from on_deliver
+// Failing service — always returns Err from deliver
 // ---------------------------------------------------------------------------
 
-struct FailingApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
-    /// Fires once on_deliver completes (after constructing the Err), so a
+struct FailingService {
+    sink: Arc<dyn Sink>,
+    /// The endpoint the BPA settled on, which delivered bundles are
+    /// addressed to.
+    endpoint: Eid,
+    /// Fires once `deliver` completes (after constructing the Err), so a
     /// waiter observes the point at which the dispatcher's Err-handling
     /// branch is about to run rather than the point at which it started.
     completed_tx: flume::Sender<()>,
 }
 
-impl FailingApp {
-    fn new() -> (Arc<Self>, flume::Receiver<()>) {
+impl FailingService {
+    fn factory() -> (impl service::Factory<Component = Self>, flume::Receiver<()>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                completed_tx: tx,
+            service::factory_fn(move |cx: service::Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    endpoint: cx.endpoint,
+                    completed_tx: tx,
+                }))
             }),
             rx,
         )
@@ -3896,31 +3514,25 @@ impl FailingApp {
 }
 
 #[async_trait]
-impl services::Application for FailingApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl Service for FailingService {
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
-        let err = services::Error::Internal("test: simulated delivery failure".into());
+    ) -> service::Result<()> {
+        let err = service::Error::Internal("test: simulated delivery failure".into());
         let _ = self.completed_tx.send(());
         Err(err)
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -3928,35 +3540,35 @@ impl services::Application for FailingApp {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-05: dispatcher tolerates on_deliver returning Err
+// INT-BPA-05: dispatcher tolerates deliver returning Err
 // ---------------------------------------------------------------------------
 
-/// When `on_deliver` returns `Err`, the dispatcher must preserve the bundle
+/// When `deliver` returns `Err`, the dispatcher must preserve the bundle
 /// as `WaitingForService`, not report it delivered and delete it. Proven
 /// end-to-end: after the failing receiver rejects the bundle, a fresh working
 /// receiver registered on the same service id must have it re-delivered. A
 /// regression to the old drop-on-error behaviour makes the re-delivery time
 /// out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dispatcher_handles_on_deliver_err() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
+async fn dispatcher_handles_deliver_err() {
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
-    let (sender, _sender_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(43), sender.clone())
+    let (factory, _sender_rx) = TestService::factory();
+    let sender = bpa
+        .register_service(Some(ServiceId::Ipn(43)), factory)
         .await
         .unwrap();
 
-    let (failing, completed_rx) = FailingApp::new();
-    let receiver_eid = bpa
-        .register_application(Service::Ipn(42), failing.clone())
+    let (factory, completed_rx) = FailingService::factory();
+    let failing = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
+    let receiver_eid = failing.endpoint.clone();
 
     sender
         .sink
-        .get()
-        .unwrap()
         .send(
             receiver_eid,
             Bytes::from_static(b"payload"),
@@ -3966,23 +3578,23 @@ async fn dispatcher_handles_on_deliver_err() {
         .await
         .unwrap();
 
-    // The failing receiver rejects the bundle from within on_deliver.
+    // The failing receiver rejects the bundle from within `deliver`.
     // Event-driven wait; the timeout only bounds a regression.
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         completed_rx.recv_async(),
     )
     .await
-    .expect("dispatcher must call on_deliver")
+    .expect("dispatcher must call deliver")
     .unwrap();
 
     // Swap in a working receiver on the same service id — no quiesce
     // needed: the failed delivery's park re-checks the routing snapshot, so
     // whether it lands before this registration's WaitingForService poll or
     // after it, the bundle re-enters dispatch and reaches the new receiver.
-    failing.sink.get().unwrap().unregister().await;
-    let (receiver, received_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), receiver.clone())
+    failing.sink.unregister().await;
+    let (factory, received_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -4005,59 +3617,50 @@ async fn dispatcher_handles_on_deliver_err() {
 // ---------------------------------------------------------------------------
 
 struct DeferringCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     offers_tx: flume::Sender<Id>,
     remaining_accepts: AtomicUsize,
 }
 
 impl DeferringCla {
-    fn new(accepts: usize) -> (Arc<Self>, flume::Receiver<Id>) {
+    fn factory(accepts: usize) -> (impl Factory<Component = Self>, flume::Receiver<Id>) {
         let (tx, rx) = flume::bounded(16);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                offers_tx: tx,
-                remaining_accepts: AtomicUsize::new(accepts),
+            factory_fn(Request::default(), move |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    offers_tx: tx,
+                    remaining_accepts: AtomicUsize::new(accepts),
+                }))
             }),
             rx,
         )
     }
 
     fn sink(&self) -> &dyn cla::Sink {
-        self.sink.get().unwrap().as_ref()
+        self.sink.as_ref()
     }
 }
 
 #[async_trait]
 impl cla::Cla for DeferringCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.offers_tx.send(bundle_id.clone());
         if self
             .remaining_accepts
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
-            Ok(cla::ForwardBundleResult::Accepted)
+            Ok(cla::ForwardOutcome::Accepted)
         } else {
-            Ok(cla::ForwardBundleResult::Sent)
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 }
@@ -4075,21 +3678,17 @@ async fn deferring_setup(
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, offers_rx) = DeferringCla::new(accepts);
-    bpa.register_cla(
-        format!("deferring-{peer_node_number}"),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, offers_rx) = DeferringCla::factory(accepts);
+    let cla = bpa
+        .register_cla(&format!("deferring-{peer_node_number}"), cla)
+        .await
+        .unwrap();
     cla.sink()
         .add_peer(
-            cla::ClaAddress::Private(format!("peer-{peer_node_number}").into_bytes().into()),
+            cla::Address::Private(format!("peer-{peer_node_number}").into_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: peer_node_number,
@@ -4149,7 +3748,7 @@ async fn deferred_outcome_failed_redispatches() {
 
     let id = expect_offer(&offers_rx).await;
     cla.sink()
-        .transfer_outcome(&id, cla::TransferOutcome::Failed)
+        .report_transfer(&id, cla::TransferOutcome::Failed)
         .await
         .unwrap();
 
@@ -4187,13 +3786,13 @@ async fn deferred_outcome_completed_resolves() {
 
     let id = expect_offer(&offers_rx).await;
     cla.sink()
-        .transfer_outcome(&id, cla::TransferOutcome::Completed)
+        .report_transfer(&id, cla::TransferOutcome::Completed)
         .await
         .unwrap();
 
     // A late duplicate outcome is ignored, not honoured twice.
     cla.sink()
-        .transfer_outcome(&id, cla::TransferOutcome::Failed)
+        .report_transfer(&id, cla::TransferOutcome::Failed)
         .await
         .unwrap();
     expect_no_offer(&offers_rx).await;
@@ -4238,7 +3837,7 @@ async fn deferred_outcome_peer_removal_resolves_unknown() {
 
     let id = expect_offer(&offers_rx).await;
 
-    let peer_addr = cla::ClaAddress::Private("peer-2".as_bytes().into());
+    let peer_addr = cla::Address::Private("peer-2".as_bytes().into());
     let peer_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -4271,19 +3870,12 @@ async fn deferred_outcome_ignores_wrong_cla() {
     let (bpa, cla_a, offers_a) = deferring_setup(1, 2).await;
 
     // A second CLA with its own peer on a different node
-    let (cla_b, offers_b) = DeferringCla::new(0);
-    bpa.register_cla(
-        "deferring-b".to_string(),
-        cla_b.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla_b, offers_b) = DeferringCla::factory(0);
+    let cla_b = bpa.register_cla("deferring-b", cla_b).await.unwrap();
     cla_b
         .sink()
         .add_peer(
-            cla::ClaAddress::Private("peer-b".as_bytes().into()),
+            cla::Address::Private("peer-b".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 4,
@@ -4319,14 +3911,14 @@ async fn deferred_outcome_ignores_wrong_cla() {
     };
     cla_b
         .sink()
-        .transfer_outcome(&unknown, cla::TransferOutcome::Completed)
+        .report_transfer(&unknown, cla::TransferOutcome::Completed)
         .await
         .unwrap();
 
     // CLA B does not own the transfer's peer: its outcome is ignored.
     cla_b
         .sink()
-        .transfer_outcome(&id, cla::TransferOutcome::Completed)
+        .report_transfer(&id, cla::TransferOutcome::Completed)
         .await
         .unwrap();
     expect_no_offer(&offers_a).await;
@@ -4334,7 +3926,7 @@ async fn deferred_outcome_ignores_wrong_cla() {
     // The owning CLA's outcome is still honoured.
     cla_a
         .sink()
-        .transfer_outcome(&id, cla::TransferOutcome::Failed)
+        .report_transfer(&id, cla::TransferOutcome::Failed)
         .await
         .unwrap();
     let id2 = expect_offer(&offers_a).await;
@@ -4358,22 +3950,28 @@ async fn deferred_outcome_ignores_wrong_cla() {
 // ---------------------------------------------------------------------------
 
 struct BlockingCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     offered_tx: flume::Sender<Id>,
     release_rx: flume::Receiver<()>,
     first: AtomicBool,
 }
 
 impl BlockingCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
+    fn factory() -> (
+        impl Factory<Component = Self>,
+        flume::Receiver<Id>,
+        flume::Sender<()>,
+    ) {
         let (offered_tx, offered_rx) = flume::bounded(16);
         let (release_tx, release_rx) = flume::bounded(1);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                offered_tx,
-                release_rx,
-                first: AtomicBool::new(true),
+            factory_fn(Request::default(), move |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    offered_tx,
+                    release_rx,
+                    first: AtomicBool::new(true),
+                }))
             }),
             offered_rx,
             release_tx,
@@ -4383,31 +3981,20 @@ impl BlockingCla {
 
 #[async_trait]
 impl cla::Cla for BlockingCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.offered_tx.send_async(bundle_id.clone()).await;
         if self.first.swap(false, Ordering::SeqCst) {
             let _ = self.release_rx.recv_async().await;
             return Err(cla::Error::StreamCancelled);
         }
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -4418,40 +4005,30 @@ impl cla::Cla for BlockingCla {
 /// second offer, since no further route events occur.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_failure_park_recheck_redispatches() {
-    let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
-    bpa.register_cla(
-        "blocking".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, offered_rx, release_tx) = BlockingCla::factory();
+    let cla = bpa.register_cla("blocking", cla).await.unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            cla::Address::Private("peer-a".as_bytes().into()),
             from_ref(&remote_node),
         )
         .await
         .unwrap();
 
-    let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(90), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(90)), factory)
         .await
         .unwrap();
-    let id = app
+    let id = service
         .sink
-        .get()
-        .unwrap()
         .send(
             "ipn:0.2.7".parse().unwrap(),
             Bytes::from_static(b"recheck"),
@@ -4473,10 +4050,8 @@ async fn forward_failure_park_recheck_redispatches() {
     // ...when a second peer for the same node appears. Its route event
     // polls Waiting bundles and cannot see this one.
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-b".as_bytes().into()),
+            cla::Address::Private("peer-b".as_bytes().into()),
             from_ref(&remote_node),
         )
         .await
@@ -4503,42 +4078,30 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     let metadata_store = Arc::new(MetadataMemStorage::new(None));
     let bpa = Bpa::builder()
         .metadata_storage(metadata_store.clone())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, offered_rx, release_tx) = BlockingCla::new();
-    bpa.register_cla(
-        "blocking".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, offered_rx, release_tx) = BlockingCla::factory();
+    let cla = bpa.register_cla("blocking", cla).await.unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            cla::Address::Private("peer-a".as_bytes().into()),
             from_ref(&remote_node),
         )
         .await
         .unwrap();
 
-    let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(91), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(91)), factory)
         .await
         .unwrap();
-    let id = app
+    let id = service
         .sink
-        .get()
-        .unwrap()
         .send(
             "ipn:0.2.7".parse().unwrap(),
             Bytes::from_static(b"resolve me"),
@@ -4592,18 +4155,13 @@ async fn dispatch_inbound(cla: &PipelineCla, data: Bytes) {
             .unwrap();
     });
     assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut rx)
-            .await
-            .unwrap(),
+        cla.sink.dispatch(None, None, &mut rx).await.unwrap(),
         cla::Acceptance::Accepted
     );
     producer.await.unwrap();
 }
 
-/// Builds a strict-or-relaxed BPA around a local application at ipn:0.1.42,
+/// Builds a strict-or-relaxed BPA around a local service at ipn:0.1.42,
 /// returning the delivery channel.
 async fn gate_fixture(
     configure: impl FnOnce(hardy_bpa::builder::BpaBuilder) -> hardy_bpa::builder::BpaBuilder,
@@ -4616,28 +4174,18 @@ async fn gate_fixture(
         .as_slice(),
     )
     .unwrap();
-    let bpa = configure(Bpa::builder().node_ids(node_ids))
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+    let bpa = configure(Bpa::builder().node_ids(node_ids)).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, service_rx) = TestService::factory();
+    bpa.register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
-    (bpa, cla, app_rx)
+    (bpa, cla, service_rx)
 }
 
 fn unprotected_primary_bundle() -> Bytes {
@@ -4661,7 +4209,7 @@ fn clockless_ageless_bundle() -> Bytes {
 /// neither CRC nor BIB coverage is rejected at the pre-drain gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_rejects_unprotected_primary_block() {
-    let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
+    let (bpa, cla, service_rx) = gate_fixture(|b| b).await;
 
     dispatch_inbound(&cla, unprotected_primary_bundle()).await;
 
@@ -4669,7 +4217,7 @@ async fn gate_rejects_unprotected_primary_block() {
     // delivery before it returns.
     bpa.shutdown().await;
     assert!(
-        app_rx.is_empty(),
+        service_rx.is_empty(),
         "an unprotected primary block must be rejected at the gate"
     );
 }
@@ -4678,13 +4226,13 @@ async fn gate_rejects_unprotected_primary_block() {
 /// bundle is admitted and delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relaxed_gate_admits_unprotected_primary_block() {
-    let (bpa, cla, app_rx) = gate_fixture(|b| b.primary_block_integrity(false)).await;
+    let (bpa, cla, service_rx) = gate_fixture(|b| b.primary_block_integrity(false)).await;
 
     dispatch_inbound(&cla, unprotected_primary_bundle()).await;
 
     // Event-driven wait; the timeout only bounds a regression.
     let (_, payload) =
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), service_rx.recv_async())
             .await
             .expect("Timeout waiting for delivery")
             .expect("Channel closed");
@@ -4697,7 +4245,7 @@ async fn relaxed_gate_admits_unprotected_primary_block() {
 /// without a Bundle Age block is rejected at the pre-drain gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_rejects_clockless_bundle_without_age() {
-    let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
+    let (bpa, cla, service_rx) = gate_fixture(|b| b).await;
 
     dispatch_inbound(&cla, clockless_ageless_bundle()).await;
 
@@ -4705,7 +4253,7 @@ async fn gate_rejects_clockless_bundle_without_age() {
     // delivery before it returns.
     bpa.shutdown().await;
     assert!(
-        app_rx.is_empty(),
+        service_rx.is_empty(),
         "a clockless bundle without a Bundle Age block must be rejected at the gate"
     );
 }
@@ -4714,13 +4262,13 @@ async fn gate_rejects_clockless_bundle_without_age() {
 /// is admitted and delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relaxed_gate_admits_clockless_bundle_without_age() {
-    let (bpa, cla, app_rx) = gate_fixture(|b| b.bundle_age_required(false)).await;
+    let (bpa, cla, service_rx) = gate_fixture(|b| b.bundle_age_required(false)).await;
 
     dispatch_inbound(&cla, clockless_ageless_bundle()).await;
 
     // Event-driven wait; the timeout only bounds a regression.
     let (_, payload) =
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), service_rx.recv_async())
             .await
             .expect("Timeout waiting for delivery")
             .expect("Channel closed");
@@ -4785,25 +4333,24 @@ async fn peer_removed_mid_construction_is_withdrawn() {
         node_number: 1,
     };
     let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
-
     let (entered_tx, entered_rx) = flume::unbounded();
     let (release_tx, release_rx) = flume::bounded::<()>(1);
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        Some(Arc::new(ParkedPolicy {
-            entered_tx,
-            release_rx,
-        })),
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .egress_policy(
+            "test",
+            Arc::new(ParkedPolicy {
+                entered_tx,
+                release_rx,
+            }),
+        )
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -4814,13 +4361,7 @@ async fn peer_removed_mid_construction_is_withdrawn() {
         let cla = cla.clone();
         let peer_addr = peer_addr.clone();
         let remote_node = remote_node.clone();
-        tokio::spawn(async move {
-            cla.sink
-                .get()
-                .unwrap()
-                .add_peer(peer_addr, from_ref(&remote_node))
-                .await
-        })
+        tokio::spawn(async move { cla.sink.add_peer(peer_addr, from_ref(&remote_node)).await })
     };
     // Event-driven wait; the timeout only bounds a regression.
     tokio::time::timeout(tokio::time::Duration::from_secs(5), entered_rx.recv_async())
@@ -4831,8 +4372,6 @@ async fn peer_removed_mid_construction_is_withdrawn() {
     // ...and the removal wins the claim while it is parked.
     assert!(
         cla.sink
-            .get()
-            .unwrap()
             .remove_peer(&peer_addr)
             .await
             .expect("remove_peer failed"),
@@ -4850,8 +4389,6 @@ async fn peer_removed_mid_construction_is_withdrawn() {
     // dropped, so its construction completes immediately).
     assert!(
         cla.sink
-            .get()
-            .unwrap()
             .add_peer(peer_addr, from_ref(&remote_node))
             .await
             .expect("add_peer failed"),
@@ -4876,43 +4413,32 @@ async fn early_route_drop_never_awaits_the_payload() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
     // A peer for the report route (report-to defaults to the source), plus
     // Drop routes: reasoned for one destination, silent for another.
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
     bpa.register_routing_agent(
-        "drop-routes".to_string(),
-        Arc::new(StaticRoutingAgent::new(&[
+        "drop-routes",
+        StaticAgent::factory(&[
             (
                 "ipn:0.9.99".parse().unwrap(),
                 RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
                 1,
             ),
             ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
-        ])),
+        ]),
     )
     .await
     .unwrap();
@@ -4940,10 +4466,7 @@ async fn early_route_drop_never_awaits_the_payload() {
     assert_eq!(
         tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(Some(&remote_node), None, &mut stream)
+            cla.sink.dispatch(Some(&remote_node), None, &mut stream)
         )
         .await
         .expect("Timeout: the route drop must not wait for the payload")
@@ -4981,10 +4504,7 @@ async fn early_route_drop_never_awaits_the_payload() {
     assert_eq!(
         tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(Some(&remote_node), None, &mut stream)
+            cla.sink.dispatch(Some(&remote_node), None, &mut stream)
         )
         .await
         .expect("Timeout: the silent route drop must not wait for the payload")
@@ -5003,17 +4523,16 @@ async fn early_route_drop_never_awaits_the_payload() {
 /// A routing agent that hands its sink to the test, which installs and
 /// withdraws routes at chosen moments.
 struct SinkAgent {
-    sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
+    sink: Arc<dyn routing::Sink>,
 }
 
-#[async_trait]
-impl RoutingAgent for SinkAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-        self.sink.call_once(|| sink);
+impl SinkAgent {
+    fn factory() -> impl routing::Factory<Component = Self> {
+        routing::factory_fn(|cx: routing::Context| Ok(Arc::new(Self { sink: cx.sink })))
     }
-
-    async fn on_unregister(&self) {}
 }
+
+impl Agent for SinkAgent {}
 
 // The gate's decision of record is made again at the commit when the table
 // changed during the drain, so a route withdrawn while the payload was still
@@ -5030,26 +4549,17 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     // Two CLAs with one peer each: ipn:0.2 behind the first, ipn:0.4 behind
     // the second.
-    let (old_cla, old_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "old".to_string(),
-        old_cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (old_cla, old_rx) = PipelineCla::factory();
+    let old_cla = bpa.register_cla("old", old_cla).await.unwrap();
     old_cla
         .sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("old".as_bytes().into()),
+            cla::Address::Private("old".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -5057,21 +4567,12 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
         )
         .await
         .unwrap();
-    let (new_cla, new_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "new".to_string(),
-        new_cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (new_cla, new_rx) = PipelineCla::factory();
+    let new_cla = bpa.register_cla("new", new_cla).await.unwrap();
     new_cla
         .sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("new".as_bytes().into()),
+            cla::Address::Private("new".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 4,
@@ -5080,13 +4581,11 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
         .await
         .unwrap();
 
-    let agent = Arc::new(SinkAgent {
-        sink: hardy_async::sync::spin::Once::new(),
-    });
-    bpa.register_routing_agent("swap".to_string(), agent.clone())
+    let agent = bpa
+        .register_routing_agent("swap", SinkAgent::factory())
         .await
         .unwrap();
-    let routes = agent.sink.get().unwrap();
+    let routes = &agent.sink;
     let old_via = RouteAction::Via("ipn:0.2.0".parse().unwrap());
     let new_via = RouteAction::Via("ipn:0.4.0".parse().unwrap());
     assert!(
@@ -5109,14 +4608,7 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
     // segment proves the gate's lookup is done.
     let (tx, mut rx) = hardy_async::channel::bounded(1);
     let arrival = old_cla.clone();
-    let dispatch = tokio::spawn(async move {
-        arrival
-            .sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut rx)
-            .await
-    });
+    let dispatch = tokio::spawn(async move { arrival.sink.dispatch(None, None, &mut rx).await });
     tx.send(Segment::Next(data.slice(..start))).await.unwrap();
     tx.send(Segment::Next(data.slice(start..start + 1000)))
         .await
@@ -5167,38 +4659,31 @@ async fn a_route_changed_during_the_drain_is_decided_again() {
     assert!(old_rx.is_empty(), "the withdrawn route carries nothing");
 }
 
-/// An application whose status notifications block until the test releases
+/// A service whose status notifications block until the test releases
 /// them, announcing each as it begins.
 struct BlockingNotifyApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
     entered_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
 
 #[async_trait]
-impl services::Application for BlockingNotifyApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl Service for BlockingNotifyApp {
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -5221,33 +4706,27 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (entered_tx, entered_rx) = flume::bounded(1);
     let (release_tx, release_rx) = flume::bounded(1);
-    bpa.register_application(
-        Service::Ipn(42),
-        Arc::new(BlockingNotifyApp {
-            sink: hardy_async::sync::spin::Once::new(),
-            entered_tx,
-            release_rx,
+    bpa.register_service(
+        Some(ServiceId::Ipn(42)),
+        service::factory_fn(move |_| {
+            Ok(Arc::new(BlockingNotifyApp {
+                entered_tx,
+                release_rx,
+            }))
         }),
     )
     .await
     .unwrap();
-    let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
 
     // A delivery report, from a remote node's admin endpoint to ours, about
-    // a bundle the application sent.
+    // a bundle the service sent.
     let (record, ()) = emit(&AdministrativeRecord::BundleStatusReport(
         BundleStatusReport {
             bundle_id: Id {
@@ -5272,10 +4751,7 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
     assert_eq!(
         tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch(None, None, &mut Bytes::from(data))
+            cla.sink.dispatch(None, None, &mut Bytes::from(data))
         )
         .await
         .expect("Timeout: the admin record must not hold the arriving CLA")
@@ -5308,15 +4784,15 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
 async fn originate_route_drop_never_awaits_the_payload() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
     bpa.register_routing_agent(
-        "drop-routes".to_string(),
-        Arc::new(StaticRoutingAgent::new(&[
+        "drop-routes",
+        StaticAgent::factory(&[
             (
                 "ipn:0.9.99".parse().unwrap(),
                 RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
                 1,
             ),
             ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
-        ])),
+        ]),
     )
     .await
     .unwrap();
@@ -5342,13 +4818,13 @@ async fn originate_route_drop_never_awaits_the_payload() {
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        svc.sink.get().unwrap().send(&mut stream),
+        svc.sink.send(&mut stream),
     )
     .await
     .expect("Timeout: the route drop must not wait for the payload");
     assert!(matches!(
         result,
-        Err(services::Error::Dropped(Some(
+        Err(service::Error::Dropped(Some(
             ReasonCode::NoKnownRouteToDestinationFromHere
         )))
     ));
@@ -5359,11 +4835,11 @@ async fn originate_route_drop_never_awaits_the_payload() {
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        svc.sink.get().unwrap().send(&mut stream),
+        svc.sink.send(&mut stream),
     )
     .await
     .expect("Timeout: the silent route drop must not wait for the payload");
-    assert!(matches!(result, Err(services::Error::Dropped(None))));
+    assert!(matches!(result, Err(service::Error::Dropped(None))));
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
@@ -5379,15 +4855,14 @@ async fn originate_route_drop_never_awaits_the_payload() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adu_originate_refuses_a_zero_lifetime() {
     let (bpa, _svc, forwarded_rx, _) = streamed_originate_setup().await;
-    let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let result = app
+    let result = service
         .sink
-        .get()
-        .unwrap()
         .send(
             "ipn:0.2.1".parse().unwrap(),
             Bytes::from_static(b"expired"),
@@ -5397,7 +4872,7 @@ async fn adu_originate_refuses_a_zero_lifetime() {
         .await;
     assert!(matches!(
         result,
-        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+        Err(service::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
     ));
 
     // The streamed door, the same refusal before the payload is pulled: the
@@ -5405,7 +4880,7 @@ async fn adu_originate_refuses_a_zero_lifetime() {
     let mut stream = ParkedReceiver::new(b"expired", 7, 0);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        app.sink.get().unwrap().send_streamed(
+        service.sink.send_streamed(
             "ipn:0.2.1".parse().unwrap(),
             7,
             &mut stream,
@@ -5417,7 +4892,7 @@ async fn adu_originate_refuses_a_zero_lifetime() {
     .expect("Timeout: the expired send must not pull the payload");
     assert!(matches!(
         result,
-        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+        Err(service::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
     ));
 
     // The completed shutdown is the barrier proving the absence.
@@ -5444,10 +4919,10 @@ async fn raw_originate_applies_the_admission_gates() {
         .with_payload(Cow::Borrowed(b"exhausted".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    let result = svc.sink.send(&mut Bytes::from(data)).await;
     assert!(matches!(
         result,
-        Err(services::Error::Dropped(Some(ReasonCode::HopLimitExceeded)))
+        Err(service::Error::Dropped(Some(ReasonCode::HopLimitExceeded)))
     ));
 
     // Unprotected primary block: RFC 9171 §4.3.1, newly applied to raw
@@ -5457,10 +4932,10 @@ async fn raw_originate_applies_the_admission_gates() {
         .with_payload(Cow::Borrowed(b"no integrity".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    let result = svc.sink.send(&mut Bytes::from(data)).await;
     assert!(matches!(
         result,
-        Err(services::Error::Dropped(Some(
+        Err(service::Error::Dropped(Some(
             ReasonCode::BlockUnintelligible
         )))
     ));
@@ -5470,10 +4945,10 @@ async fn raw_originate_applies_the_admission_gates() {
         .with_payload(Cow::Borrowed(b"no clock".as_slice()))
         .build(CreationTimestamp::default())
         .expect("Failed to build bundle");
-    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    let result = svc.sink.send(&mut Bytes::from(data)).await;
     assert!(matches!(
         result,
-        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+        Err(service::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
     ));
 
     // The completed shutdown is the barrier proving the absence.
@@ -5510,8 +4985,8 @@ async fn raw_originate_rejects_a_fragment() {
     let chunks = editor.rebuild().expect("rebuild the fragment");
     let mut fragment = Chunk::flatten_bytes(chunks, data);
 
-    let result = svc.sink.get().unwrap().send(&mut fragment).await;
-    assert!(matches!(result, Err(services::Error::FragmentedBundle)));
+    let result = svc.sink.send(&mut fragment).await;
+    assert!(matches!(result, Err(service::Error::FragmentedBundle)));
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
@@ -5529,13 +5004,7 @@ async fn raw_originate_duplicate_surfaces_to_the_caller() {
     let data = build_bundle(&source_eid, &dest, b"send once");
 
     let mut first = data.clone();
-    let id = svc
-        .sink
-        .get()
-        .unwrap()
-        .send(&mut first)
-        .await
-        .expect("first send admits");
+    let id = svc.sink.send(&mut first).await.expect("first send admits");
 
     // Event-driven wait; the timeout only bounds a regression.
     let forwarded = tokio::time::timeout(
@@ -5551,8 +5020,8 @@ async fn raw_originate_duplicate_surfaces_to_the_caller() {
     );
 
     let mut second = data;
-    let result = svc.sink.get().unwrap().send(&mut second).await;
-    assert!(matches!(result, Err(services::Error::DuplicateBundle)));
+    let result = svc.sink.send(&mut second).await;
+    assert!(matches!(result, Err(service::Error::DuplicateBundle)));
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
@@ -5573,12 +5042,7 @@ async fn raw_originate_duplicate_never_awaits_the_payload() {
     let data = build_bundle(&source_eid, &dest, &payload);
 
     let mut first = data.clone();
-    svc.sink
-        .get()
-        .unwrap()
-        .send(&mut first)
-        .await
-        .expect("first send admits");
+    svc.sink.send(&mut first).await.expect("first send admits");
     // Event-driven wait; the timeout only bounds a regression.
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -5595,12 +5059,12 @@ async fn raw_originate_duplicate_never_awaits_the_payload() {
     let mut replay = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        svc.sink.get().unwrap().send(&mut replay),
+        svc.sink.send(&mut replay),
     )
     .await
     .expect("Timeout: the duplicate origination awaited its parked payload");
     assert!(
-        matches!(result, Err(services::Error::DuplicateBundle)),
+        matches!(result, Err(service::Error::DuplicateBundle)),
         "the parked replay must surface DuplicateBundle without the payload"
     );
 
@@ -5630,28 +5094,17 @@ async fn restart_setup(
         .node_ids(node_ids)
         .metadata_storage(metadata)
         .bundle_storage(bundles)
-        .build()
+        .build();
+    bpa.start(false).await.unwrap();
+    let svc = bpa
+        .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
         .unwrap();
-    bpa.start(false).await;
-    let svc = EchoService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
-        .await
-        .unwrap();
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
@@ -5692,16 +5145,12 @@ async fn a_duplicate_after_a_restart_is_refused_at_the_insert() {
     let (bpa, svc, cla, forwarded_rx) = restart_setup(metadata.clone(), bundles.clone()).await;
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut arrival.clone())
             .await
             .unwrap(),
         cla::Acceptance::Accepted
     );
     svc.sink
-        .get()
-        .unwrap()
         .send(&mut raw.clone())
         .await
         .expect("the first raw send admits");
@@ -5721,15 +5170,13 @@ async fn a_duplicate_after_a_restart_is_refused_at_the_insert() {
     let (bpa, svc, cla, forwarded_rx) = restart_setup(metadata, bundles.clone()).await;
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut arrival.clone())
             .await
             .unwrap(),
         cla::Acceptance::Accepted
     );
-    let result = svc.sink.get().unwrap().send(&mut raw.clone()).await;
-    assert!(matches!(result, Err(services::Error::DuplicateBundle)));
+    let result = svc.sink.send(&mut raw.clone()).await;
+    assert!(matches!(result, Err(service::Error::DuplicateBundle)));
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
@@ -5760,17 +5207,16 @@ async fn oversized_originate_refuses_before_the_payload() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .max_bundle_size(NonZeroU64::new(2048).unwrap())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let svc = EchoService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
+    let svc = bpa
+        .register_raw_service(Some(ServiceId::Ipn(7)), EchoService::factory())
         .await
         .unwrap();
-    let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
@@ -5783,12 +5229,12 @@ async fn oversized_originate_refuses_before_the_payload() {
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        svc.sink.get().unwrap().send(&mut stream),
+        svc.sink.send(&mut stream),
     )
     .await
     .expect("Timeout: the raw size refusal must not wait for the payload");
     match result {
-        Err(services::Error::PayloadTooLarge { size, max }) => {
+        Err(service::Error::PayloadTooLarge { size, max }) => {
             assert_eq!(size, data.len() as u64, "the declared wire size");
             assert_eq!(max, 2048);
         }
@@ -5801,7 +5247,7 @@ async fn oversized_originate_refuses_before_the_payload() {
     let mut stream = ParkedReceiver::new(&payload, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        app.sink.get().unwrap().send_streamed(
+        service.sink.send_streamed(
             "ipn:0.2.1".parse().unwrap(),
             50_000,
             &mut stream,
@@ -5812,7 +5258,7 @@ async fn oversized_originate_refuses_before_the_payload() {
     .await
     .expect("Timeout: the ADU size refusal must not wait for the payload");
     match result {
-        Err(services::Error::PayloadTooLarge { size, max }) => {
+        Err(service::Error::PayloadTooLarge { size, max }) => {
             assert!(size >= 50_000, "a declared size, got {size}");
             assert_eq!(max, 2048);
         }
@@ -5841,16 +5287,15 @@ async fn adu_originate_refuses_headers_over_the_cap() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .max_bundle_size(NonZeroU64::new(2048).unwrap())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (app, _app_rx) = TestApp::new();
-    let source = bpa
-        .register_application(Service::Ipn(42), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
+    let source = service.endpoint.clone();
     let destination: Eid = "ipn:0.2.1".parse().unwrap();
     let lifetime = Duration::from_secs(60);
 
@@ -5879,15 +5324,14 @@ async fn adu_originate_refuses_headers_over_the_cap() {
     let mut stream = ParkedReceiver::new(&payload, 1000, 0);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        app.sink
-            .get()
-            .unwrap()
+        service
+            .sink
             .send_streamed(destination, 2040, &mut stream, lifetime, None),
     )
     .await
     .expect("Timeout: the size refusal must not wait for the payload");
     match result {
-        Err(services::Error::PayloadTooLarge { size, max }) => {
+        Err(service::Error::PayloadTooLarge { size, max }) => {
             assert!(
                 twins.contains(&size),
                 "expected one of {twins:?}, got {size}"
@@ -5906,50 +5350,45 @@ async fn adu_originate_refuses_headers_over_the_cap() {
 #[tokio::test]
 async fn configured_endpoints_activate_at_start() {
     struct ProbeCla {
-        registered: hardy_async::sync::spin::Once<()>,
+        started_tx: flume::Sender<()>,
     }
 
     #[async_trait]
     impl cla::Cla for ProbeCla {
-        async fn on_register(
-            &self,
-            _sink: Box<dyn cla::Sink>,
-            _node_ids: &[NodeId],
-            _max_bundle_size: Option<NonZeroU64>,
-        ) {
-            self.registered.call_once(|| ());
+        async fn register(&self) -> cla::Result<()> {
+            let _ = self.started_tx.send(());
+            Ok(())
         }
-
-        async fn on_unregister(&self) {}
 
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             _bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn Receiver<Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
-            Ok(cla::ForwardBundleResult::Sent)
+        ) -> cla::Result<cla::ForwardOutcome> {
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 
-    let probe = Arc::new(ProbeCla {
-        registered: hardy_async::sync::spin::Once::new(),
-    });
+    let (started_tx, started_rx) = flume::bounded(1);
     let bpa = Bpa::builder()
-        .cla("probe", probe.clone(), None, cla::ClaInit::default())
-        .build()
-        .await
-        .unwrap();
+        .cla(
+            "probe",
+            factory_fn(Request::default(), |_cx: Context| {
+                Ok(Arc::new(ProbeCla { started_tx }))
+            }),
+        )
+        .build();
     assert!(
-        probe.registered.get().is_none(),
+        started_rx.is_empty(),
         "a configured CLA must not go live before start"
     );
 
-    bpa.start(false).await;
+    bpa.start(false).await.unwrap();
     assert!(
-        probe.registered.get().is_some(),
+        started_rx.try_recv().is_ok(),
         "start activates the configured CLA"
     );
 
@@ -5957,7 +5396,7 @@ async fn configured_endpoints_activate_at_start() {
 }
 
 // ---------------------------------------------------------------------------
-// The streamed ADU door: ApplicationSink::send_streamed
+// The streamed ADU door: Sink::send_streamed
 // ---------------------------------------------------------------------------
 
 /// A payload streamed through `send_streamed` originates a bundle
@@ -5975,31 +5414,23 @@ async fn app_send_streamed_matches_whole_buffer_send() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -6016,10 +5447,8 @@ async fn app_send_streamed_matches_whole_buffer_send() {
     }
     tx.send(Segment::Final(Bytes::new())).await.unwrap();
     drop(tx);
-    let streamed_id = app
+    let streamed_id = service
         .sink
-        .get()
-        .unwrap()
         .send_streamed(
             dest.clone(),
             payload.len() as u64,
@@ -6031,10 +5460,8 @@ async fn app_send_streamed_matches_whole_buffer_send() {
         .expect("streamed send failed");
 
     // Whole-buffer twin.
-    let buffered_id = app
+    let buffered_id = service
         .sink
-        .get()
-        .unwrap()
         .send(
             dest.clone(),
             Bytes::from(payload.clone()),
@@ -6097,30 +5524,22 @@ async fn app_send_streamed_producer_drop_cancels() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -6131,10 +5550,8 @@ async fn app_send_streamed_producer_drop_cancels() {
         .unwrap();
     drop(tx); // no Final — the producer aborts
 
-    let result = app
+    let result = service
         .sink
-        .get()
-        .unwrap()
         .send_streamed(
             "ipn:0.2.1".parse().unwrap(),
             5000,
@@ -6143,7 +5560,7 @@ async fn app_send_streamed_producer_drop_cancels() {
             None,
         )
         .await;
-    assert!(matches!(result, Err(services::Error::StreamCancelled)));
+    assert!(matches!(result, Err(service::Error::StreamCancelled)));
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
@@ -6167,30 +5584,22 @@ async fn app_send_streamed_enforces_the_declared_length() {
         .as_slice(),
     )
     .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = Bpa::builder().node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
-    let (app, _app_rx) = TestApp::new();
-    bpa.register_application(Service::Ipn(42), app.clone())
+    let (factory, _service_rx) = TestService::factory();
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), factory)
         .await
         .unwrap();
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let (cla, forwarded_rx) = PipelineCla::factory();
+    let cla = bpa.register_cla("test", cla).await.unwrap();
+    let peer_addr = cla::Address::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
     });
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(peer_addr, from_ref(&remote_node))
         .await
         .unwrap();
@@ -6202,15 +5611,13 @@ async fn app_send_streamed_enforces_the_declared_length() {
         .await
         .unwrap();
     drop(tx);
-    let result = app
+    let result = service
         .sink
-        .get()
-        .unwrap()
         .send_streamed(dest.clone(), 1000, &mut rx, Duration::from_secs(3600), None)
         .await;
     assert!(matches!(
         result,
-        Err(services::Error::PayloadTooLarge { max: 1000, .. })
+        Err(service::Error::PayloadTooLarge { max: 1000, .. })
     ));
 
     // Underrun: 1000 bytes against a declaration of 2000.
@@ -6219,15 +5626,13 @@ async fn app_send_streamed_enforces_the_declared_length() {
         .await
         .unwrap();
     drop(tx);
-    let result = app
+    let result = service
         .sink
-        .get()
-        .unwrap()
         .send_streamed(dest.clone(), 2000, &mut rx, Duration::from_secs(3600), None)
         .await;
     assert!(matches!(
         result,
-        Err(services::Error::PayloadUnderrun {
+        Err(service::Error::PayloadUnderrun {
             size: 1000,
             expected: 2000
         })
@@ -6240,19 +5645,15 @@ async fn app_send_streamed_enforces_the_declared_length() {
     let mut stream = ParkedReceiver::new(&[], 1, 0);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        app.sink.get().unwrap().send_streamed(
-            dest,
-            u64::MAX,
-            &mut stream,
-            Duration::from_secs(3600),
-            None,
-        ),
+        service
+            .sink
+            .send_streamed(dest, u64::MAX, &mut stream, Duration::from_secs(3600), None),
     )
     .await
     .expect("Timeout: the size refusal must not wait for the payload");
     assert!(matches!(
         result,
-        Err(services::Error::PayloadTooLarge { size: u64::MAX, .. })
+        Err(service::Error::PayloadTooLarge { size: u64::MAX, .. })
     ));
 
     // The completed shutdown is the barrier proving the absence.
@@ -6268,7 +5669,7 @@ async fn app_send_streamed_default_buffers_and_delegates() {
     struct RecordingSink(flume::Sender<Bytes>);
 
     #[async_trait]
-    impl services::ApplicationSink for RecordingSink {
+    impl Sink for RecordingSink {
         async fn unregister(&self) {}
 
         async fn send(
@@ -6276,8 +5677,8 @@ async fn app_send_streamed_default_buffers_and_delegates() {
             _destination: Eid,
             data: Bytes,
             _lifetime: Duration,
-            _options: Option<services::SendOptions>,
-        ) -> services::Result<Id> {
+            _options: Option<SendOptions>,
+        ) -> service::Result<Id> {
             self.0.send(data).unwrap();
             Ok(Id::default())
         }
@@ -6297,7 +5698,7 @@ async fn app_send_streamed_default_buffers_and_delegates() {
     }
     seg_tx.send(Segment::Final(Bytes::new())).await.unwrap();
     drop(seg_tx);
-    services::ApplicationSink::send_streamed(
+    Sink::send_streamed(
         &sink,
         "ipn:0.2.1".parse().unwrap(),
         payload.len() as u64,
@@ -6316,7 +5717,7 @@ async fn app_send_streamed_default_buffers_and_delegates() {
         .await
         .unwrap();
     drop(seg_tx);
-    let result = services::ApplicationSink::send_streamed(
+    let result = Sink::send_streamed(
         &sink,
         "ipn:0.2.1".parse().unwrap(),
         500,
@@ -6327,7 +5728,7 @@ async fn app_send_streamed_default_buffers_and_delegates() {
     .await;
     assert!(matches!(
         result,
-        Err(services::Error::PayloadUnderrun {
+        Err(service::Error::PayloadUnderrun {
             size: 100,
             expected: 500
         })

@@ -1,128 +1,68 @@
-pub(crate) mod sink;
-mod static_agent;
+//! The routing agents of one BPA: the contract they implement and the
+//! table that owns them.
+//!
+//! An embedder implements [`Agent`] and hands the BPA a [`Factory`] for
+//! it. The BPA builds the agent from a [`Context`] carrying the [`Sink`]
+//! it pushes routes through, and `table::Table` owns it from there, until
+//! the agent unregisters or the BPA shuts down.
 
-pub use self::static_agent::StaticRoutingAgent;
-
-use hardy_bpv7::eid::{Eid, NodeId};
-use hardy_eid_patterns::EidPattern;
-use thiserror::Error;
-
-use super::action::RouteAction;
 use crate::async_trait;
 
-/// A specialized `Result` type for routing agent operations.
-pub type Result<T> = core::result::Result<T, self::Error>;
+use super::Result;
 
-/// Errors that can occur during routing agent operations.
-#[derive(Debug, Error)]
-pub enum Error {
-    /// An attempt was made to register a routing agent with a name already in use.
-    #[error("Attempt to register duplicate routing agent name {0}")]
-    AlreadyExists(String),
+mod factory;
+mod sink;
+mod static_agent;
 
-    /// The connection to the BPA has been lost.
-    #[error("The sink is disconnected")]
-    Disconnected,
+pub(crate) mod table;
 
-    /// A route was rejected because the next-hop is the null endpoint.
-    #[error("Route via null next-hop rejected")]
-    NullNextHop,
+pub use self::factory::{BoxFactory, Context, Factory, factory_fn};
+pub use self::sink::Sink;
+pub use self::static_agent::StaticAgent;
 
-    /// A route was rejected because the next-hop resolves to the local node.
-    #[error("Route via own node {0} rejected")]
-    ViaOwnNode(Eid),
-
-    /// An internal error occurred.
-    #[error(transparent)]
-    Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
-}
-
-/// The primary trait for a Routing Agent.
+/// A component that supplies routes to the BPA.
 ///
-/// A routing agent discovers or computes routes and pushes them to the BPA's
-/// Routing Information Base (RIB) via a [`RoutingSink`]. Examples include static
-/// route configuration, link-state protocols, and neighbour discovery.
+/// An agent discovers or computes routes and pushes them into the BPA's
+/// routing information base through the [`Sink`] its [`Context`] carries:
+/// static configuration, a link-state protocol and neighbour discovery
+/// are all agents.
 ///
-/// Routing agents are purely push-based: they push routes to the BPA via the Sink,
-/// and the BPA never calls back into the agent to request work (unlike CLAs which
-/// have a `forward` method).
-///
-/// # Sink Lifecycle
-///
-/// The routing agent receives a [`RoutingSink`] in [`on_register`](Self::on_register)
-/// which it **must store** for its entire active lifetime. The Sink provides the
-/// communication channel back to the BPA's RIB.
-///
-/// **Critical**: If the Sink is dropped (either explicitly or by not storing it), the BPA
-/// interprets this as the agent requesting disconnection and will call
-/// [`on_unregister`](Self::on_unregister). All routes from this agent are automatically removed.
-///
-/// Two disconnection paths exist:
-/// - **Agent-initiated**: Agent drops its Sink or calls `sink.unregister()` -> BPA calls `on_unregister()`
-/// - **BPA-initiated**: BPA shuts down -> calls `on_unregister()` -> Sink becomes non-functional
+/// Agents are purely push-based. The BPA never calls back to ask for
+/// work, unlike a [`Cla`](crate::cla::Cla), which is asked to forward, so
+/// the trait carries nothing but the lifecycle the BPA drives: the BPA
+/// builds the agent from a [`Factory`], owns it, brings it up with
+/// [`register`](Self::register) and takes it down with
+/// [`unregister`](Self::unregister), withdrawing every route the
+/// agent added.
 #[async_trait]
-pub trait RoutingAgent: Send + Sync {
-    /// Called when the routing agent is registered with the BPA.
+pub trait Agent: Send + Sync {
+    /// Brings the agent up: spawns tasks, installs its initial routes,
+    /// opens the sources it learns routes from.
     ///
-    /// The agent should store the `sink` for its entire active lifetime.
-    /// Dropping the sink triggers automatic unregistration and route cleanup.
+    /// Called once, as the registration opens: at
+    /// [`Bpa::start`](crate::bpa::Bpa::start) for a declared agent,
+    /// after storage recovery, and at the registration call for any
+    /// other. An `Err` means the agent cannot run at all: the
+    /// registration is undone, and the error reaches whoever asked for
+    /// it.
     ///
-    /// # Arguments
-    /// * `sink` - Communication channel back to the BPA's RIB. Must be stored.
-    /// * `node_ids` - The BPA's own node identifiers.
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, node_ids: &[NodeId]);
+    /// The default implementation does nothing, for an agent that is live
+    /// from the moment it is built.
+    async fn register(&self) -> Result<()> {
+        Ok(())
+    }
 
-    /// Called when the routing agent is being unregistered.
+    /// Takes the agent down: stops background tasks, releases resources.
     ///
-    /// Called when either:
-    /// 1. The agent dropped its Sink (agent-initiated disconnection)
-    /// 2. The BPA is shutting down (BPA-initiated disconnection)
+    /// Called once, when the agent unregisters or the BPA shuts down. The
+    /// sink answers [`Error::Disconnected`] to everything by then, and the
+    /// agent's routes are withdrawn once this returns; an `Err` is logged
+    /// and teardown continues regardless.
     ///
-    /// The agent should perform cleanup: stop background tasks, close connections,
-    /// and release resources. Routes are automatically removed by the BPA after this returns.
-    async fn on_unregister(&self);
-}
-
-/// A communication channel from a routing agent back to the BPA's RIB.
-///
-/// The Sink automatically injects the agent's registered name as the route source,
-/// so an agent can only add/remove routes attributed to itself.
-///
-/// # Lifecycle
-///
-/// The Sink is provided in [`RoutingAgent::on_register`]. The agent **must store** this
-/// Sink for its entire active lifetime. When the Sink is dropped, the BPA interprets
-/// this as the agent requesting disconnection.
-///
-/// After disconnection, all Sink operations return [`Error::Disconnected`].
-#[async_trait]
-pub trait RoutingSink: Send + Sync {
-    /// Explicitly unregisters the associated routing agent from the BPA.
+    /// The default implementation does nothing.
     ///
-    /// Equivalent to dropping the Sink. After this call, the BPA calls
-    /// [`RoutingAgent::on_unregister`] and all routes from this agent are removed.
-    async fn unregister(&self);
-
-    /// Adds a route to the RIB.
-    ///
-    /// Returns `true` if the route was newly inserted, `false` if it already existed.
-    async fn add_route(
-        &self,
-        pattern: EidPattern,
-        action: RouteAction,
-        priority: u32,
-    ) -> Result<bool>;
-
-    /// Removes a specific route from the RIB.
-    ///
-    /// Only removes routes that match all three fields (pattern, action, priority)
-    /// and this agent's source name.
-    ///
-    /// Returns `true` if the route was found and removed.
-    async fn remove_route(
-        &self,
-        pattern: &EidPattern,
-        action: &RouteAction,
-        priority: u32,
-    ) -> Result<bool>;
+    /// [`Error::Disconnected`]: crate::routing::Error::Disconnected
+    async fn unregister(&self) -> Result<()> {
+        Ok(())
+    }
 }

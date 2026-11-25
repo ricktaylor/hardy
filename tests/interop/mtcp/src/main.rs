@@ -4,13 +4,10 @@ mod config;
 mod connect;
 mod listen;
 
-use core::num::NonZeroU64;
-
 use hardy_async::TaskPool;
-use hardy_async::sync::spin::Once;
 use hardy_bpa::{
-    bpa::BpaRegistration,
-    cla::{ClaAddressType, ClaInit},
+    cla::{AddressType, Context, RegistrarExt, Request},
+    node_ids::NodeIds,
 };
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
@@ -53,29 +50,16 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
-    // The configured inbound framing bound doubles as the declared
-    // receive limit (0 = unbounded, declared as no limit).
-    let init = ClaInit {
-        address_type: Some(ClaAddressType::Tcp),
-        lane_count: None,
-        max_bundle_size: NonZeroU64::new(config.cla.max_bundle_size),
-    };
-    let cla = Arc::new(cla::Cla::new(config.cla));
-
     info!("Connecting to BPA at {}", config.bpa_address);
 
     let remote_bpa = hardy_proto::client::RemoteBpa::new(config.bpa_address);
 
-    let node_ids = remote_bpa
-        .register_cla(config.cla_name.clone(), cla.clone(), None, init)
+    let cla = remote_bpa
+        .register_cla(&config.cla_name, cla::Cla::factory(config.cla))
         .await
         .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
 
-    info!(
-        "CLA {} registered, node IDs: {:?}",
-        config.cla_name,
-        node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
-    );
+    info!("CLA {} registered", config.cla_name);
 
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);

@@ -67,7 +67,7 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 | `reassemble_basic_happy_path` | `src/storage/adu_reassembly.rs` | §3.5 | Two fragments → complete bundle via Builder + Editor |
 | `test_duplicate_reg` | `src/services/registry.rs` | §3.4 | Duplicate explicit IPN service number rejected |
 | `test_cleanup` | `src/services/registry.rs` | §3.4 | Service ID freed after sink unregister, re-registration succeeds |
-| `test_address_parsing` | `src/cla/mod.rs` | §3.8 | ClaAddress round-trip (TCP, IPv6, Private) |
+| `test_address_parsing` | `src/cla/mod.rs` | §3.8 | cla::Address round-trip (TCP, IPv6, Private) |
 | `test_duplicate_registration` | `src/cla/registry.rs` | §3.8 | Duplicate CLA name rejected |
 | `test_peer_lifecycle` | `src/cla/registry.rs` | §3.8 | add_peer/remove_peer + double-remove |
 | `test_cascading_cleanup` | `src/cla/registry.rs` | §3.8 | CLA unregister removes all peers, name freed |

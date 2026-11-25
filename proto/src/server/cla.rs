@@ -1,39 +1,40 @@
 use core::num::{NonZeroU32, NonZeroU64};
 
+use hardy_bpa::{
+    cla::{Context, RegistrarExt, Request, Sink, Terms, factory_fn},
+    node_ids::NodeIds,
+};
+use hardy_bpv7::eid::NodeId;
+
 use super::*;
 use proto::cla::*;
 
-type ClaSink = Arc<dyn hardy_bpa::cla::Sink>;
-
+// The BPA's end of a remote CLA: it forwards through the proxy standing
+// in for the far CLA, and the CLA reaches the BPA back through the sink.
 struct Cla {
-    sink: Mutex<Option<ClaSink>>,
-    proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
-    // The effective cap from the BPA at on_register, relayed to the remote
-    // CLA in the RegisterClaResponse.
-    max_bundle_size: std::sync::OnceLock<Option<NonZeroU64>>,
+    sink: Arc<dyn Sink>,
+    node_ids: Arc<NodeIds>,
+    terms: Terms,
+    proxy: Arc<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
 }
 
 impl Cla {
-    fn sink(&self) -> Result<ClaSink, tonic::Status> {
-        self.sink
-            .lock()
-            .clone()
-            .ok_or(tonic::Status::unavailable("Unregistered"))
-    }
-
     async fn call(&self, msg: bpa_to_cla::Msg) -> hardy_bpa::cla::Result<cla_to_bpa::Msg> {
-        let proxy = self.proxy.get().ok_or_else(|| {
-            error!("call made before on_register!");
-            hardy_bpa::cla::Error::Disconnected
-        })?;
-
-        match proxy.call(msg).await {
+        match self.proxy.call(msg).await {
             Ok(None) => Err(hardy_bpa::cla::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
             Err(e) => Err(hardy_bpa::cla::Error::Internal(e.into())),
         }
     }
+}
 
+// The far CLA's end of the session: every request it makes lands on the
+// sink its registration handed back.
+struct Handler {
+    sink: Arc<dyn Sink>,
+}
+
+impl Handler {
     async fn dispatch(
         &self,
         mut request: DispatchBundleRequest,
@@ -47,13 +48,13 @@ impl Cla {
             })
             .transpose()?;
 
-        let peer_addr: Option<hardy_bpa::cla::ClaAddress> =
+        let peer_addr: Option<hardy_bpa::cla::Address> =
             request.peer_addr.map(|a| a.try_into()).transpose()?;
 
         // The unary wire message already delivered the whole bundle, so it
         // enters the BPA as a one-segment stream. The verdict rides the
         // response; only sink faults become gRPC errors.
-        self.sink()?
+        self.sink
             .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut request.bundle)
             .await
             .map(|verdict| {
@@ -83,7 +84,7 @@ impl Cla {
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
-        self.sink()?
+        self.sink
             .add_peer(cla_addr, &node_ids)
             .await
             .map(|added| bpa_to_cla::Msg::AddPeer(AddPeerResponse { added }))
@@ -99,7 +100,7 @@ impl Cla {
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
-        self.sink()?
+        self.sink
             .remove_peer(&cla_addr)
             .await
             .map(|removed| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse { removed }))
@@ -124,41 +125,19 @@ impl Cla {
             None => return Err(tonic::Status::invalid_argument("Missing outcome")),
         };
 
-        self.sink()?
-            .transfer_outcome(&bundle_id, outcome)
+        self.sink
+            .report_transfer(&bundle_id, outcome)
             .await
             .map(|_| bpa_to_cla::Msg::TransferOutcome(TransferOutcomeResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))
-    }
-
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
     }
 }
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[hardy_bpv7::eid::NodeId],
-        max_bundle_size: Option<NonZeroU64>,
-    ) {
-        let _ = self.max_bundle_size.set(max_bundle_size);
-        *self.sink.lock() = Some(Arc::from(sink));
-    }
-
-    async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
-            return;
-        }
-
-        if let Some(proxy) = self.proxy.get() {
-            proxy.shutdown().await;
-        }
+    async fn unregister(&self) -> hardy_bpa::cla::Result<()> {
+        self.proxy.shutdown().await;
+        Ok(())
     }
 
     // INTERIM BUFFERING: the wire protocol has no segmented bundle messages
@@ -170,11 +149,11 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn forward(
         &self,
         lane: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        cla_addr: &hardy_bpa::cla::Address,
         bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardOutcome> {
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         match self
             .call(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
@@ -190,13 +169,13 @@ impl hardy_bpa::cla::Cla for Cla {
                     tonic::Status::internal("Invalid result code").into(),
                 )),
                 Some(forward_bundle_response::Result::Sent(_)) => {
-                    Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
+                    Ok(hardy_bpa::cla::ForwardOutcome::Sent)
                 }
                 Some(forward_bundle_response::Result::NoNeighbour(_)) => {
-                    Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
+                    Ok(hardy_bpa::cla::ForwardOutcome::NoNeighbour)
                 }
                 Some(forward_bundle_response::Result::Accepted(_)) => {
-                    Ok(hardy_bpa::cla::ForwardBundleResult::Accepted)
+                    Ok(hardy_bpa::cla::ForwardOutcome::Accepted)
                 }
             },
             msg => {
@@ -209,10 +188,6 @@ impl hardy_bpa::cla::Cla for Cla {
     }
 }
 
-struct Handler {
-    cla: Arc<Cla>,
-}
-
 #[async_trait]
 impl ProxyHandler for Handler {
     type SMsg = bpa_to_cla::Msg;
@@ -220,10 +195,10 @@ impl ProxyHandler for Handler {
 
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         let msg = match msg {
-            cla_to_bpa::Msg::Dispatch(msg) => self.cla.dispatch(msg).await,
-            cla_to_bpa::Msg::AddPeer(msg) => self.cla.add_peer(msg).await,
-            cla_to_bpa::Msg::RemovePeer(msg) => self.cla.remove_peer(msg).await,
-            cla_to_bpa::Msg::TransferOutcome(msg) => self.cla.transfer_outcome(msg).await,
+            cla_to_bpa::Msg::Dispatch(msg) => self.dispatch(msg).await,
+            cla_to_bpa::Msg::AddPeer(msg) => self.add_peer(msg).await,
+            cla_to_bpa::Msg::RemovePeer(msg) => self.remove_peer(msg).await,
+            cla_to_bpa::Msg::TransferOutcome(msg) => self.transfer_outcome(msg).await,
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;
@@ -237,15 +212,14 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.cla.unregister().await;
-        if let Some(proxy) = self.cla.proxy.get() {
-            proxy.cancel();
-        }
+        // The far CLA is gone: unregister, which takes the CLA down with
+        // the session.
+        self.sink.unregister().await;
     }
 }
 
 pub struct Service {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::cla::Registrar>,
     session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
@@ -275,107 +249,114 @@ impl cla_server::Cla for Service {
 }
 
 async fn run_cla_session(
-    mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToCla, tonic::Status>>,
-    mut channel_receiver: tonic::Streaming<ClaToBpa>,
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    channel_sender: tokio::sync::mpsc::Sender<Result<BpaToCla, tonic::Status>>,
+    channel_receiver: tonic::Streaming<ClaToBpa>,
+    bpa: Arc<dyn hardy_bpa::cla::Registrar>,
 ) {
-    let cla = Arc::new(Cla {
-        sink: Mutex::new(None),
-        proxy: Once::new(),
-        max_bundle_size: std::sync::OnceLock::new(),
-    });
+    let (proxy, msg_id, opening) = match RpcProxy::accept(channel_sender, channel_receiver).await {
+        Ok(session) => session,
+        Err(e) => {
+            warn!("CLA session failed to open: {e}");
+            return;
+        }
+    };
 
-    // Wait for the client's registration message and process it
-    let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
-        match msg {
-            cla_to_bpa::Msg::Register(request) => {
-                let address_type =
-                    request
-                        .address_type
-                        .map(|address_type| match address_type.try_into() {
-                            Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
-                            Err(_) | Ok(ClaAddressType::Private) => {
-                                hardy_bpa::cla::ClaAddressType::Private
-                            }
-                        });
-                // Absent = no CLA-side limit declared; an explicit 0 is
-                // invalid (omit the field to declare no limit).
-                let max_bundle_size = match request.max_bundle_size {
-                    Some(0) => {
-                        return Err(tonic::Status::invalid_argument(
-                            "max_bundle_size 0 is invalid; omit the field to declare no limit",
-                        ));
-                    }
-                    declared => declared.and_then(NonZeroU64::new),
-                };
-                // Same shape for the lane declaration: absent = no limit.
-                let lane_count = match request.lane_count {
-                    Some(0) => {
-                        return Err(tonic::Status::invalid_argument(
-                            "lane_count 0 is invalid; omit the field to declare no limit",
-                        ));
-                    }
-                    declared => declared.and_then(NonZeroU32::new),
-                };
-                let node_ids = bpa
-                    .register_cla(
-                        request.name,
-                        cla.clone(),
-                        None,
-                        hardy_bpa::cla::ClaInit {
-                            address_type,
-                            lane_count,
-                            max_bundle_size,
-                        },
-                    )
-                    .await
-                    .map_err(|e| tonic::Status::from_error(e.into()))?
+    match register(&*bpa, opening, &proxy).await {
+        Ok(cla) => {
+            let response = RegisterClaResponse {
+                node_ids: Vec::<NodeId>::from(cla.node_ids.as_ref())
                     .into_iter()
                     .map(|node_id| node_id.to_string())
-                    .collect();
-
-                Ok(bpa_to_cla::Msg::Register(RegisterClaResponse {
-                    node_ids,
-                    // Set by on_register, which `register_cla` drives to
-                    // completion before returning — that is a documented
-                    // contract on `BpaRegistration::register_cla`, so the
-                    // expect fires only on a non-conforming implementation.
-                    // Absent on the wire = no negotiated cap.
-                    max_bundle_size: cla
-                        .max_bundle_size
-                        .get()
-                        .expect("register_cla returned without driving on_register")
-                        .map(NonZeroU64::get),
-                }))
-            }
-            _ => {
-                warn!("CLA sent incorrect message: {msg:?}");
-                Err(tonic::Status::internal(format!(
-                    "Unexpected response: {msg:?}"
-                )))
-            }
+                    .collect(),
+                // Absent on the wire = no negotiated cap.
+                max_bundle_size: cla.terms.max_bundle_size.map(NonZeroU64::get),
+            };
+            let handler = Handler {
+                sink: cla.sink.clone(),
+            };
+            proxy.open(
+                msg_id,
+                bpa_to_cla::Msg::Register(response),
+                Box::new(handler),
+            );
         }
-    })
-    .await;
-
-    if let Err(e) = result {
-        warn!("CLA registration failed: {e}");
-        return;
+        Err(status) => {
+            warn!("CLA registration failed: {status}");
+            proxy.fail(status).await;
+        }
     }
+}
 
-    // Start the proxy for ongoing communication
-    let handler = Box::new(Handler { cla: cla.clone() });
-    cla.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
+// Registers the CLA the opening message asks for, built around the proxy
+// the BPA forwards through.
+async fn register(
+    bpa: &dyn hardy_bpa::cla::Registrar,
+    opening: cla_to_bpa::Msg,
+    proxy: &Arc<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
+) -> Result<Arc<Cla>, tonic::Status> {
+    let cla_to_bpa::Msg::Register(request) = opening else {
+        warn!("CLA sent incorrect message: {opening:?}");
+        return Err(tonic::Status::internal(format!(
+            "Unexpected response: {opening:?}"
+        )));
+    };
+
+    let address_type = request
+        .address_type
+        .map(|address_type| match address_type.try_into() {
+            Ok(ClaAddressType::Tcp) => hardy_bpa::cla::AddressType::Tcp,
+            Err(_) | Ok(ClaAddressType::Private) => hardy_bpa::cla::AddressType::Private,
+        });
+
+    // Absent = no CLA-side limit declared; an explicit 0 is invalid (omit
+    // the field to declare no limit).
+    let max_bundle_size = match request.max_bundle_size {
+        Some(0) => {
+            return Err(tonic::Status::invalid_argument(
+                "max_bundle_size 0 is invalid; omit the field to declare no limit",
+            ));
+        }
+        declared => declared.and_then(NonZeroU64::new),
+    };
+
+    // Same shape for the lane declaration: absent = no limit.
+    let lane_count = match request.lane_count {
+        Some(0) => {
+            return Err(tonic::Status::invalid_argument(
+                "lane_count 0 is invalid; omit the field to declare no limit",
+            ));
+        }
+        declared => declared.and_then(NonZeroU32::new),
+    };
+
+    let cla_request = Request {
+        address_type,
+        lane_count,
+        max_bundle_size,
+    };
+
+    bpa.register_cla(
+        &request.name,
+        factory_fn(cla_request, |cx: Context| {
+            Ok(Arc::new(Cla {
+                sink: cx.sink,
+                node_ids: cx.node_ids,
+                terms: cx.terms,
+                proxy: proxy.clone(),
+            }))
+        }),
+    )
+    .await
+    .map_err(|e| tonic::Status::from_error(e.into()))
 }
 
 /// Create a new CLA gRPC service.
 pub fn new_cla_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::cla::Registrar>,
     tasks: &hardy_async::TaskPool,
 ) -> cla_server::ClaServer<Service> {
     cla_server::ClaServer::new(Service {
-        bpa: bpa.clone(),
+        bpa,
         session_tasks: tasks.clone(),
         channel_size: 16,
     })

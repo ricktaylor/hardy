@@ -3,13 +3,12 @@
 // runs until cancelled.
 
 use core::time::Duration;
-use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::Context as _;
 use hardy_async::{CancellationToken, TaskPool};
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::cla::RegistrarExt;
 use hardy_proto::client::RemoteBpa;
-use hardy_tcpclv4::Tcpclv4;
+use hardy_tcpclv4::{Tcpclv4, config::Config as ClaConfig};
 use tokio::net::lookup_host;
 use tracing::{info, warn};
 
@@ -23,7 +22,7 @@ const PEER_REDIAL_INTERVAL: Duration = Duration::from_secs(5);
 // entity plus what running it needs, with everything between "constructed"
 // and "stopped" inside [`run`](Self::run).
 pub struct Tcpclv4Server {
-    cla: Arc<Tcpclv4>,
+    cla_config: ClaConfig,
     bpa_address: String,
     cla_name: String,
     peers: Vec<String>,
@@ -31,51 +30,44 @@ pub struct Tcpclv4Server {
 }
 
 impl Tcpclv4Server {
-    // Builds the TCPCLv4 entity from the loaded configuration: the TLS
-    // material is loaded and the listeners are bound here, so their errors
-    // surface before the server runs.
+    // Takes the loaded configuration apart; nothing is built until
+    // [`run`](Self::run), where the BPA builds the entity.
     //
     // `tasks` hosts the server's background tasks; it comes from the
     // composition root, which owns process policy (wiring SIGINT/SIGTERM
     // to the pool's cancellation token via `signal::listen_for_cancel`).
-    pub fn new(config: Config, tasks: TaskPool) -> anyhow::Result<Self> {
-        let cla = Tcpclv4::try_from(config.cla).context("Failed to create the TCPCLv4 CLA")?;
-        Ok(Self {
-            cla: Arc::new(cla),
+    pub fn new(config: Config, tasks: TaskPool) -> Self {
+        Self {
+            cla_config: config.cla,
             bpa_address: config.bpa_address,
             cla_name: config.cla_name,
             peers: config.peers,
             tasks,
-        })
+        }
     }
 
-    // Runs the server to completion: register with the BPA, keep the
-    // static peers dialed, then wait for the pool's cancellation token
-    // (the composition root wires signals to it) and unregister
-    // gracefully.
+    // Runs the server to completion: register with the BPA, which builds
+    // the entity, keep the static peers dialed, then wait for the pool's
+    // cancellation token (the composition root wires signals to it) and
+    // unregister gracefully.
     pub async fn run(self) -> anyhow::Result<()> {
+        // The TLS material is loaded and the listeners are bound as the
+        // factory is assembled, so their errors surface before anything
+        // reaches the BPA.
+        let factory =
+            Tcpclv4::factory(self.cla_config).context("Failed to create the TCPCLv4 CLA")?;
+
         info!("Connecting to BPA at {}", self.bpa_address);
 
-        let remote_bpa = RemoteBpa::new(self.bpa_address.clone());
-
-        let node_ids = remote_bpa
-            .register_cla(
-                self.cla_name.clone(),
-                self.cla.clone(),
-                None,
-                self.cla.cla_init(),
-            )
+        let cla = RemoteBpa::new(self.bpa_address.clone())
+            .register_cla(&self.cla_name, factory)
             .await
             .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
 
-        info!(
-            "CLA {} registered, node IDs: {:?}",
-            self.cla_name,
-            node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
-        );
+        info!("CLA {} registered", self.cla_name);
 
         for peer in &self.peers {
-            let cla = self.cla.clone();
+            let cla = cla.clone();
             let peer = peer.clone();
             let cancel = self.tasks.cancel_token().clone();
             hardy_async::spawn!(self.tasks, "peer_connect", async move {
@@ -87,19 +79,16 @@ impl Tcpclv4Server {
 
         self.tasks.cancel_token().cancelled().await;
 
-        self.shutdown().await;
+        // Leave the network gracefully, in dependency order: unregister
+        // from the BPA first, so it stops offering bundles and sweeps this
+        // CLA's queues, then wait for the server's remaining tasks to
+        // finish.
+        cla.unregister().await;
+        self.tasks.shutdown().await;
 
         info!("Stopped");
 
         Ok(())
-    }
-
-    // Leaves the network gracefully, in dependency order: unregister from
-    // the BPA first, so it stops offering bundles and sweeps this CLA's
-    // queues, then wait for the server's remaining tasks to finish.
-    async fn shutdown(&self) {
-        self.cla.unregister().await;
-        self.tasks.shutdown().await;
     }
 
     // Dials `peer` until a session is established or the server is

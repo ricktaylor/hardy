@@ -4,7 +4,6 @@
 //! services, and applications to connect to a BPA instance.
 
 use super::*;
-use hardy_async::sync::spin::Once;
 use proxy::*;
 
 mod application;
@@ -59,10 +58,20 @@ pub struct GrpcServer {
 impl GrpcServer {
     /// Build a gRPC server with the configured services, bound to
     /// `config.address`.
-    pub fn new(
+    ///
+    /// `bpa` is whatever answers the registration doors the configured
+    /// services need: a local [`Bpa`](hardy_bpa::bpa::Bpa), or anything
+    /// else implementing the three registrar traits.
+    pub fn new<B>(
         config: &Config,
-        bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        bpa: Arc<B>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
+    where
+        B: hardy_bpa::cla::Registrar
+            + hardy_bpa::service::Registrar
+            + hardy_bpa::routing::Registrar
+            + 'static,
+    {
         if config.services.is_empty() {
             return Err("No gRPC services configured".into());
         }
@@ -72,16 +81,16 @@ impl GrpcServer {
         for svc in &config.services {
             match svc.as_str() {
                 "application" => {
-                    routes.add_service(application::new_application_service(&bpa, &tasks));
+                    routes.add_service(application::new_application_service(bpa.clone(), &tasks));
                 }
                 "cla" => {
-                    routes.add_service(cla::new_cla_service(&bpa, &tasks));
+                    routes.add_service(cla::new_cla_service(bpa.clone(), &tasks));
                 }
                 "service" => {
-                    routes.add_service(service::new_endpoint_service(&bpa, &tasks));
+                    routes.add_service(service::new_endpoint_service(bpa.clone(), &tasks));
                 }
                 "routing" => {
-                    routes.add_service(routing::new_routing_agent_service(&bpa, &tasks));
+                    routes.add_service(routing::new_routing_agent_service(bpa.clone(), &tasks));
                 }
                 s => {
                     warn!("Ignoring unknown gRPC service {s}");

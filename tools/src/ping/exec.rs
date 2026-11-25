@@ -1,5 +1,9 @@
 use super::*;
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::{
+    cla::RegistrarExt,
+    routing::RegistrarExt as _,
+    service::{Registrar, RegistrarExt as _},
+};
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,26 +44,26 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
             .node_ids(node_ids)
             .primary_block_integrity(!args.lax_rfc9171)
             .bundle_age_required(!args.lax_rfc9171)
-            .build()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to build BPA: {e}"))?,
+            .build(),
     );
 
     // Add a default 'drop' route, we don't want to cache locally
     bpa.register_routing_agent(
-        "ping".to_string(),
-        alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+        "ping",
+        hardy_bpa::routing::StaticAgent::factory(&[(
             "*:**".parse().unwrap(),
             hardy_bpa::routing::RouteAction::Drop(Some(
                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
             )),
             1000,
-        )])),
+        )]),
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to register default routes: {e}"))?;
 
-    bpa.start(false).await;
+    bpa.start(false)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start BPA: {e}"))?;
 
     if is_external_cla(&args.cla) {
         exec_external_cla(args, &bpa).await
@@ -98,13 +102,12 @@ async fn exec_builtin_cla(
         );
     }
 
-    let cla = alloc::sync::Arc::new(
-        builder
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?,
-    );
+    let factory = builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?;
 
-    bpa.register_cla(args.cla.clone(), cla.clone(), None, cla.cla_init())
+    let cla = bpa
+        .register_cla(&args.cla, factory)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", args.cla))?;
 
@@ -136,12 +139,12 @@ async fn exec_builtin_cla(
     // Now add a route if we are targeting a service
     if args.destination.service().is_some() {
         bpa.register_routing_agent(
-            "ping-target".to_string(),
-            alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+            "ping-target",
+            hardy_bpa::routing::StaticAgent::factory(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
-            )])),
+            )]),
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;
@@ -190,7 +193,7 @@ async fn exec_external_cla(
     // entries). The CLA subprocess connects via gRPC and the registration
     // completes asynchronously — we need the forward entries to exist before
     // we start sending pings.
-    // TODO: Replace with proper RoutingAgent notification API when available
+    // TODO: Replace with a proper routing agent notification API when available
     {
         let timeout = tokio::time::sleep(std::time::Duration::from_secs(10));
         tokio::pin!(timeout);
@@ -225,12 +228,12 @@ async fn exec_external_cla(
         })?;
 
         bpa.register_routing_agent(
-            "ping-target".to_string(),
-            alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+            "ping-target",
+            hardy_bpa::routing::StaticAgent::factory(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
-            )])),
+            )]),
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;
@@ -255,8 +258,6 @@ async fn run_ping(
     let tasks = hardy_async::TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    let service = alloc::sync::Arc::new(service::Service::new(args));
-
     // Set by the deadline task alone, so an expired deadline can be told apart
     // from an operator's Ctrl+C when choosing the exit code — both cancel the
     // same token, but only the former is a failure.
@@ -279,7 +280,7 @@ async fn run_ping(
         });
     }
 
-    exec_inner(args, bpa.as_ref(), tasks.cancel_token(), service.clone()).await?;
+    let service = exec_inner(args, bpa.as_ref(), tasks.cancel_token()).await?;
 
     let stats = service.statistics();
     service.print_summary(&stats);
@@ -302,16 +303,16 @@ async fn run_ping(
 
 async fn exec_inner(
     args: &Command,
-    bpa: &dyn BpaRegistration,
+    bpa: &dyn Registrar,
     cancel_token: &tokio_util::sync::CancellationToken,
-    service: alloc::sync::Arc<service::Service>,
-) -> anyhow::Result<()> {
-    if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
-        bpa.register_service(service_id, service.clone()).await
-    } else {
-        bpa.register_dynamic_service(service.clone()).await
-    }
-    .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
+) -> anyhow::Result<alloc::sync::Arc<service::Service>> {
+    let service = bpa
+        .register_raw_service(
+            args.source.as_ref().and_then(|eid| eid.service()),
+            service::Service::factory(args),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 
     for seq_no in 0..args.count.unwrap_or(u32::MAX) {
         service.send(args, seq_no).await?;
@@ -344,7 +345,7 @@ async fn exec_inner(
             eprintln!("Timeout waiting for responses");
         }
     }
-    Ok(())
+    Ok(service)
 }
 
 pub fn exec(args: Command) -> ! {

@@ -1,20 +1,30 @@
-use super::*;
+use core::num::NonZeroU32;
 
+use super::{Address, Cla};
+use crate::{
+    Arc, async_trait,
+    bundle::Bundle,
+    dispatcher::Dispatcher,
+    policy::{EgressQueue, EgressQueueSet},
+};
+
+/// The parts every lane of one adjacency shares.
 struct Shared {
     cla: Arc<dyn Cla>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    dispatcher: Arc<Dispatcher>,
     peer: u32,
-    cla_addr: ClaAddress,
+    cla_addr: Address,
 }
 
-struct EgressQueue {
+/// One lane of one adjacency, or the unpinned lane when `lane` is `None`.
+struct Queue {
     shared: Arc<Shared>,
     lane: Option<u32>,
 }
 
 #[async_trait]
-impl policy::EgressQueue for EgressQueue {
-    async fn forward(&self, bundle: bundle::Bundle) {
+impl EgressQueue for Queue {
+    async fn forward(&self, bundle: Bundle) {
         self.shared
             .dispatcher
             .forward_bundle(
@@ -28,19 +38,19 @@ impl policy::EgressQueue for EgressQueue {
     }
 }
 
-impl EgressQueue {
-    fn create(shared: Arc<Shared>, lane: Option<u32>) -> Arc<dyn policy::EgressQueue> {
+impl Queue {
+    fn create(shared: Arc<Shared>, lane: Option<u32>) -> Arc<dyn EgressQueue> {
         Arc::new(Self { shared, lane })
     }
 }
 
-pub fn new_queue_set(
+pub fn new_set(
     cla: Arc<dyn Cla>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    dispatcher: Arc<Dispatcher>,
     peer: u32,
-    cla_addr: ClaAddress,
-    lane_count: Option<core::num::NonZeroU32>,
-) -> policy::EgressQueueSet {
+    cla_addr: Address,
+    lane_count: Option<NonZeroU32>,
+) -> EgressQueueSet {
     // A queue is instantiated eagerly per declared lane, so the count a CLA
     // declares directly sizes an allocation here — cap it to keep an absurd
     // declaration from becoming a resource bomb. Lane indices are u32 on the
@@ -54,10 +64,10 @@ pub fn new_queue_set(
         cla_addr,
     });
 
-    policy::EgressQueueSet {
-        next_free: EgressQueue::create(shared.clone(), None),
+    EgressQueueSet {
+        next_free: Queue::create(shared.clone(), None),
         pinned: (0..lane_count)
-            .map(|i| (i, EgressQueue::create(shared.clone(), Some(i))))
+            .map(|i| (i, Queue::create(shared.clone(), Some(i))))
             .collect(),
     }
 }

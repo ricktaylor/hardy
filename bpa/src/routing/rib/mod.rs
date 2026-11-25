@@ -1,12 +1,12 @@
+//! The routing information base: the routes agents install, and the
+//! forwarding decision the dispatcher reads out of them.
+
 use core::hash::BuildHasher;
 
 use arc_swap::ArcSwap;
 use foldhash::quality::RandomState;
 use futures::{FutureExt, select_biased};
-use hardy_async::{
-    Notify, TaskPool,
-    sync::{Mutex, spin},
-};
+use hardy_async::{Notify, TaskPool, sync::Mutex};
 use hardy_bpv7::{
     bundle::Bundle as Bpv7Bundle,
     eid::{Eid, NodeId},
@@ -16,27 +16,22 @@ use hardy_eid_patterns::EidPattern;
 use portable_atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+use self::routes::{Entry, LookupResult, RouteTable, Trail};
 use super::{
-    Error, Result, RoutingAgent, TableId,
+    Result, TableId,
     action::{Action, InternalAction, RouteAction},
-    agent::sink::Sink,
-    table::{Entry, LookupResult, RouteTable, Trail},
 };
 use crate::{
-    Arc, HashMap, HashSet,
-    bundle::Bundle,
-    cla::{ClaAddressType, registry::Cla},
-    dispatcher::Dispatcher,
-    hash_map::Entry as HashMapEntry,
-    node_ids::NodeIds,
-    services::registry::Service,
-    storage::store::Store,
+    Arc, HashSet, bundle::Bundle, dispatcher::Dispatcher, node_ids::NodeIds,
+    service::table::Record, storage::store::Store,
 };
+
+mod routes;
 
 /// The resolved inputs of a RIB lookup — the `{table, key}` pair
 /// [`Rib::decide`] reads from the bundle's own record at every lookup.
@@ -110,7 +105,7 @@ impl RoutingKey {
 #[derive(Debug)]
 pub enum DispatchAction {
     AdminEndpoint,
-    Deliver(Arc<Service>),
+    Deliver(Arc<Record>),
     Forward {
         /// The selected CLA peer.
         peer: u32,
@@ -139,14 +134,12 @@ pub struct Decision {
 pub struct Rib {
     snapshot: ArcSwap<RouteTable>,
     table: Mutex<RouteTable>,
-    address_types: spin::Mutex<HashMap<ClaAddressType, Arc<Cla>>>,
-    agents: spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
     node_ids: Arc<NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
     // Random across BPA instances (unpredictable), but consistent within
     // an instance so the same bundle always selects the same peer.
     ecmp_hash_state: RandomState,
-    pub(crate) tasks: TaskPool,
+    tasks: TaskPool,
     poll_waiting_notify: Arc<Notify>,
     // Waiting-poll requests raised so far (wrapping). The poll task records
     // the count each poll covers, so a wakeup with nothing new — the permit
@@ -161,47 +154,15 @@ pub struct Rib {
     service_priority: u32,
 }
 
-pub struct RibBuilder {
-    agents: Vec<(String, Arc<dyn RoutingAgent>)>,
-    service_priority: u32,
-}
-
-impl RibBuilder {
-    pub fn new() -> Self {
-        Self {
-            agents: Vec::new(),
-            service_priority: 1,
-        }
-    }
-
-    pub fn insert(&mut self, name: String, agent: Arc<dyn RoutingAgent>) {
-        self.agents.push((name, agent));
-    }
-
-    pub fn service_priority(&mut self, priority: u32) {
-        self.service_priority = priority;
-    }
-
-    pub async fn build(self, node_ids: Arc<NodeIds>, store: Arc<Store>) -> Result<Arc<Rib>> {
-        let rib = Arc::new(Rib::new(node_ids, store, self.service_priority));
-        for (name, agent) in self.agents {
-            rib.register_agent(name, agent).await?;
-        }
-        Ok(rib)
-    }
-}
-
 impl Rib {
     const FORWARDS_NAME: &str = "neighbours";
     const SERVICES_NAME: &str = "services";
 
-    fn new(node_ids: Arc<NodeIds>, store: Arc<Store>, service_priority: u32) -> Self {
+    pub(crate) fn new(node_ids: Arc<NodeIds>, store: Arc<Store>, service_priority: u32) -> Self {
         let table = RouteTable::new(node_ids.clone());
         Self {
             snapshot: ArcSwap::from_pointee(table.clone()),
             table: Mutex::new(table),
-            address_types: Default::default(),
-            agents: Default::default(),
             node_ids,
             ecmp_hash_state: RandomState::default(),
             tasks: TaskPool::new(),
@@ -344,7 +305,7 @@ impl Rib {
         !Arc::ptr_eq(&seen.0, &self.snapshot.load_full())
     }
 
-    pub fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
+    pub fn find_service(&self, to: &Eid) -> Option<Arc<Record>> {
         self.snapshot.load().find_service(to)
     }
 
@@ -554,7 +515,7 @@ impl Rib {
         .await
     }
 
-    pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> Result<bool> {
+    pub async fn add_service(&self, eid: Eid, service: Arc<Record>) -> Result<bool> {
         self.add(
             eid.into(),
             Self::SERVICES_NAME.into(),
@@ -564,7 +525,7 @@ impl Rib {
         .await
     }
 
-    pub async fn remove_service(&self, eid: &Eid, service: Arc<Service>) -> bool {
+    pub async fn remove_service(&self, eid: &Eid, service: Arc<Record>) -> bool {
         let pattern: EidPattern = eid.clone().into();
         self.remove(
             &pattern,
@@ -573,73 +534,6 @@ impl Rib {
             self.service_priority,
         )
         .await
-    }
-
-    pub(crate) async fn register_agent(
-        self: &Arc<Self>,
-        name: String,
-        agent: Arc<dyn RoutingAgent>,
-    ) -> Result<Vec<NodeId>> {
-        {
-            let mut agents = self.agents.lock();
-            let HashMapEntry::Vacant(e) = agents.entry(name.clone()) else {
-                return Err(Error::AlreadyExists(name));
-            };
-            e.insert(agent.clone());
-        }
-
-        info!("Registered new routing agent: {name}");
-        metrics::gauge!("bpa.rib.agents").increment(1.0);
-
-        let node_ids: Vec<NodeId> = (&*self.node_ids).into();
-
-        agent
-            .on_register(Box::new(Sink::new(name, self.clone())), &node_ids)
-            .await;
-
-        Ok(node_ids)
-    }
-
-    pub(crate) async fn unregister_agent(&self, name: &str) {
-        let agent = self.agents.lock().remove(name);
-
-        if let Some(agent) = agent {
-            metrics::gauge!("bpa.rib.agents").decrement(1.0);
-            agent.on_unregister().await;
-            self.remove_by_source(name).await;
-            info!("Unregistered routing agent: {name}");
-        }
-    }
-
-    pub(crate) async fn shutdown_agents(&self) {
-        let agents = {
-            let mut locked = self.agents.lock();
-            let mut v = Vec::with_capacity(locked.len());
-            v.extend(locked.drain());
-            v
-        };
-
-        if !agents.is_empty() {
-            metrics::gauge!("bpa.rib.agents").decrement(agents.len() as f64);
-        }
-
-        for (name, agent) in agents {
-            agent.on_unregister().await;
-            self.remove_by_source(&name).await;
-            info!("Unregistered routing agent: {name}");
-        }
-    }
-
-    pub fn add_address_type(&self, address_type: ClaAddressType, cla: Arc<Cla>) {
-        self.address_types.lock().insert(address_type, cla);
-    }
-
-    pub fn remove_address_type(&self, address_type: &ClaAddressType) {
-        self.address_types.lock().remove(address_type);
-    }
-
-    pub(super) fn has_agent(&self, name: &str) -> bool {
-        self.agents.lock().contains_key(name)
     }
 
     fn expand_pattern(&self, pattern: EidPattern) -> EidPattern {
@@ -679,8 +573,8 @@ mod tests {
     use super::*;
     use crate::bundle::tests::test_bundle;
     use crate::filter::slots::MetadataDelta;
-    use crate::services::registry::ServiceImpl;
-    use crate::services::tests::NullService;
+    use crate::routing::Error;
+    use crate::service::{raw::tests::NullService, table::Kind};
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_store() -> Arc<Store> {
@@ -709,19 +603,19 @@ mod tests {
 
     /// A complete `Service` for route entries: `Service::new` demands the
     /// delivery queue and canonical EID, so the test wires a real channel.
-    fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Service> {
+    fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Record> {
         let eid: Eid = eid.parse().unwrap();
-        let (tx, _rx) = store.channel(
+        let queue = store.channel(
             crate::bundle::BundleStatus::DeliverPending {
                 service: eid.clone(),
             },
             1,
         );
-        Service::new(
-            ServiceImpl::LowLevel(Arc::new(NullService)),
+        Record::new(
+            Kind::Raw(Arc::new(NullService)),
             EidService::Ipn(42),
             eid,
-            tx,
+            queue,
         )
     }
 

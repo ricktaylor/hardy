@@ -9,11 +9,11 @@ use hardy_bpv7::{
 };
 
 use super::*;
-use crate::services::registry::{Service, ServiceImpl};
+use crate::service::table::{Kind, Record};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
-    pub(super) async fn deliver_bundle(&self, service: Arc<Service>, bundle: bundle::Bundle) {
+    pub(super) async fn deliver_bundle(&self, record: Arc<Record>, bundle: bundle::Bundle) {
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
@@ -23,7 +23,7 @@ impl Dispatcher {
         // `poll_service_waiting` matches on re-registration. The bundle's
         // own destination can be a different Eid variant for the same
         // endpoint (e.g. LegacyIpn vs Ipn) and would never match.
-        let service_eid = service.eid().clone();
+        let service_eid = record.eid().clone();
 
         // Snapshot the routing table before the claim: the parks in the
         // offer re-check it to close the park-vs-poll window (see
@@ -62,7 +62,7 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Delivery,
-            self.offer_to_service(service, service_eid, bundle, data, seen)
+            self.offer_to_service(record, service_eid, bundle, data, seen)
                 .await,
         )
         .await
@@ -73,7 +73,7 @@ impl Dispatcher {
     /// caller resolves, so the claim cannot dangle.
     async fn offer_to_service(
         &self,
-        service: Arc<Service>,
+        record: Arc<Record>,
         service_eid: Eid,
         mut bundle: bundle::Bundle,
         data: Bytes,
@@ -93,16 +93,17 @@ impl Dispatcher {
             }
         };
 
-        let delivery_result = match &service.service {
-            ServiceImpl::LowLevel(svc) => {
-                // Pass raw bundle bytes to low-level services: the whole
+        let delivery_result = match &record.kind {
+            Kind::Raw(service) => {
+                // A whole-bundle service takes the bundle bytes: the whole
                 // bundle is in hand, so it travels as a single Final segment.
                 let total_len = data.len() as u64;
-                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
+                service
+                    .deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
                     .await
             }
-            ServiceImpl::Application(app) => {
-                // Extract and decrypt payload for Application.
+            Kind::Payload(service) => {
+                // Extract and decrypt the payload for a payload-only service.
                 // KeyProvider needs a &Bundle; scope the parse
                 // as a match expression so the parse OperationSets
                 // (which contain `Rc<…>` and are therefore `!Send`) are
@@ -165,17 +166,18 @@ impl Dispatcher {
                     Ok(payload) => payload,
                 };
 
-                // As for low-level services, the whole payload is in hand,
-                // so it travels as a single Final segment.
+                // As for a whole-bundle service, the whole payload is in
+                // hand, so it travels as a single Final segment.
                 let total_len = payload.len() as u64;
-                app.on_deliver(
-                    bundle.id(),
-                    bundle.expiry(),
-                    bundle.primary().flags.app_ack_requested,
-                    total_len,
-                    &mut payload,
-                )
-                .await
+                service
+                    .deliver(
+                        bundle.id(),
+                        bundle.expiry(),
+                        bundle.primary().flags.app_ack_requested,
+                        total_len,
+                        &mut payload,
+                    )
+                    .await
             }
         };
 

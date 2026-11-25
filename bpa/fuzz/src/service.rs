@@ -1,7 +1,17 @@
+use core::time::Duration;
+use std::sync::Arc;
+
+// This module's `SendOptions` is an `Arbitrary` mirror of the BPA type,
+// so the BPA's own stays qualified.
+use hardy_bpa::{
+    Bytes, async_trait,
+    service::{self, Service, Sink, StatusNotify},
+    stream::{Receiver, Segment},
+};
+use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
+use time::OffsetDateTime;
+
 use super::*;
-use hardy_async::sync::spin::Once;
-use hardy_bpa::async_trait;
-use hardy_bpv7::eid::Eid;
 
 #[derive(Arbitrary)]
 pub struct SendOptions {
@@ -14,9 +24,9 @@ pub struct SendOptions {
     notify_deletion: bool,
 }
 
-impl From<SendOptions> for hardy_bpa::services::SendOptions {
+impl From<SendOptions> for service::SendOptions {
     fn from(val: SendOptions) -> Self {
-        hardy_bpa::services::SendOptions {
+        service::SendOptions {
             do_not_fragment: val.do_not_fragment,
             request_ack: val.request_ack,
             report_status_time: val.report_status_time,
@@ -37,64 +47,46 @@ pub struct Msg {
 }
 
 pub struct PipeService {
-    sink: Once<Box<dyn hardy_bpa::services::ApplicationSink>>,
+    sink: Arc<dyn Sink>,
 }
 
 impl PipeService {
-    pub fn new() -> Self {
-        Self { sink: Once::new() }
+    pub fn factory() -> impl service::Factory<Component = Self> {
+        service::factory_fn(|cx: service::Context| Ok(Arc::new(Self { sink: cx.sink })))
     }
 
     pub async fn send(
         &self,
         destination: Eid,
-        data: hardy_bpa::Bytes,
-        lifetime: core::time::Duration,
-        options: Option<hardy_bpa::services::SendOptions>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
-        self.sink
-            .get()
-            .expect("send called before registration")
-            .send(destination, data, lifetime, options)
-            .await
+        data: Bytes,
+        lifetime: Duration,
+        options: Option<service::SendOptions>,
+    ) -> service::Result<Id> {
+        self.sink.send(destination, data, lifetime, options).await
     }
 }
 
 #[async_trait]
-impl hardy_bpa::services::Application for PipeService {
-    async fn on_register(
+impl Service for PipeService {
+    async fn deliver(
         &self,
-        _source: &Eid,
-        sink: Box<dyn hardy_bpa::services::ApplicationSink>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {
-        if self.sink.get().is_none() {
-            panic!("Extra unregister!");
-        }
-    }
-
-    async fn on_deliver(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _expiry: time::OffsetDateTime,
+        _bundle_id: &Id,
+        _expiry: OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<()> {
+        _stream: &mut dyn Receiver<Segment>,
+    ) -> service::Result<()> {
         // Do nothing
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         _from: &Eid,
-        _kind: hardy_bpa::services::StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
-        _timestamp: Option<time::OffsetDateTime>,
+        _kind: StatusNotify,
+        _reason: ReasonCode,
+        _timestamp: Option<OffsetDateTime>,
     ) {
         // Do nothing
     }

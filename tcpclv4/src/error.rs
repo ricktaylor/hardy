@@ -30,11 +30,6 @@ pub enum Error {
     )]
     RequiredTlsWithoutIdentity,
 
-    /// The entity is already registered with a BPA; the sink and the
-    /// bound listener sockets were consumed by the first registration.
-    #[error("The entity is already registered")]
-    AlreadyRegistered,
-
     /// A TLS error surfaced at the crate boundary: loading or validating
     /// the TLS material built by `tls::Tls::builder()`.
     #[error("TLS error: {0}")]

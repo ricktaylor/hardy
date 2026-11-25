@@ -10,10 +10,7 @@
 //! bundle whose primary block forbids its edit: the flags are the sender's
 //! choice, so an abort there would hand any peer a node-kill.
 
-use core::{
-    num::{NonZeroU8, NonZeroU64},
-    time::Duration,
-};
+use core::{num::NonZeroU8, time::Duration};
 use std::{
     collections::VecDeque,
     sync::{
@@ -24,16 +21,16 @@ use std::{
 
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     builder::BpaBuilder,
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla,
+    cla::{self, Context, RegistrarExt, Request, factory_fn},
     filter::{
         Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, Verifier, VerifyContext,
         pack::FilterPack, slots::MetadataDelta,
     },
     node_ids::NodeIds,
-    services,
+    service::{self, RegistrarExt as _, SendOptions, Service, Sink, StatusNotify, raw},
     storage::{
         BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage, RecoveryResponse,
         Result as StorageResult,
@@ -48,7 +45,10 @@ use hardy_bpv7::{
     bundle::{Flags as BundleFlags, Id},
     crc::CrcType,
     creation_timestamp::CreationTimestamp,
-    eid::{Eid, IpnNodeId, NodeId, Service},
+    // `eid::Service` is the service number inside an EID, not the service
+    // trait registered here; it is aliased to the word the code already uses
+    // for it.
+    eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     extension_editor::Error as EditorError,
     hop_info::HopInfo,
     parse::parse,
@@ -294,37 +294,38 @@ impl Rewriter for SlotReader {
     }
 }
 
-// An application that only sends.
-struct SendingApp {
-    // Held: dropping the sink unregisters the application.
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+// A service that only sends.
+struct SendingService {
+    sink: Arc<dyn Sink>,
+}
+
+impl SendingService {
+    // `Context` and `factory_fn` name the CLA's here, so the service's
+    // namesakes are qualified.
+    fn factory() -> impl service::Factory<Component = Self> {
+        service::factory_fn(|cx: service::Context| Ok(Arc::new(Self { sink: cx.sink })))
+    }
 }
 
 #[async_trait]
-impl services::Application for SendingApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl Service for SendingService {
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         buffer_stream(stream, total_len).await?;
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -332,69 +333,62 @@ impl services::Application for SendingApp {
 }
 
 struct CapturingCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     forwarded_tx: flume::Sender<Bytes>,
 }
 
 #[async_trait]
 impl cla::Cla for CapturingCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         total_len: u64,
         stream: &mut dyn Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let bundle = buffer_stream(stream, total_len).await?;
         let _ = self.forwarded_tx.send(bundle);
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
 // A raw-bundle service: sees the rewritten extension blocks.
 struct CapturingService {
-    // Held: dropping the sink unregisters the service.
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    sink: Arc<dyn raw::Sink>,
     delivered_tx: flume::Sender<Bytes>,
 }
 
-#[async_trait]
-impl services::Service for CapturingService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
-        self.sink.call_once(|| sink);
+impl CapturingService {
+    fn factory(delivered_tx: flume::Sender<Bytes>) -> impl raw::Factory<Component = Self> {
+        raw::factory_fn(move |cx: raw::Context| {
+            Ok(Arc::new(Self {
+                sink: cx.sink,
+                delivered_tx,
+            }))
+        })
     }
+}
 
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+#[async_trait]
+impl raw::Service for CapturingService {
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let bundle = buffer_stream(stream, total_len).await?;
         let _ = self.delivered_tx.send(bundle);
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -413,27 +407,25 @@ fn node(node_number: u32) -> NodeId {
 // reports to the source alike.
 async fn setup(builder: BpaBuilder) -> (Bpa, Arc<CapturingCla>, flume::Receiver<Bytes>) {
     let node_ids = NodeIds::try_from([node(1)].as_slice()).unwrap();
-    let bpa = builder.node_ids(node_ids).build().await.unwrap();
-    bpa.start(false).await;
+    let bpa = builder.node_ids(node_ids).build();
+    bpa.start(false).await.unwrap();
 
     let (forwarded_tx, forwarded_rx) = flume::bounded(16);
-    let cla = Arc::new(CapturingCla {
-        sink: hardy_async::sync::spin::Once::new(),
-        forwarded_tx,
-    });
-    bpa.register_cla(
-        "test".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = bpa
+        .register_cla(
+            "test",
+            factory_fn(Request::default(), |cx: Context| {
+                Ok(Arc::new(CapturingCla {
+                    sink: cx.sink,
+                    forwarded_tx,
+                }))
+            }),
+        )
+        .await
+        .unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[node(2), node(3)],
         )
         .await
@@ -441,15 +433,14 @@ async fn setup(builder: BpaBuilder) -> (Bpa, Arc<CapturingCla>, flume::Receiver<
     (bpa, cla, forwarded_rx)
 }
 
-// Registers a capturing raw service at `LOCAL`. The returned service must
-// be held for the test's duration: the registry does not keep it alive.
-async fn register_service(bpa: &Bpa) -> (Arc<CapturingService>, flume::Receiver<Bytes>) {
+// Registers a capturing raw service at `LOCAL`.
+async fn register_capturing_service(bpa: &Bpa) -> (Arc<CapturingService>, flume::Receiver<Bytes>) {
     let (delivered_tx, delivered_rx) = flume::bounded(16);
-    let service = Arc::new(CapturingService {
-        sink: hardy_async::sync::spin::Once::new(),
-        delivered_tx,
-    });
-    bpa.register_service(Service::Ipn(42), service.clone())
+    let service = bpa
+        .register_raw_service(
+            Some(ServiceId::Ipn(42)),
+            CapturingService::factory(delivered_tx),
+        )
         .await
         .unwrap();
     (service, delivered_rx)
@@ -465,8 +456,6 @@ async fn arrive(cla: &CapturingCla, source: &str, flags: BundleFlags, destinatio
     let mut inbound = Bytes::from(data);
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&node(2)), None, &mut inbound)
             .await
             .unwrap(),
@@ -614,7 +603,7 @@ async fn deliver_rewriter_meets_a_refusal_on_a_null_source() {
         },
     );
     let (bpa, cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
-    let (_service, delivered_rx) = register_service(&bpa).await;
+    let (_service, delivered_rx) = register_capturing_service(&bpa).await;
 
     // Control: an ordinary arrival takes the insert.
     arrive(&cla, SOURCE, BundleFlags::default(), LOCAL).await;
@@ -641,7 +630,7 @@ async fn deliver_rewriter_meets_a_refusal_on_a_null_source() {
 async fn deliver_drop_with_a_reason_reports_once() {
     let (bpa, cla, forwarded_rx, _dropped_rx, storage, metadata) =
         dropping_setup(Hook::Deliver, LOCAL, Some(ReasonCode::TrafficPared)).await;
-    let (_service, delivered_rx) = register_service(&bpa).await;
+    let (_service, delivered_rx) = register_capturing_service(&bpa).await;
 
     let id = arrive(&cla, SOURCE, report_requested(), LOCAL).await;
     let report = next_report(&forwarded_rx).await;
@@ -666,7 +655,7 @@ async fn deliver_drop_with_a_reason_reports_once() {
 async fn deliver_drop_without_a_reason_is_silent() {
     let (bpa, cla, forwarded_rx, dropped_rx, storage, metadata) =
         dropping_setup(Hook::Deliver, LOCAL, None).await;
-    let (_service, delivered_rx) = register_service(&bpa).await;
+    let (_service, delivered_rx) = register_capturing_service(&bpa).await;
 
     let id = arrive(&cla, SOURCE, report_requested(), LOCAL).await;
     next(&dropped_rx).await;
@@ -734,8 +723,6 @@ async fn per_hop_writes_supersede_an_egress_rewriter() {
     let mut inbound = Bytes::from(data);
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&node(2)), None, &mut inbound)
             .await
             .unwrap(),
@@ -770,23 +757,20 @@ async fn per_hop_writes_supersede_an_egress_rewriter() {
     bpa.shutdown().await;
 }
 
-// Registers a sending application at `LOCAL` and sends one report-requesting
+// Registers a sending service at `LOCAL` and sends one report-requesting
 // payload to `REMOTE`, returning the send's outcome.
-async fn originate(bpa: &Bpa) -> services::Result<Id> {
-    let app = Arc::new(SendingApp {
-        sink: hardy_async::sync::spin::Once::new(),
-    });
-    bpa.register_application(Service::Ipn(42), app.clone())
+async fn originate(bpa: &Bpa) -> service::Result<Id> {
+    let service = bpa
+        .register_service(Some(ServiceId::Ipn(42)), SendingService::factory())
         .await
         .unwrap();
-    let options = services::SendOptions {
+    let options = SendOptions {
         notify_reception: true,
         notify_deletion: true,
         ..Default::default()
     };
-    app.sink
-        .get()
-        .unwrap()
+    service
+        .sink
         .send(
             REMOTE.parse().unwrap(),
             Bytes::from_static(b"payload"),
@@ -857,7 +841,7 @@ async fn ingress_drop_without_a_reason_reports_reception_only() {
 }
 
 /// Originate `Drop(Some(reason))`: the reason returns to the sender as
-/// `services::Error::Dropped`; nothing is stored and no report is sent,
+/// `service::Error::Dropped`; nothing is stored and no report is sent,
 /// though the send requested them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originate_drop_with_a_reason_returns_it_to_the_sender() {
@@ -866,7 +850,7 @@ async fn originate_drop_with_a_reason_returns_it_to_the_sender() {
 
     assert!(matches!(
         originate(&bpa).await,
-        Err(services::Error::Dropped(Some(ReasonCode::TrafficPared)))
+        Err(service::Error::Dropped(Some(ReasonCode::TrafficPared)))
     ));
 
     // The completed shutdown is the barrier proving the absences.
@@ -879,7 +863,7 @@ async fn originate_drop_with_a_reason_returns_it_to_the_sender() {
     );
 }
 
-/// Originate `Drop(None)`: the sender gets `services::Error::Dropped(None)`;
+/// Originate `Drop(None)`: the sender gets `service::Error::Dropped(None)`;
 /// nothing is stored and no report is sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn originate_drop_without_a_reason_returns_none_to_the_sender() {
@@ -888,7 +872,7 @@ async fn originate_drop_without_a_reason_returns_none_to_the_sender() {
 
     assert!(matches!(
         originate(&bpa).await,
-        Err(services::Error::Dropped(None))
+        Err(service::Error::Dropped(None))
     ));
 
     // The completed shutdown is the barrier proving the absences.
@@ -938,12 +922,7 @@ async fn ingress_slot_reaches_egress_across_the_store() {
 
     // A route appears: the parked record re-enters from the store.
     cla.sink
-        .get()
-        .unwrap()
-        .add_peer(
-            cla::ClaAddress::Private("peer4".as_bytes().into()),
-            &[node(4)],
-        )
+        .add_peer(cla::Address::Private("peer4".as_bytes().into()), &[node(4)])
         .await
         .unwrap();
     assert_eq!(next(&seen_rx).await, Some(7), "Egress sees the stored slot");
@@ -971,7 +950,7 @@ async fn deliver_rewriter_meets_a_refusal_on_the_raw_report_bit() {
         },
     );
     let (bpa, cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
-    let (_service, delivered_rx) = register_service(&bpa).await;
+    let (_service, delivered_rx) = register_capturing_service(&bpa).await;
 
     let anonymous = BundleFlags {
         do_not_fragment: true,
@@ -1034,8 +1013,6 @@ async fn ingress_reads_the_payload_whenever_resident() {
     let mut whole = build();
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&node(2)), None, &mut whole)
             .await
             .unwrap(),
@@ -1058,8 +1035,6 @@ async fn ingress_reads_the_payload_whenever_resident() {
         ]));
         assert_eq!(
             cla.sink
-                .get()
-                .unwrap()
                 .dispatch(Some(&node(2)), None, &mut segments)
                 .await
                 .unwrap(),
@@ -1100,8 +1075,6 @@ async fn arrive_peeked(
 ) -> Option<Vec<u8>> {
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(Some(&node(2)), None, stream)
             .await
             .unwrap(),
@@ -1124,8 +1097,6 @@ async fn send_peeked(
 ) -> Option<Vec<u8>> {
     service
         .sink
-        .get()
-        .unwrap()
         .send(stream)
         .await
         .expect("the raw send is accepted");
@@ -1439,8 +1410,8 @@ async fn originate_reads_the_payload_whenever_resident() {
     let mut pack = FilterPack::new("test");
     pack.originate_verifier("witness", PayloadWitness { available_tx });
     let (bpa, _cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
-    let (service, _delivered_rx) = register_service(&bpa).await;
-    let sink = service.sink.get().unwrap();
+    let (service, _delivered_rx) = register_capturing_service(&bpa).await;
+    let sink = &service.sink;
     let build = || {
         let (_, data) = Builder::new(LOCAL.parse().unwrap(), REMOTE.parse().unwrap())
             .with_payload(b"payload".as_slice().into())
@@ -1498,7 +1469,7 @@ async fn an_originate_classifier_reads_its_declared_peek() {
         let mut pack = FilterPack::new("test");
         pack.originate_classifier_with_peek("peek", PeekWitness { peek_tx }, peek);
         let (bpa, _cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
-        let (service, _delivered_rx) = register_service(&bpa).await;
+        let (service, _delivered_rx) = register_capturing_service(&bpa).await;
 
         let found = send_peeked(
             &service,
@@ -1544,8 +1515,8 @@ async fn an_originate_classifier_reads_its_declared_peek() {
 }
 
 /// An Originate Classifier reads its declared peek at the ADU doors too: the
-/// streamed door holds the app's first payload bytes before the gate, and the
-/// resident door's payload is a one-segment stream. The bytes are the app's
+/// streamed door holds the service's first payload bytes before the gate, and the
+/// resident door's payload is a one-segment stream. The bytes are the service's
 /// own plaintext, which the Originate chain may read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_adu_doors_hold_the_declared_peek() {
@@ -1556,21 +1527,19 @@ async fn the_adu_doors_hold_the_declared_peek() {
         let mut pack = FilterPack::new("test");
         pack.originate_classifier_with_peek("peek", PeekWitness { peek_tx }, peek);
         let (bpa, _cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
-        let app = Arc::new(SendingApp {
-            sink: hardy_async::sync::spin::Once::new(),
-        });
-        bpa.register_application(Service::Ipn(42), app.clone())
+        let service = bpa
+            .register_service(Some(ServiceId::Ipn(42)), SendingService::factory())
             .await
             .unwrap();
-        let sink = app.sink.get().unwrap();
-        // Each send is forwarded with the app's payload unchanged: the peek
+        let sink = &service.sink;
+        // Each send is forwarded with the service's payload unchanged: the peek
         // never stands in for a bundle that went no further.
         let assert_forwarded = |forwarded: Bytes| {
             let out = parse(forwarded).unwrap();
             assert_eq!(
                 out.bundle.blocks[&1].payload(&out.data),
                 Some(&payload[..]),
-                "the bundle is forwarded with the app's payload"
+                "the bundle is forwarded with the service's payload"
             );
         };
 
@@ -1602,7 +1571,7 @@ async fn the_adu_doors_hold_the_declared_peek() {
         assert_eq!(
             found.as_slice(),
             &payload[..held],
-            "the streamed door's peek is the app's first {held} bytes"
+            "the streamed door's peek is the service's first {held} bytes"
         );
         assert_forwarded(next(&forwarded_rx).await);
 

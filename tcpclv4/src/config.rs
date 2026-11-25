@@ -8,7 +8,7 @@
 //! [`Tcpclv4Builder::from`] maps a `Config` onto a builder without touching
 //! a socket or a file, so the result can be adjusted before
 //! [`build()`](Tcpclv4Builder::build), the one effectful step.
-//! [`Tcpclv4::try_from`] is the shorthand for both: it binds the listeners
+//! [`Tcpclv4::factory`] is the shorthand for both: it binds the listeners
 //! and loads the TLS material.
 //!
 //! With the `serde` feature the types deserialize from the kebab-case
@@ -26,7 +26,6 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use crate::{
     ContactTimeout, KeepaliveInterval, Tcpclv4,
     builder::Tcpclv4Builder,
-    error::Error,
     tls::{self, ClientAuth, Tls, TlsBuilder},
 };
 
@@ -185,21 +184,6 @@ impl From<Config> for Tcpclv4Builder {
             builder = builder.tls(tls.into());
         }
         builder
-    }
-}
-
-impl TryFrom<Config> for Tcpclv4 {
-    type Error = Error;
-
-    /// Builds the entity, `Tcpclv4Builder::from(config).build()`: binds
-    /// the listeners and loads the TLS material.
-    ///
-    /// # Errors
-    ///
-    /// The errors of [`TlsBuilder::build`] (as [`Error::Tls`]) and of
-    /// [`Tcpclv4Builder::build`].
-    fn try_from(config: Config) -> Result<Self, Self::Error> {
-        Tcpclv4Builder::from(config).build()
     }
 }
 

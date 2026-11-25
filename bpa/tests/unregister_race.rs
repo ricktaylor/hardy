@@ -6,7 +6,7 @@
 //! back to `Waiting` by its caller) — never stranded in `ForwardPending`
 //! on a dead peer.
 
-use core::num::{NonZeroU64, NonZeroUsize};
+use core::num::NonZeroUsize;
 use std::{
     borrow::Cow,
     sync::{
@@ -17,9 +17,9 @@ use std::{
 
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla,
+    cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     node_ids::NodeIds,
     storage::{self, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, Sender},
@@ -226,20 +226,26 @@ impl MetadataStorage for SweepGate {
 /// The peer-owning CLA: its first `forward` parks on a rendezvous, keeping
 /// the egress queue consumer busy so later sends queue behind it.
 struct StallCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     forward_entered_tx: flume::Sender<Id>,
     forward_release_rx: flume::Receiver<()>,
 }
 
 impl StallCla {
-    fn new() -> (Arc<Self>, flume::Receiver<Id>, flume::Sender<()>) {
+    fn factory() -> (
+        impl Factory<Component = Self>,
+        flume::Receiver<Id>,
+        flume::Sender<()>,
+    ) {
         let (forward_entered_tx, forward_entered_rx) = flume::unbounded();
         let (forward_release_tx, forward_release_rx) = flume::unbounded();
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                forward_entered_tx,
-                forward_release_rx,
+            factory_fn(Request::default(), |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    forward_entered_tx,
+                    forward_release_rx,
+                }))
             }),
             forward_entered_rx,
             forward_release_tx,
@@ -249,66 +255,44 @@ impl StallCla {
 
 #[async_trait]
 impl cla::Cla for StallCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.forward_entered_tx.send(bundle_id.clone());
         let _ = self.forward_release_rx.recv_async().await;
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
 /// Minimal CLA to inject inbound bundles.
 struct IngressCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
 }
 
 impl IngressCla {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
+    fn factory() -> impl Factory<Component = Self> {
+        factory_fn(Request::default(), |cx: Context| {
+            Ok(Arc::new(Self { sink: cx.sink }))
         })
     }
 }
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        Ok(cla::ForwardBundleResult::Sent)
+    ) -> cla::Result<cla::ForwardOutcome> {
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -349,25 +333,14 @@ async fn racing_forward_is_not_stranded_by_unregister() {
         .node_ids(node_ids)
         .metadata_storage(metadata_store.clone())
         .poll_channel_depth(NonZeroUsize::new(1).unwrap())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
-    let (cla, forward_entered_rx, forward_release_tx) = StallCla::new();
-    bpa.register_cla(
-        "stall".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let (cla, forward_entered_rx, forward_release_tx) = StallCla::factory();
+    let cla = bpa.register_cla("stall", cla).await.unwrap();
     cla.sink
-        .get()
-        .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 3,
@@ -376,15 +349,8 @@ async fn racing_forward_is_not_stranded_by_unregister() {
         .await
         .unwrap();
 
-    let ingress = IngressCla::new();
-    bpa.register_cla(
-        "ingress".to_string(),
-        ingress.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let ingress = IngressCla::factory();
+    let ingress = bpa.register_cla("ingress", ingress).await.unwrap();
 
     // Bundle A occupies the egress consumer: it is claimed out of the queue
     // and parked inside the CLA's forward.
@@ -398,8 +364,6 @@ async fn racing_forward_is_not_stranded_by_unregister() {
             assert_eq!(
                 ingress
                     .sink
-                    .get()
-                    .unwrap()
                     .dispatch(None, None, &mut a_data)
                     .await
                     .expect("dispatch failed"),
@@ -419,8 +383,6 @@ async fn racing_forward_is_not_stranded_by_unregister() {
             assert_eq!(
                 ingress
                     .sink
-                    .get()
-                    .unwrap()
                     .dispatch(None, None, &mut c_data)
                     .await
                     .expect("dispatch failed"),
@@ -440,8 +402,6 @@ async fn racing_forward_is_not_stranded_by_unregister() {
             assert_eq!(
                 ingress
                     .sink
-                    .get()
-                    .unwrap()
                     .dispatch(None, None, &mut b_data)
                     .await
                     .expect("dispatch failed"),
@@ -454,7 +414,7 @@ async fn racing_forward_is_not_stranded_by_unregister() {
     // Unregister the CLA concurrently; it parks inside its peer sweeps.
     let unregister = {
         let cla = cla.clone();
-        tokio::spawn(async move { cla.sink.get().unwrap().unregister().await })
+        tokio::spawn(async move { cla.sink.unregister().await })
     };
     recv(&gates.qs_entered_rx, "the ForwardPending sweep").await;
 

@@ -204,7 +204,7 @@ extern crate alloc;
 
 - Use the runtime-agnostic primitives in `hardy-async` rather than reaching for `tokio` directly: `TaskPool` / `BoundedTaskPool` for spawning, the `spawn!` macro for tracing-instrumented tasks, cancellation tokens for shutdown.
 - `hardy_async::sync::spin::{Mutex, RwLock, Once}` are for **O(1) critical sections only** — never hold a spin lock across an `.await`. For anything that awaits or does real work, use an async-aware lock.
-- Subsystems (CLAs, services, routing agents) follow the **Trait + Sink** pattern: a trait with `on_register(sink, …)` / `on_unregister()`, a `Sink` back-channel, and dropping the `Sink` triggers automatic unregistration. New pluggable components should match this shape.
+- Subsystems (CLAs, services, routing agents) follow the **Factory + Trait + Sink** pattern: a `Factory` the BPA builds the component from, a trait whose `register()` / `unregister()` hooks the BPA drives as the registration opens and closes, and a `Sink` back-channel the component calls the BPA through. New pluggable components should match this shape.
 
 ## Cryptographic Hygiene
 

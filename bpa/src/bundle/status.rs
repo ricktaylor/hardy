@@ -54,7 +54,7 @@ pub enum BundleStatus {
         /// Canonical registration EID of the service this bundle is queued for.
         service: Eid,
     },
-    /// Offered to a local service via `on_deliver` (the local analogue of
+    /// Offered to a local service via `Service::deliver` (the local analogue of
     /// [`ForwardAckPending`](Self::ForwardAckPending)). No storage poller
     /// recovers this status: every delivery exit resolves the claim, and a
     /// restart re-parks it as

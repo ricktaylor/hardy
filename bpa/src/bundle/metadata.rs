@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 
 use crate::{
     Arc,
-    cla::ClaAddress,
+    cla::Address,
     filter::slots::{
         Blob, MetadataDelta, Slot, SlotValue,
         state::{PolicyEpoch, SlotMap},
@@ -40,7 +40,7 @@ pub enum Origin {
             feature = "serde",
             serde(default, skip_serializing_if = "Option::is_none")
         )]
-        peer_addr: Option<ClaAddress>,
+        peer_addr: Option<Address>,
         /// Name of the CLA instance that received the bundle — a fact about
         /// arrival, valid even if that CLA instance no longer exists.
         cla: Arc<str>,
@@ -184,11 +184,7 @@ impl BundleMetadata {
 
     /// Creates the record for a bundle arriving from a peer, stamping the
     /// current time.
-    pub fn ingress(
-        cla: Arc<str>,
-        peer_node: Option<NodeId>,
-        peer_addr: Option<ClaAddress>,
-    ) -> Self {
+    pub fn ingress(cla: Arc<str>, peer_node: Option<NodeId>, peer_addr: Option<Address>) -> Self {
         Self::new(
             OffsetDateTime::now_utc(),
             Origin::Ingress {

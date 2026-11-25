@@ -1,5 +1,5 @@
 //! The originate doors: bundles entering the pipeline from local
-//! applications and services.
+//! services.
 //!
 //! Two doors with one admission stage. The ADU door
 //! ([`originate`](Dispatcher::originate)) builds the bundle
@@ -12,13 +12,13 @@
 //! (Originate chain, then the route lookup as the decision of record)
 //! settled ahead of the spool, one metadata write, and the routing
 //! decision executed as at CLA ingress. Every rejection is a
-//! [`services::Error`](Error) to the originator; this path never raises status
-//! reports.
+//! [`service::Error`](Error) to the originator; this path never raises
+//! status reports.
 
 use core::time::Duration;
 
 use hardy_async::async_trait;
-// Aliased: a bare `Error` in this file is the originator's `services::Error`.
+// Aliased: a bare `Error` in this file is the originator's `service::Error`.
 use hardy_bpv7::{
     bpsec::{Error as BpsecError, bcb::OperationSet},
     builder::{Builder, PayloadTrailer, StreamBuild},
@@ -46,7 +46,7 @@ use crate::{
     filter::ChainOutcome,
     otel_metrics::{reason_label, status_label},
     routing::{Decision, DispatchAction},
-    services::{Error, SendOptions},
+    service::{Error, SendOptions},
     stream::{ConcatError, Receiver, RecvError},
 };
 
@@ -202,7 +202,7 @@ impl Dispatcher {
         }
 
         // The Originate chain's payload peek, held before the gate as the raw
-        // door's header pass holds it: the app's first payload bytes join the
+        // door's header pass holds it: the service's first payload bytes join the
         // prefix the gate reads. A bundle the shared stage refuses by size
         // pulls nothing, and an Originate chain with no peek declared holds nothing.
         let admissible = record.bpv7.encoded_len() <= self.max_bundle_size_wire();

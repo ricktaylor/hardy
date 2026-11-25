@@ -4,13 +4,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use hardy_bpa::cla::{Cla as _, ClaAddress, ForwardBundleResult};
+use hardy_bpa::{
+    cla::{Address, Cla as _, Context, Factory as _, ForwardOutcome, Terms},
+    node_ids::NodeIds,
+};
 use hardy_bpv7::{bundle::FragmentInfo, eid::NodeId};
 use hardy_file_cla::{Cla, Config};
 
 // A Sink stub that records add_peer addresses; the forward path never
 // dispatches inbound bundles.
-struct StubSink(Arc<Mutex<Vec<ClaAddress>>>);
+struct StubSink(Arc<Mutex<Vec<Address>>>);
 
 #[hardy_bpa::async_trait]
 impl hardy_bpa::cla::Sink for StubSink {
@@ -19,7 +22,7 @@ impl hardy_bpa::cla::Sink for StubSink {
     async fn dispatch(
         &self,
         _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&ClaAddress>,
+        _peer_addr: Option<&Address>,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         unreachable!("forward tests never dispatch inbound bundles");
@@ -27,18 +30,18 @@ impl hardy_bpa::cla::Sink for StubSink {
 
     async fn add_peer(
         &self,
-        cla_addr: ClaAddress,
+        cla_addr: Address,
         _node_ids: &[NodeId],
     ) -> hardy_bpa::cla::Result<bool> {
         self.0.lock().unwrap().push(cla_addr);
         Ok(true)
     }
 
-    async fn remove_peer(&self, _cla_addr: &ClaAddress) -> hardy_bpa::cla::Result<bool> {
+    async fn remove_peer(&self, _cla_addr: &Address) -> hardy_bpa::cla::Result<bool> {
         Ok(true)
     }
 
-    async fn transfer_outcome(
+    async fn report_transfer(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _outcome: hardy_bpa::cla::TransferOutcome,
@@ -47,19 +50,25 @@ impl hardy_bpa::cla::Sink for StubSink {
     }
 }
 
-// Registered CLA with a single peer inbox, plus the ClaAddress the CLA
+// A registered CLA with a single peer inbox, paired with the `Address` it
 // announced for that inbox.
-async fn registered_cla(inbox: &Path) -> (Cla, ClaAddress) {
+async fn registered_cla(inbox: &Path) -> (Arc<Cla>, Address) {
     let peer: NodeId = "ipn:9.0".parse::<NodeId>().unwrap();
-    let cla = Cla::new(&Config {
+    let factory = Cla::factory(&Config {
         outbox: None,
         peers: HashMap::from([(peer, inbox.to_path_buf())]),
     })
     .unwrap();
 
     let peers = Arc::new(Mutex::new(Vec::new()));
-    cla.on_register(Box::new(StubSink(peers.clone())), &[], None)
-        .await;
+    let cla = factory
+        .build(Context::new(
+            Arc::new(StubSink(peers.clone())),
+            Arc::new(NodeIds::default()),
+            Terms::default(),
+        ))
+        .expect("a file CLA builds under any terms");
+    cla.register().await.expect("the peer inbox is announced");
 
     let addr = peers
         .lock()
@@ -95,7 +104,7 @@ async fn test_forward_writes_inbox() {
         )
         .await
         .unwrap();
-    assert!(matches!(result, ForwardBundleResult::Sent));
+    assert!(matches!(result, ForwardOutcome::Sent));
 
     let entries: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -136,7 +145,7 @@ async fn test_forward_fragment_suffix() {
         )
         .await
         .unwrap();
-    assert!(matches!(result, ForwardBundleResult::Sent));
+    assert!(matches!(result, ForwardOutcome::Sent));
 
     let entry = std::fs::read_dir(dir.path())
         .unwrap()
@@ -157,7 +166,7 @@ async fn test_forward_unknown_address_is_no_neighbour() {
     let dir = tempfile::tempdir().unwrap();
     let (cla, _addr) = registered_cla(dir.path()).await;
 
-    let unknown = ClaAddress::Private(hardy_bpa::Bytes::from_static(
+    let unknown = Address::Private(hardy_bpa::Bytes::from_static(
         b"/definitely/not/a/registered/inbox",
     ));
     let result = cla
@@ -170,7 +179,7 @@ async fn test_forward_unknown_address_is_no_neighbour() {
         )
         .await
         .unwrap();
-    assert!(matches!(result, ForwardBundleResult::NoNeighbour));
+    assert!(matches!(result, ForwardOutcome::NoNeighbour));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 
@@ -197,35 +206,6 @@ async fn test_forward_write_failure_is_internal_error() {
     };
     assert!(
         matches!(err, hardy_bpa::cla::Error::Internal(_)),
-        "got {err:?}"
-    );
-}
-
-// forward() before on_register is Disconnected.
-#[tokio::test]
-async fn test_forward_before_register_is_disconnected() {
-    let dir = tempfile::tempdir().unwrap();
-    let cla = Cla::new(&Config {
-        outbox: None,
-        peers: HashMap::from([("ipn:9.0".parse().unwrap(), dir.path().to_path_buf())]),
-    })
-    .unwrap();
-
-    let addr = ClaAddress::Private(hardy_bpa::Bytes::from_static(b"unused"));
-    let Err(err) = cla
-        .forward(
-            None,
-            &addr,
-            &dtn_bundle_id(),
-            4,
-            &mut hardy_bpa::Bytes::from_static(b"data"),
-        )
-        .await
-    else {
-        panic!("expected an error before registration");
-    };
-    assert!(
-        matches!(err, hardy_bpa::cla::Error::Disconnected),
         "got {err:?}"
     );
 }

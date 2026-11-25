@@ -70,7 +70,7 @@ message BpaToCla {
 
 // An enumeration of known CLA address types.
 // This is used to identify the protocol associated with a `ClaAddress`.
-// See `bpa::cla::ClaAddressType` for the Rust implementation.
+// See `bpa::cla::AddressType` for the Rust implementation.
 enum ClaAddressType {
   // The address type is private.
   CLA_ADDRESS_TYPE_PRIVATE = 0;
@@ -79,7 +79,7 @@ enum ClaAddressType {
 }
 
 // Represents a network address for a specific Convergence Layer Adapter.
-// See `bpa::cla::ClaAddress` for the Rust implementation.
+// See `bpa::cla::Address` for the Rust implementation.
 message ClaAddress {
   // The type of the CLA address.
   ClaAddressType address_type = 1;
