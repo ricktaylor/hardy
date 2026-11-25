@@ -37,5 +37,6 @@ config = { version = "0.15", features = ["yaml", "toml", "json"] }
 directories = "6"
 
 [dev-dependencies]
+hardy-bpv7 = { version = "0.6", path = "../bpv7" }
 tempfile = "3"
 serial_test = "4"

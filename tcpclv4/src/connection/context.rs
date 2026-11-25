@@ -322,6 +322,7 @@ impl ConnectionContext {
                 self.sink.clone(),
                 connection::Connection { tx, local_addr },
                 remote_addr,
+                connection::Origin::Accepted,
                 peer_init.node_id,
             )
             .await;

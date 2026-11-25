@@ -47,8 +47,8 @@ pub struct Tcpclv4 {
     transfer_mru: NonZeroU64,
     max_idle_connections: usize,
     max_outstanding_transfers: NonZeroUsize,
-    // The listeners' bound addresses, kept for `Debug`: the sockets
-    // themselves move to their tasks when the entity starts.
+    // The listeners' bound addresses, read when the entity is built: the
+    // sockets themselves move to their accept tasks at registration
     listen_addresses: Vec<SocketAddr>,
 
     // Computed at construction
@@ -84,8 +84,8 @@ impl Tcpclv4 {
         max_outstanding_transfers: NonZeroUsize,
         tls: Option<Arc<tls::Tls>>,
     ) -> Self {
-        // A bound socket always has a local address; one it cannot report
-        // is left out of the Debug list rather than failing construction.
+        // A bound socket has a local address; one that cannot report it
+        // is left out rather than failing construction
         let listen_addresses = listeners
             .iter()
             .filter_map(|listener| listener.local_addr().ok())
@@ -126,6 +126,13 @@ impl Tcpclv4 {
         }
     }
 
+    /// The addresses this entity's listeners are bound to, in the order they were added to the builder.
+    ///
+    /// A listener added on port 0 reports the port the system assigned it. The addresses are fixed when the entity is built, so they read the same before and after registration.
+    pub fn listen_addresses(&self) -> &[SocketAddr] {
+        &self.listen_addresses
+    }
+
     /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
         if let Some(inner) = self.inner.get() {
@@ -135,12 +142,17 @@ impl Tcpclv4 {
 
     /// Initiates a TCP connection to a remote peer (RFC 9174 Section 3).
     ///
-    /// Retries up to 5 times on timeout before returning an error.
+    /// Retries up to 5 times on timeout before returning an error. A dial started before registration, or after the entity has unregistered, is refused with [`cla::Error::Disconnected`]. The check is made once, as the dial starts, so a dial already under way when the entity unregisters is not refused this way.
+    ///
+    /// Dropping the returned future abandons the dial. A session it had already negotiated stays up, registered like any other, and [`disconnected`](Self::disconnected) waits for it.
     pub async fn connect(&self, remote_addr: &SocketAddr) -> cla::Result<()> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("connect called before on_register!");
             cla::Error::Disconnected
         })?;
+        if self.session_cancel_token.is_cancelled() {
+            return Err(cla::Error::Disconnected);
+        }
 
         for _ in 0..5 {
             let conn = connection::connect::Connector {
@@ -158,6 +170,13 @@ impl Tcpclv4 {
         Err(cla::Error::Internal(
             Error::from(session::Error::PeerTimeout).into(),
         ))
+    }
+
+    /// Waits until this entity holds no session to `remote_addr`, dialled or accepted.
+    ///
+    /// Returns at once when there is none. An embedder that keeps a peer connected waits on this after [`connect`](Self::connect) succeeds, then dials again.
+    pub async fn disconnected(&self, remote_addr: &SocketAddr) {
+        self.registry.sessions_closed(remote_addr).await
     }
 
     /// Creates a ConnectionContext for use in connect/forward operations.
@@ -346,8 +365,9 @@ impl Cla for Tcpclv4 {
 const DIAL_ATTEMPTS: usize = 5;
 
 // Transmit a bundle to `remote_addr` over a pooled session, dialing new
-// connections as the pool allows, and return the terminal outcome of the
-// transfer: `Completed` only once the peer has fully acknowledged it.
+// connections as the pool allows (only to an address a dialled session has
+// reached), and return the terminal outcome of the transfer: `Completed`
+// only once the peer has fully acknowledged it.
 async fn transmit(
     tasks: Arc<hardy_async::TaskPool>,
     ctx: &connection::context::ConnectionContext,
@@ -372,11 +392,21 @@ async fn transmit(
             }
         };
 
+        // An address no dialled session has reached belongs to a pool of
+        // accepted sessions, the peer's source address: there is nothing to
+        // dial, so queue on whatever session remains
+        let Some(dial_lock) = ctx.registry.dial_lock(&remote_addr) else {
+            return ctx
+                .registry
+                .forward(&remote_addr, bundle, connection::OnBusy::Queue)
+                .await
+                .unwrap_or(TransferOutcome::Failed);
+        };
+
         // One dial at a time per peer: concurrent forwards coalesce here
         // rather than racing parallel dials, and the pool is re-checked
         // under the lock — the previous holder's session may already be
         // registered
-        let dial_lock = ctx.registry.dial_lock(remote_addr);
         let _dialing = dial_lock.lock().await;
         bundle = match ctx
             .registry
@@ -424,6 +454,14 @@ async fn transmit(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use hardy_bpv7::eid::IpnNodeId;
+    use tokio::{
+        sync::oneshot,
+        time::{Duration, timeout},
+    };
+
     use super::*;
 
     struct MockSink;
@@ -456,6 +494,320 @@ mod tests {
         ) -> cla::Result<()> {
             Ok(())
         }
+    }
+
+    // What a `RecordingSink` saw, in order
+    #[derive(Debug, PartialEq, Eq)]
+    enum Event {
+        Add(ClaAddress),
+        Remove(ClaAddress),
+        Dispatch(Option<ClaAddress>, hardy_bpa::Bytes),
+    }
+
+    // A sink that keeps the BPA's adjacency claims (one per address; a
+    // second add_peer at a claimed address is refused) and reports every
+    // claim change and delivered bundle on a channel, in order. Arming
+    // `hold_next_add` parks the next add_peer before it claims: a BPA
+    // that has not yet answered, as over gRPC.
+    struct RecordingSink {
+        claims: Mutex<HashMap<ClaAddress, Vec<NodeId>>>,
+        events: tokio::sync::mpsc::UnboundedSender<Event>,
+        held_add: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> (Self, tokio::sync::mpsc::UnboundedReceiver<Event>) {
+            let (events, rx) = tokio::sync::mpsc::unbounded_channel();
+            (
+                Self {
+                    claims: Mutex::new(HashMap::new()),
+                    events,
+                    held_add: Mutex::new(None),
+                },
+                rx,
+            )
+        }
+
+        // Parks the next add_peer: the receiver resolves once that call
+        // has started, and the call goes on when the sender fires
+        fn hold_next_add(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+            // `oneshot` stays qualified: this module also names the mpsc
+            // and BPA stream receivers
+            let (started_tx, started_rx) = oneshot::channel();
+            let (release_tx, release_rx) = oneshot::channel();
+            *self.held_add.lock().unwrap() = Some((started_tx, release_rx));
+            (started_rx, release_tx)
+        }
+    }
+
+    #[async_trait]
+    impl Sink for RecordingSink {
+        async fn unregister(&self) {}
+
+        async fn dispatch(
+            &self,
+            _peer_node: Option<&NodeId>,
+            peer_addr: Option<&ClaAddress>,
+            stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
+        ) -> cla::Result<cla::Acceptance> {
+            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
+                .await
+                .unwrap();
+            _ = self
+                .events
+                .send(Event::Dispatch(peer_addr.cloned(), bundle));
+            Ok(cla::Acceptance::Accepted)
+        }
+
+        async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
+            let held = self.held_add.lock().unwrap().take();
+            if let Some((started, release)) = held {
+                _ = started.send(());
+                _ = release.await;
+            }
+            let mut claims = self.claims.lock().unwrap();
+            if claims.contains_key(&cla_addr) {
+                return Ok(false);
+            }
+            claims.insert(cla_addr.clone(), node_ids.to_vec());
+            _ = self.events.send(Event::Add(cla_addr));
+            Ok(true)
+        }
+
+        async fn remove_peer(&self, cla_addr: &ClaAddress) -> cla::Result<bool> {
+            let removed = self.claims.lock().unwrap().remove(cla_addr).is_some();
+            if removed {
+                _ = self.events.send(Event::Remove(cla_addr.clone()));
+            }
+            Ok(removed)
+        }
+
+        async fn transfer_outcome(
+            &self,
+            _bundle_id: &Id,
+            _outcome: TransferOutcome,
+        ) -> cla::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn ipn(node_number: u32) -> NodeId {
+        NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number,
+        })
+    }
+
+    // A registered entity for `node` listening on an ephemeral loopback
+    // port, with its sink's claims, its event stream and its listen address
+    async fn entity(
+        node: u32,
+    ) -> (
+        Tcpclv4,
+        Arc<RecordingSink>,
+        tokio::sync::mpsc::UnboundedReceiver<Event>,
+        SocketAddr,
+    ) {
+        let cla = Tcpclv4::builder()
+            .listen("127.0.0.1:0".parse().unwrap())
+            .build()
+            .unwrap();
+        let listen = cla.listen_addresses()[0];
+        let (sink, events) = RecordingSink::new();
+        let sink = Arc::new(sink);
+        cla.on_register(Box::new(ArcSink(sink.clone())), &[ipn(node)], None)
+            .await;
+        (cla, sink, events, listen)
+    }
+
+    // Shares a `RecordingSink` between the entity and the test
+    struct ArcSink(Arc<RecordingSink>);
+
+    #[async_trait]
+    impl Sink for ArcSink {
+        async fn unregister(&self) {}
+
+        async fn dispatch(
+            &self,
+            peer_node: Option<&NodeId>,
+            peer_addr: Option<&ClaAddress>,
+            stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
+        ) -> cla::Result<cla::Acceptance> {
+            self.0.dispatch(peer_node, peer_addr, stream).await
+        }
+
+        async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
+            self.0.add_peer(cla_addr, node_ids).await
+        }
+
+        async fn remove_peer(&self, cla_addr: &ClaAddress) -> cla::Result<bool> {
+            self.0.remove_peer(cla_addr).await
+        }
+
+        async fn transfer_outcome(
+            &self,
+            bundle_id: &Id,
+            outcome: TransferOutcome,
+        ) -> cla::Result<()> {
+            self.0.transfer_outcome(bundle_id, outcome).await
+        }
+    }
+
+    async fn next_event(events: &mut tokio::sync::mpsc::UnboundedReceiver<Event>) -> Event {
+        // the timeout only bounds a regression; the event follows at once
+        tokio::time::timeout(tokio::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("no sink event")
+            .expect("sink dropped")
+    }
+
+    // Forward `payload` from `cla` to `to` and wait for the peer's sink to
+    // deliver it: returns the ingress address the peer recorded
+    async fn deliver(
+        cla: &Tcpclv4,
+        to: SocketAddr,
+        payload: &'static [u8],
+        peer_events: &mut tokio::sync::mpsc::UnboundedReceiver<Event>,
+    ) -> Option<ClaAddress> {
+        let mut bundle = hardy_bpa::Bytes::from_static(payload);
+        let result = cla
+            .forward(
+                None,
+                &ClaAddress::Tcp(to),
+                &Id::default(),
+                payload.len() as u64,
+                &mut bundle,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, ForwardBundleResult::Accepted));
+        match next_event(peer_events).await {
+            Event::Dispatch(peer_addr, bundle) if bundle == payload => peer_addr,
+            e => panic!("expected the delivery of {payload:?}, got {e:?}"),
+        }
+    }
+
+    // Both entities dial each other, the peer first: the inbound pool at A
+    // gets the adjacency for B's node, then A's own dial takes it over, so
+    // A forwards to B over the pool that can grow. The inbound session
+    // still delivers what B sends.
+    #[tokio::test]
+    async fn own_dial_takes_the_adjacency_from_the_peers_session() {
+        let (a, a_sink, mut a_events, a_listen) = entity(1).await;
+        let (b, _b_sink, mut b_events, b_listen) = entity(2).await;
+
+        b.connect(&a_listen).await.unwrap();
+        let Event::Add(ClaAddress::Tcp(inbound)) = next_event(&mut a_events).await else {
+            panic!("expected an adjacency for B's session");
+        };
+        assert_ne!(inbound, b_listen);
+        assert_eq!(
+            next_event(&mut b_events).await,
+            Event::Add(ClaAddress::Tcp(a_listen))
+        );
+
+        a.connect(&b_listen).await.unwrap();
+        assert_eq!(
+            next_event(&mut a_events).await,
+            Event::Add(ClaAddress::Tcp(b_listen))
+        );
+        assert_eq!(
+            next_event(&mut a_events).await,
+            Event::Remove(ClaAddress::Tcp(inbound))
+        );
+        assert_eq!(
+            *a_sink.claims.lock().unwrap(),
+            HashMap::from([(ClaAddress::Tcp(b_listen), vec![ipn(2)])])
+        );
+
+        // B's bundles still arrive over the session B dialled
+        assert_eq!(
+            deliver(&b, a_listen, b"from B", &mut a_events).await,
+            Some(ClaAddress::Tcp(inbound))
+        );
+
+        a.on_unregister().await;
+        b.on_unregister().await;
+    }
+
+    // Both entities dial each other, this one first: the peer's later
+    // session joins a pool that withholds its adjacency, so the BPA keeps
+    // forwarding over the dialled pool alone, and the withheld session
+    // still delivers what the peer sends.
+    #[tokio::test]
+    async fn peers_session_withholds_its_adjacency_from_an_own_dial() {
+        let (a, a_sink, mut a_events, a_listen) = entity(1).await;
+        let (b, _b_sink, mut b_events, b_listen) = entity(2).await;
+
+        a.connect(&b_listen).await.unwrap();
+        assert_eq!(
+            next_event(&mut a_events).await,
+            Event::Add(ClaAddress::Tcp(b_listen))
+        );
+        // B advertises A's session until B's own dial takes over
+        let Event::Add(ClaAddress::Tcp(at_b)) = next_event(&mut b_events).await else {
+            panic!("expected an adjacency for A's session at B");
+        };
+
+        b.connect(&a_listen).await.unwrap();
+        assert_eq!(
+            next_event(&mut b_events).await,
+            Event::Add(ClaAddress::Tcp(a_listen))
+        );
+        assert_eq!(
+            next_event(&mut b_events).await,
+            Event::Remove(ClaAddress::Tcp(at_b))
+        );
+
+        // The delivery is the barrier: B's session registered at A before
+        // its first bundle reached A's sink, with no claim change between
+        let Some(ClaAddress::Tcp(inbound)) = deliver(&b, a_listen, b"from B", &mut a_events).await
+        else {
+            panic!("expected B's session's address");
+        };
+        assert_ne!(inbound, b_listen);
+        assert_eq!(
+            *a_sink.claims.lock().unwrap(),
+            HashMap::from([(ClaAddress::Tcp(b_listen), vec![ipn(2)])])
+        );
+
+        a.on_unregister().await;
+        b.on_unregister().await;
+    }
+
+    // A dial abandoned while its session registers leaves that session
+    // whole: it stays registered, and unregisters when it ends, so the
+    // entity is not left holding a pool that no session will ever empty.
+    // The sink parks the registration's add_peer, by which point the
+    // session is already in its pool.
+    #[tokio::test]
+    async fn dial_abandoned_while_registering_leaves_no_orphaned_pool() {
+        let (a, a_sink, _a_events, _a_listen) = entity(1).await;
+        let (b, _b_sink, _b_events, b_listen) = entity(2).await;
+
+        let (registering, release) = a_sink.hold_next_add();
+        let mut dial = Box::pin(a.connect(&b_listen));
+        tokio::select! {
+            r = &mut dial => panic!("connect returned {r:?} before its session registered"),
+            // the timeout only bounds a regression; the dial follows at once
+            r = timeout(Duration::from_secs(10), registering) => {
+                r.expect("the dial never reached registration").unwrap()
+            }
+        }
+        drop(dial);
+        _ = release.send(());
+
+        // The peer goes away, and the session with it
+        b.on_unregister().await;
+        // the timeout only bounds a regression; the session ends at once
+        timeout(Duration::from_secs(10), a.disconnected(&b_listen))
+            .await
+            .expect("the abandoned dial's session was never unregistered");
+
+        // Unregistration waits for the session's task, which withdraws the
+        // adjacency its registration claimed
+        a.on_unregister().await;
+        assert!(a_sink.claims.lock().unwrap().is_empty());
     }
 
     // The transfer MRU sessions advertise is the configured value folded
@@ -513,6 +865,40 @@ mod tests {
         assert_eq!(cla.inner.get().unwrap().segment_mru, segment);
     }
 
+    // A forward whose pool has gone dials only an address a dialled
+    // session has reached: the address of a pool of accepted sessions is
+    // the peer's source port, so the transfer fails back to the BPA rather
+    // than dialling it. A listener stands in for that port, and
+    // `transmit` returning is the barrier after which a dial would be
+    // sitting in its accept queue.
+    #[tokio::test]
+    async fn transmit_never_dials_an_address_no_dialled_session_reached() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let cla = Tcpclv4::builder()
+            .contact_timeout(ContactTimeout::new(1).unwrap())
+            .build()
+            .unwrap();
+        cla.on_register(Box::new(MockSink), &[], None).await;
+        let ctx = cla.connection_context().unwrap();
+
+        let outcome = transmit(
+            cla.tasks.clone(),
+            &ctx,
+            address,
+            hardy_bpa::Bytes::from_static(b"bundle"),
+        )
+        .await;
+        assert_eq!(outcome, TransferOutcome::Failed);
+        assert_eq!(
+            listener.accept().map_err(|e| e.kind()).err(),
+            Some(std::io::ErrorKind::WouldBlock),
+            "transmit dialled an address no dialled session had reached"
+        );
+    }
+
     // RFC 9174 Section 2.1: an entity may support zero or more passive
     // listening elements, each bound during build().
     #[test]
@@ -521,6 +907,7 @@ mod tests {
             .build()
             .expect("a dial-only plaintext build cannot fail");
         assert!(cla.listeners.lock().unwrap().is_empty());
+        assert!(cla.listen_addresses().is_empty());
         assert!(cla.tls.is_none());
 
         let cla = Tcpclv4::builder()
@@ -533,6 +920,13 @@ mod tests {
         for listener in listeners.iter() {
             assert_ne!(listener.local_addr().unwrap().port(), 0);
         }
+        // The entity reports the addresses the sockets were bound to, in
+        // the order the listeners were added
+        let bound: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
+        assert_eq!(cla.listen_addresses(), bound);
     }
 
     // A socket that cannot be bound fails the build instead of a

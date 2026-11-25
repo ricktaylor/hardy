@@ -1,11 +1,15 @@
 use super::*;
 
-use crate::session::Error;
+use crate::session::{Error, Ingest, Session};
+use futures::Stream;
 use std::net::SocketAddr;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::*,
+    sync::{
+        mpsc::{Receiver, channel},
+        oneshot,
+    },
 };
 
 pub struct Connector {
@@ -302,33 +306,60 @@ impl Connector {
             cancel_token,
         );
 
-        // Kick off the run() as a background task
-        // Extract what we need to avoid capturing `self` (which has Arc<TaskPool>)
-        let registry = self.ctx.registry.clone();
-        let sink = self.ctx.sink.clone();
-        let remote_addr = *remote_addr;
-
         // Spawn the writer task first
         hardy_async::spawn!(self.tasks, "active_session_writer", async move {
             writer_task.run().await;
         });
 
-        // Register before returning: the dialing forward re-checks the pool
-        // as soon as connect() returns, and registration inside the spawned
-        // task would let that same forward miss its own fresh session and
-        // dial again
-        registry
-            .register_session(
-                sink,
-                connection::Connection { tx, local_addr },
-                remote_addr,
-                peer_init.node_id,
-            )
-            .await;
+        self.spawn_session(
+            session,
+            ingest_rx,
+            Connection { tx, local_addr },
+            *remote_addr,
+            peer_init.node_id,
+        )
+        .await
+    }
 
-        metrics::counter!("tcpclv4.session.established").increment(1);
+    // Spawns the session's task, which registers the session, runs it and
+    // unregisters it, and returns once the session is registered: the
+    // dialling forward re-checks the pool as soon as `connect` returns,
+    // and must find the session it dialled rather than dial again.
+    //
+    // Registration belongs to the task, not to this future, because a
+    // caller may drop `connect` at any await: a session registered by a
+    // future that is then dropped would stay in its pool with no task to
+    // remove it.
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    async fn spawn_session<R>(
+        self,
+        session: Session<R>,
+        ingest_rx: Receiver<Ingest>,
+        conn: Connection,
+        remote_addr: SocketAddr,
+        node_id: Option<NodeId>,
+    ) -> Result<(), Error>
+    where
+        // `Sync` because the session's task holds `&Session` across awaits
+        R: Stream<Item = Result<codec::Message, codec::Error>> + Unpin + Send + Sync + 'static,
+    {
+        let registry = self.ctx.registry.clone();
+        let sink = self.ctx.sink.clone();
+        let local_addr = conn.local_addr;
+        // `oneshot` stays qualified: its `channel` shares a name with mpsc's
+        let (registered_tx, registered_rx) = oneshot::channel();
 
         hardy_async::spawn!(self.tasks, "active_session_task", async move {
+            registry
+                .register_session(sink, conn, remote_addr, Origin::Dialled, node_id)
+                .await;
+
+            metrics::counter!("tcpclv4.session.established").increment(1);
+
+            // Nobody is waiting if the dial was dropped; the session runs
+            // all the same
+            _ = registered_tx.send(());
+
             session.run(ingest_rx).await;
 
             debug!(%local_addr, %remote_addr, "Session closed");
@@ -337,6 +368,8 @@ impl Connector {
             registry.unregister_session(&local_addr, &remote_addr).await
         });
 
-        Ok(())
+        // The task signals before it runs the session, so the signal is
+        // lost only with the runtime
+        registered_rx.await.map_err(|_| Error::ShuttingDown)
     }
 }
