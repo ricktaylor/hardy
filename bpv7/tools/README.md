@@ -464,7 +464,7 @@ bundle update-primary [OPTIONS] [INPUT]
 
 **Update Options (at least one required):**
 
-- `-l, --lifetime <DURATION>` - New lifetime duration (e.g., `1year`, `30days`, `24h`)
+- `-l, --lifetime <DURATION>` - New lifetime duration (e.g., `365d`, `30days`, `24h`); days and weeks count as 24-hour multiples, while months and years have no fixed length and are refused
 - `-t, --reset-timestamp` - Reset creation timestamp to now
 - `-s, --source <EID>` - New source Endpoint ID
 - `-d, --destination <EID>` - New destination Endpoint ID
@@ -480,9 +480,9 @@ bundle update-primary [OPTIONS] [INPUT]
 **Examples:**
 
 ```bash
-# Extend lifetime to 1 year and reset timestamp
+# Extend lifetime to 365 days and reset timestamp
 bundle update-primary \
-  --lifetime 1year \
+  --lifetime 365d \
   --reset-timestamp \
   --output refreshed.bundle \
   input.bundle
@@ -510,7 +510,7 @@ bundle update-primary \
 
 ```bash
 bundle remove-integrity -b 0 input.bundle | \
-  bundle update-primary --lifetime 1year - \
+  bundle update-primary --lifetime 365d - \
   > updated.bundle
 ```
 

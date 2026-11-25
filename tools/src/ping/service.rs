@@ -18,7 +18,7 @@ use hardy_bpv7::{
 use hardy_cbor::decode::parse_exact;
 use trace_err::*;
 
-use super::{Command, payload};
+use super::{Command, format_duration, payload};
 // Statistics for ping session, following IP ping conventions.
 #[derive(Default, Clone)]
 pub struct Statistics {
@@ -214,13 +214,7 @@ impl Service {
             .map(|(node, node_hops)| {
                 let mut statuses: Vec<String> = node_hops
                     .iter()
-                    .map(|h| {
-                        format!(
-                            "{} {}",
-                            abbrev(h.kind),
-                            humantime::format_duration(h.elapsed)
-                        )
-                    })
+                    .map(|h| format!("{} {}", abbrev(h.kind), format_duration(h.elapsed)))
                     .collect();
                 statuses.sort();
                 format!("{} ({})", node, statuses.join(", "))
@@ -270,10 +264,10 @@ impl Service {
             let stddev = stats.stddev_rtt().unwrap_or_default();
             println!(
                 "rtt min/avg/max/stddev = {}/{}/{}/{}",
-                humantime::format_duration(min),
-                humantime::format_duration(avg),
-                humantime::format_duration(max),
-                humantime::format_duration(stddev),
+                format_duration(min),
+                format_duration(avg),
+                format_duration(max),
+                format_duration(stddev),
             );
         }
 
@@ -305,7 +299,7 @@ impl Service {
                         seqno,
                         status,
                         last_hop.node,
-                        humantime::format_duration(last_hop.elapsed)
+                        format_duration(last_hop.elapsed)
                     );
                 }
             }
@@ -334,7 +328,7 @@ impl Service {
                                     "{} {} ({})",
                                     abbrev(h.kind),
                                     h.node,
-                                    humantime::format_duration(elapsed)
+                                    format_duration(elapsed)
                                 )
                             }
                             None => format!("{} {}", abbrev(h.kind), h.node),
@@ -489,7 +483,7 @@ impl Service {
                 Leg::Forward { seqno, send_time } => {
                     let elapsed: Option<Duration> = (report_time - *send_time).try_into().ok();
                     let after = elapsed
-                        .map(|e| format!(" after {}", humantime::format_duration(e)))
+                        .map(|e| format!(" after {}", format_duration(e)))
                         .unwrap_or_default();
                     if !self.quiet {
                         println!("Ping {seqno} {}{location}{reason}{after}", verb(kind));
@@ -694,7 +688,7 @@ impl hardy_bpa::services::Service for Service {
                     "Reply from {}: seq={} rtt={}",
                     bundle.primary.id.source,
                     payload.seqno,
-                    humantime::format_duration(rtt)
+                    format_duration(rtt)
                 );
             }
             self.print_path(payload.seqno);

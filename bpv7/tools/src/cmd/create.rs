@@ -1,7 +1,10 @@
-use core::num::NonZeroU8;
+use core::{num::NonZeroU8, time::Duration};
+
+use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, eid::Eid};
 
 use super::*;
-use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, eid::Eid};
+use crate::duration::{format_duration, parse_duration};
+
 #[derive(Parser, Debug)]
 #[command(
     about = "Create a new bundle with payload",
@@ -46,9 +49,9 @@ pub struct Command {
     #[arg(short, long = "crc-type")]
     crc_type: Option<flags::ArgCrcType>,
 
-    /// The optional lifetime of the bundle, or 24 hours if not supplied
-    #[arg(short, long)]
-    lifetime: Option<humantime::Duration>,
+    /// The optional lifetime of the bundle (e.g. `48h`, `30d`), or 24 hours if not supplied
+    #[arg(short, long, value_parser = parse_duration)]
+    lifetime: Option<Duration>,
 
     /// The optional hop_limit of the bundle (RFC 9171 §4.4.3: 1 to 255).
     #[arg(short('H'), long = "hop-limit")]
@@ -88,9 +91,12 @@ impl Command {
             lifetime: {
                 if let Some(lifetime) = self.lifetime {
                     if lifetime.as_millis() > u64::MAX as u128 {
-                        return Err(anyhow::anyhow!("Lifetime too long: {lifetime}!"));
+                        return Err(anyhow::anyhow!(
+                            "Lifetime too long: {}!",
+                            format_duration(lifetime)
+                        ));
                     }
-                    Some(lifetime.into())
+                    Some(lifetime)
                 } else {
                     None
                 }

@@ -7,6 +7,7 @@ use hardy_bpv7::{
 use hardy_cbor::decode::{parse_exact, parse_value};
 
 use super::*;
+use crate::duration::format_duration;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -241,7 +242,7 @@ fn dump_markdown(
     output.append_str(format!("Created: {}\n\n", primary.id.timestamp))?;
     output.append_str(format!(
         "Lifetime: {}\n\n",
-        humantime::format_duration(primary.lifetime)
+        format_duration(primary.lifetime)
     ))?;
 
     let mut notes: Vec<&'static str> = Vec::new();
@@ -473,10 +474,7 @@ fn dump_block(
                 None => dump_unknown(payload.as_ref(), output),
             },
             block::Type::BundleAge => match ext.age {
-                Some(age) => output.append_str(format!(
-                    "Bundle Age: {}\n\n",
-                    humantime::format_duration(age)
-                )),
+                Some(age) => output.append_str(format!("Bundle Age: {}\n\n", format_duration(age))),
                 None => dump_unknown(payload.as_ref(), output),
             },
             block::Type::HopCount => match &ext.hop_count {

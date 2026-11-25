@@ -1,6 +1,7 @@
-use super::*;
 use hardy_bpv7::{block, builder::Builder, crc::CrcType, hop_info::HopInfo};
 use hardy_cbor::{decode, encode};
+
+use super::*;
 
 // The echo-service draft defines no payload wire format — the echo reflects the
 // payload unchanged and never parses it (see draft-taylor-dtn-echo-service). This
@@ -136,7 +137,7 @@ pub fn build_payload(args: &Command, seq_no: u32) -> anyhow::Result<BuiltPing> {
         .then_some(())
         .ok_or(anyhow::anyhow!(
             "Lifetime too long: {}!",
-            humantime::format_duration(args.lifetime())
+            format_duration(args.lifetime())
         ))?;
 
     let Some(target_size) = args.size else {

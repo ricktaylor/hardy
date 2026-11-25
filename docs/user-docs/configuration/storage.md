@@ -72,6 +72,8 @@ Recommended for production and multi-container deployments where the
 BPA container needs to be stateless. The database and tables are created
 automatically on first connection.
 
+A duration string is a number and a unit, from nanoseconds to hours (`30s`, `10m`, `1h 30m`), or an ISO 8601 duration (`PT30S`). Days, weeks, months and years are refused.
+
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `type` | `postgres` | - | Selects the PostgreSQL backend. |
