@@ -49,7 +49,7 @@ hardy-otel = { version = "0.2", path = "../otel", optional = true }
 hardy-echo-service = { version = "0.2", path = "../echo-service", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
-jiff = { version = "1", default-features = false, features = ["std"], optional = true }
+jiff = { version = "1", default-features = false, features = ["std", "serde"], optional = true }
 serde = { version = "1", features = ["derive"] }
 directories = "6"
 clap = { version = "4", features = ["derive"] }

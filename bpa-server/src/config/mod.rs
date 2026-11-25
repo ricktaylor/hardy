@@ -12,8 +12,6 @@ use crate::error::Error;
 
 pub mod bpsec;
 pub mod cla;
-#[cfg(feature = "postgres-storage")]
-mod duration;
 pub mod storage;
 
 // Returns the default config directory, platform-specific:

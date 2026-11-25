@@ -93,13 +93,13 @@ impl BpaServer {
                     storage = storage.min_connections(limit);
                 }
                 if let Some(timeout) = cfg.connect_timeout {
-                    storage = storage.connect_timeout(timeout.get());
+                    storage = storage.connect_timeout(timeout.unsigned_abs());
                 }
                 if let Some(timeout) = cfg.idle_timeout {
-                    storage = storage.idle_timeout(timeout.get());
+                    storage = storage.idle_timeout(timeout.unsigned_abs());
                 }
                 if let Some(lifetime) = cfg.max_lifetime {
-                    storage = storage.max_lifetime(lifetime.get());
+                    storage = storage.max_lifetime(lifetime.unsigned_abs());
                 }
                 if let Some(size) = cfg.poll_page_size {
                     storage = storage.poll_page_size(size);

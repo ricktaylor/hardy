@@ -6,10 +6,9 @@ use std::path::PathBuf;
 
 #[cfg(feature = "s3-storage")]
 use hardy_s3_storage::{MultipartThreshold, PartSize};
-use serde::{Deserialize, Serialize};
-
 #[cfg(feature = "postgres-storage")]
-use super::duration::NonZeroDuration;
+use jiff::SignedDuration;
+use serde::{Deserialize, Serialize};
 
 // The `type: "sqlite"` metadata backend schema: absent keys defer to the
 // backend's own defaults (the platform cache directory, `metadata.db`).
@@ -44,19 +43,51 @@ pub struct PostgresConfig {
 
     // How long to wait when acquiring a connection before returning an
     // error; a duration string (e.g. `30s`), greater than zero.
-    pub connect_timeout: Option<NonZeroDuration>,
+    #[serde(with = "positive_duration")]
+    pub connect_timeout: Option<SignedDuration>,
 
     // How long a connection may sit idle before it is closed and removed
     // from the pool; a duration string (e.g. `10m`), greater than zero.
-    pub idle_timeout: Option<NonZeroDuration>,
+    #[serde(with = "positive_duration")]
+    pub idle_timeout: Option<SignedDuration>,
 
     // Maximum lifetime of a pooled connection; a duration string (e.g.
     // `30m`), greater than zero.
-    pub max_lifetime: Option<NonZeroDuration>,
+    #[serde(with = "positive_duration")]
+    pub max_lifetime: Option<SignedDuration>,
 
     // Rows fetched per page in keyset-paginated poll queries; must be
     // greater than zero.
     pub poll_page_size: Option<NonZeroU32>,
+}
+
+// A pool timing: jiff's ISO 8601 or friendly duration (`30s`, `1h 30m`,
+// `PT30S`), refused unless greater than zero, and written back in the
+// friendly format.
+#[cfg(feature = "postgres-storage")]
+mod positive_duration {
+    use jiff::{SignedDuration, fmt::serde::duration::friendly::compact};
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<SignedDuration>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(duration) = Option::<SignedDuration>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        if !duration.is_positive() {
+            return Err(D::Error::custom("a duration must be greater than zero"));
+        }
+        Ok(Some(duration))
+    }
+
+    pub fn serialize<S>(duration: &Option<SignedDuration>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        compact::optional(duration, serializer)
+    }
 }
 
 // The `type: "localdisk"` bundle backend schema: absent keys defer to the
@@ -243,5 +274,60 @@ pub struct StorageConfig {
 impl StorageConfig {
     pub fn uses_cache(&self) -> bool {
         !matches!(&self.bundle, BundleStorageConfig::Memory(_))
+    }
+}
+
+#[cfg(all(test, feature = "postgres-storage"))]
+mod tests {
+    use serde_json::error::Category;
+
+    use super::*;
+
+    fn parse(json: &str) -> serde_json::Result<PostgresConfig> {
+        serde_json::from_str(json)
+    }
+
+    // Friendly and ISO 8601 durations parse, and serialize back in the
+    // friendly format.
+    #[test]
+    fn pool_timings_parse_and_round_trip() {
+        let config = parse(
+            r#"{"connect-timeout": "30s", "idle-timeout": "PT10M", "max-lifetime": "1h 30m"}"#,
+        )
+        .unwrap();
+        assert_eq!(config.connect_timeout, Some(SignedDuration::from_secs(30)));
+        assert_eq!(config.idle_timeout, Some(SignedDuration::from_mins(10)));
+        assert_eq!(config.max_lifetime, Some(SignedDuration::from_mins(90)));
+
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["connect-timeout"], "30s");
+        assert_eq!(json["idle-timeout"], "10m");
+        assert_eq!(json["max-lifetime"], "1h 30m");
+    }
+
+    // An absent or null timing defers to the backend default.
+    #[test]
+    fn absent_and_null_timings_are_none() {
+        assert_eq!(parse("{}").unwrap().connect_timeout, None);
+        assert_eq!(
+            parse(r#"{"connect-timeout": null}"#)
+                .unwrap()
+                .connect_timeout,
+            None
+        );
+    }
+
+    // Zero and negative durations parse as SignedDurations, so refusing them
+    // is the positivity check's doing; days and malformed text are refused by
+    // jiff itself.
+    #[test]
+    fn non_positive_calendar_and_malformed_timings_are_refused() {
+        for text in ["0s", "-5s"] {
+            assert!(serde_json::from_str::<SignedDuration>(&format!("\"{text}\"")).is_ok());
+        }
+        for text in ["0s", "-5s", "1d", "1year", "30"] {
+            let err = parse(&format!(r#"{{"connect-timeout": "{text}"}}"#)).unwrap_err();
+            assert_eq!(err.classify(), Category::Data, "{text:?}: {err}");
+        }
     }
 }

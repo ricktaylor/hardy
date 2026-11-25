@@ -23,9 +23,8 @@ pub fn parse_duration(text: &str) -> Result<Duration, DurationError> {
     if span.get_years() != 0 || span.get_months() != 0 {
         return Err(DurationError::CalendarUnit);
     }
-    Ok(Duration::try_from(
-        span.to_duration(SpanRelativeTo::days_are_24_hours())?,
-    )?)
+    let signed = span.to_duration(SpanRelativeTo::days_are_24_hours())?;
+    Ok(Duration::try_from(signed)?)
 }
 
 #[cfg(test)]
