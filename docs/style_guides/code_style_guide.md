@@ -60,83 +60,110 @@ Follow standard Rust naming (Clippy enforces most of it):
 
 ## Imports and `use` Blocks
 
-Organise `use` statements into up to three blocks, each separated by a single blank line, in this order:
+The rules first, as a table an import decision can be checked against, then the detail behind each. Every rule has an ID so a review can cite it. `cargo fmt` enforces only the sorting inside a block; everything else here is written by hand (see [What rustfmt does and does not do](#what-rustfmt-does-and-does-not-do)).
 
-1. The standard library — `std::…`, `core::…`, and `alloc::…` all share this one block (`no_std` crates use `core`/`alloc` in place of `std`).
-2. Third-party crates — `<external_crate>::…`.
-3. Local imports — `self::…`, `super::…`, and `crate::…` share this one block, listed here in the order rustfmt sorts them.
+### Rules at a glance
 
-This is the order of the (currently unstable) rustfmt option `group_imports = "StdExternalCrate"`: writing it by hand now means that if the option stabilises and we enable it, `cargo fmt` reproduces the layout with no churn. Omit any block that has no imports (hence "up to three") — never leave an empty block. `rustfmt` sorts within each block and preserves the blank-line separation, but under its default settings it does not reorder or merge the blocks themselves, so the order above is a manual discipline.
+| ID | Rule | Write | Not |
+|----|------|-------|-----|
+| I1 | Import every item a file references and use the bare name. A `::` path at a use site is a defect. Functions included: this departs from the Rust Book's `module::function()` convention, for one rule across all items. | `Arc<Registry>` | `std::sync::Arc<hardy_bpa::cla::Registry>` |
+| I2 | Exempt from I1, because there is no import to hoist: macro paths, `Type::assoc` on an imported type, trait-method calls. | `tracing::debug!(..)`, `NonZeroU32::new(n)`, `value.method()` | — |
+| I3 | Two imports would share a name: alias the less-central one `<Origin><Name>`, with a one-line comment at the import. | `use hardy_cbor::decode::Error as CborError;` | `hardy_cbor::decode::Error` spelled in a signature |
+| I4 | The colliding pair is two role-named items, or two modules' `Error`/`Result`: import both modules and qualify both. No comment. | `Box<dyn cla::Sink>` beside `Arc<dyn routing::Sink>`; `cla::Result<()>` beside `service::Result<Eid>` | `Sink as ClaSink` |
+| I5 | A trait imported only for its methods is anonymous. | `use sqlx::Connection as _;` | `use sqlx::Connection;` when the name is never written |
+| I6 | A crate that links `std` imports from `std`. A `no_std` crate imports from `core` and `alloc`, and takes `Arc`, `Weak`, the maps and the sets from its crate root. | `use std::sync::Arc;` in `bpa-server`; `use crate::{Arc, HashMap};` in `bpa` | `use core::fmt;` in `bpa-server`; `use hashbrown::HashMap;` in a `bpa` file |
+| I7 | Up to three blank-line-separated blocks, in order: `std`/`core`/`alloc`, external crates, `self`/`super`/`crate`. One nested `use` per crate. Child modules through `self::`. | the example under [Laying out the `use` block](#laying-out-the-use-block) | `use crate::a::A;` on one line and `use crate::b::B;` on the next |
+| I8 | `use` lives at the top of the file or `mod` block, never inside a function. | — | `fn f() { use std::fmt::Write; … }` |
+| I9 | No globs except the four under [Globs](#globs). Never glob an enum's variants. | `use super::*;` in `mod tests` | `use hardy_bpa::cla::*;`, `use Kind::*;` |
+| I10 | Re-exports: a module root re-exports its private submodules' items; the crate root re-exports dependency types that appear in its public API; nothing else re-exports. | `pub use self::address::Address;` in `cla/mod.rs` | `pub use crate::cla::Address;` from `dispatcher` |
+
+### How to write a reference
+
+For every type, trait, function, variant or constant a file names, decide in this order:
+
+1. Defined in this file or module: the bare name.
+2. Defined elsewhere: add it to the `use` block (I7) and use the bare name (I1). A macro path, a `Type::assoc` on an imported type, or a method call needs nothing (I2).
+3. The bare name would collide with another import. If the pair is two role-named items (`cla::Sink` and `routing::Sink`; likewise `routing::Agent`, `cla::Address`) or two modules' `Error`/`Result`, import the modules and qualify both (I4). Otherwise alias the less-central one `<Origin><Name>` and comment the import (I3). Reuse an alias the workspace already uses rather than coining one: `hardy_bpv7::eid::Service` is `ServiceId`; `Error` is `CborError`, `Bpv7Error`, `ClaError` or `EditorError` after its crate or module; `Result` from storage is `StorageResult`; `Bundle` from `hardy_bpv7` is `Bpv7Bundle`; `Flags` are `BlockFlags` or `BundleFlags`.
+4. A trait whose name never appears in the file, in a `dyn`, an `impl … for`, a bound or a `Trait::method` call: `use path::Trait as _;` (I5).
+
+The four together:
+
+```rust
+use std::sync::Arc;
+
+use hardy_bpa::{
+    cla, routing,
+    service::{self, Application, Service},
+};
+// `Service` is the whole-bundle service trait above; the EID service number is aliased (I3).
+use hardy_bpv7::eid::{Eid, Service as ServiceId};
+use sqlx::Connection as _;
+
+struct Node {
+    // Two sinks in one file: both through their module (I4).
+    cla_sink: Box<dyn cla::Sink>,
+    agent_sink: Arc<dyn routing::Sink>,
+    // One of each: bare (I1).
+    app: Arc<dyn Application>,
+    svc: Arc<dyn Service>,
+}
+
+// Two modules' results in one file: both through their module (I4).
+fn attach(node: &Node, id: ServiceId) -> cla::Result<Eid> { /* … */ }
+fn detach(node: &Node) -> service::Result<()> { /* … */ }
+```
+
+### Laying out the `use` block
 
 ```rust
 use core::num::NonZeroUsize;
-
-use thiserror::Error;
-
-use crate::{bundle::Bundle, eid::Eid};
-```
-
-**Collapse imports that share a leading path** into a single nested statement rather than repeating that prefix across lines: factor out the shared part and group the divergent tails in braces.
-
-```rust
-// preferred
-use crate::{bundle::Bundle, eid::Eid};
-
-// avoid — repeats the `crate` prefix
-use crate::bundle::Bundle;
-use crate::eid::Eid;
-```
-
-This is the rustfmt `imports_granularity = "Crate"` layout; like the block order above, writing it by hand keeps `cargo fmt` a no-op if the option is ever enabled (it defaults to `Preserve`, so the merging is manual for now). Avoid the opposite, Java-style extreme of giving every item its own fully-qualified line.
-
-**Avoid glob imports** (`use some_crate::*;`). Pulling every item from a crate into scope hides where each name comes from: when a dependency is later updated and removes or renames an item, the compiler reports an undefined symbol with no hint which glob it came from, and a newly-added upstream item can silently clash with a name from another glob. Explicit imports keep that traceable for the next maintainer.
-
-`use super::*;` is the one sanctioned glob, and even then it is the exception, not the default. Reach for it only in a **leaf module** — where one logical module has been split across several deeply-interrelated files that legitimately share the parent's imports — or in a **unit-test module**, where `#[cfg(test)] mod tests { use super::*; … }` is the well-defined idiom (see [Tests](#tests)). In ordinary submodules, list imports explicitly rather than glob-importing the parent.
-
-**Don't glob enum variants into scope** (`use SomeEnum::*;`) — it hides the variants' type and can obscure that an enum is being handled at all. Spell out `SomeEnum::Variant` in full, including in `match` arms. The visible type is the point, not noise; no local rename is worth losing it.
-
-**Keep `use` at module scope.** Imports belong at the top of the file (or `mod` block), never inside a function body. A reader should find every path a function depends on in one place, and a function-local `use` — an alias especially — hides where a name really comes from.
-
-**Refer to imported items by their bare name; do not spell a multi-segment path at the use site.** Every type, trait, function, enum variant, and constant a file references is imported at the top and used unqualified in the body. A `::`-qualified path appearing in an expression, a type position, or a signature is a defect to fix, not a stylistic choice: it is the function-local equivalent of not importing at all, scattering the "where does this come from" answer across every call rather than gathering it into the `use` block.
-
-```rust
-// avoid — paths spelled inline
-fn build(&self) -> std::sync::Arc<hardy_bpa::cla::Registry> {
-    let n = core::num::NonZeroU32::new(self.lanes)?;
-    std::sync::Arc::new(hardy_bpa::cla::Registry::with_lanes(n))
-}
-
-// preferred — names imported, body reads clean
-use core::num::NonZeroU32;
 use std::sync::Arc;
 
-use hardy_bpa::cla::Registry;
+use thiserror::Error;
+use tracing::{debug, warn};
 
-fn build(&self) -> Arc<Registry> {
-    let n = NonZeroU32::new(self.lanes)?;
-    Arc::new(Registry::with_lanes(n))
-}
+use self::registry::Registration;
+use super::Dispatcher;
+use crate::{bundle::Bundle, eid::Eid};
 ```
 
-The single sanctioned reason to keep a path qualified is a **name collision**: when two imports would introduce the same identifier (a `bpsec::Error` alongside a `cbor::Error`, or two `Config`s), import the more-central one plainly and disambiguate the other. Prefer aliasing (`use hardy_cbor::decode::Error as CborError;`) and use the alias; fall back to a bare qualified path (`hardy_cbor::decode::Error`) only where an alias reads worse at the point of use. Leave a one-line comment at the qualified use so the next reader knows the qualification is deliberate, not an un-hoisted import.
+- Three blocks at most, in that order; a block with nothing in it is omitted, never left as a blank line (I7).
+- One nested `use` per crate or per local root: factor the shared prefix and brace the tails. Not one fully qualified line per item.
+- A child module is named through `self::` (`use self::foo::Foo;`, `pub use self::foo::Foo;`), so a dependency later called `foo` cannot capture the path.
+- `use` sits at module scope, at the top of the file or of the `mod` block it belongs to (I8). A function-local `use`, an alias above all, hides where a name comes from.
 
-**Use role-named items through their module.** Some items are named for the part they play in their module and are ambiguous on their own: `cla::Sink`, `routing::Sink`, `routing::Agent`, `cla::Address`. Import the module, not the item, and write the qualified name at the use site (`use hardy_bpa::cla;` … `Box<dyn cla::Sink>`). Inside the defining module, use the bare name. A module's `Error` and `Result` may be written the same way (`cla::Result<()>`). This is an exemption from the bare-name rule, so the qualified use needs no comment.
+### Where names come from
 
-Three constructs are exempt because they carry no import to hoist:
+- A crate that links `std` imports from `std` (`std::sync::Arc`, `std::time::Duration`, `std::fmt`), not from the `core` or `alloc` paths that re-export the same items (I6). This is the opposite of Clippy's opt-in `std_instead_of_core`, which this workspace does not enable: only the six crates below build `no_std`, and they are named.
+- A `no_std` crate (`cbor`, `bpv7`, `bpa`, `eid-patterns`, `btpu`, `bibe`) imports from `core` and `alloc`, and gates anything `std`-only behind its `std` feature.
+- A per-feature choice of implementation is made once, at the crate root, and files import the chosen name from `crate::`. In `bpa` that is `Arc` and `Weak` from `alloc::sync`, and `HashMap`, `HashSet`, `hash_map`, `BTreeMap`, `BTreeSet`, `btree_map` from `std::collections` or `hashbrown`. A file writes `use crate::{Arc, HashMap};` and never names `alloc::sync`, `std::collections` or `hashbrown` itself.
 
-- **Trait-method calls**: `value.method()` and the disambiguating `<Type as Trait>::method()`.
-- **Macro invocation paths**: `tracing::debug!(...)`, `serde_json::json!(...)`.
-- **An associated function or constant reached through a type that is already imported**: with `NonZeroU32` in scope, `NonZeroU32::new(n)` and `NonZeroU32::MAX` are correct; `Self::MAX` and `Duration::from_secs(1)` likewise. The rule is about *paths to items*, not about the `Type::assoc` access that names an imported type.
+### Globs
 
-**Name child modules through `self::`** when importing or re-exporting from them (`use self::foo::Foo;`, `pub use self::foo::Foo;`). The explicit `self::` distinguishes the child module from a same-named dependency, so introducing a crate called `foo` later cannot silently change what the path resolves to.
+| Glob | Where | Why it is allowed |
+|------|-------|-------------------|
+| `use super::*;` | a `#[cfg(test)] mod tests`, or a leaf module split across files that share the parent's imports | the standard idiom; every name comes from one known parent |
+| `use <dep>::prelude::*;` | `chumsky`, `base64`, `rand` | a prelude exists to be globbed, and the crate documents its contents |
+| `use trace_err::*;` | anywhere | extension traits only; no name from it is ever written |
+| `use proto::<file>::*;` | inside `hardy-proto`, over the generated modules | generated code whose names the `.proto` file fixes |
 
-```rust
-mod config;
-mod error;
+Everything else imports by name (I9), so an item removed or renamed upstream fails at the import that names it, not at an unexplained undefined symbol. An enum's variants are never globbed: write `Kind::Variant`, in `match` arms too, so the type stays visible.
 
-pub use self::config::Config;
-pub use self::error::Error;
-```
+### Re-exports
+
+A module root re-exports the public items of its private submodules (`mod address;` then `pub use self::address::{Address, AddressType};`), so how the module is split into files is not part of its path. The crate root re-exports a dependency's type only when that type appears in the crate's public API (`pub use bytes::Bytes;`, `pub use hardy_async::async_trait;`), so a caller can name it without adding the dependency. Nothing else re-exports (I10): a consumer imports an item from the module that declares it, never through an incidental re-export, and each item is documented at its definition, not at the re-export. Visibility itself is set at the definition, see [Visibility](#visibility).
+
+### What rustfmt does and does not do
+
+- Does: sort the items within a block and within braces, and keep the blank lines between blocks.
+- Does not: order the blocks, merge per-crate `use`s, or move a `use` out of a function. The matching options, `group_imports = "StdExternalCrate"` and `imports_granularity = "Crate"`, are nightly-only; writing their layout by hand keeps `cargo fmt` a no-op if they stabilise.
+
+### Before handing back
+
+- No `::` path in a body except the I2 cases and I4 pairs.
+- Every alias is `<Origin><Name>`, reuses the workspace's existing alias for that item, and is commented at the import.
+- Blocks in I7 order, no empty block, no `use` inside a function.
+- Every glob appears in the table under [Globs](#globs).
 
 ## Visibility
 
@@ -144,7 +171,7 @@ Control an item's visibility **at its own definition**, using `pub` or `pub(crat
 
 Inside a module that is itself private or `pub(crate)`, write plain `pub`, not `pub(crate)`. The enclosing module already caps visibility, so `pub(crate)` is redundant noise (the codebase does not rely on `unreachable_pub`).
 
-Re-export public API at the crate root where it aids discoverability, but document each item at its definition, not at the re-export.
+Where re-exports live is import rule I10, under [Re-exports](#re-exports).
 
 ## Error Handling
 
