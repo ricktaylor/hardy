@@ -100,9 +100,10 @@ impl SqliteStorage {
         self.readers.read(f).await
     }
 
+    // `f` may run more than once: see `Writer::write`.
     async fn write<F, R>(&self, f: F) -> storage::Result<R>
     where
-        F: FnOnce(&Connection) -> storage::Result<R> + Send + 'static,
+        F: FnMut(&Connection) -> storage::Result<R> + Send + 'static,
         R: Send + 'static,
     {
         self.writer.write(f).await
@@ -323,7 +324,7 @@ impl MetadataStorage for SqliteStorage {
             conn.prepare_cached(
                 "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             )?
-            .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3))
+            .execute((&id,&bundle,expiry,received_at,status_code,status_param1,status_param2,&status_param3))
             .map(|c| c == 1)
             .map_err(Into::into)
         })
@@ -347,15 +348,15 @@ impl MetadataStorage for SqliteStorage {
                  WHERE bundle_id = ?1 AND status_code = ?6 AND status_param1 IS ?7 AND status_param2 IS ?8 AND status_param3 IS ?9",
             )?
             .execute((
-                id,
+                &id,
                 status_code,
                 status_param1,
                 status_param2,
-                status_param3,
+                &status_param3,
                 expected_code,
                 expected_param1,
                 expected_param2,
-                expected_param3,
+                &expected_param3,
             ))
             .map_err(Into::into)
         })
@@ -378,11 +379,11 @@ impl MetadataStorage for SqliteStorage {
                  WHERE bundle_id = ?1 AND status_code = ?2 AND status_param1 IS ?3 AND status_param2 IS ?4 AND status_param3 IS ?5",
             )?
             .execute((
-                id,
+                &id,
                 expected_code,
                 expected_param1,
                 expected_param2,
-                expected_param3,
+                &expected_param3,
             ))
             .map_err(Into::into)
         })
@@ -398,7 +399,7 @@ impl MetadataStorage for SqliteStorage {
                 conn.prepare_cached(
                     "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE bundle_id = ?1",
                 )?
-                .execute((id,))
+                .execute((&id,))
                 .map_err(Into::into)
             })
             .await?
@@ -438,7 +439,7 @@ impl MetadataStorage for SqliteStorage {
                 conn.prepare_cached(
                     "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                 )?
-                .query_row((id,), |row| {
+                .query_row((&id,), |row| {
                      Ok((
                             row.get::<_, Vec<u8>>(0)?,
                             row.get::<_, i64>(1)?,
@@ -549,7 +550,7 @@ impl MetadataStorage for SqliteStorage {
             conn.prepare_cached(
                 "UPDATE bundles SET status_code = ?1, status_param1 = ?2, status_param2 = ?3, status_param3 = ?4 WHERE status_code = ?5 AND status_param1 = ?6",
             )?
-            .execute((to_code, to_p1, to_p2, to_p3, from_code, from_p1))
+            .execute((to_code, to_p1, to_p2, &to_p3, from_code, from_p1))
             .map(|c| c as u64)
             .map_err(Into::into)
         })
@@ -587,7 +588,7 @@ impl MetadataStorage for SqliteStorage {
             conn.prepare_cached(
                 "UPDATE bundles SET status_code = ?1 WHERE status_code = ?2 AND status_param3 = ?3",
             )?
-            .execute((to_code, from_code, from_p3))
+            .execute((to_code, from_code, &from_p3))
             .map(|c| c as u64)
             .map_err(Into::into)
         })

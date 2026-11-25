@@ -11,17 +11,20 @@
 //!
 //! Some failures do not stop at a savepoint: on a full disk or an I/O
 //! error, SQLite rolls the whole transaction back. The batch then stops
-//! where it is and every write in it fails, the ones that had already
-//! succeeded included, because none of them took effect.
+//! where it is. A failure that may clear by itself, such as a full disk or
+//! a lock held by another process, rolls the batch back and runs it again,
+//! writes and all, until the retry policy gives up. Then, or at once for a
+//! failure that will not clear, every write in the batch fails, the ones
+//! that had already succeeded included, because none of them took effect.
 //!
 //! The writer does not checkpoint the write-ahead log as it commits: between
 //! batches it hands that to the [`Checkpointer`].
 
-use std::{mem, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
-use hardy_bpa::storage::Result as StorageResult;
+use hardy_bpa::storage::{Error as StorageError, Result as StorageResult};
 use rusqlite::{
-    Connection, Error as SqliteError, Transaction, TransactionBehavior,
+    Connection, Error as SqliteError, Result as SqliteResult, Transaction, TransactionBehavior,
     ffi::{Error as SqliteCode, SQLITE_ABORT, SQLITE_MISUSE},
 };
 use thiserror::Error;
@@ -31,7 +34,11 @@ use tokio::sync::{
 };
 use trace_err::*;
 
-use super::{checkpoint::Checkpointer, thread::JoinOnDrop};
+use super::{
+    checkpoint::Checkpointer,
+    retry::{RETRY, is_recoverable},
+    thread::JoinOnDrop,
+};
 
 // The most writes one transaction commits. Every caller in a batch waits
 // for the batch's commit, so the cap bounds how many writes the first
@@ -45,8 +52,9 @@ const MAX_BATCH_SIZE: usize = 64;
 pub enum Error {
     // The write's batch lost its transaction, so none of the batch's writes
     // took effect: the transaction failed to begin or to commit, or SQLite
-    // rolled it back when one of the writes failed. Shared, because every
-    // caller in the batch is answered with the same failure.
+    // rolled it back when one of the writes failed, in a way that will not
+    // clear or that outlasted the retries. Shared, because every caller in
+    // the batch is answered with the same failure.
     #[error("Metadata write transaction failed: {0}")]
     Transaction(#[source] Arc<SqliteError>),
 
@@ -86,18 +94,24 @@ impl Writer {
     // commit together or not at all. Every caller awaits its own reply, so
     // the queue holds at most one write per caller and needs no bound.
     //
+    // `write` may run more than once: a batch that failed in a way that may
+    // clear is rolled back and run again. Each run starts from the state
+    // the rollback restored, so a write that does the same thing each time
+    // it runs takes effect once.
+    //
     // Dropping the returned future cancels the write only until the writer
     // thread starts it. A write already running commits with its batch, and
     // its result is discarded.
     pub async fn write<F, R>(&self, write: F) -> StorageResult<R>
     where
-        F: FnOnce(&Connection) -> StorageResult<R> + Send + 'static,
+        F: FnMut(&Connection) -> StorageResult<R> + Send + 'static,
         R: Send + 'static,
     {
         let (reply, result) = channel();
         self.queue
             .send(Box::new(Request {
-                stage: Stage::Queued(write),
+                write,
+                result: None,
                 reply,
             }))
             .map_err(|_| Error::Stopped)?;
@@ -111,10 +125,11 @@ type BatchResult = Result<(), Arc<SqliteError>>;
 // A queued write, type-erased so one queue carries every result type.
 trait Job: Send {
     // Runs the write in its own savepoint, holding its result for `reply`.
-    // Fails if the write left the batch without its transaction: SQLite
-    // rolled the whole batch back, not just this write. The write's own
-    // failure is not this function's: it is held for the reply.
-    fn run(&mut self, transaction: &mut Transaction<'_>) -> Result<(), SqliteError>;
+    // Fails if the batch must stop: SQLite rolled the whole batch back, not
+    // just this write, or the write failed in a way that may clear, which
+    // makes the batch worth running again. The write's other failures are
+    // not this function's: they are held for the reply.
+    fn run(&mut self, transaction: &mut Transaction<'_>) -> SqliteResult<()>;
 
     // Replies to the caller once the write's batch has completed: with the
     // write's own result if the batch committed, else with the batch's
@@ -122,50 +137,61 @@ trait Job: Send {
     fn reply(self: Box<Self>, batch: &BatchResult);
 }
 
-// How far a queued write has got.
-enum Stage<F, R> {
-    Queued(F),
-    Done(StorageResult<R>),
-    // Not run: the caller had gone before the write's turn, or the batch
-    // lost its transaction first.
-    Skipped,
-}
-
 // A write and the caller awaiting its result.
 struct Request<F, R> {
-    stage: Stage<F, R>,
+    write: F,
+    // The write's result from the batch's latest run, or `None` if it was
+    // not run: the caller had gone before the write's turn, or the batch
+    // stopped first.
+    result: Option<StorageResult<R>>,
     reply: Sender<StorageResult<R>>,
 }
 
 impl<F, R> Job for Request<F, R>
 where
-    F: FnOnce(&Connection) -> StorageResult<R> + Send + 'static,
+    F: FnMut(&Connection) -> StorageResult<R> + Send + 'static,
     R: Send + 'static,
 {
-    fn run(&mut self, transaction: &mut Transaction<'_>) -> Result<(), SqliteError> {
-        let Stage::Queued(write) = mem::replace(&mut self.stage, Stage::Skipped) else {
-            return Ok(());
-        };
+    fn run(&mut self, transaction: &mut Transaction<'_>) -> SqliteResult<()> {
+        self.result = None;
         // A caller whose future dropped before its write's turn is not
         // written for: nobody would act on the result.
         if self.reply.is_closed() {
             return Ok(());
         }
-        let result = with_savepoint(transaction, write);
-        let lost = transaction
-            .is_autocommit()
-            .then(|| transaction_lost(&result));
-        self.stage = Stage::Done(result);
-        lost.map_or(Ok(()), Err)
+        let result = with_savepoint(transaction, &mut self.write);
+        let stop = if transaction.is_autocommit() {
+            Some(transaction_lost(&result))
+        } else {
+            result
+                .as_ref()
+                .err()
+                .and_then(sqlite_failure)
+                .filter(is_recoverable)
+        };
+        self.result = Some(result);
+        stop.map_or(Ok(()), Err)
     }
 
     fn reply(self: Box<Self>, batch: &BatchResult) {
-        let result = match (batch, self.stage) {
+        let result = match (batch, self.result) {
             (Err(e), _) => Err(Error::Transaction(e.clone()).into()),
-            (Ok(()), Stage::Done(result)) => result,
-            (Ok(()), Stage::Queued(_) | Stage::Skipped) => return,
+            (Ok(()), Some(result)) => result,
+            (Ok(()), None) => return,
         };
         _ = self.reply.send(result);
+    }
+}
+
+// A copy of a write's error, if SQLite raised it. The write's error is
+// boxed, and not `Clone`, so the copy keeps what identifies it: the result
+// code and the message.
+fn sqlite_failure(e: &StorageError) -> Option<SqliteError> {
+    match e.downcast_ref::<SqliteError>() {
+        Some(SqliteError::SqliteFailure(code, message)) => {
+            Some(SqliteError::SqliteFailure(*code, message.clone()))
+        }
+        _ => None,
     }
 }
 
@@ -173,15 +199,10 @@ where
 // left the connection without a transaction.
 fn transaction_lost<R>(result: &StorageResult<R>) -> SqliteError {
     match result {
-        // SQLite rolled the transaction back as the write failed. The
-        // write's error is boxed, and not `Clone`, so the batch's copy
-        // keeps what identifies it: the result code and the message.
-        Err(e) => match e.downcast_ref::<SqliteError>() {
-            Some(SqliteError::SqliteFailure(code, message)) => {
-                SqliteError::SqliteFailure(*code, message.clone())
-            }
-            _ => SqliteError::SqliteFailure(SqliteCode::new(SQLITE_ABORT), Some(e.to_string())),
-        },
+        // SQLite rolled the transaction back as the write failed.
+        Err(e) => sqlite_failure(e).unwrap_or_else(|| {
+            SqliteError::SqliteFailure(SqliteCode::new(SQLITE_ABORT), Some(e.to_string()))
+        }),
         // The write ended the transaction itself, which no write may do.
         Ok(_) => SqliteError::SqliteFailure(
             SqliteCode::new(SQLITE_MISUSE),
@@ -199,7 +220,11 @@ fn run(
 ) {
     let mut batch = Vec::with_capacity(MAX_BATCH_SIZE);
     while jobs.blocking_recv_many(&mut batch, MAX_BATCH_SIZE) > 0 {
-        let committed = run_batch(&mut conn, &mut batch);
+        let committed = RETRY
+            .run("Metadata write batch", is_recoverable, || {
+                run_batch(&mut conn, &mut batch)
+            })
+            .map_err(Arc::new);
         for job in batch.drain(..) {
             job.reply(&committed);
         }
@@ -213,22 +238,24 @@ fn run(
 // Runs a batch of writes in one transaction, returning how it ended.
 // Dropped without committing, the transaction rolls back, unless SQLite
 // has already rolled it back: a commit that fails cannot leave it open for
-// the next batch to join, and a batch that stops early needs no cleanup.
-fn run_batch(conn: &mut Connection, batch: &mut [Box<dyn Job>]) -> BatchResult {
+// the next batch to join, and a batch that stops early needs no cleanup,
+// so the batch can run again from the start.
+fn run_batch(conn: &mut Connection, batch: &mut [Box<dyn Job>]) -> SqliteResult<()> {
     let mut transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for job in batch {
         // On a lost transaction, SQLite has rolled the batch back. A write
         // run now would commit on its own, outside any batch, so none is.
         job.run(&mut transaction)?;
     }
-    Ok(transaction.commit()?)
+    transaction.commit()
 }
 
 // Runs `write` in its own savepoint, so a failing write rolls back alone
 // and the rest of its batch still commits. Dropped without being released,
 // the savepoint rolls back. If SQLite has rolled the whole transaction back
 // instead, there is nothing left to roll back to, and the caller, finding
-// the transaction gone, stops the batch.
+// the transaction gone, stops the batch. A savepoint whose release fails
+// in a way that may clear also stops it, to be run again.
 fn with_savepoint<F, R>(transaction: &mut Transaction<'_>, write: F) -> StorageResult<R>
 where
     F: FnOnce(&Connection) -> StorageResult<R>,
@@ -246,9 +273,15 @@ mod tests {
         task::{Context, Waker},
     };
 
-    use std::{path::PathBuf, time::Duration};
+    // std's channel, which blocks the writer thread where tokio's would
+    // need a runtime; `super::*` brings in tokio's `Sender` and `channel`.
+    use std::{
+        path::PathBuf,
+        sync::mpsc::{Sender as BlockingSender, channel as blocking_channel},
+        time::Duration,
+    };
 
-    use rusqlite::ErrorCode;
+    use rusqlite::{ErrorCode, ffi::SQLITE_IOERR_WRITE};
     use tempfile::{TempDir, tempdir};
     use tokio::time::timeout;
 
@@ -315,13 +348,16 @@ mod tests {
         writer: &Writer,
     ) -> (
         Pin<Box<impl Future<Output = StorageResult<()>> + '_>>,
-        Sender<()>,
+        BlockingSender<()>,
     ) {
         let (started, running) = channel();
-        let (release, released) = channel::<()>();
+        let (release, released) = blocking_channel::<()>();
+        let mut started = Some(started);
         let mut held = Box::pin(writer.write(move |_| {
-            started.send(()).unwrap();
-            released.blocking_recv().unwrap();
+            if let Some(started) = started.take() {
+                started.send(()).unwrap();
+                released.recv().unwrap();
+            }
             Ok(())
         }));
         enqueue(held.as_mut());
@@ -407,11 +443,44 @@ mod tests {
         assert_eq!(ids(&writer).await, Vec::<i64>::new());
     }
 
+    // A write that fails in a way that may clear rolls its whole batch back,
+    // and the batch runs again, writes and all: each write takes effect
+    // once, and every caller gets its own result.
+    #[tokio::test]
+    async fn a_batch_that_fails_until_the_failure_clears_runs_again() {
+        let (_dir, writer) = open();
+        let (held, release) = hold(&writer).await;
+
+        let mut before = pin!(writer.write(|conn| insert(conn, 1)));
+        enqueue(before.as_mut());
+        let mut runs = 0;
+        let mut flaky = pin!(writer.write(move |conn| {
+            insert(conn, 2)?;
+            runs += 1;
+            if runs == 1 {
+                Err(SqliteError::SqliteFailure(SqliteCode::new(SQLITE_IOERR_WRITE), None).into())
+            } else {
+                Ok(runs)
+            }
+        }));
+        enqueue(flaky.as_mut());
+        let mut after = pin!(writer.write(|conn| insert(conn, 3)));
+        enqueue(after.as_mut());
+
+        release.send(()).unwrap();
+        within_timeout(held).await.unwrap();
+        within_timeout(before).await.unwrap();
+        assert_eq!(within_timeout(flaky).await.unwrap(), 2);
+        within_timeout(after).await.unwrap();
+        assert_eq!(ids(&writer).await, [1, 2, 3]);
+    }
+
     // A write that fills the database makes SQLite roll the whole batch
-    // back, not just that write. Every write in the batch fails with what
-    // went wrong, the one that had already succeeded included, and the
-    // writes after it are not run: left to run, they would commit on
-    // their own.
+    // back, not just that write. The batch runs again while the retry
+    // policy allows; the disk stays full, so every write in the batch then
+    // fails with what went wrong, the one that had already succeeded
+    // included, and the writes after it are not run: left to run, they
+    // would commit on their own.
     #[tokio::test]
     async fn a_write_that_loses_the_transaction_fails_its_whole_batch() {
         let (_dir, path, conn) = database();

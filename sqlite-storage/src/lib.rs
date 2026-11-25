@@ -16,8 +16,10 @@ protocol (mark-unconfirmed / confirm / sweep).
 mod checkpoint;
 mod migrate;
 mod reader_pool;
+mod retry;
 mod storage;
 mod thread;
+mod wal;
 mod writer;
 
 pub use self::storage::SqliteStorage;

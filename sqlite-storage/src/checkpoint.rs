@@ -21,13 +21,15 @@ use std::{
     time::Duration,
 };
 
-use rusqlite::{
-    Connection, ErrorCode, MAIN_DB, OpenFlags, Result as SqliteResult, wal::CheckpointMode,
-};
+use rusqlite::{Connection, Result as SqliteResult};
 use trace_err::*;
 use tracing::{debug, warn};
 
-use super::thread::JoinOnDrop;
+use super::{
+    retry::{RETRY, is_busy, is_recoverable},
+    thread::JoinOnDrop,
+    wal::{cycle, open, pass, wal_size},
+};
 
 // When checkpoints run, in WAL frames. A frame is one page: 4 KiB at
 // SQLite's default page size.
@@ -53,13 +55,6 @@ const THRESHOLDS: Thresholds = Thresholds {
     restart: 8000,
     limit: 16000,
 };
-
-// Above the restart bound, a cycle keeps making passes until the writer is
-// this few frames ahead: what is left is what the writer copies itself.
-const SLACK_FRAMES: u32 = 64;
-
-// The most passes one cycle makes while chasing the writer.
-const MAX_PASSES: usize = 8;
 
 // The checkpoint thread stops only when its `Checkpointer` drops, and a
 // panic on it aborts the process, so the writer never finds it gone.
@@ -140,7 +135,7 @@ impl Checkpointer {
 
     // Called by the writer between transactions, with its own connection.
     pub fn after_commit(&mut self, writer: &Connection) {
-        let Some(wal) = defer_if_busy(wal_size(writer), "Failed to read the metadata WAL's size")
+        let Some(wal) = defer_if_busy("Reading the metadata WAL's size", || wal_size(writer))
         else {
             return;
         };
@@ -230,38 +225,28 @@ fn cycle_state(reported: Result<(), TryRecvError>) -> Cycle {
 // next transaction restarts it from its beginning.
 fn try_finish(writer: &Connection) {
     // Deferred, the WAL keeps growing until a later finish succeeds.
-    _ = defer_if_busy(pass(writer), "Metadata checkpoint failed on the writer");
+    _ = defer_if_busy("Metadata checkpoint on the writer", || pass(writer));
 }
 
-// What a checkpoint step returned, or `None` if it only lost a race for one
-// of the WAL's locks: the step is then left for a later batch.
+// Runs a checkpoint step, `what`, and returns what it returned, or `None`
+// if it only lost a race for one of the WAL's locks: the step is then left
+// for a later batch.
 //
-// Any other failure is the database failing to write. No caller is waiting
-// on a checkpoint to be handed the error, and a sync that failed cannot be
-// retried safely, because the kernel may have dropped the pages it could
-// not write. So the failure is fatal here: the panic aborts the process.
-fn defer_if_busy<T>(step: SqliteResult<T>, failure: &str) -> Option<T> {
-    match step {
+// A step that fails in another way that may clear, such as a full disk, is
+// run again under the retry policy. A failure that will not clear, or that
+// outlasts the retries, is fatal: no caller is waiting on a checkpoint to
+// be handed the error, and a sync that failed cannot be retried safely,
+// because the kernel may have dropped the pages it could not write. The
+// panic aborts the process.
+fn defer_if_busy<T>(what: &str, step: impl FnMut() -> SqliteResult<T>) -> Option<T> {
+    match RETRY.run(what, |e| !is_busy(e) && is_recoverable(e), step) {
         Ok(value) => Some(value),
-        Err(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) => {
-            debug!("Metadata checkpoint deferred: {e}");
+        Err(e) if is_busy(&e) => {
+            debug!("{what} deferred: {e}");
             None
         }
-        Err(e) => Some(Err(e).trace_expect(failure)),
+        Err(e) => Some(Err(e).trace_expect(&format!("{what} failed"))),
     }
-}
-
-// Opens the checkpoint thread's own connection to the writer's database.
-fn open(path: &Path) -> SqliteResult<Connection> {
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    // A connection opens its database's WAL only when it first reads the
-    // database, and until then its checkpoints succeed without copying
-    // anything. Reading the schema version is that first read.
-    conn.query_row("PRAGMA schema_version", [], |_| Ok(()))?;
-    Ok(conn)
 }
 
 // The checkpoint thread: one cycle per request, until the writer has gone.
@@ -270,131 +255,10 @@ fn run(conn: Connection, woken: Receiver<()>, done: Sender<()>, restart: u32) {
         // A cycle deferred by a lock race, such as reading the WAL's header
         // during a commit, is asked for again after the writer's next
         // batch, while the backlog is large enough.
-        _ = defer_if_busy(cycle(&conn, restart), "Metadata checkpoint failed");
+        _ = defer_if_busy("Metadata checkpoint", || cycle(&conn, restart));
         if done.send(()).is_err() {
             break;
         }
-    }
-}
-
-// Copies the WAL into the database file and syncs it. A pass copies the WAL
-// as it stood when the pass began. Above the restart bound, where the
-// writer is about to copy the remainder itself, the cycle repeats for as
-// long as that shrinks the remainder: a writer that outruns the passes is
-// not chased.
-fn cycle(conn: &Connection, restart: u32) -> SqliteResult<()> {
-    let mut checkpointed = wal_size(conn)?.checkpointed;
-    let mut remainder = u32::MAX;
-    for _ in 0..MAX_PASSES {
-        let wal = pass(conn)?;
-        // A pass syncs the database file only if it copied the whole WAL,
-        // which a pass racing the writer does not. Syncing here is what
-        // leaves the writer's finishing pass little to flush. A pass that
-        // copied nothing, held back by a reader's snapshot, left nothing to
-        // flush.
-        if wal.checkpointed != checkpointed {
-            os::sync(conn)?;
-        }
-        if wal.frames < restart || wal.backlog() <= SLACK_FRAMES || wal.backlog() >= remainder {
-            break;
-        }
-        checkpointed = wal.checkpointed;
-        remainder = wal.backlog();
-    }
-    Ok(())
-}
-
-// One passive pass: copies what it can without waiting for the writer or
-// for any reader, and returns the WAL's size as the pass left it.
-fn pass(conn: &Connection) -> SqliteResult<WalSize> {
-    checkpoint(conn, CheckpointMode::PASSIVE)
-}
-
-// The WAL's size in frames, and how much of it a checkpoint has copied into
-// the database file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WalSize {
-    frames: u32,
-    // At most `frames`.
-    checkpointed: u32,
-}
-
-impl WalSize {
-    // The frames not yet checkpointed into the database file.
-    fn backlog(self) -> u32 {
-        self.frames - self.checkpointed
-    }
-}
-
-// Reads the WAL's own counters, and copies nothing.
-fn wal_size(conn: &Connection) -> SqliteResult<WalSize> {
-    checkpoint(conn, CheckpointMode::NOOP)
-}
-
-// Runs a checkpoint in `mode`, returning the WAL's size after it.
-fn checkpoint(conn: &Connection, mode: CheckpointMode) -> SqliteResult<WalSize> {
-    let (frames, checkpointed) = conn.wal_checkpoint_v2(Some(MAIN_DB), mode)?;
-    // Both are -1 unless the database is in WAL mode.
-    let frames = frames.try_into().unwrap_or(0);
-    Ok(WalSize {
-        frames,
-        checkpointed: checkpointed.try_into().unwrap_or(0).min(frames),
-    })
-}
-
-// Syncing a database file through the file object SQLite holds open for it.
-//
-// A second handle on the file, opened here, would not do: closing any
-// descriptor of a file releases every POSIX lock the process holds on it,
-// SQLite's own among them.
-//
-// rusqlite's safe `Connection::file_control` takes a closed enum with no
-// variant for `SQLITE_FCNTL_FILE_POINTER`, so the file object is reached
-// through the C API. `check` repeats rusqlite's own, which is not exported.
-mod os {
-    use std::{ffi::c_void, ptr::null_mut};
-
-    use rusqlite::{
-        Connection, Error as SqliteError, MAIN_DB, Result as SqliteResult,
-        ffi::{
-            Error as SqliteCode, SQLITE_FCNTL_FILE_POINTER, SQLITE_MISUSE, SQLITE_OK,
-            SQLITE_SYNC_NORMAL, sqlite3_file, sqlite3_file_control,
-        },
-    };
-
-    fn check(code: i32) -> SqliteResult<()> {
-        if code == SQLITE_OK {
-            Ok(())
-        } else {
-            Err(SqliteError::SqliteFailure(SqliteCode::new(code), None))
-        }
-    }
-
-    // Syncs `conn`'s main database file, as SQLite does at the end of a
-    // checkpoint that copied the whole WAL.
-    pub fn sync(conn: &Connection) -> SqliteResult<()> {
-        let mut file: *mut sqlite3_file = null_mut();
-        // SAFETY: `conn` is open for the whole call and, not being `Sync`,
-        // is used by this thread alone. FILE_POINTER stores the main
-        // database's file object through the out-pointer, which is valid
-        // for the write.
-        check(unsafe {
-            sqlite3_file_control(
-                conn.handle(),
-                MAIN_DB.as_ptr(),
-                SQLITE_FCNTL_FILE_POINTER,
-                (&raw mut file).cast::<c_void>(),
-            )
-        })?;
-        // SAFETY: on success `file` is the file object the connection keeps
-        // open while it lives, and an open file object's method table is
-        // set.
-        let sync = unsafe { file.as_ref().and_then(|file| file.pMethods.as_ref()) }
-            .and_then(|methods| methods.xSync)
-            .ok_or_else(|| SqliteError::SqliteFailure(SqliteCode::new(SQLITE_MISUSE), None))?;
-        // SAFETY: `sync` is that file object's own sync method, called on
-        // it as SQLite calls it.
-        check(unsafe { sync(file, SQLITE_SYNC_NORMAL) })
     }
 }
 
@@ -404,12 +268,15 @@ mod tests {
 
     use rusqlite::{
         Error as SqliteError,
-        ffi::{Error as SqliteCode, SQLITE_BUSY},
+        ffi::{Error as SqliteCode, SQLITE_BUSY, SQLITE_IOERR_WRITE},
     };
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::thread::tests::{assert_aborts, test_path, wait_for_abort};
+    use crate::{
+        thread::tests::{assert_aborts, test_path, wait_for_abort},
+        wal::WalSize,
+    };
 
     // Thresholds no test's writes reach, for a test to lower the ones it
     // is about.
@@ -648,22 +515,41 @@ mod tests {
         assert!(!checkpointer.over_limit);
     }
 
-    #[test]
-    fn the_database_file_syncs_through_its_own_handle() {
-        let (_dir, _path, conn) = database();
-        os::sync(&conn).unwrap();
+    fn failure(code: i32) -> SqliteError {
+        SqliteError::SqliteFailure(SqliteCode::new(code), None)
     }
 
-    // A step that only lost a race for one of the WAL's locks is deferred.
+    // A step that only lost a race for one of the WAL's locks is deferred,
+    // not retried.
     #[test]
     fn a_busy_checkpoint_step_is_deferred() {
-        let busy = SqliteError::SqliteFailure(SqliteCode::new(SQLITE_BUSY), None);
-        assert_eq!(defer_if_busy::<()>(Err(busy), "a checkpoint step"), None);
+        let mut runs = 0;
+        let step = || -> SqliteResult<()> {
+            runs += 1;
+            Err(failure(SQLITE_BUSY))
+        };
+        assert_eq!(defer_if_busy("a checkpoint step", step), None);
+        assert_eq!(runs, 1);
     }
 
-    // A checkpoint that fails for any other reason takes the process down.
-    // The checkpoint thread here opens the database read-only, so its first
-    // pass fails to write the database file.
+    // A step whose failure clears is run again, and its result returned.
+    #[test]
+    fn a_checkpoint_step_that_fails_then_clears_is_retried() {
+        let mut runs = 0;
+        let step = || {
+            runs += 1;
+            if runs == 1 {
+                Err(failure(SQLITE_IOERR_WRITE))
+            } else {
+                Ok(runs)
+            }
+        };
+        assert_eq!(defer_if_busy("a checkpoint step", step), Some(2));
+    }
+
+    // A checkpoint that keeps failing takes the process down once its
+    // retries are used up. The checkpoint thread here opens the database
+    // read-only, so every pass fails to write the database file.
     #[test]
     fn a_failed_checkpoint_aborts_the_process() {
         assert_aborts(test_path!(a_failed_checkpoint_aborts_the_process), || {

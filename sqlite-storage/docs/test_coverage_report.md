@@ -26,9 +26,9 @@ The `MetadataStorage` trait contract is verified by the shared storage harness (
 
 All 16 pass. No failures or skips.
 
-### Backend-specific tests (`migrate.rs`, `storage.rs`, `writer.rs`, `reader_pool.rs`, `checkpoint.rs`, `thread.rs`)
+### Backend-specific tests (`migrate.rs`, `storage.rs`, `writer.rs`, `reader_pool.rs`, `checkpoint.rs`, `wal.rs`, `retry.rs`, `thread.rs`)
 
-43 unit tests. 35 cover the 23 planned scenarios (SQL-01..23); the other 8 pin the status encoding and the queue-poll query plans, which the plan does not list as scenarios.
+49 unit tests. 41 cover the 24 planned scenarios (SQL-01..24); the other 8 pin the status encoding and the queue-poll query plans, which the plan does not list as scenarios.
 
 | Test Function | Plan Ref | Scope |
 | :--- | :--- | :--- |
@@ -65,8 +65,14 @@ All 16 pass. No failures or skips.
 | `a_worker_that_returns_is_joined` | SQL-22 | A worker that returns is joined, with no abort |
 | `a_panicking_write_aborts_the_process` | SQL-22 | A panic inside a write aborts the process |
 | `a_panicking_read_aborts_the_process` | SQL-22 | A panic inside a read aborts the process |
-| `a_busy_checkpoint_step_is_deferred` | SQL-23 | A step that lost a lock race is deferred |
-| `a_failed_checkpoint_aborts_the_process` | SQL-23 | A failed checkpoint aborts the process |
+| `a_busy_checkpoint_step_is_deferred` | SQL-23 | A step that lost a lock race is deferred, not retried |
+| `a_checkpoint_step_that_fails_then_clears_is_retried` | SQL-23 | A step whose failure clears is retried |
+| `a_failed_checkpoint_aborts_the_process` | SQL-23 | A checkpoint that keeps failing aborts the process |
+| `a_recoverable_failure_is_retried_until_it_clears` | SQL-24 | A failure that may clear is retried until it does |
+| `a_failure_that_outlasts_the_retries_stands` | SQL-24 | The failure stands after the last retry |
+| `an_unrecoverable_failure_is_not_retried` | SQL-24 | A failure that will not clear runs once |
+| `a_failed_sync_is_unrecoverable` | SQL-24 | Which failures may clear |
+| `a_batch_that_fails_until_the_failure_clears_runs_again` | SQL-24 | The batch runs again; each write takes effect once |
 | `test_journal_mode_is_wal` | — | The database is in WAL mode |
 | `test_forward_ack_pending_roundtrip_and_reset` | — | `ForwardAckPending` round trip and peer reset |
 | `test_swap_status_is_conditional` | — | `swap_status` applies only from the expected status |
@@ -85,8 +91,8 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 | `PLAN-STORE-01` Suite A (META-01..04, 15) | CRUD & tombstone semantics | 5 | 5 | Complete |
 | `PLAN-STORE-01` Suite B (META-06..10, 14) | Polling & ordering | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite C (META-05, 11..13, 16) | State transitions & bulk ops | 5 | 5 | Complete |
-| `PLAN-SQLITE-01` §4 (SQL-01..23) | Backend-specific | 23 | 23 | Complete (35 tests) |
-| **Total** | | **39** | **39** | **100%** |
+| `PLAN-SQLITE-01` §4 (SQL-01..24) | Backend-specific | 24 | 24 | Complete (41 tests) |
+| **Total** | | **40** | **40** | **100%** |
 
 ## 4. Line Coverage
 
@@ -102,8 +108,8 @@ lcov --summary lcov.info
   functions..: 83.1% (374 of 450 functions)
 ```
 
-The 43 unit tests exercise the writer thread, the checkpoint thread, the readers, migrations, the status encoding and the trait methods that have backend-specific tests. The lines left uncovered are mostly `MetadataStorage` methods exercised only by the generic storage harness (16 tests), which runs in a separate crate and is not captured by `llvm-cov`. The function-coverage figure varies with monomorphisation counting; line coverage is the reliable signal.
+The 49 unit tests exercise the writer thread, the checkpoint thread, the readers, migrations, the status encoding and the trait methods that have backend-specific tests. The lines left uncovered are mostly `MetadataStorage` methods exercised only by the generic storage harness (16 tests), which runs in a separate crate and is not captured by `llvm-cov`. The function-coverage figure varies with monomorphisation counting; line coverage is the reliable signal.
 
 ## 5. Conclusion
 
-59 tests (16 integration + 43 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic, tamper detection and the upgrade of an existing store; concurrent writer safety; batched-write isolation, commit failure and a batch that loses its transaction; the abort when a store thread panics or a checkpoint fails; query-only readers; background checkpoints and the WAL's restart and size limit; the live-row indexes; corrupt data resilience; configuration; and waiting queue cache correctness.
+65 tests (16 integration + 49 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic, tamper detection and the upgrade of an existing store; concurrent writer safety; batched-write isolation, commit failure, a batch that loses its transaction, and the retry of a failure that may clear; the abort when a store thread panics or a checkpoint fails; query-only readers; background checkpoints and the WAL's restart and size limit; the live-row indexes; corrupt data resilience; configuration; and waiting queue cache correctness.
