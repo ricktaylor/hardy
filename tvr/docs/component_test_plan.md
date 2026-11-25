@@ -26,7 +26,7 @@ This document details the component-level testing strategy for `hardy-tvr`. Thes
 
 Component verification is split into two tiers:
 
-1. **gRPC Session Tests:** Rust integration tests using a real `tonic` client connected to the TVR gRPC service over a local socket, with the scheduler backed by a mock `RoutingSink`. These verify session protocol correctness without requiring a running BPA.
+1. **gRPC Session Tests:** Rust integration tests using a real `tonic` client connected to the TVR gRPC service over a local socket, with the scheduler backed by a mock `routing::Sink`. These verify session protocol correctness without requiring a running BPA.
 
 2. **System Integration Tests:** Shell-scripted end-to-end tests (`tests/test_tvr.sh`) that start real BPA nodes, a hardy-tvr instance, and verify route installation and bundle forwarding via `bp ping`.
 

@@ -2,8 +2,7 @@ use std::net::SocketAddr;
 
 use crate::{session, tls};
 
-/// Convenience alias used throughout the crate so callers can write
-/// `error::Result<T>` instead of `Result<T, error::Error>`.
+/// A [`Result`](std::result::Result) alias for [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The generic error for everything related to TCPCLv4: assembling and
@@ -29,11 +28,6 @@ pub enum Error {
         the listeners could serve neither TLS nor plaintext"
     )]
     RequiredTlsWithoutIdentity,
-
-    /// The entity is already registered with a BPA; the sink and the
-    /// bound listener sockets were consumed by the first registration.
-    #[error("The entity is already registered")]
-    AlreadyRegistered,
 
     /// A TLS error surfaced at the crate boundary: loading or validating
     /// the TLS material built by `tls::Tls::builder()`.

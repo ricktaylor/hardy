@@ -1,12 +1,9 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 
-use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     async_trait,
     cla::Acceptance,
-    services::{
-        Error as ServiceError, Result as ServiceResult, Service, ServiceSink, StatusNotify,
-    },
+    service::{self, StatusNotify, raw},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -15,55 +12,44 @@ use tracing::{debug, warn};
 
 use crate::{cla::BibeCla, pdu};
 
-/// BIBE Decapsulation Service.
+/// The decapsulating half of a BIBE tunnel.
 ///
-/// Receives outer bundles, extracts the inner bundle from the payload,
-/// and re-injects it into the BPA via the CLA's dispatch method.
+/// Each outer bundle delivered here yields the inner bundle carried in its
+/// payload, which the CLA dispatches back into the BPA.
 pub struct DecapService {
     cla: Arc<BibeCla>,
-    sink: Once<Box<dyn ServiceSink>>,
+
+    /// Communication channel back to the BPA, for the service's whole
+    /// active lifetime.
+    sink: Arc<dyn raw::Sink>,
 }
 
 impl DecapService {
-    /// Create a new DecapService using the given CLA for dispatch.
-    pub fn new(cla: Arc<BibeCla>) -> Self {
-        Self {
-            cla,
-            sink: Once::new(),
-        }
+    /// A factory for a decapsulation service that re-injects the inner
+    /// bundles it extracts through `cla`.
+    pub fn factory(cla: Arc<BibeCla>) -> impl raw::Factory<Component = Self> {
+        raw::factory_fn(move |cx: raw::Context| Ok(Arc::new(Self { cla, sink: cx.sink })))
     }
 
-    /// Unregister this service from the BPA.
+    /// Unregisters the service from the BPA.
     pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
+        self.sink.unregister().await;
     }
 }
 
 #[async_trait]
-impl Service for DecapService {
-    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>) {
-        self.sink.call_once(|| sink);
-        debug!("BIBE DecapService registered at {endpoint}");
-    }
-
-    async fn on_unregister(&self) {
-        debug!("BIBE DecapService unregistered");
-    }
-
-    // INTERIM BUFFERING: decapsulation parses the whole outer bundle with a
-    // whole-buffer codec, so the stream is assembled in memory via
-    // `stream::buffer_stream` first. This is a deliberate stepping stone
-    // toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md.
-    async fn on_deliver(
+impl raw::Service for DecapService {
+    // Decapsulation parses the whole outer bundle with a whole-buffer
+    // codec, so `stream::buffer_stream` assembles the stream in memory
+    // first. See bpa/docs/streaming_pipeline_design.md for the streaming
+    // form this is a step towards.
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> ServiceResult<()> {
+    ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
 
         // A malformed outer bundle is a permanent failure: log and accept it,
@@ -79,10 +65,10 @@ impl Service for DecapService {
         debug!("BIBE decapsulated bundle, dispatching");
         match self.cla.dispatch(inner).await {
             Ok(Acceptance::Accepted) => Ok(()),
-            // A refusal is deterministic for these bytes (the inner cannot
-            // outgrow the outer, so this is not a size race): accept the
-            // outer bundle rather than park it for a retry that could never
-            // succeed — the same rule as a malformed outer.
+            // A refusal is deterministic for these bytes, the inner bundle
+            // being unable to outgrow the outer, so this is no size race:
+            // accept the outer bundle rather than park it for a retry that
+            // could never succeed, as for a malformed outer.
             Ok(Acceptance::Refused) => {
                 warn!("Decapsulated bundle refused by the BPA, outer bundle consumed");
                 Ok(())
@@ -91,12 +77,13 @@ impl Service for DecapService {
             // bundle is parked and retried rather than dropped.
             Err(e) => {
                 warn!("Failed to dispatch decapsulated bundle: {e}");
-                Err(ServiceError::Internal(e.into()))
+                Err(service::Error::Internal(e.into()))
             }
         }
     }
 
-    async fn on_status_notify(
+    /// Discards the notification: the service sends no bundles of its own.
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -104,6 +91,5 @@ impl Service for DecapService {
         _reason: ReasonCode,
         _timestamp: Option<OffsetDateTime>,
     ) {
-        // DecapService doesn't send bundles, so no status reports expected
     }
 }

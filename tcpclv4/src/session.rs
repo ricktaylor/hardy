@@ -13,14 +13,15 @@ const INGEST_QUEUE_DEPTH: usize = 128;
 
 // Number of completed bundles that may await dispatch to the BPA before the
 // session reader stops draining the socket. Each pending bundle can hold up
-// to transfer_mru bytes, so this bound is deliberately small — at the 1 GiB
+// to transfer_mru bytes, so this bound is deliberately small: at the 1 GiB
 // default transfer-mru it still permits 2 GiB held per session, bounded in
 // practice by peers' actual bundle sizes.
 const INGEST_MAX_PENDING_DISPATCH: usize = 2;
 
-/// How a session, or the establishment of one, ended. The terminal
-/// outcome rides the error channel: the run loop's epilogue is the single
-/// consumer and dispatches teardown on the variant.
+/// The outcome of a session, or of an attempt to establish one.
+///
+/// The terminal outcome rides the error channel, whose single consumer is
+/// the run loop's epilogue, dispatching teardown on the variant.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     /// The peer closed the transport cleanly (EOF between messages).
@@ -135,18 +136,18 @@ enum SendState {
 
 // Work items for the per-session ingest task.
 //
-// Every XFER_ACK we emit flows through this queue, not just final ones:
-// acknowledgments must be sent in segment-arrival order (a sender's ack
-// matcher may be strictly ordered — ours is), and a single FIFO consumer
-// preserves that order even when a dispatch is in flight ahead of later
-// acknowledgments.
+// Every XFER_ACK flows through this queue, not just the final ones:
+// acknowledgments must be sent in segment-arrival order, since a sender's
+// ack matcher may be strictly ordered, as this implementation's is, and a
+// single FIFO consumer preserves that order even when a dispatch is in
+// flight ahead of later acknowledgments.
 pub enum Ingest {
     // Acknowledge a non-final segment.
     Ack(codec::TransferAckMessage),
     // Dispatch a completed bundle to the BPA, then acknowledge its final
     // segment. The final acknowledgment transfers responsibility for the
-    // bundle to this node — the peer deletes its copy on receipt — so it is
-    // only sent once dispatch has completed.
+    // bundle to this node, and the peer deletes its copy on receipt, so it
+    // is only sent once the dispatch has completed.
     Dispatch {
         bundle: hardy_bpa::Bytes,
         ack: codec::TransferAckMessage,
@@ -159,25 +160,25 @@ pub enum Ingest {
 //
 // This runs as its own task so that a dispatch blocked on the BPA (storage
 // write, ingress backpressure) never stops the session reader: segments,
-// acknowledgments of our own transfers, and keepalives keep flowing, bounded
-// by the ingest queue depth.
+// acknowledgments of this node's own transfers, and keepalives keep
+// flowing, bounded by the ingest queue depth.
 //
 // A transfer the BPA refuses is answered with XFER_REFUSE in place of its
-// final acknowledgement — a per-bundle outcome, so the session stays up and
-// the peer retains responsibility for the bundle.
+// final acknowledgement. That is a per-bundle outcome, so the session stays
+// up and the peer retains responsibility for the bundle.
 //
 // Exits on dispatch fault or writer failure, cancelling the session's token
 // so the session tears down promptly rather than discovering the closed
-// queue on the next inbound segment — with keepalives negotiated off, a
+// queue on the next inbound segment. With keepalives negotiated off, a
 // quiet peer waiting for its final ack and a stalled session could
 // otherwise both wait forever. An undispatched transfer is then never
-// acknowledged: the peer retains responsibility for the bundle and will
-// retransmit.
+// acknowledged: the peer retains responsibility for the bundle and
+// retransmits.
 async fn run_ingest(
     mut queue: tokio::sync::mpsc::Receiver<Ingest>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     peer_node: Option<hardy_bpv7::eid::NodeId>,
-    peer_addr: Option<hardy_bpa::cla::ClaAddress>,
+    peer_addr: Option<hardy_bpa::cla::Address>,
     writer: writer::WriterHandle<codec::Error>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -255,8 +256,8 @@ where
 {
     loop {
         let msg = if let Some(keepalive_interval) = keepalive_interval {
-            // Timeout for receiving from peer: 2x keepalive interval
-            // If we don't receive anything in this time, peer is probably dead
+            // A peer silent for twice the keepalive interval is treated as
+            // dead (RFC 9174 Section 5.1.1).
             match tokio::time::timeout(keepalive_interval.saturating_mul(2), reader.next()).await {
                 Err(_) => {
                     return Err(Error::LocalShutdown(
@@ -294,7 +295,7 @@ where
     writer: writer::WriterHandle<codec::Error>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     peer_node: Option<hardy_bpv7::eid::NodeId>,
-    peer_addr: Option<hardy_bpa::cla::ClaAddress>,
+    peer_addr: Option<hardy_bpa::cla::Address>,
     keepalive_interval: Option<tokio::time::Duration>,
     segment_mtu: usize,
     transfer_mru: usize,
@@ -327,7 +328,7 @@ where
         writer: writer::WriterHandle<codec::Error>,
         sink: Arc<dyn hardy_bpa::cla::Sink>,
         peer_node: Option<hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<hardy_bpa::cla::ClaAddress>,
+        peer_addr: Option<hardy_bpa::cla::Address>,
         keepalive_interval: Option<tokio::time::Duration>,
         segment_mtu: usize,
         transfer_mru: usize,
@@ -410,7 +411,7 @@ where
             }
             self.ingress_bundle = Some(BytesMut::with_capacity(msg.data.len()));
         } else if self.refusing == Some(msg.transfer_id) {
-            // Remaining in-flight segments of a transfer we have refused
+            // Remaining in-flight segments of a refused transfer
             if msg.message_flags.end {
                 self.refusing = None;
             }
@@ -490,9 +491,9 @@ where
         })
     }
 
-    // Process a message received from the peer while a transfer of ours is in
-    // flight: inbound transfers continue, and acknowledgments and refusals are
-    // matched against the outstanding segment queue.
+    // Processes a message received from the peer while an outbound transfer is
+    // in flight: inbound transfers continue, and acknowledgments and refusals
+    // are matched against the outstanding segment queue.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn on_peer_msg_while_sending(&mut self, msg: codec::Message) -> Result<SendState, Error> {
         match msg {
@@ -654,7 +655,7 @@ where
         }
 
         // Wait for every outstanding acknowledgment: the transfer is only
-        // complete (and the bundle deletable by our BPA) once the peer has
+        // complete (and the bundle deletable by the BPA) once the peer has
         // fully acknowledged it.
         while !self.acks.is_empty() {
             let msg = self.recv_from_peer().await?;
@@ -728,7 +729,8 @@ where
         bundle: Bytes,
         result: tokio::sync::oneshot::Sender<hardy_bpa::cla::TransferOutcome>,
     ) -> Result<(), Error> {
-        // Check we can allocate a transfer id without rollover (RFC 9174 Section 5.2.1)
+        // Transfer ids never roll over (RFC 9174 Section 5.2.1), so an
+        // exhausted counter ends the session.
         if self.transfer_id == u64::MAX {
             debug!("Out of Transfer Ids, closing session");
             return Err(Error::LocalShutdown(
@@ -795,10 +797,10 @@ where
                             Ok(codec::Message::SessionTerm(msg)) => {
                                 // A non-reply here is a crossing termination:
                                 // the peer sent its own SESS_TERM before
-                                // seeing ours. RFC 9174 Section 6.1: an
+                                // seeing this end's. RFC 9174 Section 6.1: an
                                 // entity that has already sent a SESS_TERM
-                                // does not send an acknowledging one — both
-                                // ends are Ending, so just finish up.
+                                // does not send an acknowledging one. Both
+                                // ends are Ending, so finish up.
                                 let _ = msg;
                                 break;
                             }
@@ -828,7 +830,6 @@ where
         // to the pool, which retries it on another session.
         while self.from_sink.recv().await.is_some() {}
 
-        // Send our SESSION_TERM reply
         msg.message_flags.reply = true;
         if self
             .writer
@@ -983,20 +984,18 @@ where
                     .await;
             }
             Error::Io(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                // Peer closed connection (likely without a TLS close_notify) -
-                // treat as normal hangup
+                // A peer closing without a TLS close_notify surfaces here, so
+                // this is treated as a normal hangup.
                 debug!("Peer closed connection (UnexpectedEof), ending session");
             }
             Error::Io(e) => {
                 debug!("Session I/O failure: {e:?}, ending session");
             }
             Error::Codec(e) => {
-                // The other end is sending us garbage
                 debug!("Peer sent invalid data: {e:?}, shutting down session");
                 self.shutdown(codec::SessionTermReasonCode::Unknown).await;
             }
             Error::PeerHangup => {
-                // The remote end has died completely
                 debug!("Peer hung up, ending session");
             }
             e @ (Error::PeerTimeout | Error::ShuttingDown | Error::InvalidProtocol) => {
@@ -1065,7 +1064,7 @@ mod tests {
         async fn dispatch(
             &self,
             _peer_node: Option<&hardy_bpv7::eid::NodeId>,
-            _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+            _peer_addr: Option<&hardy_bpa::cla::Address>,
             stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
         ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
             let Ok(bundle) = hardy_bpa::stream::concat_stream(stream, usize::MAX).await else {
@@ -1086,7 +1085,7 @@ mod tests {
 
         async fn add_peer(
             &self,
-            _cla_addr: hardy_bpa::cla::ClaAddress,
+            _cla_addr: hardy_bpa::cla::Address,
             _node_ids: &[hardy_bpv7::eid::NodeId],
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
@@ -1094,11 +1093,11 @@ mod tests {
 
         async fn remove_peer(
             &self,
-            _cla_addr: &hardy_bpa::cla::ClaAddress,
+            _cla_addr: &hardy_bpa::cla::Address,
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }
-        async fn transfer_outcome(
+        async fn report_transfer(
             &self,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _outcome: hardy_bpa::cla::TransferOutcome,
@@ -1110,8 +1109,8 @@ mod tests {
     // A mid-transfer XFER_REFUSE clears every outstanding acknowledgment
     // expectation for the refused transfer (RFC 9174 Section 5.2.2: no
     // further XFER_ACK messages follow for it), leaving later transfers'
-    // expectations intact — stale expectations desynchronise the
-    // acknowledgment matcher and tear the session down.
+    // expectations intact. A stale expectation desynchronises the
+    // acknowledgment matcher and tears the session down.
     #[tokio::test]
     async fn refuse_clears_all_expectations_for_refused_transfer() {
         let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel(16);
@@ -1268,9 +1267,9 @@ mod tests {
 
     // A BPA refusal answers the transfer with XFER_REFUSE (NotAcceptable) and
     // withholds the final acknowledgment, but the session stays up: the token
-    // is not cancelled and later traffic still flows — refusing per bundle
+    // is not cancelled and later traffic still flows. Refusing per bundle
     // without tearing the session down is what ends the over-cap
-    // reconnect/retransmit loop.
+    // reconnect and retransmit loop.
     #[tokio::test]
     async fn ingest_refusal_withholds_ack_without_teardown() {
         let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel(16);

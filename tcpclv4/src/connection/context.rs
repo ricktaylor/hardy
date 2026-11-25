@@ -9,11 +9,12 @@ use tokio::{
 
 use super::*;
 
-/// Data needed to handle a connection, without the TaskPool to avoid circular references.
+/// The configuration and state a connection needs to negotiate and run a
+/// TCPCLv4 session, shared by the active [`Connector`](connect::Connector)
+/// and the passive listener.
 ///
-/// This struct is shared between active (Connector) and passive (Listener) connection handling.
-/// It contains all the configuration and state needed to negotiate and run a TCPCLv4 session,
-/// but excludes the TaskPool to prevent Arc cycles when spawning tasks.
+/// The task pool is deliberately left out: holding it here would form an
+/// `Arc` cycle with the tasks spawned from it.
 #[derive(Clone)]
 pub struct ConnectionContext {
     pub contact_timeout: ContactTimeout,
@@ -42,15 +43,15 @@ impl std::fmt::Debug for ConnectionContext {
 }
 
 impl ConnectionContext {
-    /// Returns the contact timeout as a Duration.
+    /// The contact timeout, as a [`Duration`](tokio::time::Duration).
     pub fn contact_timeout_duration(&self) -> tokio::time::Duration {
         tokio::time::Duration::from_secs(u64::from(self.contact_timeout.get()))
     }
 
-    // The CAN_TLS flag must be honest per role (RFC 9174 Section 4.2:
-    // TLS is used only when both peers set it): the dialing side can
-    // always play the TLS client when material is configured, but the
-    // accepting side can only serve TLS with an identity.
+    // The CAN_TLS flag is honest per role, because TLS is used only when
+    // both peers set it (RFC 9174 Section 4.2): the dialing side can always
+    // play the TLS client when material is configured, but the accepting
+    // side can only serve TLS with an identity.
     fn contact_header(can_tls: bool) -> [u8; 6] {
         [b'd', b't', b'n', b'!', 4, u8::from(can_tls)]
     }
@@ -65,13 +66,13 @@ impl ConnectionContext {
         Self::contact_header(self.tls.as_ref().is_some_and(|tls| tls.has_identity()))
     }
 
-    /// Get the first configured node ID.
+    /// The first configured node ID.
     pub fn first_node_id(&self) -> Option<NodeId> {
         self.node_ids.first().cloned()
     }
 
-    /// Convert a keepalive interval (in seconds) to an Option<Duration>.
-    /// Returns None if the interval is 0 (keepalive disabled).
+    /// The keepalive interval as a duration, or `None` for the wire's
+    /// zero, which disables keepalives.
     pub fn keepalive_as_duration(interval_secs: u16) -> Option<tokio::time::Duration> {
         if interval_secs != 0 {
             Some(tokio::time::Duration::from_secs(interval_secs as u64))
@@ -80,11 +81,11 @@ impl ConnectionContext {
         }
     }
 
-    /// Handle a new incoming contact (passive/server side).
+    /// Accepts an inbound contact and runs the session it opens.
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn new_contact(self, mut stream: TcpStream, remote_addr: SocketAddr) {
-        // Disable Nagle's algorithm to ensure timely delivery of small messages
-        // like XFER_ACK, KEEPALIVE, and SESS_TERM
+        // Nagle's algorithm delays the small messages this protocol leans
+        // on: XFER_ACK, KEEPALIVE and SESS_TERM.
         stream
             .set_nodelay(true)
             .inspect_err(|e| debug!("Failed to set TCP_NODELAY: {e}"))
@@ -94,7 +95,6 @@ impl ConnectionContext {
             .local_addr()
             .trace_expect("Failed to get socket local address");
 
-        // Receive contact header
         let mut buffer = [0u8; 6];
         match tokio::time::timeout(
             self.contact_timeout_duration(),
@@ -113,7 +113,6 @@ impl ConnectionContext {
             }
         }
 
-        // Parse contact header
         if buffer[0..4] != *b"dtn!" {
             debug!(%local_addr, %remote_addr, "Contact header isn't: 'dtn!'");
             return;
@@ -121,7 +120,7 @@ impl ConnectionContext {
 
         debug!(%local_addr, %remote_addr, "Contact header received");
 
-        // Always send our contact header in reply!
+        // The reply header goes out whatever the peer's header says.
         if let Err(e) = stream.write_all(&self.accepting_contact_header()).await {
             debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}");
             return;
@@ -130,7 +129,6 @@ impl ConnectionContext {
         if buffer[4] != 4 {
             debug!(%local_addr, %remote_addr, "Unsupported protocol version {}", buffer[4]);
 
-            // Terminate session
             return transport::terminate(
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::VersionMismatch,
@@ -153,9 +151,9 @@ impl ConnectionContext {
                     .tls_accept(stream, remote_addr, local_addr, tls_config)
                     .await;
             }
-            // Our accepting header did not advertise TLS, so a peer flag
-            // here does not commit the session to it (RFC 9174 Section
-            // 4.2: TLS is used only when both peers set the flag)
+            // The accepting header did not advertise TLS, so a peer flag
+            // here does not commit the session to it (RFC 9174 Section 4.2:
+            // TLS is used only when both peers set the flag).
             debug!(%local_addr, %remote_addr, "TLS requested by peer, but this listener cannot serve TLS (no identity configured)");
         } else if self.tls.as_ref().is_some_and(|tls| tls.is_required()) {
             warn!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
@@ -178,7 +176,7 @@ impl ConnectionContext {
         .await
     }
 
-    /// Handle a new passive session (server side).
+    /// Negotiates and runs a session on an accepted transport.
     #[cfg_attr(feature = "instrument", instrument(skip(self, transport)))]
     pub async fn new_passive<T>(
         self,
@@ -193,7 +191,6 @@ impl ConnectionContext {
             + Send
             + 'static,
     {
-        // Read the SESS_INIT message with timeout
         let peer_init = loop {
             match transport::next_with_timeout(
                 &mut transport,
@@ -210,7 +207,6 @@ impl ConnectionContext {
                 Ok(msg) => {
                     debug!(%local_addr, %remote_addr, "Unexpected message while waiting for SESS_INIT: {msg:?}");
 
-                    // Send a MSG_REJECT/Unexpected message
                     if let Err(e) = transport
                         .send(codec::Message::Reject(codec::MessageRejectMessage {
                             reason_code: codec::MessageRejectionReasonCode::Unexpected,
@@ -218,7 +214,6 @@ impl ConnectionContext {
                         }))
                         .await
                     {
-                        // Its all gone wrong
                         debug!(%local_addr, %remote_addr, "Failed to send message: {e:?}");
                         return;
                     }
@@ -240,7 +235,6 @@ impl ConnectionContext {
                 .or_else(|| self.node_ids.first())
         };
 
-        // Send our SESS_INIT message
         if let Err(e) = transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
                 keepalive_interval: self.keepalive_interval.get(),
@@ -255,16 +249,16 @@ impl ConnectionContext {
             return;
         }
 
-        // Negotiated KeepAlive - See RFC9174 Section 5.1.1
+        // The negotiated keepalive, per RFC 9174 Section 5.1.1.
         let keepalive_interval = self
             .keepalive_interval
             .negotiate(peer_init.keepalive_interval)
             .get();
 
-        // Check peer init
+        // No session extension is supported, so a critical one ends the
+        // session.
         for i in &peer_init.session_extensions {
             if i.flags.critical {
-                // We just don't support extensions!
                 return transport::terminate(
                     transport,
                     codec::SessionTermReasonCode::ContactFailure,
@@ -277,21 +271,20 @@ impl ConnectionContext {
 
         let (tx, rx) = channel(1);
         let peer_node = peer_init.node_id.clone();
-        let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(remote_addr));
+        let peer_addr = Some(hardy_bpa::cla::Address::Tcp(remote_addr));
         let cancel_token = self.session_cancel_token.clone();
         let keepalive_duration = Self::keepalive_as_duration(keepalive_interval);
 
-        // Split the transport into reader and writer halves
-        // This allows the writer task to send keepalives independently of the
-        // session loop, preventing session timeout when dispatch() blocks.
+        // Splitting the transport lets the writer task send keepalives
+        // independently of the session loop, so a dispatch blocked in the
+        // BPA does not time the session out.
         let (transport_writer, transport_reader) = transport.split();
 
-        // Create the writer task (handles keepalives independently)
         let (writer_handle, writer_task) =
             writer::create_writer(transport_writer, keepalive_duration, cancel_token.clone());
 
-        // Spawn the writer task (not in a TaskPool - the session owns
-        // the writer's lifecycle via WriteCommand::Close and cancel_token)
+        // Spawned outside any task pool: the session owns the writer's
+        // lifetime, through `WriteCommand::Close` and the cancel token.
         let task = async move {
             writer_task.run().await;
         };
@@ -316,7 +309,6 @@ impl ConnectionContext {
             cancel_token,
         );
 
-        // Register the client for addr
         self.registry
             .register_session(
                 self.sink.clone(),
@@ -332,13 +324,13 @@ impl ConnectionContext {
 
         debug!(%local_addr, %remote_addr, "Session closed");
 
-        // Unregister the session for addr, whatever happens
+        // Unregister whatever ended the session.
         self.registry
             .unregister_session(&local_addr, &remote_addr)
             .await
     }
 
-    /// Handle TLS accept (server side).
+    /// Completes the TLS handshake and runs the session it opens.
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn tls_accept(
         self,
@@ -377,7 +369,7 @@ impl ConnectionContext {
     }
 }
 
-// Negotiate the outbound segment MTU: our configured MTU capped by the
+// Negotiates the outbound segment MTU: the configured MTU capped by the
 // peer's advertised segment MRU. The wire-derived u64 is clamped, not
 // truncated: on a 32-bit target `as usize` can truncate a large MRU to 0,
 // turning the sender's segmentation loop into an infinite empty-segment

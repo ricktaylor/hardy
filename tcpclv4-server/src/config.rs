@@ -104,7 +104,8 @@ pub struct Config {
 }
 
 impl Config {
-    // Load configuration from a file and environment variable overrides.
+    // Loads the configuration from a file, with environment variable
+    // overrides.
     //
     // Resolution order for the config file path:
     // 1. The explicit `config_file` argument (if `Some`).
@@ -152,17 +153,15 @@ mod tests {
     use core::num::NonZeroU64;
     use std::io::Write;
 
-    use hardy_async::TaskPool;
     use hardy_tcpclv4::{
-        Error as Tcpclv4Error, KeepaliveInterval,
+        Error as Tcpclv4Error, KeepaliveInterval, Tcpclv4,
         tls::{ClientAuth, Error as TlsError},
     };
     use serial_test::serial;
 
     use super::*;
-    use crate::server::Tcpclv4Server;
 
-    // Helper: write a config file and load it.
+    // Writes a config file and loads it.
     fn write_and_load(name: &str, content: &str) -> Config {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(name);
@@ -635,7 +634,7 @@ cla:
     fn empty_listeners_is_dial_only() {
         let config = write_and_load("dial_only.yaml", "cla:\n  listeners: []\n");
         assert_eq!(config.cla.listeners, Some(vec![]));
-        Tcpclv4Server::new(config, TaskPool::new()).expect("a dial-only build binds nothing");
+        Tcpclv4::factory(config.cla).expect("a dial-only build binds nothing");
     }
 
     // `null` is not a spelling in this schema: an earlier schema used it to
@@ -666,27 +665,24 @@ cla:
             config.cla.keepalive_interval,
             Some(KeepaliveInterval::DISABLED)
         );
-        Tcpclv4Server::new(config, TaskPool::new()).expect("0 disables keepalives");
+        Tcpclv4::factory(config.cla).expect("0 disables keepalives");
     }
 
-    // Building the server delegates to the library's conversion, whose
+    // The loaded CLA section feeds the library's own conversion, whose
     // rules `hardy-tcpclv4`'s own tests cover: a contradiction surfaces as
     // the library's typed error.
     #[test]
     #[serial]
-    fn building_delegates_to_the_library() {
+    fn the_cla_section_feeds_the_library() {
         let config = write_and_load(
             "no-anchor.toml",
             "[cla]\nlisteners = []\n\n[cla.tls]\nrequired = true\n",
         );
-        let Err(err) = Tcpclv4Server::new(config, TaskPool::new()) else {
+        let Err(err) = Tcpclv4::factory(config.cla) else {
             panic!("TLS without a trust anchor must fail to build");
         };
         assert!(
-            matches!(
-                err.downcast_ref::<Tcpclv4Error>(),
-                Some(Tcpclv4Error::Tls(TlsError::NoTrustAnchor))
-            ),
+            matches!(err, Tcpclv4Error::Tls(TlsError::NoTrustAnchor)),
             "{err:?}"
         );
     }

@@ -26,7 +26,7 @@ The BPA is constructed via `BpaBuilder` and exposes a `BpaRegistration` trait th
 - **Pluggable storage**: `BundleStorage` and `MetadataStorage` traits with built-in in-memory implementations and optional LRU caching
 - **Channel state machine**: Hybrid memory/storage backpressure for egress queues
 - **Component registry**: Unified trait + sink pattern for CLAs, services, applications, and routing agents
-- **Static routing**: `StaticRoutingAgent` for fixed route sets without implementing the full `RoutingAgent` trait
+- **Static routing**: `routing::StaticAgent` for fixed route sets without implementing the full `routing::Agent` trait
 - **`no_std` compatible**: With a heap allocator (currently blocked on `flume` and `metrics` dependencies)
 - Feature flag: `tokio` (default) -- enables Tokio runtime support, implies `std`
 - Feature flag: `rfc9173` (default) -- enables RFC 9173 (BPSec) security contexts
@@ -43,11 +43,10 @@ use hardy_bpa::node_ids::NodeIds;
 let bpa = Bpa::builder()
     .node_ids(node_ids)
     .status_reports(true)
-    .build()
-    .await?;
+    .build();
 
-// Start processing
-bpa.start(false).await;
+// Start processing, registering every declared component
+bpa.start(false).await?;
 
 // Register components via the BpaRegistration trait
 bpa.register_cla(name, cla, policy).await?;

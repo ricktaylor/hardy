@@ -1,8 +1,7 @@
 use clap::Parser;
 use hardy_async::TaskPool;
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::routing::RegistrarExt as _;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::{error, info};
 
 mod config;
@@ -50,7 +49,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
-    // Describe metrics
     metrics::describe_gauge!(
         "tvr_contacts",
         metrics::Unit::Count,
@@ -83,44 +81,31 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         "Contact plan file reload attempts"
     );
 
-    // Create scheduler channel (handle available immediately, task starts after registration)
+    // The handle is usable before the scheduler task starts, so the agent
+    // factory can take it at registration time.
     let (scheduler_handle, scheduler_rx) = scheduler::channel();
 
-    // Create the routing agent
-    let agent = Arc::new(contacts::TvrAgent::new(
-        config.priority,
-        scheduler_handle.clone(),
-    ));
-
-    // Connect to BPA and register as a RoutingAgent
     info!("Connecting to BPA at {}", config.bpa_address);
 
     let remote_bpa = hardy_proto::client::RemoteBpa::new(config.bpa_address);
 
-    let node_ids = remote_bpa
-        .register_routing_agent(config.agent_name.clone(), agent.clone())
+    let agent = remote_bpa
+        .register_routing_agent(
+            &config.agent_name,
+            contacts::TvrAgent::factory(config.priority, scheduler_handle.clone()),
+        )
         .await
-        .map_err(|e| anyhow::anyhow!("RoutingAgent registration failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Routing agent registration failed: {e}"))?;
 
-    info!(
-        "Routing agent '{}' registered, node IDs: {:?}",
-        config.agent_name,
-        node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
-    );
+    info!("Routing agent '{}' registered", config.agent_name);
 
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    // Start scheduler task (sink is now available after registration)
-    {
-        let sink = agent.sink().expect("sink should be set after registration");
-        scheduler::start(scheduler_rx, sink, &tasks);
-    }
+    scheduler::start(scheduler_rx, agent.sink().clone(), &tasks);
 
-    // Start TVR gRPC session server
     server::start(config.grpc_listen, &agent, &tasks).await;
 
-    // Load contact plan file if configured
     if let Some(contact_plan) = &config.contact_plan {
         info!("Loading contact plan from '{}'", contact_plan.display());
         match parser::load_contacts(
@@ -204,7 +189,6 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
 
     tasks.cancel_token().cancelled().await;
 
-    // Gracefully unregister from the BPA
     agent.unregister().await;
 
     tasks.shutdown().await;

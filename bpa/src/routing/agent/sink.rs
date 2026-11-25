@@ -1,71 +1,64 @@
+//! The interface a routing agent pushes routes through.
+
 use hardy_eid_patterns::EidPattern;
 
-use super::{Error, Result, RoutingSink};
 use crate::{
-    Arc, async_trait,
-    routing::{action::RouteAction, rib::Rib},
+    async_trait,
+    routing::{Result, RouteAction},
 };
 
-pub struct Sink {
-    name: String,
-    rib: Arc<Rib>,
-}
-
-impl Sink {
-    pub fn new(name: String, rib: Arc<Rib>) -> Self {
-        Self { name, rib }
-    }
-
-    fn check_connected(&self) -> Result<()> {
-        if self.rib.has_agent(&self.name) {
-            Ok(())
-        } else {
-            Err(Error::Disconnected)
-        }
-    }
-}
-
+/// The interface an [`Agent`](super::Agent) uses to push routes.
+///
+/// The sink stamps the agent's registered name on every route as its
+/// source, so an agent can only add or remove routes attributed to
+/// itself.
+///
+/// The sink is supplied in the [`Context`](super::Context) the agent is
+/// built from, and stays usable until the agent unregisters or the BPA
+/// shuts down, after which every method here returns
+/// [`Error::Disconnected`](crate::routing::Error::Disconnected).
 #[async_trait]
-impl RoutingSink for Sink {
-    async fn unregister(&self) {
-        self.rib.unregister_agent(&self.name).await;
-    }
+pub trait Sink: Send + Sync {
+    /// Unregisters the agent from the BPA, withdrawing the routes it
+    /// added.
+    async fn unregister(&self);
 
+    /// Adds a route to the RIB.
+    ///
+    /// Returns `true` if the route was inserted, and `false` if an
+    /// identical route was already present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NullNextHop`] or [`Error::ViaOwnNode`] if the
+    /// route's next hop is unusable, and [`Error::Disconnected`] once the
+    /// agent has unregistered.
+    ///
+    /// [`Error::NullNextHop`]: crate::routing::Error::NullNextHop
+    /// [`Error::ViaOwnNode`]: crate::routing::Error::ViaOwnNode
+    /// [`Error::Disconnected`]: crate::routing::Error::Disconnected
     async fn add_route(
         &self,
         pattern: EidPattern,
         action: RouteAction,
         priority: u32,
-    ) -> Result<bool> {
-        self.check_connected()?;
-        self.rib
-            .add(pattern, self.name.clone(), action.into(), priority)
-            .await
-    }
+    ) -> Result<bool>;
 
+    /// Removes a route from the RIB.
+    ///
+    /// Only a route matching the pattern, the action and the priority,
+    /// and carrying this agent's source name, is removed. Returns `true`
+    /// if one was found.
+    ///
+    /// # Errors
+    ///
+    /// Returns
+    /// [`Error::Disconnected`](crate::routing::Error::Disconnected) once
+    /// the agent has unregistered.
     async fn remove_route(
         &self,
         pattern: &EidPattern,
         action: &RouteAction,
         priority: u32,
-    ) -> Result<bool> {
-        self.check_connected()?;
-        Ok(self
-            .rib
-            .remove(pattern, &self.name, action.clone().into(), priority)
-            .await)
-    }
-}
-
-impl Drop for Sink {
-    fn drop(&mut self) {
-        if self.rib.tasks.is_cancelled() || !self.rib.has_agent(&self.name) {
-            return;
-        }
-        let name = self.name.clone();
-        let rib = self.rib.clone();
-        hardy_async::spawn!(self.rib.tasks, "routing_agent_drop_cleanup", async move {
-            rib.unregister_agent(&name).await;
-        });
-    }
+    ) -> Result<bool>;
 }

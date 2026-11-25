@@ -1,19 +1,21 @@
-//! Per-service delivery queue lifecycle: bundles queued behind an in-flight
-//! delivery hold `DeliverPending`; unregistering the service sweeps them to
-//! `WaitingForService` (leaving the in-flight `DeliveryAckPending` claim
-//! alone — the service consumes or defers it itself), and a later
-//! registration on the same EID delivers them.
+//! Per-service delivery queue lifecycle.
+//!
+//! Bundles queued behind an in-flight delivery hold `DeliverPending`.
+//! Unregistering the service sweeps them to `WaitingForService`, leaving
+//! the in-flight `DeliveryAckPending` claim alone for the service to
+//! consume or defer itself, and a later registration on the same EID
+//! delivers them.
 
-use core::{num::NonZeroU64, time::Duration};
+use core::time::Duration;
 use std::{borrow::Cow, sync::Arc};
 
 use hardy_bpa::{
     Bytes, async_trait,
-    bpa::{Bpa, BpaRegistration},
+    bpa::Bpa,
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla,
+    cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
     node_ids::NodeIds,
-    services,
+    service::{self, RegistrarExt as ServiceRegistrarExt, StatusNotify, raw},
     storage::{self, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, Sender},
 };
@@ -28,15 +30,16 @@ use hardy_bpv7::{
 /// Records each delivered bundle id; holds the first delivery open until
 /// the release sender fires (or is dropped).
 struct HoldService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    sink: Arc<dyn raw::Sink>,
     delivered_tx: flume::Sender<Id>,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
 
 impl HoldService {
-    fn new() -> (
-        Arc<Self>,
+    /// The factory, with the channels each delivery reports through.
+    fn factory() -> (
+        impl raw::Factory<Component = Self>,
         flume::Receiver<Id>,
         flume::Receiver<()>,
         flume::Sender<()>,
@@ -45,11 +48,13 @@ impl HoldService {
         let (started_tx, started_rx) = flume::unbounded();
         let (release_tx, release_rx) = flume::bounded(1);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                delivered_tx,
-                started_tx,
-                release_rx,
+            raw::factory_fn(move |cx: raw::Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    delivered_tx,
+                    started_tx,
+                    release_rx,
+                }))
             }),
             delivered_rx,
             started_rx,
@@ -59,20 +64,14 @@ impl HoldService {
 }
 
 #[async_trait]
-impl services::Service for HoldService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    async fn on_deliver(
+impl raw::Service for HoldService {
+    async fn deliver(
         &self,
         bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let _ = self.started_tx.send_async(()).await;
         let _ = self.release_rx.recv_async().await;
         loop {
@@ -85,11 +84,11 @@ impl services::Service for HoldService {
         Ok(())
     }
 
-    async fn on_status_notify(
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -97,31 +96,28 @@ impl services::Service for HoldService {
 }
 
 struct IngressCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
+}
+
+impl IngressCla {
+    fn factory() -> impl Factory<Component = Self> {
+        factory_fn(Request::default(), |cx: Context| {
+            Ok(Arc::new(Self { sink: cx.sink }))
+        })
+    }
 }
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        Ok(cla::ForwardBundleResult::Sent)
+    ) -> cla::Result<cla::ForwardOutcome> {
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -162,28 +158,20 @@ async fn unregister_sweeps_queued_deliveries() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .metadata_storage(metadata_store.clone())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
     let service_eid: Eid = "ipn:0.1.7".parse().unwrap();
-    let (svc_a, delivered_a_rx, started_rx, release_tx) = HoldService::new();
-    bpa.register_service(Service::Ipn(7), svc_a.clone())
+    let (factory, delivered_a_rx, started_rx, release_tx) = HoldService::factory();
+    let svc_a = bpa
+        .register_raw_service(Some(Service::Ipn(7)), factory)
         .await
         .unwrap();
 
-    let cla = Arc::new(IngressCla {
-        sink: hardy_async::sync::spin::Once::new(),
-    });
-    bpa.register_cla(
-        "ingress".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = bpa
+        .register_cla("ingress", IngressCla::factory())
+        .await
+        .unwrap();
 
     let dispatch = |payload: &'static [u8]| {
         let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
@@ -201,8 +189,6 @@ async fn unregister_sweeps_queued_deliveries() {
     let (_id1, data1) = dispatch(b"held");
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut data1.clone())
             .await
             .unwrap(),
@@ -217,8 +203,6 @@ async fn unregister_sweeps_queued_deliveries() {
     let (id2, data2) = dispatch(b"queued");
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut data2.clone())
             .await
             .unwrap(),
@@ -235,7 +219,7 @@ async fn unregister_sweeps_queued_deliveries() {
 
     // Unregistering sweeps the queued bundle to WaitingForService; the held
     // delivery keeps its DeliveryAckPending claim and completes normally.
-    svc_a.sink.get().unwrap().unregister().await;
+    svc_a.sink.unregister().await;
     await_status(
         &metadata_store,
         &id2,
@@ -255,9 +239,9 @@ async fn unregister_sweeps_queued_deliveries() {
     assert_ne!(delivered, id2, "the swept bundle must not reach service A");
 
     // A later registration on the same EID recovers the swept bundle.
-    let (svc_b, delivered_b_rx, _started_b_rx, release_b_tx) = HoldService::new();
+    let (factory, delivered_b_rx, _started_b_rx, release_b_tx) = HoldService::factory();
     drop(release_b_tx); // complete deliveries immediately
-    bpa.register_service(Service::Ipn(7), svc_b.clone())
+    bpa.register_raw_service(Some(Service::Ipn(7)), factory)
         .await
         .unwrap();
     let delivered = tokio::time::timeout(
@@ -360,8 +344,8 @@ impl MetadataStorage for BlockingPollStorage {
         stream: &dyn Sender<Bundle>,
     ) -> storage::Result<()> {
         let _ = self.entered_tx.send(());
-        // Parked until the test drops the release sender — registration
-        // must not be waiting on us.
+        // Parked until the test drops the release sender: registration must
+        // not be waiting on this poll.
         let _ = self.release_rx.recv_async().await;
         self.inner.poll_service_waiting(source, stream).await
     }
@@ -385,10 +369,11 @@ impl MetadataStorage for BlockingPollStorage {
 }
 
 // Registration returns while its post-registration WaitingForService poll
-// is still parked in storage: the poll is spawned, never awaited inline —
-// a sink whose event buffer drains only after registration returns (the
-// gRPC-bridge shape) would otherwise deadlock registration against its own
-// announcements. The parked bundle still arrives once the poll runs.
+// is still parked in storage: the poll is spawned, never awaited inline,
+// since a sink whose event buffer drains only after registration returns,
+// as the gRPC bridge's does, would otherwise deadlock registration against
+// its own announcements. The parked bundle still arrives once the poll
+// runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn registration_does_not_await_the_post_registration_poll() {
     let node_ids = NodeIds::try_from(
@@ -409,24 +394,15 @@ async fn registration_does_not_await_the_post_registration_poll() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .metadata_storage(store.clone())
-        .build()
-        .await
-        .unwrap();
-    bpa.start(false).await;
+        .build();
+    bpa.start(false).await.unwrap();
 
     // Park a bundle as WaitingForService: destined to a local service that
     // is not yet registered.
-    let cla = Arc::new(IngressCla {
-        sink: hardy_async::sync::spin::Once::new(),
-    });
-    bpa.register_cla(
-        "ingress".to_string(),
-        cla.clone(),
-        None,
-        cla::ClaInit::default(),
-    )
-    .await
-    .unwrap();
+    let cla = bpa
+        .register_cla("ingress", IngressCla::factory())
+        .await
+        .unwrap();
     let service_eid: Eid = "ipn:0.1.9".parse().unwrap();
     let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), service_eid.clone())
         .with_lifetime(Duration::from_secs(3600))
@@ -440,8 +416,6 @@ async fn registration_does_not_await_the_post_registration_poll() {
         .id;
     assert_eq!(
         cla.sink
-            .get()
-            .unwrap()
             .dispatch(None, None, &mut Bytes::from(data))
             .await
             .unwrap(),
@@ -459,14 +433,14 @@ async fn registration_does_not_await_the_post_registration_poll() {
     // Registration must return while the poll is parked in storage. The
     // generous timeout only bounds a regression: an inline await would
     // never return.
-    let (svc, delivered_rx, _started_rx, svc_release_tx) = HoldService::new();
+    let (factory, delivered_rx, _started_rx, svc_release_tx) = HoldService::factory();
     drop(svc_release_tx); // complete deliveries immediately
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        bpa.register_service(Service::Ipn(9), svc.clone()),
+        bpa.register_raw_service(Some(Service::Ipn(9)), factory),
     )
     .await
-    .expect("registration awaited the parked poll — the spawn regressed")
+    .expect("registration awaited the parked poll, so the spawn regressed")
     .unwrap();
 
     // The spawned poll genuinely ran and parked in storage.

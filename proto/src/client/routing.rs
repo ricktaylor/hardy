@@ -1,3 +1,10 @@
+// `Sink` is this module's own proxy sink, so the BPA's trait of that
+// name is imported anonymously, for its methods alone.
+use hardy_bpa::{
+    node_ids::NodeIds,
+    routing::{Agent, BoxFactory, Context, Sink as _},
+};
+
 use super::*;
 use proto::routing::*;
 
@@ -16,7 +23,7 @@ impl Sink {
 }
 
 #[async_trait]
-impl hardy_bpa::routing::RoutingSink for Sink {
+impl hardy_bpa::routing::Sink for Sink {
     async fn add_route(
         &self,
         pattern: hardy_eid_patterns::EidPattern,
@@ -64,8 +71,16 @@ impl hardy_bpa::routing::RoutingSink for Sink {
     }
 }
 
+// The agent the session owns, shared with the proxy's handler.
+//
+// The agent is built from a context carrying the sink the proxy stands
+// behind, so the proxy exists first and learns the agent it serves
+// here. The handler holds the only strong reference: the session owns
+// the agent it registered, and drops it on close.
+type SessionAgent = Arc<Mutex<Option<Arc<dyn Agent>>>>;
+
 struct Handler {
-    agent: Weak<dyn hardy_bpa::routing::RoutingAgent>,
+    agent: SessionAgent,
 }
 
 #[async_trait]
@@ -74,24 +89,30 @@ impl ProxyHandler for Handler {
     type RMsg = bpa_to_agent::Msg;
 
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
-        {
-            warn!("Ignoring unsolicited response: {msg:?}");
-            None
-        }
+        // Routing agents are push-only: the BPA never asks one for work.
+        warn!("Ignoring unsolicited response: {msg:?}");
+        None
     }
 
     async fn on_close(&self) {
-        if let Some(agent) = self.agent.upgrade() {
-            agent.on_unregister().await;
+        let agent = self.agent.lock().take();
+        if let Some(agent) = agent
+            && let Err(e) = agent.unregister().await
+        {
+            warn!("Routing agent unregister failed: {e}");
         }
     }
 }
 
+/// Registers a routing agent with the BPA over gRPC.
+///
+/// The bidirectional stream to the BPA's RoutingAgent endpoint stays open
+/// for the agent's lifetime, and closing it unregisters the agent.
 pub async fn register_routing_agent(
     grpc_addr: String,
-    name: String,
-    agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
-) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
+    name: &str,
+    factory: BoxFactory<'_>,
+) -> hardy_bpa::routing::Result<()> {
     let mut client = routing_agent_client::RoutingAgentClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
@@ -112,11 +133,12 @@ pub async fn register_routing_agent(
         })?
         .into_inner();
 
-    // Send the initial registration message.
     let response = match RpcProxy::send(
         &mut channel_sender,
         &mut channel_receiver,
-        agent_to_bpa::Msg::Register(RegisterRoutingAgentRequest { name: name.clone() }),
+        agent_to_bpa::Msg::Register(RegisterRoutingAgentRequest {
+            name: name.to_string(),
+        }),
     )
     .await
     .map_err(|e| {
@@ -133,11 +155,11 @@ pub async fn register_routing_agent(
         }
     };
 
-    let node_ids_vec = response.node_ids;
-    let count = node_ids_vec.len();
-    let node_ids = node_ids_vec
+    let node_id_count = response.node_ids.len();
+    let node_ids = response
+        .node_ids
         .into_iter()
-        .try_fold(Vec::with_capacity(count), |mut v, node_id| {
+        .try_fold(Vec::with_capacity(node_id_count), |mut v, node_id| {
             v.push(node_id.parse::<hardy_bpv7::eid::NodeId>()?);
             Ok::<_, hardy_bpv7::eid::Error>(v)
         })
@@ -145,67 +167,113 @@ pub async fn register_routing_agent(
             error!("Failed to parse node IDs in response: {e}");
             hardy_bpa::routing::Error::Internal(e.into())
         })?;
+    let node_ids = NodeIds::try_from(node_ids.as_slice()).map_err(|e| {
+        error!("Far BPA reported unusable node IDs: {e}");
+        hardy_bpa::routing::Error::Internal(e.into())
+    })?;
 
-    let handler = Box::new(Handler {
-        agent: Arc::downgrade(&agent),
-    });
+    let session: SessionAgent = Arc::new(Mutex::new(None));
+    let proxy = RpcProxy::run(
+        channel_sender,
+        channel_receiver,
+        Box::new(Handler {
+            agent: session.clone(),
+        }),
+        Side::Client,
+    );
+    let sink = Arc::new(Sink { proxy });
 
-    // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
+    // The agent runs against the proxy from here, so a build or
+    // registration failure takes the session down with it.
+    let registered = async {
+        let agent = factory.build(Context::new(sink.clone(), Arc::new(node_ids)))?;
+        agent.register().await?;
+        Ok(agent)
+    }
+    .await;
 
-    // Call on_register()
-    agent
-        .on_register(Box::new(Sink { proxy }), node_ids.as_slice())
-        .await;
-
-    info!("Proxy routing agent {name} started");
-    Ok(node_ids)
+    match registered {
+        Ok(agent) => {
+            *session.lock() = Some(agent);
+            info!("Proxy routing agent {name} registered");
+            Ok(())
+        }
+        Err(e) => {
+            sink.unregister().await;
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::routing::{RoutingAgent, RoutingSink};
-    use hardy_bpv7::eid::NodeId;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
     // ── Mock routing agent ───────────────────────────────────────────
 
-    struct MockRoutingAgent {
+    // The lifecycle the session drives, observable from outside the
+    // agent the factory builds.
+    #[derive(Default)]
+    struct Lifecycle {
         registered: AtomicBool,
-        unregister_count: AtomicUsize,
-        sink: Mutex<Option<Box<dyn RoutingSink>>>,
+        unregisters: AtomicUsize,
+        unregistered: tokio::sync::Notify,
     }
 
-    impl MockRoutingAgent {
-        fn new() -> Self {
-            Self {
-                registered: AtomicBool::new(false),
-                unregister_count: AtomicUsize::new(0),
-                sink: Mutex::new(None),
-            }
-        }
-
+    impl Lifecycle {
         fn is_registered(&self) -> bool {
             self.registered.load(Ordering::Relaxed)
         }
 
         fn is_unregistered(&self) -> bool {
-            self.unregister_count.load(Ordering::Relaxed) > 0
+            self.unregisters.load(Ordering::Relaxed) > 0
+        }
+
+        // Resolves once the agent has been unregistered at least once.
+        async fn unregistered(&self) {
+            let notified = self.unregistered.notified();
+            if self.is_unregistered() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    struct MockRoutingAgent {
+        lifecycle: Arc<Lifecycle>,
+        // A real agent keeps the sink for its whole active life, and the
+        // session's proxy stands behind it: dropping it here would close
+        // the stream under the test.
+        _sink: Arc<dyn hardy_bpa::routing::Sink>,
+    }
+
+    impl MockRoutingAgent {
+        fn factory(
+            lifecycle: Arc<Lifecycle>,
+        ) -> impl hardy_bpa::routing::Factory<Component = Self> {
+            hardy_bpa::routing::factory_fn(move |cx: Context| {
+                Ok(Arc::new(Self {
+                    lifecycle,
+                    _sink: cx.sink,
+                }))
+            })
         }
     }
 
     #[async_trait]
-    impl RoutingAgent for MockRoutingAgent {
-        async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-            *self.sink.lock() = Some(sink);
-            self.registered.store(true, Ordering::Relaxed);
+    impl Agent for MockRoutingAgent {
+        async fn register(&self) -> hardy_bpa::routing::Result<()> {
+            self.lifecycle.registered.store(true, Ordering::Relaxed);
+            Ok(())
         }
 
-        async fn on_unregister(&self) {
-            self.unregister_count.fetch_add(1, Ordering::Relaxed);
+        async fn unregister(&self) -> hardy_bpa::routing::Result<()> {
+            self.lifecycle.unregisters.fetch_add(1, Ordering::Relaxed);
+            self.lifecycle.unregistered.notify_waiters();
+            Ok(())
         }
     }
 
@@ -216,8 +284,8 @@ mod tests {
         NEXT_PORT.fetch_add(1, Ordering::Relaxed) as u16
     }
 
-    // The loopback host for test servers: IPv6 when available, IPv4 as a
-    // fallback (some sandboxes have no ::1)
+    // The loopback host for test servers: IPv6 when available, IPv4 where
+    // no ::1 is bindable.
     fn loopback_host() -> &'static str {
         static HOST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         HOST.get_or_init(|| {
@@ -248,7 +316,6 @@ mod tests {
                 .unwrap();
         });
 
-        // Give the server a moment to bind
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         (grpc_addr, handle)
@@ -269,10 +336,8 @@ mod tests {
             let mut stream = request.into_inner();
 
             tokio::spawn(async move {
-                // Read the client's registration message
                 let _ = stream.message().await;
 
-                // Send valid response
                 let _ = tx
                     .send(Ok(BpaToAgent {
                         msg_id: 0,
@@ -282,7 +347,8 @@ mod tests {
                     }))
                     .await;
 
-                // Drop tx immediately — closes the stream right after handshake
+                // Dropping tx here closes the stream right after the
+                // handshake.
             });
 
             Ok(tonic::Response::new(ReceiverStream::new(rx)))
@@ -304,7 +370,6 @@ mod tests {
             let mut stream = request.into_inner();
 
             tokio::spawn(async move {
-                // Read the client's registration message
                 let _ = stream.message().await;
 
                 let response = BpaToAgent {
@@ -314,16 +379,13 @@ mod tests {
                     })),
                 };
 
-                // Send valid response
                 let _ = tx.send(Ok(response.clone())).await;
 
-                // Small delay to ensure the first response is processed
+                // Let the client consume the first response before the
+                // duplicate, then hold the stream open long enough for it to
+                // consume the duplicate too.
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-                // Send duplicate response (protocol violation)
                 let _ = tx.send(Ok(response)).await;
-
-                // Keep stream alive briefly so the client reader processes the duplicate
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             });
 
@@ -346,11 +408,12 @@ mod tests {
             let mut stream = request.into_inner();
 
             tokio::spawn(async move {
-                // Read the client's registration message (must consume it)
+                // The registration message must be consumed before the
+                // response goes out.
                 let _ = stream.message().await;
 
-                // Send an AddRouteResponse with non-zero msg_id — the client
-                // handshake expects msg_id 0.
+                // The handshake expects msg_id 0, so an AddRouteResponse at
+                // msg_id 5 is out of sequence.
                 let _ = tx
                     .send(Ok(BpaToAgent {
                         msg_id: 5,
@@ -367,33 +430,34 @@ mod tests {
 
     // ── Tests ────────────────────────────────────────────────────────
 
-    // ERR-CLI-02: Client receives synthetic on_unregister when server
-    // closes the stream immediately after the registration handshake.
+    // ERR-CLI-02: Client shuts its agent down when the server closes the
+    // stream immediately after the registration handshake.
     //
     // A custom mock server sends a valid registration response then
     // immediately drops the channel, closing the stream. The client
-    // proxy's reader detects the closure and delivers a synthetic
-    // `on_unregister()` via `on_close`.
+    // proxy's reader detects the closure and shuts the agent down via
+    // `on_close`.
     #[tokio::test]
     async fn err_cli_02_premature_stream_end() {
         let (grpc_addr, server_handle) = start_bad_server(PrematureCloseServer).await;
 
-        let agent = Arc::new(MockRoutingAgent::new());
+        let lifecycle = Arc::new(Lifecycle::default());
 
-        let result =
-            register_routing_agent(grpc_addr, "test-agent".to_string(), agent.clone()).await;
+        let result = register_routing_agent(
+            grpc_addr,
+            "test-agent",
+            BoxFactory::new(MockRoutingAgent::factory(lifecycle.clone())),
+        )
+        .await;
 
         // Registration should succeed (the response was valid)
         assert!(result.is_ok(), "registration should succeed");
-        assert!(agent.is_registered());
+        assert!(lifecycle.is_registered());
 
-        // Give the client time to detect the stream close
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        assert!(
-            agent.is_unregistered(),
-            "agent should have received synthetic on_unregister after stream close"
-        );
+        // The timeout only bounds a regression
+        tokio::time::timeout(std::time::Duration::from_secs(5), lifecycle.unregistered())
+            .await
+            .expect("agent should have been unregistered after the stream closed");
 
         server_handle.abort();
     }
@@ -402,30 +466,34 @@ mod tests {
     //
     // A custom mock server sends `RegisterRoutingAgentResponse` twice.
     // The first response completes the handshake normally. The second
-    // arrives as an unsolicited message — the reader finds no pending
-    // entry for msg_id 0 and dispatches it to `on_notify`, which logs
-    // a warning and ignores it.
+    // arrives unsolicited: the reader finds no pending entry for msg_id 0
+    // and dispatches it to `on_notify`, which logs a warning and ignores
+    // it.
     #[tokio::test]
     async fn err_cli_03_duplicate_register_response() {
         let (grpc_addr, server_handle) = start_bad_server(DuplicateRegisterServer).await;
 
-        let agent = Arc::new(MockRoutingAgent::new());
+        let lifecycle = Arc::new(Lifecycle::default());
 
-        let result =
-            register_routing_agent(grpc_addr, "test-agent".to_string(), agent.clone()).await;
+        let result = register_routing_agent(
+            grpc_addr,
+            "test-agent",
+            BoxFactory::new(MockRoutingAgent::factory(lifecycle.clone())),
+        )
+        .await;
 
         // Registration should succeed (first response is valid)
         assert!(result.is_ok(), "registration should succeed");
-        assert!(agent.is_registered());
+        assert!(lifecycle.is_registered());
 
-        // Wait for the duplicate to arrive and be processed
+        // Wait for the duplicate to arrive and be processed.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-        // No panic — test completing is the primary assertion.
-        // After the server's stream closes, the client should get on_unregister.
+        // Reaching here without a panic is half the assertion; once the
+        // server's stream closes, the client unregisters its agent.
         assert!(
-            agent.is_unregistered(),
-            "agent should have received on_unregister after server stream closed"
+            lifecycle.is_unregistered(),
+            "agent should have been unregistered after the server stream closed"
         );
 
         server_handle.abort();
@@ -442,18 +510,22 @@ mod tests {
     async fn err_cli_04_invalid_message_sequence() {
         let (grpc_addr, server_handle) = start_bad_server(OutOfSequenceServer).await;
 
-        let agent = Arc::new(MockRoutingAgent::new());
+        let lifecycle = Arc::new(Lifecycle::default());
 
-        let result =
-            register_routing_agent(grpc_addr, "test-agent".to_string(), agent.clone()).await;
+        let result = register_routing_agent(
+            grpc_addr,
+            "test-agent",
+            BoxFactory::new(MockRoutingAgent::factory(lifecycle.clone())),
+        )
+        .await;
 
         assert!(
             result.is_err(),
             "registration should fail with out-of-sequence response"
         );
         assert!(
-            !agent.is_registered(),
-            "agent should not have received on_register"
+            !lifecycle.is_registered(),
+            "agent should not have been built or registered"
         );
 
         server_handle.abort();

@@ -1,62 +1,60 @@
 //! BPA pipeline throughput benchmark.
 //!
-//! Uses criterion to measure bundle forwarding throughput through the
-//! full BPA pipeline with in-memory storage.
+//! Measures bundle forwarding throughput through the full BPA pipeline
+//! over in-memory storage.
 
-use core::num::NonZeroU64;
-use criterion::*;
-use hardy_bpa::bpa::{Bpa, BpaRegistration};
-use hardy_bpa::cla;
-use hardy_bpa::{Bytes, async_trait};
-use hardy_bpv7::eid::{IpnNodeId, NodeId};
 use std::sync::Arc;
 
-// -- Inline CLA — captures arrival time inside forward() --
+use criterion::*;
+use hardy_bpa::{
+    Bytes, async_trait,
+    bpa::Bpa,
+    cla::{self, Context, Factory, RegistrarExt, Request, factory_fn},
+    node_ids::NodeIds,
+};
+use hardy_bpv7::eid::{IpnNodeId, NodeId};
+
+// Records the arrival instant inside `forward`.
 
 struct BenchCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    sink: Arc<dyn cla::Sink>,
     arrival_tx: flume::Sender<std::time::Instant>,
 }
 
 impl BenchCla {
-    fn new() -> (Arc<Self>, flume::Receiver<std::time::Instant>) {
-        let (tx, rx) = flume::bounded(4096);
+    fn factory() -> (
+        impl Factory<Component = Self>,
+        flume::Receiver<std::time::Instant>,
+    ) {
+        let (arrival_tx, arrival_rx) = flume::bounded(4096);
         (
-            Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
-                arrival_tx: tx,
+            factory_fn(Request::default(), move |cx: Context| {
+                Ok(Arc::new(Self {
+                    sink: cx.sink,
+                    arrival_tx,
+                }))
             }),
-            rx,
+            arrival_rx,
         )
     }
 }
 
 #[async_trait]
 impl cla::Cla for BenchCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: Option<NonZeroU64>,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-    async fn on_unregister(&self) {}
-
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let _ = self.arrival_tx.send(std::time::Instant::now());
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
-// -- Static state: runtime + BPA live for the entire benchmark process --
+// The runtime and BPA live for the whole benchmark process.
 
 struct BenchState {
     cla: Arc<BenchCla>,
@@ -79,7 +77,7 @@ fn get_state() -> &'static BenchState {
         let rt = get_runtime();
 
         rt.block_on(async {
-            let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+            let node_ids = NodeIds::try_from(
                 [NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 1,
@@ -88,34 +86,25 @@ fn get_state() -> &'static BenchState {
             )
             .unwrap();
 
-            let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-            bpa.start(false).await;
+            let bpa = Bpa::builder().node_ids(node_ids).build();
+            bpa.start(false).await.unwrap();
 
-            let (cla, arrival_rx) = BenchCla::new();
-            bpa.register_cla(
-                "bench".to_string(),
-                cla.clone(),
-                None,
-                cla::ClaInit::default(),
-            )
-            .await
-            .unwrap();
+            let (factory, arrival_rx) = BenchCla::factory();
+            let cla = bpa.register_cla("bench", factory).await.unwrap();
 
             let remote_node = NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
             });
             cla.sink
-                .get()
-                .unwrap()
                 .add_peer(
-                    cla::ClaAddress::Private("peer".as_bytes().into()),
+                    cla::Address::Private("peer".as_bytes().into()),
                     &[remote_node],
                 )
                 .await
                 .unwrap();
 
-            // BPA intentionally not shut down — lives for process lifetime (like fuzz harness)
+            // Never shut down: the BPA lives for the process lifetime.
             std::mem::forget(bpa);
 
             BenchState { cla, arrival_rx }
@@ -183,8 +172,6 @@ fn throughput_benchmark(c: &mut Criterion) {
                     state
                         .cla
                         .sink
-                        .get()
-                        .unwrap()
                         .dispatch(None, None, &mut Bytes::from(data))
                         .await
                         .unwrap(),

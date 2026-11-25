@@ -4,16 +4,19 @@ use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 
+use hardy_bpa::cla::{AddressType, Context, Factory, Request, factory_fn};
 use tracing::{debug, warn};
 
 use crate::{
     ContactTimeout, KeepaliveInterval, Tcpclv4,
     error::{Error, Result},
     otel_metrics,
+    tcpclv4::Settings,
     tls::TlsBuilder,
 };
 
-/// Builder for a [`Tcpclv4`]. Obtain one from [`Tcpclv4::builder`].
+/// Builder for a [`Tcpclv4`]. Obtain one from
+/// [`Tcpclv4::builder`](crate::Tcpclv4::builder).
 ///
 /// Every setting starts at the default documented on its method, so only deviations need to be chained before [`build()`](Self::build).
 #[must_use = "a Tcpclv4Builder does nothing unless `build()` is called"]
@@ -149,13 +152,17 @@ impl Tcpclv4Builder {
         self
     }
 
-    /// Loads the TLS material, binds the listeners, and assembles the [`Tcpclv4`], ready to register with a BPA.
+    /// Loads the TLS material, binds the listeners, and assembles the factory a BPA builds the [`Tcpclv4`] from.
+    ///
+    /// The transport is opened here, never inside the factory: a socket
+    /// that cannot be bound fails before the BPA is involved. A caller
+    /// that owns the entity itself, rather than handing it over, mints a
+    /// [`Context`] and calls [`Factory::build`] on the result.
     ///
     /// # Errors
     ///
     /// Returns an [`enum@Error`] when the TLS material fails to load, when a listener socket cannot be bound, or when listeners are combined with an identity-less required-TLS policy; a dial-only plaintext build cannot fail.
-    pub fn build(self) -> Result<Tcpclv4> {
-        // Register metric descriptions with the global recorder
+    pub fn build(self) -> Result<impl Factory<Component = Tcpclv4>> {
         otel_metrics::init();
 
         let tls = self.tls.map(TlsBuilder::build).transpose()?.map(Arc::new);
@@ -165,7 +172,7 @@ impl Tcpclv4Builder {
             );
         }
 
-        // Listeners under a required-TLS policy need an identity to serve
+        // Listeners under a required-TLS policy need an identity to serve.
         if let Some(tls) = &tls
             && tls.required_without_identity()
             && !self.listeners.is_empty()
@@ -175,29 +182,40 @@ impl Tcpclv4Builder {
 
         // Bind the passive listening elements eagerly, so socket failures
         // (port in use, missing privileges) surface here rather than in a
-        // background task; accepting starts at BPA registration
+        // background task. Accepting starts when the BPA starts the
+        // entity.
         let mut listeners = Vec::with_capacity(self.listeners.len());
         for address in self.listeners {
             let listener = TcpListener::bind(address)
                 .and_then(|listener| {
-                    // The runtime's reactor requires non-blocking sockets
+                    // The runtime's reactor requires non-blocking sockets.
                     listener.set_nonblocking(true).map(|()| listener)
                 })
                 .map_err(|source| Error::BindListener { address, source })?;
             listeners.push(listener);
         }
 
-        Ok(Tcpclv4::new(
-            self.contact_timeout,
-            self.keepalive_interval,
-            listeners,
-            self.connection_rate_limit,
-            self.segment_mru,
-            self.transfer_mru,
-            self.max_idle_connections,
-            self.max_outstanding_transfers,
-            tls,
-        ))
+        let settings = Settings {
+            contact_timeout: self.contact_timeout,
+            keepalive_interval: self.keepalive_interval,
+            connection_rate_limit: self.connection_rate_limit,
+            segment_mru: self.segment_mru,
+            transfer_mru: self.transfer_mru,
+            max_idle_connections: self.max_idle_connections,
+            max_outstanding_transfers: self.max_outstanding_transfers,
+        };
+
+        // The configured transfer MRU is this entity's receive limit; the
+        // BPA folds it with its own and settles the effective cap.
+        let request = Request {
+            address_type: Some(AddressType::Tcp),
+            max_bundle_size: Some(self.transfer_mru),
+            ..Default::default()
+        };
+
+        Ok(factory_fn(request, move |cx: Context| {
+            Ok(Tcpclv4::new(settings, listeners, tls, cx))
+        }))
     }
 }
 
@@ -209,7 +227,7 @@ mod tests {
     // until one is added, and a plaintext build cannot fail.
     #[test]
     fn defaults_are_applied() {
-        let builder = Tcpclv4::builder();
+        let builder = Tcpclv4Builder::new();
         assert!(builder.listeners.is_empty());
         assert_eq!(builder.segment_mru, Tcpclv4Builder::DEFAULT_SEGMENT_MRU);
         assert_eq!(builder.transfer_mru, Tcpclv4Builder::DEFAULT_TRANSFER_MRU);

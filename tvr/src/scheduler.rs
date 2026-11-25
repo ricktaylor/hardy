@@ -1,5 +1,5 @@
 use crate::contacts::{Contact, Schedule};
-use hardy_bpa::routing::{RouteAction, RoutingSink};
+use hardy_bpa::routing::{RouteAction, Sink};
 use hardy_eid_patterns::EidPattern;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -159,8 +159,8 @@ pub fn channel() -> (SchedulerHandle, SchedulerReceiver) {
 
 // ── Scheduler internals ─────────────────────────────────────────────
 
-// Route identity for refcounting — two contacts produce the same route
-// if they match on these three fields.
+// Route identity for refcounting: two contacts produce the same route if they
+// match on these three fields.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RouteKey {
     pattern: EidPattern,
@@ -236,9 +236,9 @@ struct Scheduler {
     sources: HashMap<String, HashSet<u64>>,
     // All managed contacts by ID
     contacts: HashMap<u64, ManagedContact>,
-    // Event timeline — ordered by (time, kind, contact_id)
+    // Event timeline, ordered by (time, kind, contact_id)
     timeline: BTreeSet<Event>,
-    // Route refcounts — how many active contacts provide each route
+    // Route refcounts: how many active contacts provide each route
     route_refs: HashMap<RouteKey, u32>,
     // Next contact ID
     next_id: u64,
@@ -269,9 +269,7 @@ impl Scheduler {
 
     // ── Ingestion ───────────────────────────────────────────────────
 
-    // Ingest a single contact: create ManagedContact, schedule events,
-    // activate if currently in window. Returns (added, active, skipped).
-    // Ingest a single contact. Returns (added, active, optional route op).
+    // Ingests a single contact. Returns (added, active, optional route op).
     fn ingest(
         &mut self,
         source: &str,
@@ -338,8 +336,8 @@ impl Scheduler {
                 let duration = *duration;
                 let until = *until;
 
-                // Find the current or next occurrence
-                // First check: are we inside an active occurrence right now?
+                // Find the current or next occurrence, starting with whether
+                // one is active right now.
                 let active_now = if let Some(prev_start) = cron.prev_before(now) {
                     let prev_end = prev_start + duration;
                     if prev_end > now && until.is_none_or(|u| prev_start < u) {
@@ -358,7 +356,7 @@ impl Scheduler {
                     .insert(id);
 
                 if let Some((_start, end)) = active_now {
-                    // Currently in an active occurrence — schedule deactivate
+                    // Currently in an active occurrence, so schedule a deactivate
                     self.insert_event(end, EventKind::Deactivate, id);
                     // Next occurrence will be scheduled when this one deactivates
                     (true, true)
@@ -636,7 +634,7 @@ fn contacts_match(a: &Contact, b: &Contact) -> bool {
 
 // ── Core loop ───────────────────────────────────────────────────────
 
-async fn apply_route_op(sink: &dyn RoutingSink, op: PendingRouteOp) {
+async fn apply_route_op(sink: &dyn Sink, op: PendingRouteOp) {
     match op {
         PendingRouteOp::Add {
             pattern,
@@ -667,12 +665,7 @@ fn update_gauges(sched: &Scheduler) {
     metrics::gauge!("tvr_timeline_depth").set(sched.timeline.len() as f64);
 }
 
-// Start the scheduler task.
-pub fn start(
-    receiver: SchedulerReceiver,
-    sink: Arc<dyn RoutingSink>,
-    tasks: &hardy_async::TaskPool,
-) {
+pub fn start(receiver: SchedulerReceiver, sink: Arc<dyn Sink>, tasks: &hardy_async::TaskPool) {
     let rx = receiver.rx;
     let cancel = tasks.cancel_token().clone();
 

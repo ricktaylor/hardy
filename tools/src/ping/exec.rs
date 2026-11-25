@@ -1,18 +1,22 @@
 use super::*;
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::{
+    cla::RegistrarExt,
+    routing::RegistrarExt as _,
+    service::{Registrar, RegistrarExt as _},
+};
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitCode {
-    // At least one response was received
+    // At least one response was received.
     Success = 0,
-    // No responses received (100% packet loss)
+    // No response was received: 100% packet loss.
     NoResponse = 1,
-    // Other error (connection failure, invalid arguments, etc.)
+    // Anything else: a connection failure, invalid arguments.
     Error = 2,
 }
 
-// Returns true if the --cla value looks like a file path (external binary)
+// Whether the `--cla` value looks like a path to an external binary
 // rather than a built-in CLA name.
 fn is_external_cla(cla: &str) -> bool {
     cla.contains('/') || cla.contains('\\')
@@ -29,37 +33,38 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
 
     let node_ids = [args.node_id()?].as_slice().try_into().unwrap();
 
-    // bp is a diagnostic client, so it must accept echoes from peers that don't
-    // meet every RFC9171 ingress policy — notably dtn7-rs's dtnecho2, which
-    // reflects bundles without a primary-block CRC. --lax-rfc9171 relaxes the
-    // BPA's config-gated ingress checks; the reflected payload is still
-    // compared byte-for-byte by the client.
+    // bp is a diagnostic client, so it accepts echoes from peers that do
+    // not meet every RFC 9171 ingress policy, notably dtn7-rs's dtnecho2,
+    // which reflects bundles without a primary-block CRC. `--lax-rfc9171`
+    // relaxes the BPA's config-gated ingress checks, and the reflected
+    // payload is still compared byte for byte by the client.
     let bpa = alloc::sync::Arc::new(
         hardy_bpa::bpa::Bpa::builder()
             .status_reports(true)
             .node_ids(node_ids)
             .primary_block_integrity(!args.lax_rfc9171)
             .bundle_age_required(!args.lax_rfc9171)
-            .build()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to build BPA: {e}"))?,
+            .build(),
     );
 
-    // Add a default 'drop' route, we don't want to cache locally
+    // A default `Drop` route keeps the client from caching bundles
+    // locally.
     bpa.register_routing_agent(
-        "ping".to_string(),
-        alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+        "ping",
+        hardy_bpa::routing::StaticAgent::factory(&[(
             "*:**".parse().unwrap(),
             hardy_bpa::routing::RouteAction::Drop(Some(
                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
             )),
             1000,
-        )])),
+        )]),
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to register default routes: {e}"))?;
 
-    bpa.start(false).await;
+    bpa.start(false)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start BPA: {e}"))?;
 
     if is_external_cla(&args.cla) {
         exec_external_cla(args, &bpa).await
@@ -77,12 +82,14 @@ async fn exec_builtin_cla(
         other => return Err(anyhow::anyhow!("Unknown built-in CLA: '{other}'")),
     }
 
-    // ping only dials; never claim the registered listening port
+    // ping only dials, so it never claims the registered listening
+    // port.
     let mut builder = hardy_tcpclv4::Tcpclv4::builder();
 
-    // TLS is required as soon as --tls-insecure or --tls-ca asks for it;
-    // the two flags conflict at argument parsing, so at most one is set.
-    // Directory problems surface from build() with pathful messages
+    // TLS is required as soon as `--tls-insecure` or `--tls-ca` asks for
+    // it, and the two flags conflict at argument parsing, so at most one is
+    // set. A directory problem surfaces from `build` with the path
+    // named.
     if args.tls_insecure {
         builder = builder.tls(
             hardy_tcpclv4::tls::Tls::builder()
@@ -98,13 +105,12 @@ async fn exec_builtin_cla(
         );
     }
 
-    let cla = alloc::sync::Arc::new(
-        builder
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?,
-    );
+    let factory = builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?;
 
-    bpa.register_cla(args.cla.clone(), cla.clone(), None, cla.cla_init())
+    let cla = bpa
+        .register_cla(&args.cla, factory)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", args.cla))?;
 
@@ -122,8 +128,8 @@ async fn exec_builtin_cla(
         .map_err(|e| anyhow::anyhow!("Failed to connect to {peer_addr}: {e}"))?;
     drop(cla);
 
-    // Wait for session registration to complete (async task spawned by connect)
-    // TODO: This should be a proper wait/notification mechanism
+    // `connect` registers the session from a spawned task.
+    // TODO: wait on a notification instead of sleeping.
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     let peer: NodeId = args.destination.clone().try_to_node_id().map_err(|_| {
@@ -133,15 +139,15 @@ async fn exec_builtin_cla(
         )
     })?;
 
-    // Now add a route if we are targeting a service
+    // A service destination needs a route of its own.
     if args.destination.service().is_some() {
         bpa.register_routing_agent(
-            "ping-target".to_string(),
-            alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+            "ping-target",
+            hardy_bpa::routing::StaticAgent::factory(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
-            )])),
+            )]),
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;
@@ -154,7 +160,6 @@ async fn exec_external_cla(
     args: &Command,
     bpa: &alloc::sync::Arc<hardy_bpa::bpa::Bpa>,
 ) -> anyhow::Result<ExitCode> {
-    // Start gRPC server with CLA service
     let tasks = hardy_async::TaskPool::new();
     let grpc_config = hardy_proto::server::Config {
         address: args.grpc_listen,
@@ -169,13 +174,11 @@ async fn exec_external_cla(
         }
     });
 
-    // Yield to let the gRPC server task bind and start listening
+    // Yield so the gRPC server task binds and starts listening.
     tokio::task::yield_now().await;
 
-    // Spawn the CLA binary as a subprocess
     let mut cmd = tokio::process::Command::new(&args.cla);
 
-    // Pass through user-supplied arguments
     if let Some(cla_args) = &args.cla_args {
         for arg in cla_args.split_whitespace() {
             cmd.arg(arg);
@@ -186,11 +189,10 @@ async fn exec_external_cla(
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to start CLA process '{}': {e}", args.cla))?;
 
-    // Wait for the CLA to fully register (including add_peer creating forward
-    // entries). The CLA subprocess connects via gRPC and the registration
-    // completes asynchronously — we need the forward entries to exist before
-    // we start sending pings.
-    // TODO: Replace with proper RoutingAgent notification API when available
+    // The CLA subprocess connects over gRPC and registers asynchronously,
+    // so wait until it has fully registered and its `add_peer` has created
+    // the forward entries the first ping needs.
+    // TODO: wait on a routing agent notification API when one exists.
     {
         let timeout = tokio::time::sleep(std::time::Duration::from_secs(10));
         tokio::pin!(timeout);
@@ -213,9 +215,8 @@ async fn exec_external_cla(
         }
     }
 
-    // Add a route for the destination via the peer node
-    // (the CLA's add_peer creates a forward entry, but the BPA also needs
-    // a route to resolve the destination EID to the peer node)
+    // The CLA's `add_peer` creates a forward entry, but resolving the
+    // destination EID to the peer node still needs a route.
     if args.destination.service().is_some() {
         let peer: NodeId = args.destination.clone().try_to_node_id().map_err(|_| {
             anyhow::anyhow!(
@@ -225,12 +226,12 @@ async fn exec_external_cla(
         })?;
 
         bpa.register_routing_agent(
-            "ping-target".to_string(),
-            alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+            "ping-target",
+            hardy_bpa::routing::StaticAgent::factory(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
-            )])),
+            )]),
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;
@@ -238,10 +239,10 @@ async fn exec_external_cla(
 
     let result = run_ping(args, bpa).await;
 
-    // Clean up: kill CLA subprocess first, then stop gRPC server.
-    // Order matters: gRPC server shutdown (tonic serve_with_shutdown) waits
-    // for active connections to close. The CLA holds an active gRPC stream,
-    // so the server would hang if we tried to shut it down first.
+    // The CLA subprocess is killed before the gRPC server is stopped:
+    // tonic's `serve_with_shutdown` waits for active connections to close,
+    // and the CLA holds an active gRPC stream, so the reverse order
+    // hangs.
     let _ = child.kill().await;
     tasks.shutdown().await;
 
@@ -255,11 +256,9 @@ async fn run_ping(
     let tasks = hardy_async::TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    let service = alloc::sync::Arc::new(service::Service::new(args));
-
-    // Set by the deadline task alone, so an expired deadline can be told apart
-    // from an operator's Ctrl+C when choosing the exit code — both cancel the
-    // same token, but only the former is a failure.
+    // Set by the deadline task alone, so an expired deadline can be told
+    // apart from an operator's Ctrl+C when choosing the exit code. Both
+    // cancel the same token, but only the former is a failure.
     let timed_out = alloc::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // A session deadline is a scheduled Ctrl+C, so drive it through the same
@@ -279,7 +278,7 @@ async fn run_ping(
         });
     }
 
-    exec_inner(args, bpa.as_ref(), tasks.cancel_token(), service.clone()).await?;
+    let service = exec_inner(args, bpa.as_ref(), tasks.cancel_token()).await?;
 
     let stats = service.statistics();
     service.print_summary(&stats);
@@ -302,16 +301,16 @@ async fn run_ping(
 
 async fn exec_inner(
     args: &Command,
-    bpa: &dyn BpaRegistration,
+    bpa: &dyn Registrar,
     cancel_token: &tokio_util::sync::CancellationToken,
-    service: alloc::sync::Arc<service::Service>,
-) -> anyhow::Result<()> {
-    if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
-        bpa.register_service(service_id, service.clone()).await
-    } else {
-        bpa.register_dynamic_service(service.clone()).await
-    }
-    .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
+) -> anyhow::Result<alloc::sync::Arc<service::Service>> {
+    let service = bpa
+        .register_raw_service(
+            args.source.as_ref().and_then(|eid| eid.service()),
+            service::Service::factory(args),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 
     for seq_no in 0..args.count.unwrap_or(u32::MAX) {
         service.send(args, seq_no).await?;
@@ -320,13 +319,12 @@ async fn exec_inner(
             .await
             .is_ok()
         {
-            // Cancelled
             break;
         }
     }
 
-    // Wait for responses after sending all pings
-    // Default wait time is one interval if not explicitly specified
+    // Wait for the outstanding responses once every ping has been sent,
+    // for one interval unless `--wait` says otherwise.
     if !cancel_token.is_cancelled() && args.count.is_some() {
         let wait_time = args.wait.map(|w| *w).unwrap_or_else(|| *args.interval);
 
@@ -344,7 +342,7 @@ async fn exec_inner(
             eprintln!("Timeout waiting for responses");
         }
     }
-    Ok(())
+    Ok(service)
 }
 
 pub fn exec(args: Command) -> ! {

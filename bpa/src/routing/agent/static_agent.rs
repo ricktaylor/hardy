@@ -1,55 +1,64 @@
-use hardy_async::sync::spin;
-use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use tracing::warn;
 
-use super::{RoutingAgent, RoutingSink};
-use crate::{async_trait, routing::action::RouteAction};
+use super::{Agent, Context, Factory, Sink, factory_fn};
+use crate::{
+    Arc, async_trait,
+    routing::{Result, RouteAction},
+};
 
-/// A simple routing agent that installs a fixed set of routes on registration.
+/// An [`Agent`] that installs a fixed set of routes when it starts.
 ///
-/// Routes are automatically removed when the agent is unregistered (via the BPA's
-/// bulk cleanup). This is useful for tools and tests that need a quick set of
-/// static routes without implementing the full [`RoutingAgent`] trait manually.
+/// The BPA removes the routes when the agent unregisters. Tools and tests
+/// that need a handful of static routes use this instead of implementing
+/// [`Agent`].
 ///
 /// # Example
 ///
 /// ```ignore
-/// use hardy_bpa::routing::{StaticRoutingAgent, RouteAction};
+/// use hardy_bpa::routing::{RegistrarExt, RouteAction, StaticAgent};
 ///
-/// let agent = Arc::new(StaticRoutingAgent::new(&[
-///     ("ipn:*.*".parse().unwrap(), RouteAction::Via("ipn:0.2.0".parse().unwrap()), 30),
-///     ("dtn://drop/**".parse().unwrap(), RouteAction::Drop(None), 50),
-/// ]));
-/// bpa.register_routing_agent("my_routes".to_string(), agent).await?;
+/// bpa.register_routing_agent(
+///     "my_routes",
+///     StaticAgent::factory(&[
+///         ("ipn:*.*".parse().unwrap(), RouteAction::Via("ipn:0.2.0".parse().unwrap()), 30),
+///         ("dtn://drop/**".parse().unwrap(), RouteAction::Drop(None), 50),
+///     ]),
+/// )
+/// .await?;
 /// ```
-pub struct StaticRoutingAgent {
+pub struct StaticAgent {
     routes: Vec<(EidPattern, RouteAction, u32)>,
-    sink: spin::Once<Box<dyn RoutingSink>>,
+    sink: Arc<dyn Sink>,
 }
 
-impl StaticRoutingAgent {
-    pub fn new(routes: &[(EidPattern, RouteAction, u32)]) -> Self {
-        Self {
-            routes: routes.to_vec(),
-            sink: spin::Once::new(),
-        }
+impl StaticAgent {
+    /// Returns a factory for an agent that installs `routes`.
+    pub fn factory(routes: &[(EidPattern, RouteAction, u32)]) -> impl Factory<Component = Self> {
+        let routes = routes.to_vec();
+        factory_fn(move |cx: Context| {
+            Ok(Arc::new(Self {
+                routes,
+                sink: cx.sink,
+            }))
+        })
     }
 }
 
 #[async_trait]
-impl RoutingAgent for StaticRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+impl Agent for StaticAgent {
+    async fn register(&self) -> Result<()> {
+        // A route the RIB rejects is logged and skipped; the rest are
+        // still installed.
         for (pattern, action, priority) in &self.routes {
-            if let Err(e) = sink
+            if let Err(e) = self
+                .sink
                 .add_route(pattern.clone(), action.clone(), *priority)
                 .await
             {
                 warn!("Rejected route {pattern} => {action}: {e}");
             }
         }
-        self.sink.call_once(|| sink);
+        Ok(())
     }
-
-    async fn on_unregister(&self) {}
 }

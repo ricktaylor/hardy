@@ -38,7 +38,7 @@ The design goals were:
   the default is wait.
 
 - **Minimal BPA changes.** hardy-tvr uses only the existing
-  `RoutingAgent`/`RoutingSink` API. No new traits, no proto changes, no
+  `routing::Agent`/`routing::Sink` API. No new traits, no proto changes, no
   BPA modifications.
 
 ## Architecture Overview
@@ -222,9 +222,9 @@ scheduling across time-scale boundaries requires explicit conversion.
 
 hardy-tvr integrates with Hardy through two interfaces:
 
-- **RoutingAgent / RoutingSink** (BPA → TVR direction). hardy-tvr
-  registers as a `RoutingAgent` with the BPA via `hardy-proto`. The BPA
-  provides a `RoutingSink` through which hardy-tvr installs and withdraws
+- **`routing::Agent` / `routing::Sink`** (BPA → TVR direction). hardy-tvr
+  registers as a `routing::Agent` with the BPA via `hardy-proto`. The BPA
+  provides a `routing::Sink` through which hardy-tvr installs and withdraws
   routes. When the sink is dropped or `unregister()` is called, the BPA
   removes all routes from this agent.
 

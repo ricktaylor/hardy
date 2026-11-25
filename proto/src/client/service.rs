@@ -1,8 +1,12 @@
+// `Sink` is this module's own proxy sink, so the BPA's trait of that
+// name is imported anonymously, for its methods alone.
+use hardy_bpa::service::raw::{BoxFactory, Context, Service, Sink as _};
+
 use super::*;
 use proto::service::*;
 
 async fn receive(
-    service: &dyn hardy_bpa::services::Service,
+    service: &dyn hardy_bpa::service::raw::Service,
     mut request: ServiceReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
     let expiry = request
@@ -17,7 +21,7 @@ async fn receive(
     // reaches the service as a one-segment stream.
     let total_len = request.data.len() as u64;
     service
-        .on_deliver(&bundle_id, expiry, total_len, &mut request.data)
+        .deliver(&bundle_id, expiry, total_len, &mut request.data)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 
@@ -25,7 +29,7 @@ async fn receive(
 }
 
 async fn status_notify(
-    service: &dyn hardy_bpa::services::Service,
+    service: &dyn hardy_bpa::service::raw::Service,
     request: StatusNotifyRequest,
 ) -> Result<(), tonic::Status> {
     let timestamp = request
@@ -40,14 +44,10 @@ async fn status_notify(
             warn!("Unused status kind");
             return Err(tonic::Status::invalid_argument("Unused status"));
         }
-        status_notify_request::StatusKind::Deleted => hardy_bpa::services::StatusNotify::Deleted,
-        status_notify_request::StatusKind::Delivered => {
-            hardy_bpa::services::StatusNotify::Delivered
-        }
-        status_notify_request::StatusKind::Forwarded => {
-            hardy_bpa::services::StatusNotify::Forwarded
-        }
-        status_notify_request::StatusKind::Received => hardy_bpa::services::StatusNotify::Received,
+        status_notify_request::StatusKind::Deleted => hardy_bpa::service::StatusNotify::Deleted,
+        status_notify_request::StatusKind::Delivered => hardy_bpa::service::StatusNotify::Delivered,
+        status_notify_request::StatusKind::Forwarded => hardy_bpa::service::StatusNotify::Forwarded,
+        status_notify_request::StatusKind::Received => hardy_bpa::service::StatusNotify::Received,
     };
 
     let reason = hardy_bpv7::status_report::ReasonCode::try_from(request.reason)
@@ -62,7 +62,7 @@ async fn status_notify(
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid from EID: {e}")))?;
 
     service
-        .on_status_notify(&bundle_id, &from, kind, reason, timestamp)
+        .report_status(&bundle_id, &from, kind, reason, timestamp)
         .await;
 
     Ok(())
@@ -76,26 +76,25 @@ impl Sink {
     async fn call(
         &self,
         msg: service_to_bpa::Msg,
-    ) -> hardy_bpa::services::Result<bpa_to_service::Msg> {
+    ) -> hardy_bpa::service::Result<bpa_to_service::Msg> {
         match self.proxy.call(msg).await {
-            Ok(None) => Err(hardy_bpa::services::Error::Disconnected),
+            Ok(None) => Err(hardy_bpa::service::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
-            Err(e) => Err(hardy_bpa::services::Error::Internal(e.into())),
+            Err(e) => Err(hardy_bpa::service::Error::Internal(e.into())),
         }
     }
 }
 
 #[async_trait]
-impl hardy_bpa::services::ServiceSink for Sink {
-    // INTERIM BUFFERING: the wire has no streamed Send message yet, so the
-    // segment stream is accumulated (bounded by the transport cap) and sent
-    // as one unary ServiceSendRequest. This is a deliberate stepping stone
-    // toward the full streaming pipeline (chunked wire messages are the
-    // blocker); see bpa/docs/streaming_pipeline_design.md.
+impl hardy_bpa::service::raw::Sink for Sink {
+    // The wire carries no streamed Send message, so the segment stream is
+    // accumulated, bounded by the transport cap, and sent as one unary
+    // ServiceSendRequest. See bpa/docs/streaming_pipeline_design.md for the
+    // chunked form this is a step towards.
     async fn send(
         &self,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
+    ) -> hardy_bpa::service::Result<hardy_bpv7::bundle::Id> {
         // The transport cap doubles as the pre-check from
         // `client::application::Sink::send`: an oversized bundle returns a
         // typed error here instead of letting tonic break the gRPC stream,
@@ -104,10 +103,10 @@ impl hardy_bpa::services::ServiceSink for Sink {
             .await
             .map_err(|e| match e {
                 hardy_bpa::stream::ConcatError::Cancelled => {
-                    hardy_bpa::services::Error::StreamCancelled
+                    hardy_bpa::service::Error::StreamCancelled
                 }
                 hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
-                    hardy_bpa::services::Error::PayloadTooLarge {
+                    hardy_bpa::service::Error::PayloadTooLarge {
                         size: size as u64,
                         max: max as u64,
                     }
@@ -119,11 +118,11 @@ impl hardy_bpa::services::ServiceSink for Sink {
         {
             bpa_to_service::Msg::Send(response) => {
                 hardy_bpv7::bundle::Id::from_key(&response.bundle_id)
-                    .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
+                    .map_err(|e| hardy_bpa::service::Error::Internal(e.into()))
             }
             msg => {
                 warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::services::Error::Internal(
+                Err(hardy_bpa::service::Error::Internal(
                     tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
                 ))
             }
@@ -135,8 +134,16 @@ impl hardy_bpa::services::ServiceSink for Sink {
     }
 }
 
+// The service the session owns, shared with the proxy's handler.
+//
+// The service is built from a context carrying the sink the proxy stands
+// behind, so the proxy exists first and learns the service it serves
+// here. The handler holds the only strong reference: the session owns
+// the service it registered, and drops it on close.
+type SessionService = Arc<Mutex<Option<Arc<dyn Service>>>>;
+
 struct Handler {
-    service: Weak<dyn hardy_bpa::services::Service>,
+    service: SessionService,
 }
 
 #[async_trait]
@@ -147,7 +154,8 @@ impl ProxyHandler for Handler {
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         match msg {
             bpa_to_service::Msg::Receive(request) => {
-                if let Some(service) = self.service.upgrade() {
+                let service = self.service.lock().clone();
+                if let Some(service) = service {
                     match receive(service.as_ref(), request).await {
                         Ok(msg) => Some(service_to_bpa::Msg::Receive(msg)),
                         Err(e) => Some(service_to_bpa::Msg::Status(e.into())),
@@ -159,7 +167,8 @@ impl ProxyHandler for Handler {
                 }
             }
             bpa_to_service::Msg::StatusNotify(request) => {
-                if let Some(service) = self.service.upgrade() {
+                let service = self.service.lock().clone();
+                if let Some(service) = service {
                     match status_notify(service.as_ref(), request).await {
                         Ok(_) => Some(service_to_bpa::Msg::StatusNotify(StatusNotifyResponse {})),
                         Err(e) => Some(service_to_bpa::Msg::Status(e.into())),
@@ -178,44 +187,44 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        if let Some(service) = self.service.upgrade() {
-            service.on_unregister().await;
+        let service = self.service.lock().take();
+        if let Some(service) = service
+            && let Err(e) = service.unregister().await
+        {
+            warn!("Service unregister failed: {e}");
         }
     }
 }
 
-/// Register a low-level Service with the BPA via gRPC.
+/// Registers a raw service with the BPA over gRPC.
 ///
-/// This connects to the BPA's Service gRPC endpoint and establishes a
-/// bidirectional streaming connection for the service lifecycle.
-pub async fn register_endpoint_service(
+/// The bidirectional stream to the BPA's Service endpoint stays open for
+/// the service's lifetime, and closing it unregisters the service.
+pub async fn register_raw_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
-    service: Arc<dyn hardy_bpa::services::Service>,
-) -> hardy_bpa::services::Result<eid::Eid> {
+    factory: BoxFactory<'_>,
+) -> hardy_bpa::service::Result<()> {
     let mut svc_client = service_client::ServiceClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
-            hardy_bpa::services::Error::Internal(e.into())
+            hardy_bpa::service::Error::Internal(e.into())
         })?
         .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
         .max_decoding_message_size(crate::MAX_MESSAGE_SIZE);
 
-    // Create a channel for sending messages to the service.
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
 
-    // Call the service's streaming method
     let mut channel_receiver = svc_client
         .register(tokio_stream::wrappers::ReceiverStream::new(rx))
         .await
         .map_err(|e| {
             error!("Service Registration failed: {e}");
-            hardy_bpa::services::Error::Internal(e.into())
+            hardy_bpa::service::Error::Internal(e.into())
         })?
         .into_inner();
 
-    // Send the initial registration message.
     let response = match RpcProxy::send(
         &mut channel_sender,
         &mut channel_receiver,
@@ -233,37 +242,55 @@ pub async fn register_endpoint_service(
     .await
     .map_err(|e| {
         error!("Failed to send registration: {e}");
-        hardy_bpa::services::Error::Internal(e.into())
+        hardy_bpa::service::Error::Internal(e.into())
     })? {
-        None => return Err(hardy_bpa::services::Error::Disconnected),
+        None => return Err(hardy_bpa::service::Error::Disconnected),
         Some(bpa_to_service::Msg::Register(response)) => response,
         Some(msg) => {
             error!("Service Registration failed: Unexpected response: {msg:?}");
-            return Err(hardy_bpa::services::Error::Internal(
+            return Err(hardy_bpa::service::Error::Internal(
                 tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
             ));
         }
     };
 
-    let eid = response
+    let eid: eid::Eid = response
         .endpoint_id
         .parse()
         .map_err(|e: hardy_bpv7::eid::Error| {
             warn!("Failed to parse EID in response: {e}");
-            hardy_bpa::services::Error::Internal(e.into())
+            hardy_bpa::service::Error::Internal(e.into())
         })?;
 
-    // Now we have got here, we can create a Sink proxy and call on_register()
-    let handler = Box::new(Handler {
-        service: Arc::downgrade(&service),
-    });
+    let session: SessionService = Arc::new(Mutex::new(None));
+    let proxy = RpcProxy::run(
+        channel_sender,
+        channel_receiver,
+        Box::new(Handler {
+            service: session.clone(),
+        }),
+        Side::Client,
+    );
+    let sink = Arc::new(Sink { proxy });
 
-    // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
+    // The service runs against the proxy from here, so a build or
+    // registration failure takes the session down with it.
+    let registered = async {
+        let service = factory.build(Context::new(sink.clone(), eid.clone()))?;
+        service.register().await?;
+        Ok(service)
+    }
+    .await;
 
-    // Call on_register()
-    service.on_register(&eid, Box::new(Sink { proxy })).await;
-
-    info!("Proxy Service {eid} started");
-    Ok(eid)
+    match registered {
+        Ok(service) => {
+            *session.lock() = Some(service);
+            info!("Proxy Service {eid} registered");
+            Ok(())
+        }
+        Err(e) => {
+            sink.unregister().await;
+            Err(e)
+        }
+    }
 }

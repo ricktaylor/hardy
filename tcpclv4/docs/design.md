@@ -64,7 +64,7 @@ This balances connection reuse against parallelism. The `max_idle_connections` c
 
 ### Peer identity
 
-**A pool per remote address.** The registry keys connection pools by the remote socket address: a session joins the pool for the address it was dialled at or accepted from. Once SESS_INIT names the peer, the pool registers one adjacency with the BPA, `add_peer(ClaAddress::Tcp(address), [node ID])`, and removes it when its last session ends. A peer that sends an empty node ID gets no adjacency, so the BPA cannot forward to it, even over its live session. Sessions carry transfers in both directions whichever side dialled, so an inbound session carries outbound bundles too.
+**A pool per remote address.** The registry keys connection pools by the remote socket address: a session joins the pool for the address it was dialled at or accepted from. Once SESS_INIT names the peer, the pool registers one adjacency with the BPA, `add_peer(cla::Address::Tcp(address), [node ID])`, and removes it when its last session ends. A peer that sends an empty node ID gets no adjacency, so the BPA cannot forward to it, even over its live session. Sessions carry transfers in both directions whichever side dialled, so an inbound session carries outbound bundles too.
 
 **Node identity belongs to the BPA.** Adjacencies that announce the same node ID join one ECMP group in the RIB, so more than one adjacency per node is legal:
 

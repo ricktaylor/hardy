@@ -1,22 +1,17 @@
-/*!
-Bundle echo service for the Hardy BPA.
+//! Bundle echo service for the Hardy BPA, per the BPv7 Echo Service
+//! specification (draft-taylor-dtn-echo-service).
+//!
+//! [`EchoService`], one instance per registered endpoint, answers each
+//! received bundle with a fresh response: a new creation timestamp, the
+//! pinged endpoint as its source, the request's source as its destination,
+//! and the request's payload reflected. The response goes to the BPA for
+//! ordinary forwarding.
 
-Implements a simple echo (ping) service: for each received bundle it builds a
-fresh response bundle that reflects the payload back to the sender, conforming
-to the BPv7 Echo Service specification (draft-taylor-dtn-echo-service). The
-response is a freshly-sourced bundle (new creation timestamp) sourced from the
-pinged endpoint and addressed to the request's source; only the payload is
-reflected. The response is submitted to the BPA for normal forwarding.
+use std::sync::Arc;
 
-# Key types
-
-- [`EchoService`] — the service implementation, one instance per registered endpoint.
-*/
-
-use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     async_trait,
-    services::StatusNotify,
+    service::{self, StatusNotify, raw},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
@@ -34,33 +29,24 @@ use tracing::{debug, warn};
 /// fresh response bundle reflecting the payload back to the sender and submits
 /// it to the BPA. This is the DTN equivalent of ICMP echo (ping).
 pub struct EchoService {
-    /// Communication channel back to the BPA, set once during registration.
-    sink: Once<Box<dyn hardy_bpa::services::ServiceSink>>,
-}
-
-impl Default for EchoService {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Communication channel back to the BPA, for the service's whole
+    /// active lifetime.
+    sink: Arc<dyn raw::Sink>,
 }
 
 impl EchoService {
-    /// Creates a new `EchoService` with no BPA sink attached.
-    pub fn new() -> Self {
-        EchoService { sink: Once::new() }
+    /// A factory for an echo service at whichever endpoint the BPA
+    /// settles on.
+    pub fn factory() -> impl raw::Factory<Component = Self> {
+        raw::factory_fn(|cx: raw::Context| Ok(Arc::new(Self { sink: cx.sink })))
     }
 
+    /// Unregisters the service from the BPA.
     pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
+        self.sink.unregister().await;
     }
 
     async fn echo(&self, data: hardy_bpa::Bytes) -> Result<(), hardy_bpa::Error> {
-        let Some(sink) = self.sink.get() else {
-            return Ok(());
-        };
-
         // Parse the request bundle. A malformed bundle is a permanent failure:
         // stop rather than propagate, which would park it for a retry that can
         // never succeed. Only a failed send (below) is transient and worth a
@@ -71,9 +57,9 @@ impl EchoService {
             return Ok(());
         };
 
-        // When a Response Is Sent: do not respond to a bundle with no return
-        // path (null source), nor to an administrative record (which would risk
-        // reflecting status reports and bundle loops).
+        // No response goes to a bundle with no return path, its source
+        // null, nor to an administrative record, which would risk
+        // reflecting status reports and looping bundles.
         if bundle.primary.id.source.is_null() {
             debug!("Not echoing bundle from the null endpoint");
             return Ok(());
@@ -129,7 +115,8 @@ impl EchoService {
             "Sending echo response"
         );
 
-        sink.send(&mut hardy_bpa::Bytes::from(response))
+        self.sink
+            .send(&mut hardy_bpa::Bytes::from(response))
             .await
             .inspect_err(|e| {
                 warn!("Failed to send echo response: {e:?}");
@@ -140,19 +127,10 @@ impl EchoService {
 }
 
 #[async_trait]
-impl hardy_bpa::services::Service for EchoService {
-    /// Stores the BPA sink for later use when echoing bundles.
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::services::ServiceSink>) {
-        self.sink.call_once(|| sink);
-    }
-
-    /// No-op; no resources to release beyond the sink itself.
-    async fn on_unregister(&self) {
-        // Nothing to clean up
-    }
-
-    /// No-op; the echo service does not act on status reports.
-    async fn on_status_notify(
+impl raw::Service for EchoService {
+    /// Discards the notification: the echo service does not act on status
+    /// reports.
+    async fn report_status(
         &self,
         _bundle_id: &Id,
         _from: &Eid,
@@ -160,22 +138,20 @@ impl hardy_bpa::services::Service for EchoService {
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Do nothing
     }
 
-    /// Called when a bundle is delivered
-    // INTERIM BUFFERING: the echo service parses the whole request bundle
-    // with a whole-buffer codec, so it assembles the stream in memory via
-    // `stream::buffer_stream` before reflecting the payload. This is a
-    // deliberate stepping stone toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md.
-    async fn on_deliver(
+    // The echo service parses the whole request bundle with a whole-buffer
+    // codec, so `stream::buffer_stream` assembles the stream in memory
+    // before the payload is reflected. See
+    // bpa/docs/streaming_pipeline_design.md for the streaming form this is
+    // a step towards.
+    async fn deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> hardy_bpa::services::Result<()> {
+    ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
         self.echo(data).await.map_err(Into::into)
     }
@@ -189,12 +165,12 @@ fn requested_status_reports(flags: &Flags) -> bool {
         || flags.delete_report_requested
 }
 
-// The response bundle's processing control flags, derived from the request per
-// draft-taylor-dtn-echo-service: reflect "bundle must not be fragmented", and —
-// when the request asked for status reports — mirror its status-report-request
-// flags and the "status time requested in reports" flag. Every other flag
-// (notably administrative-record, fragment, and application-acknowledgement)
-// takes the node-sourced default.
+// The response bundle's processing control flags, derived from the request
+// per draft-taylor-dtn-echo-service: "bundle must not be fragmented" is
+// reflected, and a request that asked for status reports also has its
+// status-report-request flags and its "status time requested in reports"
+// flag mirrored. Every other flag, administrative-record, fragment and
+// application-acknowledgement among them, takes the node-sourced default.
 fn response_flags(request: &Flags) -> Flags {
     let mut flags = Flags {
         do_not_fragment: request.do_not_fragment,

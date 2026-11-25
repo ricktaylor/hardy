@@ -12,90 +12,76 @@ fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, ton
         + time::Duration::nanoseconds(t.nanos.into()))
 }
 
-/// A remote BPA client that implements `BpaRegistration` via gRPC.
+/// A remote BPA, reached over gRPC.
 ///
-/// This allows CLAs, services, and applications to connect to a remote BPA
-/// server using the same interface as a local `Bpa` instance.
+/// Implements the same [`cla::Registrar`](hardy_bpa::cla::Registrar),
+/// [`service::Registrar`](hardy_bpa::service::Registrar) and
+/// [`routing::Registrar`](hardy_bpa::routing::Registrar) traits as a local
+/// `Bpa`, so a component registers with a BPA in another process through
+/// the traits it already uses.
 ///
 /// # Example
 ///
 /// ```ignore
 /// let remote_bpa = RemoteBpa::new("http://[::1]:50051".to_string());
-/// cla.register(&remote_bpa, "tcp0".to_string(), None).await?;
+/// let cla = remote_bpa.register_cla("tcp0", Tcpclv4::builder().build()?).await?;
 /// ```
 pub struct RemoteBpa {
     grpc_addr: String,
 }
 
 impl RemoteBpa {
-    /// Create a new RemoteBpa client.
+    /// Creates a client for the BPA serving gRPC at `grpc_addr`, for
+    /// example `http://\[::1\]:50051`.
     ///
-    /// # Arguments
-    ///
-    /// * `grpc_addr` - The gRPC server address (e.g., "http://\[::1\]:50051")
+    /// No connection is made here: each registration dials its own
+    /// session.
     pub fn new(grpc_addr: String) -> Self {
         Self { grpc_addr }
     }
 
-    /// Get the gRPC address this client connects to.
     pub fn grpc_addr(&self) -> &str {
         &self.grpc_addr
     }
 }
 
 #[async_trait]
-impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
-    async fn register_cla(
+impl hardy_bpa::cla::Registrar for RemoteBpa {
+    async fn register_cla_boxed(
         &self,
-        name: String,
-        cla: Arc<dyn hardy_bpa::cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
-        init: hardy_bpa::cla::ClaInit,
-    ) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        // Note: policy is not supported over gRPC currently
-        cla::register_cla(self.grpc_addr.clone(), name, cla, init).await
+        name: &str,
+        factory: hardy_bpa::cla::BoxFactory<'_>,
+    ) -> hardy_bpa::cla::Result<()> {
+        cla::register_cla(self.grpc_addr.clone(), name, factory).await
+    }
+}
+
+#[async_trait]
+impl hardy_bpa::service::Registrar for RemoteBpa {
+    async fn register_service_boxed(
+        &self,
+        id: Option<hardy_bpv7::eid::Service>,
+        factory: hardy_bpa::service::BoxFactory<'_>,
+    ) -> hardy_bpa::service::Result<()> {
+        application::register_service(self.grpc_addr.clone(), id, factory).await
     }
 
-    async fn register_service(
+    async fn register_raw_service_boxed(
         &self,
-        service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), Some(service_id), service).await
+        id: Option<hardy_bpv7::eid::Service>,
+        factory: hardy_bpa::service::raw::BoxFactory<'_>,
+    ) -> hardy_bpa::service::Result<()> {
+        service::register_raw_service(self.grpc_addr.clone(), id, factory).await
     }
+}
 
-    async fn register_application(
+#[async_trait]
+impl hardy_bpa::routing::Registrar for RemoteBpa {
+    async fn register_routing_agent_boxed(
         &self,
-        service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(
-            self.grpc_addr.clone(),
-            Some(service_id),
-            application,
-        )
-        .await
-    }
-
-    async fn register_dynamic_service(
-        &self,
-        service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), None, service).await
-    }
-
-    async fn register_dynamic_application(
-        &self,
-        application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(self.grpc_addr.clone(), None, application).await
-    }
-
-    async fn register_routing_agent(
-        &self,
-        name: String,
-        agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
-    ) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        routing::register_routing_agent(self.grpc_addr.clone(), name, agent).await
+        name: &str,
+        factory: hardy_bpa::routing::BoxFactory<'_>,
+    ) -> hardy_bpa::routing::Result<()> {
+        routing::register_routing_agent(self.grpc_addr.clone(), name, factory).await
     }
 }
