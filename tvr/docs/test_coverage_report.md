@@ -14,7 +14,7 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | LLR | Feature | Result | Test | Part 4 Ref |
 | :--- | :--- | :--- | :--- | :--- |
 | **—** | Cron parsing, matching, next/prev, display | Pass | `cron.rs::every_minute` .. `cron.rs::display_preserves_shortcut` (43 tests) | 6.1 |
-| **—** | Contact plan parser (actions, schedules, link properties, file format) | Pass | `parser.rs::simple_via` .. `parser.rs::multiline_error_shows_correct_line` (42 tests) | 6.2 |
+| **—** | Contact plan parser (actions, schedules, link properties, file format) | Pass | `parser::simple_via` .. `parser::value::timestamps_convert_to_utc` (47 tests) | 6.2 |
 | **—** | Scheduler (permanent, one-shot, recurring, ordering, diffing, isolation, refcounting) | Pass | `scheduler.rs::permanent_activates_immediately` .. `scheduler.rs::remove_matches_by_content` (18 tests) | 6.3 |
 | **—** | Proto conversion (timestamps, durations, contacts) | Pass | `server.rs::timestamp_valid_utc` .. `server.rs::contact_with_link_properties` (24 tests) | 6.4 |
 | **—** | gRPC session lifecycle | Pass | `test_tvr.sh` TEST 5..10 (6 of 12 scenarios; 3 deferred, 1 unit-covered, 1 implicit, 1 untestable) | 6.5 |
@@ -70,7 +70,7 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | `display_preserves_source` | 3.8 | Display round-trip |
 | `display_preserves_shortcut` | 3.8 | Shortcut round-trip |
 
-### Parser (`src/parser.rs` — 42 tests)
+### Parser (`src/parser/` — 47 tests)
 
 | Test Function | Plan Ref | Scope |
 | :--- | :--- | :--- |
@@ -116,6 +116,11 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | `invalid_inputs` | 3.14 | Various malformed lines |
 | `error_messages_are_useful` | 3.14 | Caret-annotated errors |
 | `multiline_error_shows_correct_line` | 3.14 | Line number in errors |
+| `refused_values_report_their_own_message` | 3.14 | Field message, caret on the value |
+| `every_refused_value_is_reported` | 3.14 | One error per refused value |
+| `schedule_rules_are_reported` | 3.14 | Schedule rule messages |
+| `value::refused_values_name_their_field` | 3.14 | `ValueError` variant per field |
+| `value::timestamps_convert_to_utc` | 3.14 | Non-UTC timestamp converted |
 
 ### Scheduler (`src/scheduler.rs` — 18 tests)
 
@@ -174,13 +179,13 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | Section | Scenario | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | UTP 3.1-3.8 | Cron parsing, matching, next/prev, display | 43 | 43 | Complete |
-| UTP 3.9-3.14 | Contact plan parser | 42 | 42 | Complete |
+| UTP 3.9-3.14 | Contact plan parser | 47 | 47 | Complete |
 | UTP 3.15-3.21 | Scheduler | 18 | 18 | Complete |
 | UTP 3.22-3.24 | Proto conversion | 24 | 24 | Complete |
 | COMP 3 | gRPC session lifecycle | 12 | 6 | Partial (6 via grpcurl; 3 deferred, 1 unit-covered, 1 implicit, 1 untestable) |
 | UTP 3.25 | Configuration loading | 14 | 14 | Complete |
 | COMP 4 | System integration (test_tvr.sh) | 4 | 4 | Complete |
-| | **Total** | **157** | **151** | **96%** |
+| | **Total** | **162** | **156** | **96%** |
 
 ### System & Component Integration Tests
 
@@ -252,4 +257,4 @@ Six of twelve gRPC session scenarios are tested via `grpcurl` in `test_tvr.sh`. 
 
 ## 6. Conclusion
 
-The TVR crate has comprehensive test coverage: cron engine (43 tests), contact plan parser (42 tests), scheduler (18 tests), proto conversion (24 tests), and configuration loading (14 tests) are all fully covered at the unit level. The gRPC session protocol is verified by 6 `grpcurl`-based component tests covering open, add, close cleanup, duplicate name rejection, missing open, and name reuse. System integration is verified by 4 end-to-end tests using `bp ping`. Overall coverage is 151/157 scenarios (96%), 78.1% line coverage, with only 3 low-risk deferred gRPC scenarios remaining.
+The TVR crate has comprehensive test coverage: cron engine (43 tests), contact plan parser (47 tests), scheduler (18 tests), proto conversion (24 tests), and configuration loading (14 tests) are all fully covered at the unit level. The gRPC session protocol is verified by 6 `grpcurl`-based component tests covering open, add, close cleanup, duplicate name rejection, missing open, and name reuse. System integration is verified by 4 end-to-end tests using `bp ping`. Overall coverage is 156/162 scenarios (96%), 78.1% line coverage, with only 3 low-risk deferred gRPC scenarios remaining.

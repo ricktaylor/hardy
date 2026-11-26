@@ -1,13 +1,18 @@
+use std::{path::PathBuf, time::Duration};
+
+use chumsky::{input::Emitter, prelude::*};
+use hardy_bpa::routing::RouteAction;
+use hardy_eid_patterns::EidPattern;
+use time::OffsetDateTime;
+use tracing::{debug, error};
+
+use self::value::validated;
 use crate::{
     contacts::{Contact, Schedule},
     cron::CronExpr,
-    duration::parse_duration,
 };
-use chumsky::prelude::*;
-use hardy_bpa::routing::RouteAction;
-use hardy_eid_patterns as eid_patterns;
-use std::path::PathBuf;
-use tracing::{debug, error, warn};
+
+mod value;
 
 type Span = SimpleSpan<usize>;
 type Extra<'a> = extra::Err<Rich<'a, char, Span>>;
@@ -40,13 +45,8 @@ fn non_ws_token<'a>() -> impl Parser<'a, &'a str, &'a str, Extra<'a>> {
 
 // ── Pattern ─────────────────────────────────────────────────────────
 
-fn pattern<'a>() -> impl Parser<'a, &'a str, eid_patterns::EidPattern, Extra<'a>> {
-    non_ws_token()
-        .try_map(|s: &str, span| {
-            s.parse()
-                .map_err(|e| Rich::custom(span, format!("invalid EID pattern: {e}")))
-        })
-        .labelled("EID pattern")
+fn pattern<'a>() -> impl Parser<'a, &'a str, Option<EidPattern>, Extra<'a>> {
+    validated(non_ws_token(), value::eid_pattern).labelled("EID pattern")
 }
 
 // ── Actions (via / drop — no reflect) ───────────────────────────────
@@ -56,86 +56,59 @@ fn drop_action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
         .then(
             text::inline_whitespace()
                 .at_least(1)
-                .ignore_then(text::int(10))
-                .try_map(|s: &str, span| {
-                    let code: u64 = s
-                        .parse()
-                        .map_err(|e| Rich::custom(span, format!("invalid reason code: {e}")))?;
-                    code.try_into()
-                        .map_err(|e| Rich::custom(span, format!("invalid reason code: {e}")))
-                })
-                .or_not(),
+                .ignore_then(validated(text::int(10), value::reason_code))
+                .or_not()
+                .map(Option::flatten),
         )
         .map(|(_, reason)| RouteAction::Drop(reason))
         .labelled("drop action")
 }
 
-fn via_action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
+// The next hop is `None` when its EID was refused (the error is emitted).
+fn via_action<'a>() -> impl Parser<'a, &'a str, Option<RouteAction>, Extra<'a>> {
     keyword("via")
         .then(text::inline_whitespace().at_least(1))
-        .ignore_then(
-            non_ws_token()
-                .try_map(|s: &str, span| {
-                    s.parse()
-                        .map_err(|e| Rich::custom(span, format!("invalid next-hop EID: {e}")))
-                })
-                .labelled("next-hop EID"),
-        )
-        .map(RouteAction::Via)
+        .ignore_then(validated(non_ws_token(), value::next_hop).labelled("next-hop EID"))
+        .map(|eid| eid.map(RouteAction::Via))
         .labelled("via action")
 }
 
-fn action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
-    choice((drop_action(), via_action())).labelled("action")
+fn action<'a>() -> impl Parser<'a, &'a str, Option<RouteAction>, Extra<'a>> {
+    choice((drop_action().map(Some), via_action())).labelled("action")
 }
 
 // ── Named fields (keyword-value pairs) ──────────────────────────────
 
-fn priority_field<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
+// Each field parser yields `None` for a value it refused; the refusal has
+// already been emitted with the field's own message.
+
+fn priority_field<'a>() -> impl Parser<'a, &'a str, Option<u32>, Extra<'a>> {
     keyword("priority")
         .then(text::inline_whitespace().at_least(1))
-        .ignore_then(
-            text::int(10)
-                .try_map(|s: &str, span| {
-                    s.parse()
-                        .map_err(|e| Rich::custom(span, format!("invalid priority: {e}")))
-                })
-                .labelled("priority value"),
-        )
+        .ignore_then(validated(text::int(10), value::priority).labelled("priority value"))
         .labelled("priority")
 }
 
-// RFC 3339 timestamp (e.g. "2026-03-27T08:00:00Z")
-fn rfc3339_timestamp<'a>() -> impl Parser<'a, &'a str, time::OffsetDateTime, Extra<'a>> {
-    non_ws_token()
-        .try_map(|s: &str, span| {
-            let dt = time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
-                .map_err(|e| Rich::custom(span, format!("invalid RFC 3339 timestamp: {e}")))?;
-            if dt.offset() != time::UtcOffset::UTC {
-                warn!(
-                    "timestamp '{s}' is not UTC — converting to UTC (schedule evaluation uses UTC)"
-                );
-            }
-            Ok(dt.to_offset(time::UtcOffset::UTC))
-        })
-        .labelled("RFC 3339 timestamp")
+// RFC 3339 timestamp (e.g. "2026-03-27T08:00:00Z"), converted to UTC.
+fn rfc3339_timestamp<'a>() -> impl Parser<'a, &'a str, Option<OffsetDateTime>, Extra<'a>> {
+    validated(non_ws_token(), value::timestamp).labelled("RFC 3339 timestamp")
 }
 
-fn start_field<'a>() -> impl Parser<'a, &'a str, time::OffsetDateTime, Extra<'a>> {
+fn start_field<'a>() -> impl Parser<'a, &'a str, Option<OffsetDateTime>, Extra<'a>> {
     keyword("start")
         .then(text::inline_whitespace().at_least(1))
         .ignore_then(rfc3339_timestamp())
         .labelled("start time")
 }
 
-fn end_field<'a>() -> impl Parser<'a, &'a str, time::OffsetDateTime, Extra<'a>> {
+fn end_field<'a>() -> impl Parser<'a, &'a str, Option<OffsetDateTime>, Extra<'a>> {
     keyword("end")
         .then(text::inline_whitespace().at_least(1))
         .ignore_then(rfc3339_timestamp())
         .labelled("end time")
 }
 
-fn until_field<'a>() -> impl Parser<'a, &'a str, time::OffsetDateTime, Extra<'a>> {
+fn until_field<'a>() -> impl Parser<'a, &'a str, Option<OffsetDateTime>, Extra<'a>> {
     keyword("until")
         .then(text::inline_whitespace().at_least(1))
         .ignore_then(rfc3339_timestamp())
@@ -155,142 +128,97 @@ fn quoted_string<'a>() -> impl Parser<'a, &'a str, &'a str, Extra<'a>> {
         .labelled("quoted string")
 }
 
-fn cron_field<'a>() -> impl Parser<'a, &'a str, CronExpr, Extra<'a>> {
+fn cron_field<'a>() -> impl Parser<'a, &'a str, Option<CronExpr>, Extra<'a>> {
     keyword("cron")
         .then(text::inline_whitespace().at_least(1))
-        .ignore_then(
-            quoted_string()
-                .try_map(|s: &str, span| {
-                    CronExpr::parse(s)
-                        .map_err(|e| Rich::custom(span, format!("invalid cron expression: {e}")))
-                })
-                .labelled("cron expression"),
-        )
+        .ignore_then(validated(quoted_string(), value::cron).labelled("cron expression"))
         .labelled("cron")
 }
 
 // Duration value: e.g. "90m", "2h", "4h30m", "1h15m30s"
-fn duration_value<'a>() -> impl Parser<'a, &'a str, std::time::Duration, Extra<'a>> {
-    non_ws_token()
-        .try_map(|s: &str, span| {
-            let d = parse_duration(s)
-                .map_err(|e| Rich::custom(span, format!("invalid duration: {e}")))?;
-            if d.is_zero() {
-                return Err(Rich::custom(span, "duration must be greater than zero"));
-            }
-            Ok(d)
-        })
-        .labelled("duration")
+fn duration_value<'a>() -> impl Parser<'a, &'a str, Option<Duration>, Extra<'a>> {
+    validated(non_ws_token(), value::duration).labelled("duration")
 }
 
-fn duration_field<'a>() -> impl Parser<'a, &'a str, std::time::Duration, Extra<'a>> {
+fn duration_field<'a>() -> impl Parser<'a, &'a str, Option<Duration>, Extra<'a>> {
     keyword("duration")
         .then(text::inline_whitespace().at_least(1))
         .ignore_then(duration_value())
         .labelled("duration field")
 }
 
-fn bandwidth_field<'a>() -> impl Parser<'a, &'a str, u64, Extra<'a>> {
+fn bandwidth_field<'a>() -> impl Parser<'a, &'a str, Option<u64>, Extra<'a>> {
     keyword("bandwidth")
         .then(text::inline_whitespace().at_least(1))
-        .ignore_then(
-            non_ws_token()
-                .try_map(|s: &str, span| {
-                    parse_bandwidth(s)
-                        .map_err(|e| Rich::custom(span, format!("invalid bandwidth: {e}")))
-                })
-                .labelled("bandwidth value"),
-        )
+        .ignore_then(validated(non_ws_token(), value::bandwidth).labelled("bandwidth value"))
         .labelled("bandwidth")
 }
 
-fn delay_field<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
+fn delay_field<'a>() -> impl Parser<'a, &'a str, Option<u32>, Extra<'a>> {
     keyword("delay")
         .then(text::inline_whitespace().at_least(1))
-        .ignore_then(
-            non_ws_token()
-                .try_map(|s: &str, span| {
-                    let d = parse_duration(s)
-                        .map_err(|e| Rich::custom(span, format!("invalid delay: {e}")))?;
-                    let us = d.as_micros();
-                    u32::try_from(us).map_err(|_| {
-                        Rich::custom(span, format!("delay too large: {us}us exceeds u32 range"))
-                    })
-                })
-                .labelled("delay value"),
-        )
+        .ignore_then(validated(non_ws_token(), value::delay).labelled("delay value"))
         .labelled("delay")
-}
-
-// Parse a bandwidth value with optional SI suffix.
-//
-// Accepts: `10G`, `256K`, `1M`, `9600` (bare = bps).
-// Case-insensitive suffixes: `K` (×1,000), `M` (×1,000,000),
-// `G` (×1,000,000,000), `T` (×1,000,000,000,000).
-fn parse_bandwidth(s: &str) -> Result<u64, String> {
-    let s_upper = s.to_ascii_uppercase();
-    let (num_part, multiplier) =
-        if let Some(num) = s_upper.strip_suffix("TBPS").or(s_upper.strip_suffix('T')) {
-            (num, 1_000_000_000_000u64)
-        } else if let Some(num) = s_upper.strip_suffix("GBPS").or(s_upper.strip_suffix('G')) {
-            (num, 1_000_000_000)
-        } else if let Some(num) = s_upper.strip_suffix("MBPS").or(s_upper.strip_suffix('M')) {
-            (num, 1_000_000)
-        } else if let Some(num) = s_upper.strip_suffix("KBPS").or(s_upper.strip_suffix('K')) {
-            (num, 1_000)
-        } else if let Some(num) = s_upper.strip_suffix("BPS") {
-            (num, 1)
-        } else {
-            (s_upper.as_str(), 1)
-        };
-
-    let n: u64 = num_part
-        .parse()
-        .map_err(|_| format!("'{s}' is not a valid bandwidth"))?;
-
-    n.checked_mul(multiplier)
-        .ok_or_else(|| format!("'{s}' overflows u64"))
 }
 
 // ── Contact fields (order-independent keyword fields) ───────────────
 
 // All optional fields that can appear after the action, in any order.
+// `refused` is set when a field's value was refused (and its error emitted).
 #[derive(Default)]
 struct ContactFields {
+    refused: bool,
     priority: Option<u32>,
-    start: Option<time::OffsetDateTime>,
-    end: Option<time::OffsetDateTime>,
+    start: Option<OffsetDateTime>,
+    end: Option<OffsetDateTime>,
     cron: Option<CronExpr>,
-    duration: Option<std::time::Duration>,
-    until: Option<time::OffsetDateTime>,
+    duration: Option<Duration>,
+    until: Option<OffsetDateTime>,
     bps: Option<u64>,
     delay: Option<u32>,
 }
 
-// A single optional field — parsed one at a time, accumulated into ContactFields.
+// A single optional field, parsed one at a time and accumulated into ContactFields.
 enum Field {
     Priority(u32),
-    Start(time::OffsetDateTime),
-    End(time::OffsetDateTime),
+    Start(OffsetDateTime),
+    End(OffsetDateTime),
     Cron(CronExpr),
-    Duration(std::time::Duration),
-    Until(time::OffsetDateTime),
+    Duration(Duration),
+    Until(OffsetDateTime),
     Bps(u64),
     Delay(u32),
 }
 
-fn field<'a>() -> impl Parser<'a, &'a str, Field, Extra<'a>> {
+// A field and where it sits on the line; `None` when its value was refused.
+fn field<'a>() -> impl Parser<'a, &'a str, (Option<Field>, Span), Extra<'a>> {
     choice((
-        priority_field().map(Field::Priority),
-        start_field().map(Field::Start),
-        end_field().map(Field::End),
-        cron_field().map(Field::Cron),
-        duration_field().map(Field::Duration),
-        until_field().map(Field::Until),
-        bandwidth_field().map(Field::Bps),
-        delay_field().map(Field::Delay),
+        priority_field().map(|v| v.map(Field::Priority)),
+        start_field().map(|v| v.map(Field::Start)),
+        end_field().map(|v| v.map(Field::End)),
+        cron_field().map(|v| v.map(Field::Cron)),
+        duration_field().map(|v| v.map(Field::Duration)),
+        until_field().map(|v| v.map(Field::Until)),
+        bandwidth_field().map(|v| v.map(Field::Bps)),
+        delay_field().map(|v| v.map(Field::Delay)),
     ))
+    .map_with(|field, extra| (field, extra.span()))
     .labelled("field")
+}
+
+// Stores one field's value, emitting an error at the field when it repeats
+// an earlier one.
+fn set_once<T>(
+    slot: &mut Option<T>,
+    value: T,
+    name: &str,
+    span: Span,
+    emitter: &mut Emitter<Rich<'_, char, Span>>,
+) {
+    if slot.is_some() {
+        emitter.emit(Rich::custom(span, format!("duplicate '{name}' field")));
+    }
+    *slot = Some(value);
 }
 
 fn contact_fields<'a>() -> impl Parser<'a, &'a str, ContactFields, Extra<'a>> {
@@ -299,67 +227,33 @@ fn contact_fields<'a>() -> impl Parser<'a, &'a str, ContactFields, Extra<'a>> {
         .ignore_then(field())
         .repeated()
         .collect::<Vec<_>>()
-        .try_map(|fields, span| {
+        .validate(|fields, _, emitter| {
             let mut cf = ContactFields::default();
-            for f in fields {
-                match f {
-                    Field::Priority(v) => {
-                        if cf.priority.is_some() {
-                            return Err(Rich::custom(span, "duplicate 'priority' field"));
-                        }
-                        cf.priority = Some(v);
-                    }
-                    Field::Start(v) => {
-                        if cf.start.is_some() {
-                            return Err(Rich::custom(span, "duplicate 'start' field"));
-                        }
-                        cf.start = Some(v);
-                    }
-                    Field::End(v) => {
-                        if cf.end.is_some() {
-                            return Err(Rich::custom(span, "duplicate 'end' field"));
-                        }
-                        cf.end = Some(v);
-                    }
-                    Field::Cron(v) => {
-                        if cf.cron.is_some() {
-                            return Err(Rich::custom(span, "duplicate 'cron' field"));
-                        }
-                        cf.cron = Some(v);
-                    }
-                    Field::Duration(v) => {
-                        if cf.duration.is_some() {
-                            return Err(Rich::custom(span, "duplicate 'duration' field"));
-                        }
-                        cf.duration = Some(v);
-                    }
-                    Field::Until(v) => {
-                        if cf.until.is_some() {
-                            return Err(Rich::custom(span, "duplicate 'until' field"));
-                        }
-                        cf.until = Some(v);
-                    }
-                    Field::Bps(v) => {
-                        if cf.bps.is_some() {
-                            return Err(Rich::custom(span, "duplicate 'bps' field"));
-                        }
-                        cf.bps = Some(v);
-                    }
-                    Field::Delay(v) => {
-                        if cf.delay.is_some() {
-                            return Err(Rich::custom(span, "duplicate 'delay' field"));
-                        }
-                        cf.delay = Some(v);
-                    }
+            for (field, span) in fields {
+                let Some(field) = field else {
+                    cf.refused = true;
+                    continue;
+                };
+                match field {
+                    Field::Priority(v) => set_once(&mut cf.priority, v, "priority", span, emitter),
+                    Field::Start(v) => set_once(&mut cf.start, v, "start", span, emitter),
+                    Field::End(v) => set_once(&mut cf.end, v, "end", span, emitter),
+                    Field::Cron(v) => set_once(&mut cf.cron, v, "cron", span, emitter),
+                    Field::Duration(v) => set_once(&mut cf.duration, v, "duration", span, emitter),
+                    Field::Until(v) => set_once(&mut cf.until, v, "until", span, emitter),
+                    Field::Bps(v) => set_once(&mut cf.bps, v, "bandwidth", span, emitter),
+                    Field::Delay(v) => set_once(&mut cf.delay, v, "delay", span, emitter),
                 }
             }
-            Ok(cf)
+            cf
         })
 }
 
 // ── Contact line ────────────────────────────────────────────────────
 
-fn contact<'a>() -> impl Parser<'a, &'a str, Contact, Extra<'a>> {
+// A contact line, or `None` when any part of it was refused; every refusal
+// has been emitted, so the plan as a whole is refused.
+fn contact<'a>() -> impl Parser<'a, &'a str, Option<Contact>, Extra<'a>> {
     pattern()
         .then(
             text::inline_whitespace()
@@ -368,12 +262,18 @@ fn contact<'a>() -> impl Parser<'a, &'a str, Contact, Extra<'a>> {
                 .labelled("action"),
         )
         .then(contact_fields())
-        .try_map(|((pattern, action), fields), span| {
-            let schedule = resolve_schedule(&fields, span)?;
-
-            Ok(Contact {
-                pattern,
-                action,
+        .validate(|((pattern, action), fields), extra, emitter| {
+            // A refused field already has its error; checking the schedule
+            // without it would only report the gap it left.
+            if fields.refused {
+                return None;
+            }
+            let schedule = resolve_schedule(&fields, extra.span())
+                .map_err(|e| emitter.emit(e))
+                .ok()?;
+            Some(Contact {
+                pattern: pattern?,
+                action: action?,
                 priority: fields.priority,
                 schedule,
                 bandwidth_bps: fields.bps,
@@ -444,7 +344,7 @@ fn line<'a>() -> impl Parser<'a, &'a str, Option<Contact>, Extra<'a>> {
                 .then(any().and_is(text::newline().not()).repeated())
                 .ignored()
                 .to(None),
-            contact().map(Some),
+            contact(),
             empty().to(None),
         )))
         .then_ignore(text::inline_whitespace())
@@ -552,6 +452,28 @@ mod test {
             parse_contacts(input).is_err(),
             "Parsing '{input}' should have failed"
         );
+    }
+
+    // The single diagnostic for a one-line plan: its message, and the
+    // column (from 1) the caret points at. The diagnostic ends with the source
+    // line and a caret line, so those are read from the end: a message can
+    // span several lines of its own.
+    fn only_error(input: &str) -> (String, usize) {
+        let errors = parse_contacts(input).unwrap_err();
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected one error for {input:?}, got {errors:#?}"
+        );
+        let (body, caret) = errors[0].rsplit_once('\n').unwrap();
+        let (message, _source) = body.rsplit_once('\n').unwrap();
+        let message = message.strip_prefix("line 1: ").unwrap().to_string();
+        (message, caret.len() - "  ".len())
+    }
+
+    // The column (from 1) where `needle` starts in `input`.
+    fn column_of(input: &str, needle: &str) -> usize {
+        input.find(needle).unwrap() + 1
     }
 
     // ── Static route compatibility ──────────────────────────────────
@@ -663,7 +585,7 @@ mod test {
                 until,
             } => {
                 assert_eq!(cron.to_string(), "0 8 * * *");
-                assert_eq!(*duration, std::time::Duration::from_secs(90 * 60));
+                assert_eq!(*duration, Duration::from_secs(90 * 60));
                 assert!(until.is_none());
             }
             _ => panic!("expected Recurring schedule"),
@@ -729,7 +651,7 @@ mod test {
         let c = parse_ok("ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 90m");
         match &c[0].schedule {
             Schedule::Recurring { duration, .. } => {
-                assert_eq!(*duration, std::time::Duration::from_secs(5400));
+                assert_eq!(*duration, Duration::from_secs(5400));
             }
             _ => panic!("expected Recurring"),
         }
@@ -740,7 +662,7 @@ mod test {
         let c = parse_ok("ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 2h");
         match &c[0].schedule {
             Schedule::Recurring { duration, .. } => {
-                assert_eq!(*duration, std::time::Duration::from_secs(7200));
+                assert_eq!(*duration, Duration::from_secs(7200));
             }
             _ => panic!("expected Recurring"),
         }
@@ -751,10 +673,7 @@ mod test {
         let c = parse_ok("ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 4h30m");
         match &c[0].schedule {
             Schedule::Recurring { duration, .. } => {
-                assert_eq!(
-                    *duration,
-                    std::time::Duration::from_secs(4 * 3600 + 30 * 60)
-                );
+                assert_eq!(*duration, Duration::from_secs(4 * 3600 + 30 * 60));
             }
             _ => panic!("expected Recurring"),
         }
@@ -765,10 +684,7 @@ mod test {
         let c = parse_ok("ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 1h15m30s");
         match &c[0].schedule {
             Schedule::Recurring { duration, .. } => {
-                assert_eq!(
-                    *duration,
-                    std::time::Duration::from_secs(3600 + 15 * 60 + 30)
-                );
+                assert_eq!(*duration, Duration::from_secs(3600 + 15 * 60 + 30));
             }
             _ => panic!("expected Recurring"),
         }
@@ -779,9 +695,14 @@ mod test {
         parse_err("ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 90");
     }
 
+    // A zero duration is reported as such, at the value, with no follow-on
+    // complaint that the cron has no duration.
     #[test]
     fn duration_zero() {
-        parse_err("ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 0m");
+        let input = "ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 0m";
+        let (message, column) = only_error(input);
+        assert_eq!(message, value::ValueError::ZeroDuration.to_string());
+        assert_eq!(column, column_of(input, "0m"));
     }
 
     // ── Link properties ─────────────────────────────────────────────
@@ -914,7 +835,10 @@ ipn:3.*.* via ipn:3.1.0 priority 10
 
     #[test]
     fn duplicate_priority() {
-        parse_err("ipn:2.*.* via ipn:2.1.0 priority 10 priority 20");
+        let input = "ipn:2.*.* via ipn:2.1.0 priority 10 priority 20";
+        let (message, column) = only_error(input);
+        assert_eq!(message, "duplicate 'priority' field");
+        assert_eq!(column, column_of(input, "priority 20"));
     }
 
     #[test]
@@ -950,6 +874,94 @@ ipn:3.*.* via ipn:3.1.0 priority 10
         parse_err("Broken");
         parse_err("ipn:*.*.* Broken");
         parse_err("ipn:*.*.* via Broken");
+    }
+
+    // ── Field diagnostics ───────────────────────────────────────────
+
+    // Each refused value is reported with its field's own message, with the
+    // caret on the value rather than at the start of the line.
+    #[test]
+    fn refused_values_report_their_own_message() {
+        let cases = [
+            (
+                "notapattern via ipn:2.1.0",
+                "notapattern",
+                value::eid_pattern("notapattern").err(),
+            ),
+            (
+                "ipn:2.*.* via notaneid",
+                "notaneid",
+                value::next_hop("notaneid").err(),
+            ),
+            ("ipn:2.*.* drop 255", "255", value::reason_code("255").err()),
+            (
+                "ipn:2.*.* via ipn:2.1.0 priority 99999999999",
+                "99999999999",
+                value::priority("99999999999").err(),
+            ),
+            (
+                "ipn:2.*.* via ipn:2.1.0 start notatime",
+                "notatime",
+                value::timestamp("notatime").err(),
+            ),
+            (
+                "ipn:2.*.* via ipn:2.1.0 cron \"bogus\" duration 1h",
+                "\"bogus\"",
+                value::cron("bogus").err(),
+            ),
+            (
+                "ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 1month",
+                "1month",
+                value::duration("1month").err(),
+            ),
+            (
+                "ipn:2.*.* via ipn:2.1.0 bandwidth 10X",
+                "10X",
+                value::bandwidth("10X").err(),
+            ),
+            (
+                "ipn:2.*.* via ipn:2.1.0 delay 30",
+                "30",
+                value::delay("30").err(),
+            ),
+            (
+                "ipn:2.*.* via ipn:2.1.0 delay 2h",
+                "2h",
+                value::delay("2h").err(),
+            ),
+        ];
+        for (input, token, expected) in cases {
+            let (message, column) = only_error(input);
+            assert_eq!(message, expected.unwrap().to_string(), "{input:?}");
+            assert_eq!(column, column_of(input, token), "{input:?}");
+        }
+    }
+
+    // Every refused value in a plan is reported, across fields and lines.
+    #[test]
+    fn every_refused_value_is_reported() {
+        let input = "ipn:2.*.* via ipn:2.1.0 bandwidth 10X delay 30\nipn:3.*.* drop 255";
+        let errors = parse_contacts(input).unwrap_err();
+        let firsts: Vec<_> = errors.iter().map(|e| e.lines().next().unwrap()).collect();
+        assert_eq!(
+            firsts,
+            [
+                format!("line 1: {}", value::bandwidth("10X").unwrap_err()),
+                format!("line 1: {}", value::delay("30").unwrap_err()),
+                format!("line 2: {}", value::reason_code("255").unwrap_err()),
+            ]
+        );
+    }
+
+    // A schedule rule broken by values that all parsed is still reported.
+    #[test]
+    fn schedule_rules_are_reported() {
+        let (message, _) = only_error("ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\"");
+        assert_eq!(message, "'cron' requires 'duration' field");
+        let (message, _) = only_error(
+            "ipn:2.*.* via ipn:2.1.0 start 2026-03-27T09:30:00Z end 2026-03-27T08:00:00Z",
+        );
+        assert_eq!(message, "'end' must be after 'start'");
     }
 
     // ── Error formatting ────────────────────────────────────────────
