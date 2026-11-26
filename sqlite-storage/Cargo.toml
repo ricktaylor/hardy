@@ -23,8 +23,10 @@ instrument = ["tracing/attributes"]
 hardy-bpa = { version = "0.2", path = "../bpa", features = ["serde"] }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", features = ["std","serde"] }
 hardy-cbor = { version = "2", path = "../cbor" }
-rusqlite = { version = "0.41", features = ["array", "bundled", "time"] }
-tokio = "1"
+# `bundled` also enables `modern_sqlite`, which the checkpointer's
+# `CheckpointMode::NOOP` needs (SQLite 3.51 or later).
+rusqlite = { version = "0.41", features = ["array", "bundled", "time", "wal"] }
+tokio = { version = "1", features = ["rt", "sync"] }
 thiserror = "2"
 directories = "6"
 tracing = { version = "0.1", default-features = false }
@@ -36,7 +38,7 @@ serde_json = "1"
 [dev-dependencies]
 tempfile = "3"
 time = { version = "0.3", features = ["std"] }
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [build-dependencies]
 regex = "1"

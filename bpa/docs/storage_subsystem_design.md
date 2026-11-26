@@ -156,7 +156,9 @@ Configuration includes the storage directory path and whether to use atomic writ
 
 **Features:**
 
-- Connection pool with write lock
+- A single writer thread that batches concurrent writes into shared transactions
+- Write-ahead log checkpoints on a thread of their own
+- Pooled query-only readers on the blocking thread pool
 - Prepared statement caching
 - Status encoding as (code, param1, param2, param3) tuple
 

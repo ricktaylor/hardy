@@ -22,10 +22,31 @@ pub enum Error {
     UpdateRequired,
 }
 
+// A schema migration, embedded at build time from a file in `schemas/`.
+struct Migration {
+    seq: isize,
+    file_name: &'static str,
+    // The base64 SHA-1 of `sql`, recorded by the database when it runs.
+    hash: &'static str,
+    sql: &'static str,
+}
+
+// Every migration, in sequence order, generated from `schemas/` at build
+// time.
+const MIGRATIONS: &[Migration] = &include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
+
 #[cfg_attr(feature = "instrument", instrument(skip(conn)))]
 pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Error> {
-    let migrations = include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
+    migrate_with(conn, MIGRATIONS, upgrade)
+}
 
+// Brings the database to the schema `migrations` ends at: checks the ones
+// it has already had against the list, then applies the rest if `upgrade`.
+fn migrate_with(
+    conn: &mut rusqlite::Connection,
+    migrations: &[Migration],
+    upgrade: bool,
+) -> Result<(), Error> {
     let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
 
     // Ensure we have a migrations table
@@ -39,7 +60,8 @@ pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Err
         )",
     )?;
 
-    // Get current max sequence number
+    // Get current max sequence number. `next` indexes the first migration
+    // the database has not had.
     let mut next = 0;
     if let Some(Some::<isize>(current_max)) = trans
         .query_row(r"SELECT max(seq_no) FROM schema_versions", [], |row| {
@@ -59,13 +81,12 @@ pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Err
 
         let mut query = trans
             .prepare(r"INSERT INTO temp.schema_check (seq_no,file_name,hash) VALUES (?1,?2,?3)")?;
-        for (i, (seq, file_name, hash, _)) in migrations.iter().enumerate() {
-            next = i + 1;
-            if *seq <= current_max {
-                query.execute((seq, file_name, hash))?;
-            } else {
+        for migration in migrations {
+            if migration.seq > current_max {
                 break;
             }
+            query.execute((migration.seq, migration.file_name, migration.hash))?;
+            next += 1;
         }
 
         // Check for missing historic migrations
@@ -124,9 +145,15 @@ pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Err
     if next < migrations.len() {
         if upgrade {
             // Now run any new migrations
-            for (seq, file_name, hash, migration) in migrations[next..].iter() {
+            for Migration {
+                seq,
+                file_name,
+                hash,
+                sql,
+            } in &migrations[next..]
+            {
                 // Run the migration
-                trans.execute_batch(migration)?;
+                trans.execute_batch(sql)?;
 
                 // Update the metadata
                 trans.execute(r"INSERT INTO schema_versions (seq_no,file_name,hash,timestamp) VALUES (?1,?2,?3,datetime('now'))",(seq, file_name, hash))?;
@@ -144,7 +171,7 @@ pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Err
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, migrate};
+    use super::{Error, MIGRATIONS, migrate, migrate_with};
 
     fn open_memory_db() -> rusqlite::Connection {
         rusqlite::Connection::open_in_memory().unwrap()
@@ -264,5 +291,81 @@ mod tests {
             matches!(result, Err(Error::AlteredHistoric(_))),
             "should detect altered historic migration: {result:?}"
         );
+    }
+
+    // The migrations recorded as applied, by sequence number.
+    fn applied(conn: &rusqlite::Connection) -> Vec<isize> {
+        conn.prepare("SELECT seq_no FROM schema_versions ORDER BY seq_no")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    // The names of the indexes on `bundles` that the schema created.
+    fn bundle_indexes(conn: &rusqlite::Connection) -> Vec<String> {
+        conn.prepare(
+            "SELECT name FROM pragma_index_list('bundles') WHERE origin = 'c' ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    // A store behind by `pending` migrations: migrated with a build that
+    // ended that many short of this one.
+    fn store_behind_by(pending: usize) -> rusqlite::Connection {
+        let mut conn = open_memory_db();
+        let earlier = &MIGRATIONS[..MIGRATIONS.len() - pending];
+        migrate_with(&mut conn, earlier, true).unwrap();
+        assert_eq!(applied(&conn).len(), earlier.len());
+        conn
+    }
+
+    // SQL-21: A store one migration behind is upgraded: the pending
+    // migration runs and is recorded.
+    #[test]
+    fn test_migration_applies_the_pending_migration() {
+        let mut conn = store_behind_by(1);
+        let before = bundle_indexes(&conn);
+
+        migrate(&mut conn, true).unwrap();
+
+        let all: Vec<isize> = MIGRATIONS.iter().map(|m| m.seq).collect();
+        assert_eq!(applied(&conn), all);
+        // The newest migration reshapes the indexes on `bundles`, so having
+        // run shows in the schema as well as in the record.
+        assert_ne!(bundle_indexes(&conn), before);
+        assert_eq!(bundle_indexes(&conn), bundle_indexes(&store_behind_by(0)));
+    }
+
+    // SQL-21: A store several migrations behind has every one applied.
+    #[test]
+    fn test_migration_applies_every_pending_migration() {
+        let mut conn = store_behind_by(MIGRATIONS.len() - 1);
+
+        migrate(&mut conn, true).unwrap();
+
+        let all: Vec<isize> = MIGRATIONS.iter().map(|m| m.seq).collect();
+        assert_eq!(applied(&conn), all);
+    }
+
+    // SQL-21: Without `upgrade`, a store one migration behind is refused,
+    // and left as it was.
+    #[test]
+    fn test_migration_refuses_a_store_behind_without_upgrade() {
+        let mut conn = store_behind_by(1);
+        let before = applied(&conn);
+
+        let result = migrate(&mut conn, false);
+
+        assert!(
+            matches!(result, Err(Error::UpdateRequired)),
+            "should require an upgrade: {result:?}"
+        );
+        assert_eq!(applied(&conn), before);
     }
 }
