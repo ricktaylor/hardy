@@ -62,7 +62,7 @@ The status is encoded as a numeric code with parameters rather than as a string 
 
 Deleting a bundle leaves a tombstone: the row stays, with its bundle and status columns set to NULL, so that its bundle ID still refuses a replay. Tombstones outnumber live bundles on any node that has been running for a while, and no query looks for one by expiry or by status. The two secondary indexes are therefore partial indexes, which hold an entry only for a row that satisfies a condition: the expiry index holds rows with a bundle, and the status index holds rows with a status. The row's own `bundle_id` uniqueness index still covers every row.
 
-This matters on the write path. A bundle's last write turns its row into a tombstone, and with full indexes that write also moved the row's status entry into the run of NULLs at the front of the status index and kept its expiry entry for ever. With partial indexes it removes both entries, so the indexes stay the size of the live backlog instead of growing with every bundle the node has ever handled. That, not the count of index operations per write, is what moves the throughput: in a local benchmark a bundle's lifetime wrote about half as many pages to the WAL, because each index page it touched was in a smaller index. It matters to the reaper too: its expiry poll reads the expiry index from the front, and no longer walks every tombstone older than the first live bundle.
+This matters on the write path. A bundle's last write turns its row into a tombstone, and with full indexes that write also moved the row's status entry into the run of NULLs at the front of the status index and kept its expiry entry for ever. With partial indexes it removes both entries, so the indexes stay the size of the live backlog instead of growing with every bundle the node has ever handled. That, not the count of index operations per write, is what moves the throughput: a bundle's lifetime writes about half as many pages to the WAL, because each index page it touches is in a smaller index. It matters to the reaper too: its expiry poll reads the expiry index from the front, and no longer walks every tombstone older than the first live bundle. With 200,000 tombstones ahead of the first live bundle, the poll takes 0.8 ms instead of 360 ms.
 
 SQLite uses a partial index only for a query whose own conditions imply the index's. The expiry poll and the recovery scan state `bundle IS NOT NULL` outright, and every status-keyed query compares `status_code` with `=`, which a NULL never satisfies. A test pins the expiry poll's query plan, alongside the existing one for the queue polls, so that a change to either query that loses its index fails the build.
 
@@ -86,7 +86,7 @@ Not every failure stops at a savepoint. On a full disk, an I/O error or an out-o
 
 What happens next depends on whether the failure may clear by itself, as described under the failure rules below. If it may, the writer rolls the batch back and runs it again, every write included, and keeps doing so under the retry policy. A write that fails that way, inside its own savepoint, stops and reruns its batch the same way, even though SQLite left the transaction open. Each run starts from the state the rollback restored, so a write that does the same thing each time it runs takes effect once, and the writes are written to allow it: each only reads the values it captured. Once the failure outlasts the retries, or at once if it cannot clear, every write in the batch fails with the error that caused it, including the writes that had already succeeded, because none of them took effect.
 
-The trade-off is one cross-thread hand-off per operation, which adds roughly a tenth of a millisecond of latency. A strictly sequential caller is therefore slower than running SQLite inline: in a local benchmark of the forwarding lifecycle's metadata traffic, a little over half the throughput. The two break even at between one and four concurrent callers, and with dozens in flight batching alone doubles the throughput. Moving checkpoints off the writer and indexing live bundles only, described below, each add to that; together the three give about six times the throughput at 64 concurrent callers, and leave a sequential caller at about 60%. The BPA's workload is concurrent, and a bundle's metadata writes sit beside bundle-data I/O that costs far more, so the design favours throughput under load and an unblocked runtime.
+The trade-off is one cross-thread hand-off per operation, which adds roughly a tenth of a millisecond of latency. A strictly sequential caller is therefore slower than running SQLite inline. The BPA's workload is concurrent, and a bundle's metadata writes sit beside bundle-data I/O that costs far more, so the design favours throughput under load and an unblocked runtime. The figures are under [Performance](#performance).
 
 Rejected alternatives:
 
@@ -102,8 +102,8 @@ The store turns that default off. Between batches the writer reads the WAL's bac
 
 Two things a background checkpoint cannot do are left to the writer, at thresholds chosen so that they are rare:
 
-- **Restarting the WAL.** SQLite reuses the WAL file from its beginning only once every page in it has been copied, and a checkpoint racing the writer never quite gets there. So once the WAL passes 8000 pages (32 MiB), the writer copies the remainder itself, between two batches. By then the checkpoint thread has copied and synced nearly all of it, so the writer's share is the few pages written since: 6 to 9 ms on average in a local benchmark, an eighth as often as the default's checkpoints. Below the threshold the WAL is left to grow and the writer never stops for a checkpoint.
-- **Bounding the WAL.** A writer faster than the checkpoint thread would grow the WAL without limit. At 16000 pages (64 MiB) the writer waits for the checkpoint in flight before taking its next batch, which holds the write rate to the checkpoint rate. This is reached only at sustained saturation, where the wait is on the order of 100 ms: longer than any single pause under SQLite's default, but with far fewer writes delayed overall. The limit holds the WAL to about 64 MiB only while no reader keeps a snapshot open, because a checkpoint cannot copy past the oldest snapshot still in use. No read holds one across calls: each runs in its own implicit transaction, and the polls page with a cursor.
+- **Restarting the WAL.** SQLite reuses the WAL file from its beginning only once every page in it has been copied, and a checkpoint racing the writer never quite gets there. So once the WAL passes 8000 pages (32 MiB), the writer copies the remainder itself, between two batches. By then the checkpoint thread has copied and synced nearly all of it, so the writer's share is the few pages written since, an eighth as often as the default's checkpoints. Below the threshold the WAL is left to grow and the writer never stops for a checkpoint.
+- **Bounding the WAL.** A writer faster than the checkpoint thread would grow the WAL without limit. At 16000 pages (64 MiB) the writer waits for the checkpoint in flight before taking its next batch, which holds the write rate to the checkpoint rate. This is reached only at sustained saturation, and holds a batch up for as long as the cycle in flight takes to finish. The limit holds the WAL to about 64 MiB only while no reader keeps a snapshot open, because a checkpoint cannot copy past the oldest snapshot still in use. No read holds one across calls: each runs in its own implicit transaction, and the polls page with a cursor.
 
 The database file is synced through the file handle SQLite already holds, reached with `sqlite3_file_control`. Opening a second handle to sync is not an option on POSIX systems: closing any descriptor of a file releases every lock the process holds on that file, including the ones SQLite relies on. That call is the crate's one use of `unsafe`.
 
@@ -154,7 +154,23 @@ Migration files are embedded at compile time, so there's no risk of missing migr
 
 The `upgrade` argument to `SqliteStorage::new` (hardy-bpa-server's `--upgrade-store` flag) allows administrators to control when migrations run. In production, this prevents unexpected schema changes during routine restarts.
 
-## Recovery Support
+## Performance
+
+`tests/throughput.rs` is an `#[ignore]`d benchmark of the store through the `MetadataStorage` trait; its module documentation says how to run it. Each simulated bundle makes the metadata calls of one forwarding lifecycle: an insert, two status swaps, a get, a conditional tombstone and a tombstone. That is five writes and one read. The figures below compare this design with the one it replaced (a Tokio mutex around a pooled connection, with SQLite's own checkpoints), from the same benchmark on one machine: 4 vCPU (Intel Xeon, 2.20 GHz), the database on an ext4 cloud persistent disk, 4 runtime worker threads, SQLite 3.54.1. Absolute figures depend on the disk; the comparison is what carries over.
+
+Bundles per second, with each task running its bundles back to back:
+
+| Concurrent tasks | Previous design | This design |
+| :--- | ---: | ---: |
+| 1 | 1,400–1,500 | 800–1,200 |
+| 4 | 1,260–1,300 | 2,700–2,800 |
+| 16 | 1,100–1,130 | 4,800–4,850 |
+| 64 | 980–1,030 | 6,600–6,800 |
+
+The previous design slowed as callers were added, because every write paid its own transaction and every queued write waited behind each checkpoint. This one speeds up, because a batch shares one transaction. A single sequential caller is the one case that is slower, by the thread hand-off on every call.
+
+At a steady 600 bundles per second (3,000 writes per second) from 64 tasks, 99th-percentile write latency falls from 18–19 ms to under 0.7 ms, and no write takes over 20 ms, against about 700 of 96,000 before. The runtime stays responsive throughout: a task that wakes every millisecond is never more than 5 ms late, where the previous design's checkpoints held runtime threads for up to 42 ms. Saturated for 20 seconds, the slowest single write takes 38 ms against 550 ms before.
+
 
 The MetadataStorage trait requires a recovery protocol to synchronise metadata with bundle data after crashes. The implementation uses an "unconfirmed" table to track entries during recovery:
 

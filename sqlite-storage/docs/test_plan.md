@@ -73,3 +73,5 @@ cargo test -p hardy-sqlite-storage
 # Generic harness (covers trait contract)
 cargo test -p storage-tests
 ```
+
+`tests/throughput.rs` is a benchmark, not a test case: it is `#[ignore]`d, asserts only that each call succeeds, and is run by hand in release, as its module documentation describes. Its results are in the [design document](design.md#performance).
