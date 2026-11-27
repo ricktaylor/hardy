@@ -22,6 +22,7 @@ dtn-pat-item = ["std","dep:percent-encoding","dep:glob"]
 serde = ["dep:serde","hardy-bpv7/serde"]
 
 [dependencies]
+hardy-cbor = { version = "2", path = "../cbor" }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", default-features = false }
 thiserror = { version = "2", default-features = false }
 winnow = { version = "1", default-features = false, features = ["alloc"] }
