@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
-- `TryFrom<config::Config> for hardy_bpa::cla::Registration` builds the entity with its `cla_init()` declarations, so `BpaBuilder::cla` takes a tcpclv4 configuration directly.
+- `Tcpclv4` implements `hardy_bpa::cla::Factory`, declaring its `cla_init()`, so `BpaBuilder::cla` takes a built entity directly; the listeners are bound and the TLS material loaded when it is built.
 - `Tcpclv4` implements `Debug`, showing every builder input (the listeners' bound addresses, the MRUs, the pool and transfer limits, the rate limit, the timers) and whether it is registered; of the TLS material it shows only whether TLS is required.
 - `Tcpclv4::cla_init()` exposes the entity's set-once registration declarations (TCP address type; the configured transfer MRU as the declared receive limit) for the embedder to pass to `register_cla`, so the two limits fold into the effective cap the BPA reports back. The advertised transfer MRU is then the configured `transfer_mru` clamped to that effective cap (left alone when no cap was negotiated), and the advertised segment MRU is clamped to that folded transfer MRU in turn, so a conformant peer is never invited to offer a transfer — or a single segment — the BPA would deterministically reject.
 - `Tcpclv4Builder::max_outstanding_transfers` (default: 16; a `NonZeroUsize`, so zero is unrepresentable) bounds the transfers accepted but not yet resolved with an outcome, per peer; when reached, further forwards to that peer are held unanswered, which is the flow control back to the BPA. Per-peer scoping keeps one unreachable peer's stalled dials from starving admission for healthy peers.

@@ -18,9 +18,8 @@
 //! [`ContactTimeout`]), so invalid values fail at parse.
 
 use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf};
 
-use hardy_bpa::cla::Registration;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
@@ -201,19 +200,6 @@ impl TryFrom<Config> for Tcpclv4 {
     /// [`Tcpclv4Builder::build`].
     fn try_from(config: Config) -> Result<Self, Self::Error> {
         Tcpclv4Builder::from(config).build()
-    }
-}
-
-impl TryFrom<Config> for Registration {
-    type Error = Error;
-
-    /// Builds the entity, `Tcpclv4Builder::from(config).build()`, and pairs
-    /// it with its [`Tcpclv4::cla_init`] declarations, ready for
-    /// [`BpaBuilder::cla`](hardy_bpa::builder::BpaBuilder::cla).
-    fn try_from(config: Config) -> Result<Self, Self::Error> {
-        let cla = Tcpclv4Builder::from(config).build()?;
-        let init = cla.cla_init();
-        Ok(Self::new(Arc::new(cla), init))
     }
 }
 

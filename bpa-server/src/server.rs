@@ -10,16 +10,16 @@ use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
 use hardy_async::TaskPool;
-#[cfg(feature = "echo")]
-use hardy_bpa::services::Service;
 use hardy_bpa::{
     bpa::Bpa,
+    builder::BpaBuilder,
     policy::FlowControllerFactory,
-    routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
 #[cfg(feature = "echo")]
 use hardy_echo_service::EchoService;
+#[cfg(feature = "file-cla")]
+use hardy_file_cla::Cla as FileCla;
 #[cfg(feature = "localdisk-storage")]
 use hardy_localdisk_storage::LocalDiskStorage;
 #[cfg(feature = "postgres-storage")]
@@ -30,10 +30,12 @@ use hardy_proto::server::GrpcServer;
 use hardy_s3_storage::S3Storage;
 #[cfg(feature = "sqlite-storage")]
 use hardy_sqlite_storage::SqliteStorage;
+#[cfg(feature = "tcpclv4")]
+use hardy_tcpclv4::Tcpclv4;
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
-use crate::config::{Config, FlowControllerFactoryConfig, storage};
+use crate::config::{Config, FlowControllerFactoryConfig, cla::ClaType, storage};
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -207,7 +209,7 @@ impl BpaServer {
                     }
                 })
                 .transpose()?;
-            let agent: Arc<dyn RoutingAgent> = Arc::new(StaticRoutesAgent::new(
+            let agent = Arc::new(StaticRoutesAgent::new(
                 routes_file,
                 sr_config.priority,
                 sr_config.watch.into(),
@@ -227,8 +229,7 @@ impl BpaServer {
                         warn!("built-in-services.echo: no endpoints configured, skipping");
                     } else {
                         for service_id in services {
-                            let echo: Arc<dyn Service> = Arc::new(EchoService::new());
-                            builder = builder.service(service_id, echo);
+                            builder = builder.service(service_id, Arc::new(EchoService::new()));
                         }
                     }
                 }
@@ -262,17 +263,7 @@ impl BpaServer {
             )
             .collect();
 
-        // Each CLA is built from its config by `build()`, which names the
-        // CLA in any error.
         for cla_config in config.clas {
-            if let Some(cla_type) = cla_config.cla_type.unknown_type() {
-                warn!(
-                    "Ignoring CLA '{}' with unknown type '{cla_type}'",
-                    cla_config.name
-                );
-                continue;
-            }
-
             let egress_policy = cla_config
                 .policy
                 .as_ref()
@@ -286,7 +277,7 @@ impl BpaServer {
                 })
                 .transpose()?;
 
-            builder = builder.cla(cla_config.name, cla_config.cla_type, egress_policy);
+            builder = configure_cla(builder, cla_config.name, cla_config.cla_type, egress_policy)?;
         }
 
         let bpa = Arc::new(builder.build().await?);
@@ -337,4 +328,34 @@ impl BpaServer {
         self.tasks.shutdown().await;
         self.bpa.shutdown().await;
     }
+}
+
+// Builds one configured CLA and hands it to the builder as its factory.
+// Building binds the CLA's listeners and loads its files here, so an
+// environment error names the CLA before the BPA is constructed. An
+// unknown type is skipped with a warning.
+fn configure_cla(
+    builder: BpaBuilder,
+    name: String,
+    cla_type: ClaType,
+    policy: Option<Arc<dyn FlowControllerFactory>>,
+) -> anyhow::Result<BpaBuilder> {
+    Ok(match cla_type {
+        #[cfg(feature = "tcpclv4")]
+        ClaType::TcpClv4(config) => {
+            let cla = Tcpclv4::try_from(config)
+                .with_context(|| format!("Failed to create CLA '{name}'"))?;
+            builder.cla(name, cla, policy)
+        }
+        #[cfg(feature = "file-cla")]
+        ClaType::File(config) => {
+            let cla =
+                FileCla::new(&config).with_context(|| format!("Failed to create CLA '{name}'"))?;
+            builder.cla(name, cla, policy)
+        }
+        ClaType::Other { cla_type, .. } => {
+            warn!("Ignoring CLA '{name}' with unknown type '{cla_type}'");
+            builder
+        }
+    })
 }

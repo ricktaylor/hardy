@@ -5,21 +5,20 @@ use hardy_bpv7::eid::Service as ServiceId;
 use hardy_eid_patterns::EidPattern;
 use thiserror::Error;
 
-// Aliased: this module's own `Error` is the build error; the crate-root
-// generic error is what a deferred conversion raises.
+// Aliased: the CLA and service kinds each have an erased `BoxFactory`.
 use crate::{
-    Arc, Error as ConversionError,
+    Arc,
     bpa::Bpa,
-    cla::{self, Registration, registry::ClaRegistryBuilder},
+    cla::{self, Factory, factory::BoxFactory as BoxClaFactory, registry::ClaRegistryBuilder},
     dispatcher::{Config as DispatcherConfig, Dispatcher},
     filter::pack::{FilterPack, chains::FilterChains},
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
-    routing::{self, RibBuilder, RoutingAgent},
+    routing::{self, AgentFactory, RibBuilder},
     services::{
-        self, Application, Service,
-        registry::{ServiceImpl, ServiceRegistryBuilder},
+        self, ApplicationFactory, ServiceFactory, factory::BoxFactory as BoxServiceFactory,
+        registry::ServiceRegistryBuilder,
     },
     storage::{
         BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
@@ -33,16 +32,6 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Why [`BpaBuilder::build`] failed.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// A configured CLA failed to convert into a [`Registration`].
-    #[error("Failed to create CLA '{name}': {source}")]
-    ClaConversion {
-        /// The name the CLA was configured under.
-        name: String,
-        /// The conversion's own error.
-        #[source]
-        source: ConversionError,
-    },
-
     /// A configured CLA could not be registered: its name is taken.
     #[error("Failed to register CLA '{name}': {source}")]
     Cla {
@@ -51,16 +40,6 @@ pub enum Error {
         /// The registry's refusal.
         #[source]
         source: cla::Error,
-    },
-
-    /// A configured service or application failed to convert.
-    #[error("Failed to create service {service_id}: {source}")]
-    ServiceConversion {
-        /// The service id it was configured under.
-        service_id: ServiceId,
-        /// The conversion's own error.
-        #[source]
-        source: ConversionError,
     },
 
     /// A configured service or application could not be registered: its
@@ -80,17 +59,17 @@ pub enum Error {
     Routing(#[from] routing::Error),
 }
 
-// A configured CLA, converted at build().
+// A configured CLA, its name validated at build().
 struct PendingCla {
     name: String,
+    factory: BoxClaFactory,
     policy: Option<Arc<dyn FlowControllerFactory>>,
-    convert: Box<dyn FnOnce() -> core::result::Result<Registration, ConversionError> + Send>,
 }
 
-// A configured service or application, converted at build().
+// A configured service or application, its service id validated at build().
 struct PendingService {
     service_id: ServiceId,
-    convert: Box<dyn FnOnce() -> core::result::Result<ServiceImpl, ConversionError> + Send>,
+    factory: BoxServiceFactory,
 }
 
 /// Builder for constructing a [`Bpa`] with custom configuration, obtained
@@ -228,86 +207,80 @@ impl BpaBuilder {
         self
     }
 
-    /// Configures a CLA, registered under `name` when the BPA starts.
+    /// Configures a CLA, built and registered under `name` when the BPA
+    /// starts.
     ///
-    /// `cla` is anything that converts into a [`Registration`]: a CLA
-    /// crate's configuration type, or an already-built CLA paired with its
-    /// declarations by [`Registration::new`]. The conversion's error may be
-    /// any type that boxes into the crate's generic
-    /// [`Error`](type@crate::Error). The conversion runs in
-    /// [`build()`](Self::build), which returns its error, or a duplicate
-    /// name, as [`Error`](enum@Error). The declarations' `max_bundle_size`
-    /// is the CLA's receive limit, folded with the BPA's configured cap into
-    /// the effective value delivered to
-    /// [`Cla::on_register`](crate::cla::Cla::on_register).
-    pub fn cla<C>(
+    /// `factory` builds the CLA: a CLA crate's own factory, such as a built
+    /// `Tcpclv4`, or any built CLA paired with its declarations as a
+    /// [`Registration`](cla::Registration). At [`Bpa::start`] the BPA reads
+    /// the factory's declarations, folds their `max_bundle_size` with its
+    /// own configured cap, and builds the CLA against those
+    /// [`Terms`](cla::Terms); [`Cla::on_register`](cla::Cla::on_register)
+    /// then receives the same cap. A duplicate name is returned by
+    /// [`build()`](Self::build) as [`Error::Cla`].
+    pub fn cla<F: Factory + 'static>(
         mut self,
         name: impl Into<String>,
-        cla: C,
+        factory: F,
         policy: Option<Arc<dyn FlowControllerFactory>>,
-    ) -> Self
-    where
-        C: TryInto<Registration> + Send + 'static,
-        C::Error: Into<ConversionError>,
-    {
+    ) -> Self {
         self.clas.push(PendingCla {
             name: name.into(),
+            factory: BoxClaFactory::new(factory),
             policy,
-            convert: Box::new(move || cla.try_into().map_err(Into::into)),
         });
         self
     }
 
-    /// Configures a low-level service, registered as `service_id` when the
-    /// BPA starts.
+    /// Configures a low-level service, built and registered as
+    /// `service_id` when the BPA starts.
     ///
-    /// `service` is anything that converts into an `Arc<dyn Service>`:
-    /// an already-built `Arc<S>`, or a service crate's configuration type.
-    /// The conversion runs in [`build()`](Self::build), which returns its
-    /// error, or a refused service id, as [`Error`](enum@Error).
-    pub fn service<S>(mut self, service_id: ServiceId, service: S) -> Self
-    where
-        S: TryInto<Arc<dyn Service>> + Send + 'static,
-        S::Error: Into<ConversionError>,
-    {
+    /// `factory` builds the service: a service crate's own factory, or an
+    /// already built `Arc<S>`. At [`Bpa::start`] the BPA resolves the
+    /// endpoint and builds the service there with its sink in the
+    /// [`ServiceContext`](services::ServiceContext). A refused service id is
+    /// returned by [`build()`](Self::build) as [`Error::Service`].
+    pub fn service<F: ServiceFactory + 'static>(
+        mut self,
+        service_id: ServiceId,
+        factory: F,
+    ) -> Self {
         self.services.push(PendingService {
             service_id,
-            convert: Box::new(move || {
-                service
-                    .try_into()
-                    .map(ServiceImpl::LowLevel)
-                    .map_err(Into::into)
-            }),
+            factory: BoxServiceFactory::service(factory),
         });
         self
     }
 
-    /// Configures a high-level application, registered as `service_id`
-    /// when the BPA starts.
-    ///
-    /// `application` is anything that converts into an
-    /// `Arc<dyn Application>`, converted in [`build()`](Self::build) as for
-    /// [`service()`](Self::service).
-    pub fn application<A>(mut self, service_id: ServiceId, application: A) -> Self
-    where
-        A: TryInto<Arc<dyn Application>> + Send + 'static,
-        A::Error: Into<ConversionError>,
-    {
+    /// Configures a high-level application, built and registered as
+    /// `service_id` when the BPA starts, as [`service()`](Self::service)
+    /// does for a service.
+    pub fn application<F: ApplicationFactory + 'static>(
+        mut self,
+        service_id: ServiceId,
+        factory: F,
+    ) -> Self {
         self.services.push(PendingService {
             service_id,
-            convert: Box::new(move || {
-                application
-                    .try_into()
-                    .map(ServiceImpl::Application)
-                    .map_err(Into::into)
-            }),
+            factory: BoxServiceFactory::application(factory),
         });
         self
     }
 
-    /// Register a routing agent to be initialized when the BPA is built.
-    pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn RoutingAgent>) -> Self {
-        self.rib_builder.insert(name.into(), agent);
+    /// Configures a routing agent, built and registered under `name` when
+    /// the BPA is built.
+    ///
+    /// `factory` builds the agent: an agent crate's own factory, or an
+    /// already built `Arc<A>`, handed its sink and the node ids in the
+    /// [`AgentContext`](routing::AgentContext). A duplicate name, or a
+    /// factory refusing to build, is returned by [`build()`](Self::build)
+    /// as [`Error::Routing`].
+    pub fn routing_agent<F: AgentFactory + 'static>(
+        mut self,
+        name: impl Into<String>,
+        factory: F,
+    ) -> Self {
+        self.rib_builder.insert(name.into(), factory);
         self
     }
 
@@ -361,14 +334,14 @@ impl BpaBuilder {
     /// Consumes the builder and constructs the BPA with every configured
     /// component.
     ///
-    /// The configured CLAs, services and applications are converted here,
-    /// in configuration order, and validated against each other and the
-    /// node ids; they go live at [`Bpa::start`].
+    /// The configured CLAs, services and applications are validated here,
+    /// in configuration order, against each other and the node ids; the
+    /// CLAs are built, and every component goes live, at [`Bpa::start`].
     ///
     /// # Errors
     ///
-    /// The first configured component that fails to convert or register,
-    /// as the matching [`Error`](enum@Error) variant.
+    /// The first configured component that cannot be registered, as the
+    /// matching [`Error`](enum@Error) variant.
     pub async fn build(self) -> Result<Bpa> {
         // Freeze the filter packs first: the per-hook chains splice in call
         // order, and each input hook's P = the max peek its registrations
@@ -443,30 +416,26 @@ impl BpaBuilder {
     }
 }
 
-// Converts the configured CLAs, in configuration order, into the registry
+// Parks the configured CLAs, in configuration order, in the registry
 // builder, which refuses a duplicate name.
 fn build_clas(clas: Vec<PendingCla>) -> Result<ClaRegistryBuilder> {
     let mut builder = ClaRegistryBuilder::new();
     for PendingCla {
         name,
+        factory,
         policy,
-        convert,
     } in clas
     {
-        let Registration { cla, init } = convert().map_err(|source| Error::ClaConversion {
-            name: name.clone(),
-            source,
-        })?;
         builder
-            .insert(name.clone(), cla, policy, init)
+            .insert(name.clone(), factory, policy)
             .map_err(|source| Error::Cla { name, source })?;
     }
     Ok(builder)
 }
 
-// Converts the configured services and applications, in configuration
-// order, into the registry builder, which refuses a taken, administrative,
-// or unresolvable service id.
+// Parks the configured services and applications, in configuration order,
+// in the registry builder, which refuses a taken, administrative, or
+// unresolvable service id.
 fn build_services(
     services: Vec<PendingService>,
     node_ids: &NodeIds,
@@ -474,15 +443,11 @@ fn build_services(
     let mut builder = ServiceRegistryBuilder::new();
     for PendingService {
         service_id,
-        convert,
+        factory,
     } in services
     {
-        let service = convert().map_err(|source| Error::ServiceConversion {
-            service_id: service_id.clone(),
-            source,
-        })?;
         builder
-            .insert(service_id.clone(), service, node_ids)
+            .insert(service_id.clone(), factory, node_ids)
             .map_err(|source| Error::Service {
                 service_id,
                 source: Box::new(source),

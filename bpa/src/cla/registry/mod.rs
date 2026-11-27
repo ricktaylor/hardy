@@ -1,8 +1,15 @@
 use core::num::NonZeroU32;
 
+use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::{Eid, NodeId};
 
-use super::*;
+use self::sink::{Sink, SinkHandle};
+use super::{
+    factory::{BoxFactory, Context, Terms},
+    *,
+};
+
+mod sink;
 
 // CLA registry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -13,7 +20,7 @@ use super::*;
 pub struct Cla {
     pub cla: Arc<dyn cla::Cla>,
     pub policy: Arc<dyn policy::FlowControllerFactory>,
-    // Snapshotted from the `ClaInit` declarations at registration.
+    // Snapshotted from the factory's `ClaInit` declarations at registration.
     pub address_type: Option<ClaAddressType>,
     pub lane_count: Option<NonZeroU32>,
 
@@ -73,131 +80,47 @@ impl Cla {
 
 type ClaMap = HashMap<String, Arc<Cla>>;
 
-struct Sink {
-    cla: Weak<Cla>,
-    registry: Arc<ClaRegistry>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
-}
-
-#[async_trait]
-impl cla::Sink for Sink {
-    async fn unregister(&self) {
-        if let Some(cla) = self.cla.upgrade() {
-            self.registry.unregister(cla).await;
-        }
-    }
-
-    async fn dispatch(
-        &self,
-        peer_node: Option<&hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<&ClaAddress>,
-        stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<cla::Acceptance> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
-
-        // A CLA that unregisters mid-stream must not land its bundle: the
-        // registration's token races every pull, so teardown wakes this
-        // stream immediately — even parked behind a stalled producer — and
-        // the transfer surfaces as cancelled. Sink-side, so the dispatcher's
-        // stream consumers stay registration-agnostic.
-        let mut stream = crate::stream::CancellableReceiver {
-            inner: stream,
-            token: cla.cancel.clone(),
-        };
-        let verdict = self
-            .dispatcher
-            .receive_bundle(cla.name.clone(), peer_node, peer_addr, &mut stream)
-            .await;
-
-        // A refusal caused by that teardown is not a verdict on the bundle
-        // — the registration died. Report the dead sink instead, so the CLA
-        // does not mistake its own unregistration for a per-bundle refusal.
-        if matches!(verdict, cla::Acceptance::Refused) && cla.cancel.is_cancelled() {
-            return Err(cla::Error::Disconnected);
-        }
-        Ok(verdict)
-    }
-
-    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
-        Ok(self
-            .registry
-            .add_peer(cla, self.dispatcher.clone(), cla_addr, node_ids)
-            .await)
-    }
-
-    async fn remove_peer(&self, cla_addr: &ClaAddress) -> cla::Result<bool> {
-        Ok(self
-            .registry
-            .remove_peer(
-                self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
-                cla_addr,
-            )
-            .await)
-    }
-
-    async fn transfer_outcome(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        outcome: cla::TransferOutcome,
-    ) -> cla::Result<()> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
-        self.dispatcher
-            .transfer_outcome(&cla, bundle_id, outcome)
-            .await;
-        Ok(())
-    }
-}
-
-impl Drop for Sink {
-    fn drop(&mut self) {
-        if let Some(cla) = self.cla.upgrade() {
-            let registry = self.registry.clone();
-            hardy_async::spawn!(self.registry.tasks, "cla_drop_cleanup", async move {
-                registry.unregister(cla).await;
-            });
-        }
-    }
-}
-
-// A CLA awaiting registration, held by the building-phase registry.
+// A configured CLA, built when the registry starts.
 struct PendingCla {
-    cla: Arc<dyn cla::Cla>,
+    name: String,
+    factory: BoxFactory,
     policy: Option<Arc<dyn policy::FlowControllerFactory>>,
-    init: ClaInit,
 }
 
 // CLA registry in the building phase — only insert() is available.
 pub struct ClaRegistryBuilder {
-    clas: HashMap<String, PendingCla>,
+    clas: Vec<PendingCla>,
 }
 
 impl ClaRegistryBuilder {
     pub fn new() -> Self {
-        Self {
-            clas: Default::default(),
-        }
+        Self { clas: Vec::new() }
     }
 
+    // Parks a configured CLA, in configuration order, refusing a name
+    // already configured.
     pub fn insert(
         &mut self,
         name: String,
-        cla: Arc<dyn cla::Cla>,
+        factory: BoxFactory,
         policy: Option<Arc<dyn policy::FlowControllerFactory>>,
-        init: ClaInit,
     ) -> cla::Result<()> {
-        let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
+        if self.clas.iter().any(|pending| pending.name == name) {
             return Err(cla::Error::AlreadyExists(name));
-        };
+        }
         info!("Inserted CLA: {name}");
-        e.insert(PendingCla { cla, policy, init });
+        self.clas.push(PendingCla {
+            name,
+            factory,
+            policy,
+        });
         Ok(())
     }
 
     // Transition to the running registry with the configured CLAs parked.
-    // Activation happens in [`ClaRegistry::start`], after storage recovery:
-    // `Cla::on_register` opens listeners (tcpclv4), and registrations must
-    // not race the consistency check.
+    // Building and activation happen in [`ClaRegistry::start`], after
+    // storage recovery: `Cla::on_register` opens listeners (tcpclv4), and
+    // registrations must not race the consistency check.
     pub fn build(
         self,
         node_ids: &Arc<node_ids::NodeIds>,
@@ -209,7 +132,7 @@ impl ClaRegistryBuilder {
         Arc::new(ClaRegistry {
             node_ids: node_ids.clone(),
             clas: hardy_async::sync::spin::Mutex::new(Default::default()),
-            pending: hardy_async::sync::spin::Mutex::new(self.clas.into_iter().collect()),
+            pending: hardy_async::sync::spin::Mutex::new(self.clas),
             rib: rib.clone(),
             store: store.clone(),
             peers,
@@ -223,9 +146,9 @@ impl ClaRegistryBuilder {
 pub struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
-    // Builder-configured CLAs, parked until `start` activates them after
-    // storage recovery.
-    pending: hardy_async::sync::spin::Mutex<Vec<(String, PendingCla)>>,
+    // Builder-configured CLAs, parked until `start` builds and activates
+    // them after storage recovery.
+    pending: hardy_async::sync::spin::Mutex<Vec<PendingCla>>,
     rib: Arc<routing::Rib>,
     store: Arc<storage::store::Store>,
     peers: Arc<peers::PeerTable>,
@@ -234,22 +157,21 @@ pub struct ClaRegistry {
 }
 
 impl ClaRegistry {
-    /// Activate the builder-configured CLAs, in configuration order.
-    /// Called by `Bpa::start` once storage recovery has completed: a CLA
-    /// going live earlier would race the consistency check.
+    /// Build and activate the builder-configured CLAs, in configuration
+    /// order. Called by `Bpa::start` once storage recovery has completed: a
+    /// CLA going live earlier would race the consistency check.
     pub async fn start(self: &Arc<Self>, dispatcher: &Arc<dispatcher::Dispatcher>) {
         let pending = core::mem::take(&mut *self.pending.lock());
-        for (name, pending) in pending {
-            // The builder pre-checked duplicate names; a failure here is a
-            // bug, not a config error.
+        for PendingCla {
+            name,
+            factory,
+            policy,
+        } in pending
+        {
+            // The builder refused duplicate names, so a failure here is a
+            // factory refusing its terms.
             if let Err(e) = self
-                .register(
-                    name.clone(),
-                    pending.cla,
-                    dispatcher,
-                    pending.policy,
-                    pending.init,
-                )
+                .register(name.clone(), factory, dispatcher, policy)
                 .await
             {
                 error!("Failed to activate configured CLA {name}: {e}");
@@ -283,40 +205,30 @@ impl ClaRegistry {
         self.tasks.shutdown().await;
     }
 
-    // Full registration in one step (for runtime dynamic registration via gRPC).
+    // Full registration in one step: builds the CLA against the settled
+    // terms, files it under `name`, and activates it. Configured CLAs and
+    // runtime registrations (in-process or via gRPC) all arrive here.
+    //
+    // The build is wiring only, so the name is checked once the CLA exists:
+    // a duplicate drops a CLA that was never filed or started.
     pub async fn register(
         self: &Arc<Self>,
         name: String,
-        cla: Arc<dyn cla::Cla>,
+        factory: BoxFactory,
         dispatcher: &Arc<dispatcher::Dispatcher>,
         policy: Option<Arc<dyn policy::FlowControllerFactory>>,
-        init: ClaInit,
     ) -> cla::Result<Vec<NodeId>> {
-        // The effective cap: the BPA's configured max folded with whatever
-        // limit the CLA declared at registration — the min of the caps
-        // declared, or `None` when neither side has one.
-        let max_bundle_size = match (dispatcher.max_bundle_size(), init.max_bundle_size) {
-            (Some(bpa_cap), Some(cla_cap)) => Some(bpa_cap.min(cla_cap)),
-            (bpa_cap, cla_cap) => bpa_cap.or(cla_cap),
-        };
+        let address_type = factory.init.address_type;
+        let terms = Terms::negotiate(&factory.init, dispatcher.max_bundle_size());
+        let sink = Arc::new(Sink {
+            cla: Once::new(),
+            registry: self.clone(),
+            dispatcher: dispatcher.clone(),
+        });
+        let cla = factory.build(Context::new(sink.clone(), self.node_ids.clone(), terms))?;
 
-        let entry = {
-            let mut clas = self.clas.lock();
-            let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
-                return Err(cla::Error::AlreadyExists(name));
-            };
-            e.insert(Arc::new(Cla {
-                cancel: hardy_async::CancellationToken::new(),
-                cla,
-                address_type: init.address_type,
-                lane_count: init.lane_count,
-                peers: Default::default(),
-                name: Arc::from(name.as_str()),
-                policy: policy
-                    .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
-            }))
-            .clone()
-        };
+        let entry = self.file(name.clone(), cla, address_type, terms.lane_count, policy)?;
+        sink.cla.call_once(|| Arc::downgrade(&entry));
 
         // Register that the CLA is a handler for the address type
         if let Some(address_type) = entry.address_type {
@@ -327,21 +239,39 @@ impl ClaRegistry {
 
         entry
             .cla
-            .on_register(
-                Box::new(Sink {
-                    cla: Arc::downgrade(&entry),
-                    registry: self.clone(),
-                    dispatcher: dispatcher.clone(),
-                }),
-                &node_ids,
-                max_bundle_size,
-            )
+            .on_register(Box::new(SinkHandle(sink)), &node_ids, terms.max_bundle_size)
             .await;
 
         metrics::gauge!("bpa.cla.registered").increment(1.0);
         info!("Registered CLA: {name}");
 
         Ok(node_ids)
+    }
+
+    // Files a built CLA under `name`, the only way one becomes reachable.
+    fn file(
+        &self,
+        name: String,
+        cla: Arc<dyn cla::Cla>,
+        address_type: Option<ClaAddressType>,
+        lane_count: Option<NonZeroU32>,
+        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+    ) -> cla::Result<Arc<Cla>> {
+        let mut clas = self.clas.lock();
+        let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
+            return Err(cla::Error::AlreadyExists(name));
+        };
+        Ok(e.insert(Arc::new(Cla {
+            cancel: hardy_async::CancellationToken::new(),
+            cla,
+            address_type,
+            lane_count,
+            peers: Default::default(),
+            name: Arc::from(name.as_str()),
+            policy: policy
+                .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
+        }))
+        .clone())
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {

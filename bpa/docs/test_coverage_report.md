@@ -107,19 +107,24 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 
 ### Builder Registration Tests
 
-9 tests in `tests/builder_registration.rs` — `BpaBuilder`'s configured CLAs, services and applications.
+14 tests in `tests/builder_registration.rs` — `BpaBuilder`'s configured factories for CLAs, services, applications and routing agents.
 
 | Test Function | Scope |
 | :--- | :--- |
-| `cla_converts_at_build_and_registers_at_start` | A CLA config converts at `build()`, not when configured; its declarations reach `on_register` at `start()` |
-| `cla_conversion_failure_names_the_cla` | A failed conversion is `Error::ClaConversion` carrying the name and the crate's own error |
+| `factory_builds_at_start_against_the_settled_terms` | A CLA factory runs at `start()`, not `build()`, with the node ids and the cap folded from its declarations; `on_register` receives the same cap |
+| `context_sink_reaches_the_registration` | The `Context` sink adds and removes a peer once the CLA is registered, and is `Disconnected` after shutdown |
+| `registration_is_a_factory_for_a_built_cla` | A built CLA paired with its declarations as a `Registration` registers at `start()` with them |
+| `refused_terms_leave_the_name_free` | A factory refusing its terms leaves the name free for the next registration |
 | `duplicate_cla_name_is_an_error_not_a_panic` | A repeated name is `Error::Cla` with `cla::Error::AlreadyExists` |
 | `service_and_application_register_at_start` | Both go live at `start()` on their resolved EIDs |
 | `service_id_taken_by_an_application_is_refused` | Services and applications share one id space: `ServiceIdInUse` |
 | `administrative_service_id_is_refused` | `ipn` service 0: `AdministrativeEndpoint` |
 | `service_id_without_a_node_id_for_its_scheme_is_refused` | A `dtn` service on an `ipn`-only node: `services::Error::NodeId` |
 | `dtn_service_id_resolves_against_a_dtn_node_id` | The `dtn` scheme resolves once a `dtn` node id is configured |
-| `service_conversion_failure_names_the_service` | A failed service conversion is `Error::ServiceConversion` with the service id |
+| `service_factory_builds_at_start_at_its_endpoint` | A service factory runs at `start()` at its resolved EID; its `ServiceContext` sink is `Disconnected` after shutdown |
+| `application_factory_builds_at_start_at_its_endpoint` | An application factory runs at `start()` at its resolved EID |
+| `agent_factory_sink_installs_routes` | A routing agent factory gets the node ids, and its `AgentContext` sink adds and removes a route |
+| `duplicate_agent_sink_never_acts_for_the_holder` | A second agent under a taken name fails `build()` with `Error::Routing(AlreadyExists)`, and its sink stays `Disconnected` |
 
 ### Criterion Benchmark
 

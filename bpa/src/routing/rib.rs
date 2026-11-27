@@ -22,9 +22,12 @@ use tracing::{debug, info, trace};
 use tracing::instrument;
 
 use super::{
-    Error, Result, RoutingAgent, TableId,
+    AgentContext, AgentFactory, Error, Result, RoutingAgent, TableId,
     action::{Action, InternalAction, RouteAction},
-    agent::sink::Sink,
+    agent::{
+        factory::BoxFactory,
+        sink::{Sink, SinkHandle},
+    },
     table::{Entry, LookupResult, RouteTable, Trail},
 };
 use crate::{
@@ -162,7 +165,7 @@ pub struct Rib {
 }
 
 pub struct RibBuilder {
-    agents: Vec<(String, Arc<dyn RoutingAgent>)>,
+    agents: Vec<(String, BoxFactory)>,
     service_priority: u32,
 }
 
@@ -174,8 +177,8 @@ impl RibBuilder {
         }
     }
 
-    pub fn insert(&mut self, name: String, agent: Arc<dyn RoutingAgent>) {
-        self.agents.push((name, agent));
+    pub fn insert<F: AgentFactory + 'static>(&mut self, name: String, factory: F) {
+        self.agents.push((name, BoxFactory::new(factory)));
     }
 
     pub fn service_priority(&mut self, priority: u32) {
@@ -184,8 +187,8 @@ impl RibBuilder {
 
     pub async fn build(self, node_ids: Arc<NodeIds>, store: Arc<Store>) -> Result<Arc<Rib>> {
         let rib = Arc::new(Rib::new(node_ids, store, self.service_priority));
-        for (name, agent) in self.agents {
-            rib.register_agent(name, agent).await?;
+        for (name, factory) in self.agents {
+            rib.register_agent(name, factory).await?;
         }
         Ok(rib)
     }
@@ -575,11 +578,17 @@ impl Rib {
         .await
     }
 
+    // Builds the agent, files it under `name`, and activates it. Configured
+    // and runtime registrations all arrive here. The build is wiring only,
+    // so the name is checked once the agent exists: a duplicate drops an
+    // agent that was never filed.
     pub(crate) async fn register_agent(
         self: &Arc<Self>,
         name: String,
-        agent: Arc<dyn RoutingAgent>,
+        factory: BoxFactory,
     ) -> Result<Vec<NodeId>> {
+        let sink = Arc::new(Sink::new(name.clone(), self.clone()));
+        let agent = factory.build(AgentContext::new(sink.clone(), self.node_ids.clone()))?;
         {
             let mut agents = self.agents.lock();
             let HashMapEntry::Vacant(e) = agents.entry(name.clone()) else {
@@ -587,6 +596,7 @@ impl Rib {
             };
             e.insert(agent.clone());
         }
+        sink.file();
 
         info!("Registered new routing agent: {name}");
         metrics::gauge!("bpa.rib.agents").increment(1.0);
@@ -594,7 +604,7 @@ impl Rib {
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
         agent
-            .on_register(Box::new(Sink::new(name, self.clone())), &node_ids)
+            .on_register(Box::new(SinkHandle(sink)), &node_ids)
             .await;
 
         Ok(node_ids)

@@ -10,7 +10,8 @@ or consume raw bundle files.
 */
 
 use hardy_async::sync::spin::Once;
-use hardy_bpa::cla::{ClaInit, Registration};
+// Aliased: this crate's own `Cla` and `Result` are the file CLA's.
+use hardy_bpa::cla::{Cla as BpaCla, Context, Factory, Result as ClaResult};
 use hardy_bpv7::eid::NodeId;
 use std::{
     collections::HashMap,
@@ -155,14 +156,14 @@ impl Cla {
     }
 }
 
-impl TryFrom<Config> for Registration {
-    type Error = Error;
-
-    /// Builds the CLA, as [`Cla::new`] does, ready for
-    /// [`BpaBuilder::cla`](hardy_bpa::builder::BpaBuilder::cla). It
-    /// declares nothing: no address type, lanes, or receive limit.
-    fn try_from(config: Config) -> Result<Self, Self::Error> {
-        Ok(Self::new(Arc::new(Cla::new(&config)?), ClaInit::default()))
+/// A built CLA is the factory
+/// [`BpaBuilder::cla`](hardy_bpa::builder::BpaBuilder::cla) takes: its
+/// directories are resolved by [`Cla::new`]. It declares nothing (no
+/// address type, lanes, or receive limit) and takes its sink in
+/// `on_register`.
+impl Factory for Cla {
+    fn build(self, _cx: Context) -> ClaResult<Arc<dyn BpaCla>> {
+        Ok(Arc::new(self))
     }
 }
 

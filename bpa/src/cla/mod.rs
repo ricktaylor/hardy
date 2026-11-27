@@ -4,8 +4,10 @@ use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
 
+pub use self::factory::{Context, Factory, Registration, Terms};
 pub use crate::stream::Segment;
 
+pub(crate) mod factory;
 pub(crate) mod peers;
 pub(crate) mod registry;
 
@@ -218,8 +220,9 @@ pub enum TransferOutcome {
 
 /// A CLA's set-once registration declarations.
 ///
-/// Passed to [`BpaRegistration::register_cla`](crate::bpa::BpaRegistration::register_cla)
-/// alongside the CLA and sampled exactly once: the BPA snapshots every
+/// Returned by [`Factory::request`], or passed to
+/// [`BpaRegistration::register_cla`](crate::bpa::BpaRegistration::register_cla)
+/// alongside the CLA, and sampled exactly once: the BPA snapshots every
 /// field at registration, so none of them can change — or be re-read —
 /// for the lifetime of the registration. A CLA with nothing to declare
 /// registers with `ClaInit::default()`.
@@ -252,32 +255,6 @@ pub struct ClaInit {
     /// value delivered to [`Cla::on_register`]; dispatch enforces the
     /// BPA's configured cap, not the folded per-CLA value.
     pub max_bundle_size: Option<NonZeroU64>,
-}
-
-/// A CLA ready to register: the implementation and its set-once
-/// declarations.
-///
-/// [`BpaBuilder::cla`](crate::builder::BpaBuilder::cla) takes anything
-/// that converts into one. A CLA crate implements
-/// `TryFrom<Config> for Registration` for its configuration type, so a
-/// server registers a configured CLA without knowing how it is built. An
-/// already-built CLA is paired with its declarations by
-/// [`Registration::new`]: there is deliberately no conversion from a bare
-/// CLA, which would register it with `ClaInit::default()` and silently
-/// drop whatever it declares.
-pub struct Registration {
-    /// The CLA implementation.
-    pub cla: Arc<dyn Cla>,
-
-    /// The CLA's declarations, snapshotted at registration.
-    pub init: ClaInit,
-}
-
-impl Registration {
-    /// A registration with explicit declarations.
-    pub fn new(cla: Arc<dyn Cla>, init: ClaInit) -> Self {
-        Self { cla, init }
-    }
 }
 
 /// The BPA's acceptance verdict for a dispatched bundle — the return value

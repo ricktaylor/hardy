@@ -40,13 +40,16 @@ use hardy_bpa::bpa::Bpa;
 use hardy_bpa::node_ids::NodeIds;
 
 // Build a BPA with default in-memory storage, configuring the components
-// it registers at start. A CLA crate's config converts into the CLA it
-// describes; build() reports a bad config, or a clash, as an error.
+// it registers. Each is a factory the BPA builds with its sink in hand; a
+// built component is one. Building the TCPCLv4 entity binds its listeners
+// here, so a socket error surfaces before the BPA exists. build()
+// reports a clash, such as a duplicate CLA name, as an error.
+let tcpclv4 = Tcpclv4::try_from(tcpclv4_config)?;
 let bpa = Bpa::builder()
     .node_ids(node_ids)
     .status_reports(true)
-    .cla("tcp", tcpclv4_config, None)
-    .application(service_id, app)
+    .cla("tcp", tcpclv4, None)
+    .application(service_id, Arc::new(app))
     .build()
     .await?;
 

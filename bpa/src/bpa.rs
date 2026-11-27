@@ -3,14 +3,18 @@ use hardy_bpv7::eid::NodeId;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+// Aliased: the CLA and routing-agent kinds each have an erased `BoxFactory`.
 use crate::{
     Arc,
     builder::BpaBuilder,
-    cla::{self, Cla, ClaInit, registry::ClaRegistry},
+    cla::{
+        self, Cla, ClaInit, Registration, factory::BoxFactory as ClaBoxFactory,
+        registry::ClaRegistry,
+    },
     dispatcher::Dispatcher,
     otel_metrics,
     policy::FlowControllerFactory,
-    routing::{self, Rib, RoutingAgent},
+    routing::{self, Rib, RoutingAgent, agent::factory::BoxFactory as AgentBoxFactory},
     services::{self, Service, registry::ServiceRegistry},
     storage::store::Store,
 };
@@ -340,8 +344,9 @@ impl BpaRegistration for Bpa {
         policy: Option<Arc<dyn FlowControllerFactory>>,
         init: ClaInit,
     ) -> cla::Result<Vec<NodeId>> {
+        let factory = ClaBoxFactory::new(Registration::new(cla, init));
         self.cla_registry
-            .register(name, cla, &self.dispatcher, policy, init)
+            .register(name, factory, &self.dispatcher, policy)
             .await
     }
 
@@ -371,7 +376,9 @@ impl BpaRegistration for Bpa {
         name: String,
         agent: Arc<dyn RoutingAgent>,
     ) -> routing::Result<Vec<NodeId>> {
-        self.rib.register_agent(name, agent).await
+        self.rib
+            .register_agent(name, AgentBoxFactory::new(agent))
+            .await
     }
 }
 

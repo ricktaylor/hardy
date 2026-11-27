@@ -1,4 +1,7 @@
+pub(crate) mod factory;
 pub(crate) mod registry;
+
+pub use self::factory::{ApplicationContext, ApplicationFactory, ServiceContext, ServiceFactory};
 
 use core::{
     fmt::{self, Display, Formatter},
