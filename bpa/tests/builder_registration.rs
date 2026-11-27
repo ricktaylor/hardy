@@ -3,7 +3,7 @@
 //! `Context`; a duplicate name or a refused service id fails `build()` as a
 //! typed `builder::Error` naming the component.
 
-use core::num::NonZeroU64;
+use core::{num::NonZeroU64, slice::from_ref};
 use std::sync::Arc;
 
 use hardy_bpa::{
@@ -15,7 +15,7 @@ use hardy_bpa::{
     routing::{self, AgentContext, AgentFactory, RouteAction, RoutingAgent, RoutingSink},
     services::{
         self, Application, ApplicationContext, ApplicationFactory, ApplicationSink, Service,
-        ServiceContext, ServiceFactory, ServiceSink, StatusNotify,
+        ServiceContext, ServiceEndpoint, ServiceFactory, ServiceSink, StatusNotify,
     },
     stream::{Receiver, Segment},
 };
@@ -116,10 +116,11 @@ impl Service for RecordingService {
         let _ = self.eid_tx.send(endpoint.clone());
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
         _total_len: u64,
@@ -150,10 +151,11 @@ impl Application for RecordingApp {
         let _ = self.eid_tx.send(source.clone());
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: OffsetDateTime,
         _ack_requested: bool,
@@ -174,30 +176,36 @@ impl Application for RecordingApp {
     }
 }
 
-/// A service factory that sends its context out of `build`.
+/// A service factory that sends its context's endpoints out of `build`.
 struct ServiceContextFactory {
-    built_tx: flume::Sender<(Eid, Arc<dyn ServiceSink>)>,
+    built_tx: flume::Sender<Vec<ServiceEndpoint>>,
     eid_tx: flume::Sender<Eid>,
 }
 
 impl ServiceFactory for ServiceContextFactory {
     fn build(self, cx: ServiceContext) -> services::Result<Arc<dyn Service>> {
-        let _ = self.built_tx.send((cx.endpoint, cx.sink));
+        let _ = self.built_tx.send(cx.endpoints);
         Ok(Arc::new(RecordingService {
             eid_tx: self.eid_tx,
         }))
     }
 }
 
-/// An application factory that sends its endpoint out of `build`.
+/// An application factory that sends its context's endpoints out of
+/// `build`.
 struct ApplicationContextFactory {
-    built_tx: flume::Sender<Eid>,
+    built_tx: flume::Sender<Vec<Eid>>,
     eid_tx: flume::Sender<Eid>,
 }
 
 impl ApplicationFactory for ApplicationContextFactory {
     fn build(self, cx: ApplicationContext) -> services::Result<Arc<dyn Application>> {
-        let _ = self.built_tx.send(cx.endpoint);
+        let _ = self.built_tx.send(
+            cx.endpoints
+                .into_iter()
+                .map(|endpoint| endpoint.eid)
+                .collect(),
+        );
         Ok(Arc::new(RecordingApp {
             eid_tx: self.eid_tx,
         }))
@@ -472,10 +480,14 @@ async fn service_id_taken_by_an_application_is_refused() {
     else {
         panic!("a taken service id must fail build()");
     };
-    let Error::Service { service_id, source } = &err else {
+    let Error::Service {
+        service_ids,
+        source,
+    } = &err
+    else {
         panic!("expected Service, got {err:?}");
     };
-    assert_eq!(*service_id, ServiceId::Ipn(1));
+    assert_eq!(*service_ids, [ServiceId::Ipn(1)]);
     assert!(
         matches!(**source, services::Error::ServiceIdInUse(_)),
         "{source:?}"
@@ -495,8 +507,9 @@ async fn administrative_service_id_is_refused() {
     assert!(
         matches!(
             &err,
-            Error::Service { service_id: ServiceId::Ipn(0), source }
-                if matches!(**source, services::Error::AdministrativeEndpoint(_))
+            Error::Service { service_ids, source }
+                if *service_ids == [ServiceId::Ipn(0)]
+                    && matches!(**source, services::Error::AdministrativeEndpoint(_))
         ),
         "{err:?}"
     );
@@ -515,10 +528,14 @@ async fn service_id_without_a_node_id_for_its_scheme_is_refused() {
     else {
         panic!("an unresolvable service id must fail build()");
     };
-    let Error::Service { service_id, source } = &err else {
+    let Error::Service {
+        service_ids,
+        source,
+    } = &err
+    else {
         panic!("expected Service, got {err:?}");
     };
-    assert_eq!(*service_id, ServiceId::Dtn("echo".into()));
+    assert_eq!(*service_ids, [ServiceId::Dtn("echo".into())]);
     assert!(matches!(**source, services::Error::NodeId(_)), "{source:?}");
 }
 
@@ -565,9 +582,11 @@ async fn service_factory_builds_at_start_at_its_endpoint() {
     assert!(built_rx.is_empty(), "build() must not run the factory");
 
     bpa.start(false).await;
-    let (endpoint, sink) = built_rx.try_recv().expect("start() runs the factory");
+    let mut endpoints = built_rx.try_recv().expect("start() runs the factory");
     let expected: Eid = "ipn:0.7.1".parse().unwrap();
-    assert_eq!(endpoint, expected);
+    let ServiceEndpoint { eid, sink } = endpoints.pop().expect("one endpoint");
+    assert!(endpoints.is_empty(), "a single id is a list of one");
+    assert_eq!(eid, expected);
     assert_eq!(eid_rx.try_recv().unwrap(), expected, "on_register follows");
 
     bpa.shutdown().await;
@@ -599,8 +618,42 @@ async fn application_factory_builds_at_start_at_its_endpoint() {
 
     bpa.start(false).await;
     let expected: Eid = "ipn:0.7.2".parse().unwrap();
-    assert_eq!(built_rx.try_recv().unwrap(), expected);
+    assert_eq!(built_rx.try_recv().unwrap(), from_ref(&expected));
     assert_eq!(eid_rx.try_recv().unwrap(), expected);
+    bpa.shutdown().await;
+}
+
+// A factory configured on several endpoints is built once, with every
+// endpoint and its own sink in its context, in configuration order; then
+// on_register runs once per endpoint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_endpoint_factory_builds_once_with_every_endpoint() {
+    let (built_tx, built_rx) = flume::bounded(2);
+    let (eid_tx, eid_rx) = flume::bounded(2);
+    let bpa = Bpa::builder()
+        .node_ids(ipn_node_ids())
+        .service_endpoints(
+            [ServiceId::Ipn(3), ServiceId::Ipn(1)],
+            ServiceContextFactory { built_tx, eid_tx },
+        )
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let endpoints = built_rx.try_recv().expect("start() runs the factory");
+    assert!(built_rx.is_empty(), "the factory runs once");
+    let eids: Vec<Eid> = endpoints
+        .iter()
+        .map(|endpoint| endpoint.eid.clone())
+        .collect();
+    let expected: Vec<Eid> = ["ipn:0.7.3", "ipn:0.7.1"]
+        .iter()
+        .map(|eid| eid.parse().unwrap())
+        .collect();
+    assert_eq!(eids, expected);
+    let registered: Vec<Eid> = eid_rx.drain().collect();
+    assert_eq!(registered, expected, "on_register once per endpoint");
     bpa.shutdown().await;
 }
 

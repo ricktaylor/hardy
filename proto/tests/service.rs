@@ -44,10 +44,11 @@ impl Service for MockService {
         self.registered.store(true, Ordering::Relaxed);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
@@ -129,7 +130,7 @@ async fn svc_cli_03_receive_bundle() {
     let svc = Arc::new(MockService::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
-    let _endpoint: Eid = remote_bpa
+    let endpoint: Eid = remote_bpa
         .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
         .await
         .expect("registration should succeed");
@@ -148,7 +149,7 @@ async fn svc_cli_03_receive_bundle() {
     let bundle_id = hardy_bpv7::bundle::Id::default();
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     server_svc
-        .on_deliver(&bundle_id, expiry, total_len, &mut data)
+        .on_deliver(&endpoint, &bundle_id, expiry, total_len, &mut data)
         .await
         .expect("Delivery should succeed");
 
@@ -226,10 +227,11 @@ impl Service for ReplyingService {
         *self.sink.lock() = Some(Arc::from(sink));
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
@@ -273,7 +275,7 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
         replied: replied.clone(),
     });
     let remote_bpa = RemoteBpa::new(grpc_addr);
-    remote_bpa
+    let endpoint = remote_bpa
         .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
         .await
         .expect("registration should succeed");
@@ -290,11 +292,13 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     let deliveries = (0..N).map(|_| {
         let server_svc = server_svc.clone();
+        let endpoint = endpoint.clone();
         tokio::spawn(async move {
             let mut data = hardy_bpa::Bytes::from_static(b"payload");
             let total_len = data.len() as u64;
             let _ = server_svc
                 .on_deliver(
+                    &endpoint,
                     &hardy_bpv7::bundle::Id::default(),
                     expiry,
                     total_len,
@@ -324,5 +328,97 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
     if let Some(sink) = sink {
         sink.unregister().await;
     }
+    server_tasks.shutdown().await;
+}
+
+// Records the endpoints it is registered and unregistered on.
+struct EndpointRecorder {
+    registered: tokio::sync::mpsc::UnboundedSender<Eid>,
+    unregistered: tokio::sync::mpsc::UnboundedSender<Eid>,
+    sinks: hardy_async::sync::spin::Mutex<Vec<Box<dyn ServiceSink>>>,
+}
+
+#[async_trait]
+impl Service for EndpointRecorder {
+    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>) {
+        self.sinks.lock().push(sink);
+        let _ = self.registered.send(endpoint.clone());
+    }
+
+    async fn on_unregister(&self, endpoint: &Eid) {
+        let _ = self.unregistered.send(endpoint.clone());
+    }
+
+    async fn on_deliver(
+        &self,
+        _endpoint: &Eid,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _expiry: time::OffsetDateTime,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+    ) -> hardy_bpa::services::Result<()> {
+        Ok(())
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _from: &Eid,
+        _kind: StatusNotify,
+        _reason: hardy_bpv7::status_report::ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+    }
+}
+
+// SVC-CLI-07: a remote multi-endpoint registration opens one stream per
+// id; when an id fails, the endpoints already registered are closed again,
+// so the service sees each of them unregister.
+#[tokio::test]
+async fn svc_cli_07_multi_endpoint_rolls_back_on_a_failed_id() {
+    let bpa = Arc::new(MockBpa::new());
+    bpa.taken_service_ids
+        .lock()
+        .push(hardy_bpv7::eid::Service::Ipn(43));
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
+
+    let (registered_tx, mut registered) = tokio::sync::mpsc::unbounded_channel();
+    let (unregistered_tx, mut unregistered) = tokio::sync::mpsc::unbounded_channel();
+    let svc = Arc::new(EndpointRecorder {
+        registered: registered_tx,
+        unregistered: unregistered_tx,
+        sinks: hardy_async::sync::spin::Mutex::new(Vec::new()),
+    });
+    let remote_bpa = RemoteBpa::new(grpc_addr);
+
+    let Err(err) = remote_bpa
+        .register_service_endpoints(
+            &[
+                hardy_bpv7::eid::Service::Ipn(42),
+                hardy_bpv7::eid::Service::Ipn(43),
+            ],
+            svc.clone(),
+        )
+        .await
+    else {
+        panic!("a refused id must fail the remote registration");
+    };
+    assert!(
+        matches!(err, hardy_bpa::services::Error::Internal(_)),
+        "{err:?}"
+    );
+
+    // The first id registered, the second never did.
+    assert_eq!(
+        *bpa.registered_services.lock(),
+        [hardy_bpv7::eid::Service::Ipn(42)]
+    );
+    let first = registered.try_recv().expect("the first id registered");
+    assert!(registered.try_recv().is_err(), "only one id registered");
+
+    // ...and the rollback closed it again. The close is complete before
+    // register_service_endpoints returns, so the event is already queued.
+    assert_eq!(unregistered.try_recv(), Ok(first));
+
     server_tasks.shutdown().await;
 }

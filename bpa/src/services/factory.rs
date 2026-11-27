@@ -1,91 +1,109 @@
-//! Constructing a service or application at the endpoint the BPA resolves
+//! Constructing a service or application at the endpoints the BPA resolves
 //! for it.
 
 use core::fmt::{self, Debug, Formatter};
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use hardy_bpv7::eid::Eid;
 
 use super::{Application, ApplicationSink, Result, Service, ServiceSink};
 use crate::Arc;
 
-/// Everything the BPA hands a [`ServiceFactory`] when it builds the service.
-pub struct ServiceContext {
-    /// The channel back to the BPA.
-    ///
-    /// The same channel [`Service::on_register`] delivers: a service keeps
-    /// whichever handle suits it, and unregisters when it drops the last of
-    /// them. The sink is not live until the build returns, so
-    /// [`ServiceFactory::build`] must not use it.
-    pub sink: Arc<dyn ServiceSink>,
+/// One endpoint a service is registered at, with that endpoint's sink.
+pub struct ServiceEndpoint {
+    /// The endpoint, and the source of every bundle sent through `sink`.
+    pub eid: Eid,
 
-    /// The endpoint the service is registered at, and the source of every
-    /// bundle it sends.
-    pub endpoint: Eid,
+    /// The endpoint's channel back to the BPA.
+    ///
+    /// The same channel [`Service::on_register`] delivers for this
+    /// endpoint: a service keeps whichever handle suits it, and the
+    /// endpoint unregisters when the last of them is dropped. The sink is
+    /// not live until the build returns, so [`ServiceFactory::build`] must
+    /// not use it.
+    pub sink: Arc<dyn ServiceSink>,
+}
+
+impl Debug for ServiceEndpoint {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServiceEndpoint")
+            .field("eid", &self.eid)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Everything the BPA hands a [`ServiceFactory`] when it builds the service.
+#[derive(Debug)]
+pub struct ServiceContext {
+    /// Every endpoint the service is registered at, in the order its
+    /// service ids were given; one for a single-id registration.
+    pub endpoints: Vec<ServiceEndpoint>,
 }
 
 impl ServiceContext {
     /// Mints a context. The BPA does this; a service's tests mint one to
-    /// build the service at the endpoint they exercise.
-    pub fn new(sink: Arc<dyn ServiceSink>, endpoint: Eid) -> Self {
-        Self { sink, endpoint }
+    /// build the service at the endpoints they exercise.
+    pub fn new(endpoints: Vec<ServiceEndpoint>) -> Self {
+        Self { endpoints }
     }
 }
 
-impl Debug for ServiceContext {
+/// One endpoint an application is registered at, with that endpoint's
+/// sink, as a [`ServiceEndpoint`] is for a service.
+pub struct ApplicationEndpoint {
+    /// The endpoint, and the source of every bundle sent through `sink`.
+    pub eid: Eid,
+
+    /// The endpoint's channel back to the BPA, shared with the handle
+    /// [`Application::on_register`] delivers for it, as for
+    /// [`ServiceEndpoint::sink`].
+    pub sink: Arc<dyn ApplicationSink>,
+}
+
+impl Debug for ApplicationEndpoint {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ServiceContext")
-            .field("endpoint", &self.endpoint)
+        f.debug_struct("ApplicationEndpoint")
+            .field("eid", &self.eid)
             .finish_non_exhaustive()
     }
 }
 
 /// Everything the BPA hands an [`ApplicationFactory`] when it builds the
 /// application.
+#[derive(Debug)]
 pub struct ApplicationContext {
-    /// The channel back to the BPA, shared with the handle
-    /// [`Application::on_register`] delivers, as for
-    /// [`ServiceContext::sink`].
-    pub sink: Arc<dyn ApplicationSink>,
-
-    /// The endpoint the application is registered at, and the source of
-    /// every bundle it sends.
-    pub endpoint: Eid,
+    /// Every endpoint the application is registered at, in the order its
+    /// service ids were given; one for a single-id registration.
+    pub endpoints: Vec<ApplicationEndpoint>,
 }
 
 impl ApplicationContext {
     /// Mints a context. The BPA does this; an application's tests mint one
-    /// to build the application at the endpoint they exercise.
-    pub fn new(sink: Arc<dyn ApplicationSink>, endpoint: Eid) -> Self {
-        Self { sink, endpoint }
-    }
-}
-
-impl Debug for ApplicationContext {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ApplicationContext")
-            .field("endpoint", &self.endpoint)
-            .finish_non_exhaustive()
+    /// to build the application at the endpoints they exercise.
+    pub fn new(endpoints: Vec<ApplicationEndpoint>) -> Self {
+        Self { endpoints }
     }
 }
 
 /// Builds a low-level [`Service`] when the BPA registers it.
 ///
-/// [`BpaBuilder::service`](crate::builder::BpaBuilder::service) takes a
-/// factory, and the BPA runs it at [`Bpa::start`](crate::bpa::Bpa::start)
-/// with the resolved endpoint and the sink in hand; then
-/// [`Service::on_register`] runs as for any service. An already built
-/// service is a factory whose `build` returns it.
+/// [`BpaBuilder::service`](crate::builder::BpaBuilder::service) and
+/// [`service_endpoints`](crate::builder::BpaBuilder::service_endpoints)
+/// take a factory, and the BPA runs it once at
+/// [`Bpa::start`](crate::bpa::Bpa::start), with every resolved endpoint
+/// and its sink in hand; then [`Service::on_register`] runs once per
+/// endpoint as for any service. An already built service is a factory
+/// whose `build` returns it.
 pub trait ServiceFactory: Send {
-    /// Builds the service at the endpoint the BPA resolved.
+    /// Builds the service at the endpoints the BPA resolved.
     ///
-    /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`.
-    /// `Err` means the service cannot work at that endpoint.
+    /// Wiring only: no I/O, no spawned tasks, and no use of the sinks.
+    /// `Err` means the service cannot work at those endpoints.
     fn build(self, cx: ServiceContext) -> Result<Arc<dyn Service>>;
 }
 
 impl<S: Service + 'static> ServiceFactory for Arc<S> {
-    /// Returns the service, which takes its sink in
+    /// Returns the service, which takes its sinks in
     /// [`Service::on_register`].
     fn build(self, _cx: ServiceContext) -> Result<Arc<dyn Service>> {
         Ok(self)
@@ -93,7 +111,7 @@ impl<S: Service + 'static> ServiceFactory for Arc<S> {
 }
 
 impl ServiceFactory for Arc<dyn Service> {
-    /// Returns the service, which takes its sink in
+    /// Returns the service, which takes its sinks in
     /// [`Service::on_register`].
     fn build(self, _cx: ServiceContext) -> Result<Arc<dyn Service>> {
         Ok(self)
@@ -103,15 +121,15 @@ impl ServiceFactory for Arc<dyn Service> {
 /// Builds a high-level [`Application`] when the BPA registers it, as a
 /// [`ServiceFactory`] builds a service.
 pub trait ApplicationFactory: Send {
-    /// Builds the application at the endpoint the BPA resolved.
+    /// Builds the application at the endpoints the BPA resolved.
     ///
-    /// Wiring only: no I/O, no spawned tasks, and no use of `cx.sink`.
-    /// `Err` means the application cannot work at that endpoint.
+    /// Wiring only: no I/O, no spawned tasks, and no use of the sinks.
+    /// `Err` means the application cannot work at those endpoints.
     fn build(self, cx: ApplicationContext) -> Result<Arc<dyn Application>>;
 }
 
 impl<A: Application + 'static> ApplicationFactory for Arc<A> {
-    /// Returns the application, which takes its sink in
+    /// Returns the application, which takes its sinks in
     /// [`Application::on_register`].
     fn build(self, _cx: ApplicationContext) -> Result<Arc<dyn Application>> {
         Ok(self)
@@ -119,7 +137,7 @@ impl<A: Application + 'static> ApplicationFactory for Arc<A> {
 }
 
 impl ApplicationFactory for Arc<dyn Application> {
-    /// Returns the application, which takes its sink in
+    /// Returns the application, which takes its sinks in
     /// [`Application::on_register`].
     fn build(self, _cx: ApplicationContext) -> Result<Arc<dyn Application>> {
         Ok(self)

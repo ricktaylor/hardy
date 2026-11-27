@@ -1,5 +1,8 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
-use core::num::{NonZeroU64, NonZeroUsize};
+use core::{
+    fmt::{self, Display, Formatter},
+    num::{NonZeroU64, NonZeroUsize},
+};
 
 use hardy_bpv7::eid::Service as ServiceId;
 use hardy_eid_patterns::EidPattern;
@@ -42,13 +45,14 @@ pub enum Error {
         source: cla::Error,
     },
 
-    /// A configured service or application could not be registered: its
-    /// service id is taken, is the administrative endpoint, or names a
-    /// scheme with no node id configured.
-    #[error("Failed to register service {service_id}: {source}")]
+    /// A configured service or application could not be registered on its
+    /// service ids: one is taken or repeated, is the administrative
+    /// endpoint, or names a scheme with no node id configured. None of the
+    /// ids is registered.
+    #[error("Failed to register service {}: {source}", ServiceIds(service_ids))]
     Service {
-        /// The service id it was configured under.
-        service_id: ServiceId,
+        /// The service ids it was configured under.
+        service_ids: Vec<ServiceId>,
         /// The registry's refusal; boxed, as `services::Error` is large.
         #[source]
         source: Box<services::Error>,
@@ -68,8 +72,23 @@ struct PendingCla {
 
 // A configured service or application, its service id validated at build().
 struct PendingService {
-    service_id: ServiceId,
+    service_ids: Vec<ServiceId>,
     factory: BoxServiceFactory,
+}
+
+// Writes a configured id set as the ids, comma separated.
+struct ServiceIds<'a>(&'a [ServiceId]);
+
+impl Display for ServiceIds<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for (i, service_id) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{service_id}")?;
+        }
+        Ok(())
+    }
 }
 
 /// Builder for constructing a [`Bpa`] with custom configuration, obtained
@@ -240,13 +259,27 @@ impl BpaBuilder {
     /// endpoint and builds the service there with its sink in the
     /// [`ServiceContext`](services::ServiceContext). A refused service id is
     /// returned by [`build()`](Self::build) as [`Error::Service`].
-    pub fn service<F: ServiceFactory + 'static>(
+    pub fn service<F: ServiceFactory + 'static>(self, service_id: ServiceId, factory: F) -> Self {
+        self.service_endpoints([service_id], factory)
+    }
+
+    /// Configures one low-level service on several endpoints, built once
+    /// and registered on each when the BPA starts, all or none.
+    ///
+    /// The factory's [`ServiceContext`](services::ServiceContext) lists
+    /// every endpoint with its own sink, and each id becomes its own
+    /// registration, as
+    /// [`BpaRegistration::register_service_endpoints`](crate::bpa::BpaRegistration::register_service_endpoints)
+    /// describes. [`build()`](Self::build) refuses the whole set if any id
+    /// is taken (by this or another configured registration), repeated,
+    /// the administrative endpoint, or has no node id for its scheme.
+    pub fn service_endpoints<F: ServiceFactory + 'static>(
         mut self,
-        service_id: ServiceId,
+        service_ids: impl IntoIterator<Item = ServiceId>,
         factory: F,
     ) -> Self {
         self.services.push(PendingService {
-            service_id,
+            service_ids: service_ids.into_iter().collect(),
             factory: BoxServiceFactory::service(factory),
         });
         self
@@ -256,12 +289,23 @@ impl BpaBuilder {
     /// `service_id` when the BPA starts, as [`service()`](Self::service)
     /// does for a service.
     pub fn application<F: ApplicationFactory + 'static>(
-        mut self,
+        self,
         service_id: ServiceId,
         factory: F,
     ) -> Self {
+        self.application_endpoints([service_id], factory)
+    }
+
+    /// Configures one high-level application on several endpoints, all or
+    /// none, as [`service_endpoints()`](Self::service_endpoints) does for a
+    /// service.
+    pub fn application_endpoints<F: ApplicationFactory + 'static>(
+        mut self,
+        service_ids: impl IntoIterator<Item = ServiceId>,
+        factory: F,
+    ) -> Self {
         self.services.push(PendingService {
-            service_id,
+            service_ids: service_ids.into_iter().collect(),
             factory: BoxServiceFactory::application(factory),
         });
         self
@@ -442,14 +486,14 @@ fn build_services(
 ) -> Result<ServiceRegistryBuilder> {
     let mut builder = ServiceRegistryBuilder::new();
     for PendingService {
-        service_id,
+        service_ids,
         factory,
     } in services
     {
         builder
-            .insert(service_id.clone(), factory, node_ids)
+            .insert(service_ids.clone(), factory, node_ids)
             .map_err(|source| Error::Service {
-                service_id,
+                service_ids,
                 source: Box::new(source),
             })?;
     }

@@ -32,6 +32,10 @@ pub struct MockBpa {
     pub last_cla_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockClaSink>>>,
     pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Service>>>,
     pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Application>>>,
+    /// Service ids `register_service` refuses as taken.
+    pub taken_service_ids: hardy_async::sync::spin::Mutex<Vec<hardy_bpv7::eid::Service>>,
+    /// The endpoints registered through `register_service`, by service id.
+    pub registered_services: hardy_async::sync::spin::Mutex<Vec<hardy_bpv7::eid::Service>>,
 }
 
 impl MockBpa {
@@ -45,6 +49,8 @@ impl MockBpa {
             last_cla: hardy_async::sync::spin::Mutex::new(None),
             last_cla_sink: hardy_async::sync::spin::Mutex::new(None),
             last_service: hardy_async::sync::spin::Mutex::new(None),
+            taken_service_ids: hardy_async::sync::spin::Mutex::new(Vec::new()),
+            registered_services: hardy_async::sync::spin::Mutex::new(Vec::new()),
             last_application: hardy_async::sync::spin::Mutex::new(None),
         }
     }
@@ -93,9 +99,13 @@ impl BpaRegistration for MockBpa {
 
     async fn register_service(
         &self,
-        _service_id: hardy_bpv7::eid::Service,
+        service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn services::Service>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
+        if self.taken_service_ids.lock().contains(&service_id) {
+            return Err(services::Error::ServiceIdInUse(service_id.to_string()));
+        }
+        self.registered_services.lock().push(service_id);
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockServiceSink::new());
         *self.last_service.lock() = Some(service.clone());
@@ -117,6 +127,38 @@ impl BpaRegistration for MockBpa {
             .on_register(&endpoint, Box::new(ApplicationSinkWrapper(sink)))
             .await;
         Ok(endpoint)
+    }
+
+    // The mock registers the last id only: the proto tests drive one
+    // endpoint per stream.
+    async fn register_service_endpoints(
+        &self,
+        service_ids: &[hardy_bpv7::eid::Service],
+        service: Arc<dyn services::Service>,
+    ) -> services::Result<Vec<hardy_bpv7::eid::Eid>> {
+        let mut eids = Vec::with_capacity(service_ids.len());
+        for service_id in service_ids {
+            eids.push(
+                self.register_service(service_id.clone(), service.clone())
+                    .await?,
+            );
+        }
+        Ok(eids)
+    }
+
+    async fn register_application_endpoints(
+        &self,
+        service_ids: &[hardy_bpv7::eid::Service],
+        application: Arc<dyn services::Application>,
+    ) -> services::Result<Vec<hardy_bpv7::eid::Eid>> {
+        let mut eids = Vec::with_capacity(service_ids.len());
+        for service_id in service_ids {
+            eids.push(
+                self.register_application(service_id.clone(), application.clone())
+                    .await?,
+            );
+        }
+        Ok(eids)
     }
 
     async fn register_dynamic_service(

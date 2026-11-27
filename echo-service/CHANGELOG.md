@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- One `EchoService` serves every endpoint it is registered on, keeping a sink per endpoint and answering each request from the endpoint that was pinged.
+
 ## [0.2.0]
 
 ### Changed

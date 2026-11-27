@@ -78,6 +78,8 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 | `a_failed_build_frees_the_name_and_its_sink_stays_dead` | `src/routing/agent/sink.rs` | §3.2 | A failed agent build releases its name; the sink it kept is `Disconnected` and its `unregister` leaves the next agent registered |
 | `a_held_key_cannot_be_claimed` | `src/claim_table.rs` | §3.8 | A claim or a registration holds its key |
 | `a_released_claim_frees_the_key` | `src/claim_table.rs` | §3.8 | Releasing a failed build's claim frees the key |
+| `claim_all_claims_nothing_when_one_key_is_held` | `src/claim_table.rs` | §3.4 | A multi-endpoint claim is all or none |
+| `file_all_files_nothing_when_one_claim_was_drained` | `src/claim_table.rs` | §3.4 | A multi-endpoint build overtaken by shutdown files none of its endpoints |
 | `release_never_removes_a_registration` | `src/claim_table.rs` | §3.8 | Release only drops a claim |
 | `a_drained_claim_cannot_be_filed` | `src/claim_table.rs` | §3.8 | A build still running at shutdown cannot file |
 | `a_claim_is_not_a_registration` | `src/claim_table.rs` | §3.8 | A claim is neither visible nor removable as a registration |
@@ -118,7 +120,7 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 
 ### Builder Registration Tests
 
-15 tests in `tests/builder_registration.rs` — `BpaBuilder`'s configured factories for CLAs, services, applications and routing agents.
+16 tests in `tests/builder_registration.rs` — `BpaBuilder`'s configured factories for CLAs, services, applications and routing agents.
 
 | Test Function | Scope |
 | :--- | :--- |
@@ -135,8 +137,25 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 | `dtn_service_id_resolves_against_a_dtn_node_id` | The `dtn` scheme resolves once a `dtn` node id is configured |
 | `service_factory_builds_at_start_at_its_endpoint` | A service factory runs at `start()` at its resolved EID; its `ServiceContext` sink is `Disconnected` after shutdown |
 | `application_factory_builds_at_start_at_its_endpoint` | An application factory runs at `start()` at its resolved EID |
+| `multi_endpoint_factory_builds_once_with_every_endpoint` | A factory on several ids is built once, its context listing every endpoint in order; `on_register` runs once per endpoint |
 | `agent_factory_sink_installs_routes` | A routing agent factory gets the node ids, and its `AgentContext` sink adds and removes a route |
 | `duplicate_agent_name_is_refused_before_the_build` | A second agent under a taken name fails `build()` with `Error::Routing(AlreadyExists)`, and its factory never runs |
+
+### Multi-Endpoint Service Tests
+
+9 tests in `tests/multi_endpoint.rs`: one Service or Application on several endpoints.
+
+| Test Function | Scope |
+| :--- | :--- |
+| `each_endpoint_registers_and_receives_on_its_own` | `on_register` per endpoint, EIDs in order; each delivery names its endpoint |
+| `each_sink_sends_only_from_its_endpoint` | A sink refuses a bundle sourced from another endpoint and forwards its own |
+| `unregistering_one_endpoint_leaves_the_others` | One endpoint's unregister names it and frees its id; the others stay |
+| `a_taken_id_registers_none_of_the_set` | All or none: a taken id registers no endpoint and reaches the service with nothing |
+| `a_repeated_id_is_refused` | A repeated id refuses the set |
+| `an_empty_set_is_refused` | `NoServiceIds` |
+| `an_application_learns_the_endpoint_of_each_delivery` | An application, which sees only the payload, is told the endpoint |
+| `the_builder_registers_one_service_on_several_endpoints` | `service_endpoints` registers each id at `start()` |
+| `the_builder_refuses_an_id_shared_between_registrations` | Two configured registrations may not share an id; the error names the whole set |
 
 ### Criterion Benchmark
 
