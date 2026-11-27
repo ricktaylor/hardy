@@ -8,6 +8,7 @@ mod test;
 use arbitrary::Arbitrary;
 use core::num::NonZeroUsize;
 use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit};
+use hardy_otel::{LogLevel, OtelGuard, init};
 use std::sync::Arc;
 
 #[derive(Arbitrary)]
@@ -20,7 +21,7 @@ enum Msg {
 }
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
-    static RT: std::sync::OnceLock<(tokio::runtime::Runtime, hardy_otel::OtelGuard)> =
+    static RT: std::sync::OnceLock<(tokio::runtime::Runtime, OtelGuard)> =
         std::sync::OnceLock::new();
     &RT.get_or_init(|| {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -29,10 +30,10 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
             .unwrap();
 
         let guard = rt.block_on(async {
-            hardy_otel::init(
+            init(
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
-                tracing::Level::INFO,
+                LogLevel::default(),
             )
         });
         (rt, guard)
