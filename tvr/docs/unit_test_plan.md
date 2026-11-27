@@ -141,11 +141,11 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Simple Via** | Forward to next-hop. | `src/parser.rs` | `ipn:2.*.* via ipn:2.1.0` | `Action::Via(ipn:2.1.0)`. |
-| **Simple Drop** | Discard with default reason. | `src/parser.rs` | `ipn:2.*.* drop` | `Action::Drop(None)`. |
-| **Drop with Reason** | Discard with explicit reason. | `src/parser.rs` | `ipn:2.*.* drop 6` | `Action::Drop(Some(6))`. |
-| **Via with Priority** | Action with priority field. | `src/parser.rs` | `ipn:2.*.* via ipn:2.1.0 priority 50` | Priority = 50. |
-| **Reflect Not Supported** | Reject reflect action. | `src/parser.rs` | `ipn:2.*.* reflect` | Error. |
+| **Simple Via** | Forward to next-hop. | `src/parser/mod.rs` | `ipn:2.*.* via ipn:2.1.0` | `Action::Via(ipn:2.1.0)`. |
+| **Simple Drop** | Discard with default reason. | `src/parser/mod.rs` | `ipn:2.*.* drop` | `Action::Drop(None)`. |
+| **Drop with Reason** | Discard with explicit reason. | `src/parser/mod.rs` | `ipn:2.*.* drop 6` | `Action::Drop(Some(6))`. |
+| **Via with Priority** | Action with priority field. | `src/parser/mod.rs` | `ipn:2.*.* via ipn:2.1.0 priority 50` | Priority = 50. |
+| **Reflect Not Supported** | Reject reflect action. | `src/parser/mod.rs` | `ipn:2.*.* reflect` | Error. |
 
 ### 3.10 Contact Plan Parser — One-Shot Schedule (REQ-6.1, 6.2)
 
@@ -153,13 +153,13 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Start and End** | Full time window. | `src/parser.rs` | `... start <t1> end <t2>` | `Schedule::OneShot { start, end }`. |
-| **Start Only** | Open-ended start. | `src/parser.rs` | `... start <t1>` | `Schedule::OneShot { start, end: None }`. |
-| **End Only** | Open-ended end. | `src/parser.rs` | `... end <t2>` | `Schedule::OneShot { start: None, end }`. |
-| **End Before Start** | Invalid window. | `src/parser.rs` | `... start <t2> end <t1>` | Error. |
-| **With Bandwidth** | One-shot with link properties. | `src/parser.rs` | `... start <t> end <t> bandwidth 256K` | Parsed bandwidth. |
-| **Scheduled Drop** | Drop action with time window. | `src/parser.rs` | `... drop start <t1> end <t2>` | `Action::Drop` + `Schedule::OneShot`. |
-| **Drop with Reason and Schedule** | Full drop specification. | `src/parser.rs` | `... drop 6 start <t1> end <t2>` | Both reason and schedule. |
+| **Start and End** | Full time window. | `src/parser/mod.rs` | `... start <t1> end <t2>` | `Schedule::OneShot { start, end }`. |
+| **Start Only** | Open-ended start. | `src/parser/mod.rs` | `... start <t1>` | `Schedule::OneShot { start, end: None }`. |
+| **End Only** | Open-ended end. | `src/parser/mod.rs` | `... end <t2>` | `Schedule::OneShot { start: None, end }`. |
+| **End Before Start** | Invalid window. | `src/parser/mod.rs` | `... start <t2> end <t1>` | Error. |
+| **With Bandwidth** | One-shot with link properties. | `src/parser/mod.rs` | `... start <t> end <t> bandwidth 256K` | Parsed bandwidth. |
+| **Scheduled Drop** | Drop action with time window. | `src/parser/mod.rs` | `... drop start <t1> end <t2>` | `Action::Drop` + `Schedule::OneShot`. |
+| **Drop with Reason and Schedule** | Full drop specification. | `src/parser/mod.rs` | `... drop 6 start <t1> end <t2>` | Both reason and schedule. |
 
 ### 3.11 Contact Plan Parser — Recurring Schedule (REQ-6.1, 6.2, 6.2a)
 
@@ -167,14 +167,14 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Cron + Duration** | Basic recurring contact. | `src/parser.rs` | `... cron "0 8 * * *" duration 90m` | `Schedule::Recurring { cron, duration }`. |
-| **With Until** | Bounded recurrence. | `src/parser.rs` | `... cron "..." duration 90m until <t>` | `until` field set. |
-| **With Bandwidth and Priority** | Full recurring specification. | `src/parser.rs` | `... cron "..." duration 90m bandwidth 1G priority 50` | All fields parsed. |
-| **Invalid Cron** | Malformed cron expression. | `src/parser.rs` | `... cron "bad"` | Error. |
-| **Cron Without Duration** | Missing required duration. | `src/parser.rs` | `... cron "0 8 * * *"` | Error. |
-| **Duration Without Cron** | Orphaned duration field. | `src/parser.rs` | `... duration 90m` | Error. |
-| **Mixed Oneshot/Recurring** | Conflicting schedule types. | `src/parser.rs` | `... start <t> cron "..." duration 90m` | Error. |
-| **Until Without Cron** | Orphaned until field. | `src/parser.rs` | `... until <t>` | Error. |
+| **Cron + Duration** | Basic recurring contact. | `src/parser/mod.rs` | `... cron "0 8 * * *" duration 90m` | `Schedule::Recurring { cron, duration }`. |
+| **With Until** | Bounded recurrence. | `src/parser/mod.rs` | `... cron "..." duration 90m until <t>` | `until` field set. |
+| **With Bandwidth and Priority** | Full recurring specification. | `src/parser/mod.rs` | `... cron "..." duration 90m bandwidth 1G priority 50` | All fields parsed. |
+| **Invalid Cron** | Malformed cron expression. | `src/parser/mod.rs` | `... cron "bad"` | Error. |
+| **Cron Without Duration** | Missing required duration. | `src/parser/mod.rs` | `... cron "0 8 * * *"` | Error. |
+| **Duration Without Cron** | Orphaned duration field. | `src/parser/mod.rs` | `... duration 90m` | Error. |
+| **Mixed Oneshot/Recurring** | Conflicting schedule types. | `src/parser/mod.rs` | `... start <t> cron "..." duration 90m` | Error. |
+| **Until Without Cron** | Orphaned until field. | `src/parser/mod.rs` | `... until <t>` | Error. |
 
 ### 3.12 Contact Plan Parser — Duration Formats (REQ-6.2)
 
@@ -182,12 +182,12 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Minutes** | Plain minutes. | `src/parser.rs` | `duration 90m` | 90 minutes. |
-| **Hours** | Plain hours. | `src/parser.rs` | `duration 2h` | 2 hours. |
-| **Compound** | Mixed units. | `src/parser.rs` | `duration 1h30m` | 90 minutes. |
-| **HMS** | Hours, minutes, seconds. | `src/parser.rs` | `duration 2h30m15s` | 2h 30m 15s. |
-| **Invalid (No Unit)** | Bare number. | `src/parser.rs` | `duration 90` | Error. |
-| **Zero Duration** | Logically invalid. | `src/parser.rs` | `duration 0s` | Error. |
+| **Minutes** | Plain minutes. | `src/parser/mod.rs` | `duration 90m` | 90 minutes. |
+| **Hours** | Plain hours. | `src/parser/mod.rs` | `duration 2h` | 2 hours. |
+| **Compound** | Mixed units. | `src/parser/mod.rs` | `duration 1h30m` | 90 minutes. |
+| **HMS** | Hours, minutes, seconds. | `src/parser/mod.rs` | `duration 2h30m15s` | 2h 30m 15s. |
+| **Invalid (No Unit)** | Bare number. | `src/parser/mod.rs` | `duration 90` | Error. |
+| **Zero Duration** | Logically invalid. | `src/parser/mod.rs` | `duration 0s` | Error. |
 
 ### 3.13 Contact Plan Parser — Link Properties (REQ-6.3)
 
@@ -195,12 +195,12 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Bandwidth Bare Number** | Raw bps value. | `src/parser.rs` | `bandwidth 1000000` | 1,000,000 bps. |
-| **Bandwidth SI Suffixes** | K, M, G, T. | `src/parser.rs` | `256K`, `1M`, `10G`, `1T` | Correct bps values. |
-| **Bandwidth Long Suffixes** | Kbps, Mbps, etc. | `src/parser.rs` | `256Kbps`, `10Gbps` | Same as short form. |
-| **Bandwidth Case Insensitive** | Mixed case. | `src/parser.rs` | `256k`, `10g`, `1GBPS` | Correct bps values. |
-| **Delay Duration Units** | Various delay units. | `src/parser.rs` | `500ms`, `1s`, `250us`, `4m` | Correct microsecond values. |
-| **All Link Properties** | Combined bandwidth + delay. | `src/parser.rs` | `... bandwidth 10G delay 500ms` | Both fields set. |
+| **Bandwidth Bare Number** | Raw bps value. | `src/parser/mod.rs` | `bandwidth 1000000` | 1,000,000 bps. |
+| **Bandwidth SI Suffixes** | K, M, G, T. | `src/parser/mod.rs` | `256K`, `1M`, `10G`, `1T` | Correct bps values. |
+| **Bandwidth Long Suffixes** | Kbps, Mbps, etc. | `src/parser/mod.rs` | `256Kbps`, `10Gbps` | Same as short form. |
+| **Bandwidth Case Insensitive** | Mixed case. | `src/parser/mod.rs` | `256k`, `10g`, `1GBPS` | Correct bps values. |
+| **Delay Duration Units** | Various delay units. | `src/parser/mod.rs` | `500ms`, `1s`, `250us`, `4m` | Correct microsecond values. |
+| **All Link Properties** | Combined bandwidth + delay. | `src/parser/mod.rs` | `... bandwidth 10G delay 500ms` | Both fields set. |
 
 ### 3.14 Contact Plan Parser — File Format
 
@@ -208,16 +208,20 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Fields Any Order** | Priority before action args. | `src/parser.rs` | Various orderings | Identical parsed contact. |
-| **Comments** | Lines starting with `#`. | `src/parser.rs` | `# comment\n<contact>` | Comment skipped. |
-| **Blank Lines** | Empty and whitespace-only lines. | `src/parser.rs` | Mixed blanks + contacts | Blanks skipped. |
-| **Multiple Contacts** | Multi-line file. | `src/parser.rs` | Two contact lines | Two parsed contacts. |
-| **Mixed with Comments** | Realistic file layout. | `src/parser.rs` | Comments, blanks, contacts | Only contacts parsed. |
-| **Duplicate Priority** | Repeated field. | `src/parser.rs` | `... priority 10 priority 20` | Error. |
-| **Duplicate Start** | Repeated field. | `src/parser.rs` | `... start <t1> start <t2>` | Error. |
-| **Invalid Inputs** | Various malformed lines. | `src/parser.rs` | Empty pattern, bad EID, etc. | Error. |
-| **Useful Error Messages** | Error includes line:column. | `src/parser.rs` | Various invalid inputs | Caret-annotated error. |
-| **Multiline Error Location** | Error on line > 1. | `src/parser.rs` | Error on second line | Correct line number. |
+| **Fields Any Order** | Priority before action args. | `src/parser/mod.rs` | Various orderings | Identical parsed contact. |
+| **Comments** | Lines starting with `#`. | `src/parser/mod.rs` | `# comment\n<contact>` | Comment skipped. |
+| **Blank Lines** | Empty and whitespace-only lines. | `src/parser/mod.rs` | Mixed blanks + contacts | Blanks skipped. |
+| **Multiple Contacts** | Multi-line file. | `src/parser/mod.rs` | Two contact lines | Two parsed contacts. |
+| **Mixed with Comments** | Realistic file layout. | `src/parser/mod.rs` | Comments, blanks, contacts | Only contacts parsed. |
+| **Duplicate Priority** | Repeated field. | `src/parser/mod.rs` | `... priority 10 priority 20` | `duplicate 'priority' field`, caret on the second. |
+| **Duplicate Start** | Repeated field. | `src/parser/mod.rs` | `... start <t1> start <t2>` | Error. |
+| **Invalid Inputs** | Various malformed lines. | `src/parser/mod.rs` | Empty pattern, bad EID, etc. | Error. |
+| **Useful Error Messages** | Error includes line:column. | `src/parser/mod.rs` | Various invalid inputs | Caret-annotated error. |
+| **Multiline Error Location** | Error on line > 1. | `src/parser/mod.rs` | Error on second line | Correct line number. |
+| **Field Value Diagnostics** | Each refused value names its field. | `src/parser/mod.rs` | Bad pattern, next hop, reason code, priority, timestamp, cron, duration, bandwidth, delay | The field's own message, caret on the value. |
+| **Every Refusal Reported** | Several bad values in one plan. | `src/parser/mod.rs` | Two bad fields on line 1, one on line 2 | One error per value, in order. |
+| **Schedule Rule Diagnostics** | Rules broken by valid values. | `src/parser/mod.rs` | `cron` without `duration`; `end` before `start` | The rule's own message. |
+| **Value Conversions** | Typed refusal per field. | `src/parser/value.rs` | One bad value per field; a non-UTC timestamp | The field's `ValueError` variant; the timestamp in UTC. |
 
 ### 3.15 Scheduler — Permanent Contacts (REQ-6.1)
 
@@ -349,4 +353,4 @@ Additional validation tests cover: missing config file → error, invalid log le
 
 * **Pass Criteria:** All tests listed above must return `ok`.
 
-* **Coverage Target:** > 80% line coverage for `src/cron.rs`, `src/parser.rs`, and `src/scheduler.rs`.
+* **Coverage Target:** > 80% line coverage for `src/cron.rs`, `src/parser/mod.rs`, and `src/scheduler.rs`.

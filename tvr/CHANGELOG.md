@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - Contact-plan `duration` and `delay` values are parsed with `jiff`, replacing the unmaintained `humantime`. Days and weeks count as 24-hour multiples; months and years, which have no fixed length, are refused.
 
+### Fixed
+- A refused contact-plan value is reported with its own message, with the caret on the value: an invalid EID pattern or next hop, reason code, priority, timestamp, cron expression, duration, bandwidth or delay, and a repeated field. The parser used to drop these messages and report a generic `found '…' expected contact` at the start of the line. Every refused value in the plan is now reported, not only the first.
+
 ## [0.2.0]
 
 ### Changed
