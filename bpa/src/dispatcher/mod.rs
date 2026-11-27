@@ -5,7 +5,7 @@ use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
 
 use super::*;
-use crate::filter::pack::chains::FilterChains;
+use crate::{filter::pack::chains::FilterChains, service::registry::Registration};
 
 mod admin;
 mod deliver;
@@ -389,7 +389,7 @@ impl Dispatcher {
     /// delivery at a time per service, in queue order.
     pub fn start_delivery_queue(
         self: &Arc<Self>,
-        service: Arc<services::registry::Service>,
+        service: Arc<Registration>,
         rx: hardy_async::closeable::Receiver<bundle::Bundle>,
     ) {
         let dispatcher = self.clone();

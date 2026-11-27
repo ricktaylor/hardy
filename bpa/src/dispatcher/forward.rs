@@ -3,6 +3,7 @@
 use hardy_bpv7::editor::Error as EditorError;
 
 use super::*;
+use crate::cla::registry::Registration;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
@@ -11,7 +12,7 @@ impl Dispatcher {
         cla: &dyn cla::Cla,
         peer: u32,
         lane: Option<u32>,
-        cla_addr: &cla::ClaAddress,
+        cla_addr: &cla::Address,
         bundle: bundle::Bundle,
     ) {
         // The queue-assignment record carries the resolved adjacency, and
@@ -81,7 +82,7 @@ impl Dispatcher {
         cla: &dyn cla::Cla,
         peer: u32,
         lane: Option<u32>,
-        cla_addr: &cla::ClaAddress,
+        cla_addr: &cla::Address,
         next_hop: Eid,
         mut bundle: bundle::Bundle,
         data: Bytes,
@@ -136,14 +137,14 @@ impl Dispatcher {
             .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
             .await
         {
-            Ok(cla::ForwardBundleResult::Sent) => OfferOutcome::Completed(bundle),
-            Ok(cla::ForwardBundleResult::Accepted) => {
+            Ok(cla::ForwardOutcome::Sent) => OfferOutcome::Completed(bundle),
+            Ok(cla::ForwardOutcome::Accepted) => {
                 // The CLA owns the transfer; the bundle stays in
                 // ForwardAckPending until the outcome arrives or the peer is
                 // removed.
                 OfferOutcome::Detached(bundle)
             }
-            Ok(cla::ForwardBundleResult::NoNeighbour) => {
+            Ok(cla::ForwardOutcome::NoNeighbour) => {
                 // Link-scoped evidence: the neighbour is gone. Return the
                 // bundle to Waiting, and reset the whole peer queue so its
                 // bundles await a fresh routing decision alongside it. The
@@ -183,7 +184,7 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     pub async fn transfer_outcome(
         &self,
-        cla: &cla::registry::Cla,
+        cla: &Registration,
         bundle_id: &hardy_bpv7::bundle::Id,
         outcome: cla::TransferOutcome,
     ) {
@@ -474,13 +475,13 @@ mod tests {
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
+        ) -> cla::Result<cla::ForwardOutcome> {
             let _ = self.offers_tx.send(bundle_id.clone());
-            Ok(cla::ForwardBundleResult::Sent)
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 
@@ -537,7 +538,7 @@ mod tests {
                 &cla,
                 7,
                 None,
-                &cla::ClaAddress::Private("peer".as_bytes().into()),
+                &cla::Address::Private("peer".as_bytes().into()),
                 bundle,
             )
             .await;

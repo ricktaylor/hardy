@@ -6,7 +6,7 @@ enabling bundles to be tunneled through intermediate DTN networks by wrapping an
 inner bundle inside the payload of an outer bundle. It uses a hybrid CLA/Service
 architecture: encapsulation is performed by a [`Cla`](hardy_bpa::cla::Cla)
 implementation that intercepts `forward()` calls, while decapsulation is handled by
-a [`Service`](hardy_bpa::services::Service) that receives outer bundles, extracts
+a [`Service`](hardy_bpa::service::Service) that receives outer bundles, extracts
 the inner bundle, and re-injects it into the BPA. Tunnel destinations are registered
 as virtual peers, making them routable via standard BPA forwarding.
 */
@@ -169,5 +169,5 @@ pub enum Error {
     Dispatch(#[from] hardy_bpa::cla::Error),
     /// Failed to register service with BPA.
     #[error(transparent)]
-    ServiceRegistration(#[from] hardy_bpa::services::Error),
+    ServiceRegistration(#[from] hardy_bpa::service::Error),
 }

@@ -5,11 +5,14 @@
 #![allow(dead_code)]
 
 use hardy_async::async_trait;
-use hardy_bpa::{cla, routing, services};
+use hardy_bpa::{
+    cla, routing,
+    service::{self, ApplicationSink, SendOptions, ServiceSink},
+};
 use hardy_bpv7::eid::NodeId;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// ── RoutingSink ───────────────────────────────────────────────────────
+// ── routing::Sink ─────────────────────────────────────────────────────
 
 pub struct MockRoutingSink {
     unregistered: AtomicBool,
@@ -28,7 +31,7 @@ impl MockRoutingSink {
 }
 
 #[async_trait]
-impl routing::RoutingSink for MockRoutingSink {
+impl routing::Sink for MockRoutingSink {
     async fn unregister(&self) {
         self.unregistered.store(true, Ordering::Relaxed);
     }
@@ -81,21 +84,17 @@ impl cla::Sink for MockClaSink {
     async fn dispatch(
         &self,
         _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&cla::ClaAddress>,
+        _peer_addr: Option<&cla::Address>,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<cla::Acceptance> {
         Ok(cla::Acceptance::Accepted)
     }
 
-    async fn add_peer(
-        &self,
-        _cla_addr: cla::ClaAddress,
-        _node_ids: &[NodeId],
-    ) -> cla::Result<bool> {
+    async fn add_peer(&self, _cla_addr: cla::Address, _node_ids: &[NodeId]) -> cla::Result<bool> {
         Ok(true)
     }
 
-    async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, _cla_addr: &cla::Address) -> cla::Result<bool> {
         Ok(true)
     }
 
@@ -112,7 +111,7 @@ impl cla::Sink for MockClaSink {
     }
 }
 
-// ── ServiceSink ───────────────────────────────────────────────────────
+// ── ServiceSink ─────────────────────────────────────────────────────────
 
 pub struct MockServiceSink {
     unregistered: AtomicBool,
@@ -127,7 +126,7 @@ impl MockServiceSink {
 }
 
 #[async_trait]
-impl services::ServiceSink for MockServiceSink {
+impl ServiceSink for MockServiceSink {
     async fn unregister(&self) {
         self.unregistered.store(true, Ordering::Relaxed);
     }
@@ -135,14 +134,14 @@ impl services::ServiceSink for MockServiceSink {
     async fn send(
         &self,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        Err(services::Error::Internal(
+    ) -> service::Result<hardy_bpv7::bundle::Id> {
+        Err(service::Error::Internal(
             "mock sink: send not implemented".into(),
         ))
     }
 }
 
-// ── ApplicationSink ───────────────────────────────────────────────────
+// ── service::ApplicationSink ─────────────────────────────────────────────────────
 
 pub struct MockApplicationSink {
     unregistered: AtomicBool,
@@ -157,7 +156,7 @@ impl MockApplicationSink {
 }
 
 #[async_trait]
-impl services::ApplicationSink for MockApplicationSink {
+impl ApplicationSink for MockApplicationSink {
     async fn unregister(&self) {
         self.unregistered.store(true, Ordering::Relaxed);
     }
@@ -167,9 +166,9 @@ impl services::ApplicationSink for MockApplicationSink {
         _destination: hardy_bpv7::eid::Eid,
         _data: hardy_bpa::Bytes,
         _lifetime: core::time::Duration,
-        _options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        Err(services::Error::Internal(
+        _options: Option<SendOptions>,
+    ) -> service::Result<hardy_bpv7::bundle::Id> {
+        Err(service::Error::Internal(
             "mock sink: send not implemented".into(),
         ))
     }

@@ -11,7 +11,7 @@ use tracing::instrument;
 use super::action::{Action, InternalAction, RouteAction};
 use super::{Error, Result};
 use crate::{
-    Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, services::registry::Service,
+    Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, service::registry::Registration,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,7 +37,7 @@ impl Ord for Entry {
 #[derive(Debug)]
 pub(super) enum LookupResult<'a> {
     AdminEndpoint,
-    Deliver(Arc<Service>),
+    Deliver(Arc<Registration>),
     Forward(u32, &'a Eid),
     ForwardEcmp(Vec<(u32, &'a Eid)>),
     Drop(Option<ReasonCode>),
@@ -275,7 +275,7 @@ impl RouteTable {
         }
     }
 
-    pub(super) fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
+    pub(super) fn find_service(&self, to: &Eid) -> Option<Arc<Registration>> {
         for entries in self.routes.values() {
             for (pattern, actions) in entries {
                 if pattern.matches(to) {

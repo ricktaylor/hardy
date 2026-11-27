@@ -138,7 +138,7 @@ impl<T: Send> Receiver<T> for CancellableReceiver<'_, T> {
 
 /// A segment of a bundle's encoded bytes in transit through a streaming
 /// trait method — [`Sink::dispatch`](crate::cla::Sink::dispatch) on the CLA
-/// ingress door, [`ServiceSink::send`](crate::services::ServiceSink::send)
+/// ingress door, [`ServiceSink::send`](crate::service::ServiceSink::send)
 /// on the service originate door.
 ///
 /// `Final` marks the last segment of the bundle. The payload may be empty

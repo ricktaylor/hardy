@@ -20,21 +20,17 @@ impl cla::Sink for MockSink {
     async fn dispatch(
         &self,
         _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&cla::ClaAddress>,
+        _peer_addr: Option<&cla::Address>,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<cla::Acceptance> {
         Ok(cla::Acceptance::Accepted)
     }
 
-    async fn add_peer(
-        &self,
-        _cla_addr: cla::ClaAddress,
-        _node_ids: &[NodeId],
-    ) -> cla::Result<bool> {
+    async fn add_peer(&self, _cla_addr: cla::Address, _node_ids: &[NodeId]) -> cla::Result<bool> {
         Ok(true)
     }
 
-    async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, _cla_addr: &cla::Address) -> cla::Result<bool> {
         Ok(true)
     }
 
@@ -71,38 +67,38 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     async fn register_routing_agent(
         &self,
         _name: String,
-        _agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
+        _agent: Arc<dyn hardy_bpa::routing::Agent>,
     ) -> hardy_bpa::routing::Result<Vec<NodeId>> {
-        unimplemented!("not needed for CLA fuzzing")
-    }
-
-    async fn register_service(
-        &self,
-        _service_id: hardy_bpv7::eid::Service,
-        _service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }
 
     async fn register_application(
         &self,
         _service_id: hardy_bpv7::eid::Service,
-        _application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
+        _service: Arc<dyn hardy_bpa::service::Application>,
+    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }
 
-    async fn register_dynamic_service(
+    async fn register_service(
         &self,
-        _service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
+        _service_id: hardy_bpv7::eid::Service,
+        _service: Arc<dyn hardy_bpa::service::Service>,
+    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }
 
     async fn register_dynamic_application(
         &self,
-        _application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
+        _service: Arc<dyn hardy_bpa::service::Application>,
+    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
+        unimplemented!("not needed for CLA fuzzing")
+    }
+
+    async fn register_dynamic_service(
+        &self,
+        _service: Arc<dyn hardy_bpa::service::Service>,
+    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }
 }

@@ -165,7 +165,7 @@ Trait documentation should describe the contract, not the implementation. Includ
 /// A convergence layer adapter that can send and receive bundles.
 ///
 /// Implementors register with a [`Bpa`] via [`Bpa::register_cla`] and
-/// receive a [`ClaSink`] for forwarding received bundles. Dropping the
+/// receive a [`cla::Sink`] for forwarding received bundles. Dropping the
 /// sink unregisters the CLA.
 pub trait Cla: Send + Sync + 'static {
 ```

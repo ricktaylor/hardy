@@ -16,10 +16,13 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     cla::{self, Cla, ClaInit},
-    services,
+    service::{self, Application, ApplicationSink, StatusNotify},
     stream::{Receiver, Segment},
 };
-use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
+// `eid::Service` is the service number inside an EID, not the service
+// trait registered here; it is aliased to the word the code already uses
+// for it.
+use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId, Service as ServiceId};
 #[cfg(feature = "rfc9173")]
 use hardy_bpv7::{
     block,
@@ -99,11 +102,11 @@ impl cla::Cla for StreamingCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         if self.flaky.swap(false, Ordering::SeqCst) {
             let _ = self.events_tx.send(Event::Failed);
             return Err(cla::Error::StreamCancelled);
@@ -126,7 +129,7 @@ impl cla::Cla for StreamingCla {
             segments,
             total_len,
         });
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -166,26 +169,26 @@ impl cla::Cla for BufferedCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let _ = self.events_tx.send(Event::Forward(bundle));
-        Ok(cla::ForwardBundleResult::Sent)
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Minimal application to originate bundles
+// Minimal service to originate bundles
 // ---------------------------------------------------------------------------
 
-struct SendOnlyApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+struct SendOnlyService {
+    sink: hardy_async::sync::spin::Once<Box<dyn ApplicationSink>>,
 }
 
-impl SendOnlyApp {
+impl SendOnlyService {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             sink: hardy_async::sync::spin::Once::new(),
@@ -194,8 +197,8 @@ impl SendOnlyApp {
 }
 
 #[async_trait]
-impl services::Application for SendOnlyApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+impl Application for SendOnlyService {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -208,7 +211,7 @@ impl services::Application for SendOnlyApp {
         _ack_requested: bool,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         Ok(())
     }
 
@@ -216,7 +219,7 @@ impl services::Application for SendOnlyApp {
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -265,10 +268,11 @@ async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
         .expect("CLA event channel closed")
 }
 
-/// Sends `payload` to ipn:0.2.99 via `app`, returning the destination EID.
-async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
+/// Sends `payload` to ipn:0.2.99 via `service`, returning the destination EID.
+async fn originate(service: &SendOnlyService, payload: &'static [u8]) -> Eid {
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
-    app.sink
+    service
+        .sink
         .get()
         .unwrap()
         .send(
@@ -301,18 +305,18 @@ async fn streaming_cla_receives_single_final_segment() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
         .unwrap();
 
-    let app = SendOnlyApp::new();
+    let service = SendOnlyService::new();
     let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
-    let dest = originate(&app, b"Hello remote").await;
+    let dest = originate(&service, b"Hello remote").await;
 
     let Event::Streamed {
         segments,
@@ -355,18 +359,18 @@ async fn buffered_cla_receives_whole_bundle() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
         .unwrap();
 
-    let app = SendOnlyApp::new();
+    let service = SendOnlyService::new();
     let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
-    let dest = originate(&app, b"Hello adapter").await;
+    let dest = originate(&service, b"Hello adapter").await;
 
     let Event::Forward(data) = recv_event(&events_rx, 5).await else {
         panic!("Expected the buffering CLA to assemble the bundle");
@@ -393,17 +397,17 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            cla::Address::Private("peer-a".as_bytes().into()),
             &[remote_node(2)],
         )
         .await
         .unwrap();
 
-    let app = SendOnlyApp::new();
-    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+    let service = SendOnlyService::new();
+    bpa.register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
-    originate(&app, b"Try again").await;
+    originate(&service, b"Try again").await;
 
     assert!(matches!(recv_event(&events_rx, 5).await, Event::Failed));
 
@@ -416,7 +420,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
             .get()
             .unwrap()
             .add_peer(
-                cla::ClaAddress::Private(format!("peer-{i}").into_bytes().into()),
+                cla::Address::Private(format!("peer-{i}").into_bytes().into()),
                 &[remote_node(2)],
             )
             .await
@@ -449,7 +453,7 @@ fn direct_call_fixture() -> (
     flume::Receiver<Event>,
     hardy_bpv7::bundle::Bundle,
     Bytes,
-    cla::ClaAddress,
+    cla::Address,
 ) {
     let (cla, events_rx) = BufferedCla::new();
     let (bundle, data) = build_bundle(
@@ -457,7 +461,7 @@ fn direct_call_fixture() -> (
         &"ipn:0.2.99".parse().unwrap(),
         b"payload",
     );
-    let addr = cla::ClaAddress::Private("x".as_bytes().into());
+    let addr = cla::Address::Private("x".as_bytes().into());
     (cla, events_rx, bundle, data, addr)
 }
 
@@ -472,7 +476,7 @@ async fn buffering_cla_concats_multi_segment_stream() {
         .forward(None, &addr, &bundle.primary.id, data.len() as u64, &mut rx)
         .await
         .unwrap();
-    assert!(matches!(result, cla::ForwardBundleResult::Sent));
+    assert!(matches!(result, cla::ForwardOutcome::Sent));
 
     let Ok(Event::Forward(received)) = events_rx.try_recv() else {
         panic!("Expected forward to receive the reassembled bundle");
@@ -560,8 +564,10 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
 
 /// Builds a BPA on an allocator-1 node — its 3-element IPN EIDs change bytes
 /// under the legacy re-encode — with the given legacy-peer patterns, wired
-/// to a buffering CLA and a send-only application.
-async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Receiver<Event>, Eid) {
+/// to a buffering CLA and a send-only service.
+async fn legacy_fixture(
+    patterns: &[&str],
+) -> (Bpa, Arc<SendOnlyService>, flume::Receiver<Event>, Eid) {
     let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 1,
@@ -591,7 +597,7 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Rec
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 1,
                 node_number: 2,
@@ -600,22 +606,23 @@ async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Rec
         .await
         .unwrap();
 
-    let app = SendOnlyApp::new();
+    let service = SendOnlyService::new();
     let source_eid = bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .register_application(ServiceId::Ipn(42), service.clone())
         .await
         .unwrap();
-    (bpa, app, events_rx, source_eid)
+    (bpa, service, events_rx, source_eid)
 }
 
 /// A next hop matching a configured legacy-peer pattern receives the bundle
 /// with `Ipn` source and destination re-encoded as `LegacyIpn` on the wire.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_peer_receives_two_element_encoding() {
-    let (bpa, app, events_rx, _) = legacy_fixture(&["ipn:1.2.*"]).await;
+    let (bpa, service, events_rx, _) = legacy_fixture(&["ipn:1.2.*"]).await;
 
     let dest: Eid = "ipn:1.2.99".parse().unwrap();
-    app.sink
+    service
+        .sink
         .get()
         .unwrap()
         .send(
@@ -650,10 +657,11 @@ async fn legacy_peer_receives_two_element_encoding() {
 /// 3-element encoding untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_legacy_peer_keeps_canonical_encoding() {
-    let (bpa, app, events_rx, source_eid) = legacy_fixture(&["ipn:9.9.*"]).await;
+    let (bpa, service, events_rx, source_eid) = legacy_fixture(&["ipn:9.9.*"]).await;
 
     let dest: Eid = "ipn:1.2.99".parse().unwrap();
-    app.sink
+    service
+        .sink
         .get()
         .unwrap()
         .send(
@@ -699,7 +707,7 @@ async fn legacy_relay() -> (Bpa, Arc<BufferedCla>, flume::Receiver<Event>) {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(relay_node(2))],
         )
         .await
@@ -1192,7 +1200,7 @@ async fn relay(received: &Bytes, keys: Vec<Key>) -> Parsed {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(relay_node(2))],
         )
         .await

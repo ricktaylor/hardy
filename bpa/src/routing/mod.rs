@@ -1,4 +1,4 @@
-pub mod agent;
+mod agent;
 
 pub(crate) mod action;
 pub(crate) mod rib;
@@ -8,7 +8,7 @@ pub(crate) mod table;
 use serde::{Deserialize, Serialize};
 
 pub use self::action::RouteAction;
-pub use self::agent::{Error, Result, RoutingAgent, RoutingSink, StaticRoutingAgent};
+pub use self::agent::{Agent, Error, Result, Sink, StaticAgent};
 
 pub(crate) use self::rib::RibBuilder;
 pub(crate) use self::rib::{Decision, DispatchAction, Rib, RibSnapshot, RoutingKey};

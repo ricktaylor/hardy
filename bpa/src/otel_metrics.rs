@@ -30,7 +30,7 @@ pub fn init() {
         "Bundles dropped as duplicates at reception"
     );
 
-    // -- B. Bundle Origination (service/app ingress) --
+    // -- B. Bundle Origination (service ingress) --
     metrics::describe_counter!(
         "bpa.bundle.originated",
         metrics::Unit::Count,

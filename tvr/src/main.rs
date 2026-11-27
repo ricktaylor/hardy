@@ -93,7 +93,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         scheduler_handle.clone(),
     ));
 
-    // Connect to BPA and register as a RoutingAgent
+    // Connect to BPA and register as a routing agent
     info!("Connecting to BPA at {}", config.bpa_address);
 
     let remote_bpa = hardy_proto::client::RemoteBpa::new(config.bpa_address);
@@ -101,7 +101,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let node_ids = remote_bpa
         .register_routing_agent(config.agent_name.clone(), agent.clone())
         .await
-        .map_err(|e| anyhow::anyhow!("RoutingAgent registration failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Routing agent registration failed: {e}"))?;
 
     info!(
         "Routing agent '{}' registered, node IDs: {:?}",

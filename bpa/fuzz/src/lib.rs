@@ -147,7 +147,7 @@ impl Msg {
                 // Load static routes
                 bpa.register_routing_agent(
                     "fuzz".to_string(),
-                    Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[
+                    Arc::new(hardy_bpa::routing::StaticAgent::new(&[
                         (
                             "ipn:*.*".parse().unwrap(),
                             hardy_bpa::routing::RouteAction::Via("ipn:0.2.0".parse().unwrap()),

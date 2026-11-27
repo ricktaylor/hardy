@@ -8,7 +8,7 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::services::{Service, ServiceSink, StatusNotify};
+use hardy_bpa::service::{Service, ServiceSink, StatusNotify};
 use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -52,7 +52,7 @@ impl Service for MockService {
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<()> {
+    ) -> hardy_bpa::service::Result<()> {
         self.received.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -75,20 +75,20 @@ async fn svc_cli_01_registration() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
 
-    let svc = Arc::new(MockService::new());
+    let service = Arc::new(MockService::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
     assert_eq!(endpoint.to_string(), "ipn:1.42");
-    assert!(svc.registered.load(Ordering::Relaxed));
-    assert!(svc.sink.lock().is_some());
+    assert!(service.registered.load(Ordering::Relaxed));
+    assert!(service.sink.lock().is_some());
 
     // Clean up
-    drop(svc.take_sink());
+    drop(service.take_sink());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     server_tasks.shutdown().await;
 }
@@ -99,15 +99,15 @@ async fn svc_cli_02_send_bundle() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
 
-    let svc = Arc::new(MockService::new());
+    let service = Arc::new(MockService::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
-    let sink = svc.take_sink().expect("service should have a sink");
+    let sink = service.take_sink().expect("service should have a sink");
 
     // send() calls the mock BPA sink which is unimplemented — expect an error
     let result = sink
@@ -126,18 +126,18 @@ async fn svc_cli_03_receive_bundle() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
 
-    let svc = Arc::new(MockService::new());
+    let service = Arc::new(MockService::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
-    assert!(!svc.received.load(Ordering::Relaxed));
+    assert!(!service.received.load(Ordering::Relaxed));
 
     // BPA pushes a bundle via the server-side Service proxy
-    let server_svc = bpa
+    let server_service = bpa
         .last_service
         .lock()
         .clone()
@@ -147,18 +147,18 @@ async fn svc_cli_03_receive_bundle() {
     let total_len = data.len() as u64;
     let bundle_id = hardy_bpv7::bundle::Id::default();
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
-    server_svc
+    server_service
         .on_deliver(&bundle_id, expiry, total_len, &mut data)
         .await
         .expect("Delivery should succeed");
 
     assert!(
-        svc.received.load(Ordering::Relaxed),
+        service.received.load(Ordering::Relaxed),
         "MockService should have received the bundle"
     );
 
     // Clean up
-    drop(svc.take_sink());
+    drop(service.take_sink());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     server_tasks.shutdown().await;
 }
@@ -169,17 +169,17 @@ async fn svc_cli_04_status_notify() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
 
-    let svc = Arc::new(MockService::new());
+    let service = Arc::new(MockService::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
-    assert!(!svc.status_notified.load(Ordering::Relaxed));
+    assert!(!service.status_notified.load(Ordering::Relaxed));
 
-    let server_svc = bpa
+    let server_service = bpa
         .last_service
         .lock()
         .clone()
@@ -192,7 +192,7 @@ async fn svc_cli_04_status_notify() {
     };
     let from: Eid = "ipn:2.0".parse().unwrap();
 
-    server_svc
+    server_service
         .on_status_notify(
             &bundle_id,
             &from,
@@ -203,12 +203,12 @@ async fn svc_cli_04_status_notify() {
         .await;
 
     assert!(
-        svc.status_notified.load(Ordering::Relaxed),
+        service.status_notified.load(Ordering::Relaxed),
         "MockService should have received the status notification"
     );
 
     // Clean up
-    drop(svc.take_sink());
+    drop(service.take_sink());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     server_tasks.shutdown().await;
 }
@@ -234,7 +234,7 @@ impl Service for ReplyingService {
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<()> {
+    ) -> hardy_bpa::service::Result<()> {
         let mut data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let sink = self.sink.lock().clone().expect("registered");
         // Send back to the BPA before returning. The mock sink answers with an
@@ -268,17 +268,17 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
 
     let replied = Arc::new(AtomicUsize::new(0));
-    let svc = Arc::new(ReplyingService {
+    let service = Arc::new(ReplyingService {
         sink: hardy_async::sync::spin::Mutex::new(None),
         replied: replied.clone(),
     });
     let remote_bpa = RemoteBpa::new(grpc_addr);
     remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), service.clone())
         .await
         .expect("registration should succeed");
 
-    let server_svc = bpa
+    let server_service = bpa
         .last_service
         .lock()
         .clone()
@@ -289,11 +289,11 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
     const N: usize = 32;
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     let deliveries = (0..N).map(|_| {
-        let server_svc = server_svc.clone();
+        let server_service = server_service.clone();
         tokio::spawn(async move {
             let mut data = hardy_bpa::Bytes::from_static(b"payload");
             let total_len = data.len() as u64;
-            let _ = server_svc
+            let _ = server_service
                 .on_deliver(
                     &hardy_bpv7::bundle::Id::default(),
                     expiry,
@@ -320,7 +320,7 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
 
     // Close the client so the server's bidi stream ends; otherwise
     // server_tasks.shutdown() waits on the still-open stream.
-    let sink = svc.sink.lock().take();
+    let sink = service.sink.lock().take();
     if let Some(sink) = sink {
         sink.unregister().await;
     }

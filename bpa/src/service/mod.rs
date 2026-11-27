@@ -1,15 +1,20 @@
-pub(crate) mod registry;
-
 use core::{
     fmt::{self, Display, Formatter},
     time::Duration,
 };
 
-use hardy_async::async_trait;
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
 use thiserror::Error;
+use time::OffsetDateTime;
 
-use crate::Bytes;
+use crate::{
+    Bytes, async_trait,
+    stream::{BufferError, Receiver, buffer_stream},
+};
+
+pub(crate) mod registry;
+
+pub use crate::stream::Segment;
 
 /// A specialized `Result` type for service operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -28,7 +33,7 @@ pub enum Error {
     /// The service id denotes the node's administrative endpoint, which is
     /// structurally registered and cannot be claimed by a service
     /// (RFC 9758 Section 5.7).
-    #[error("Service id {0} identifies the administrative endpoint (RFC 9758 Section 5.7)")]
+    #[error("Application id {0} identifies the administrative endpoint (RFC 9758 Section 5.7)")]
     AdministrativeEndpoint(String),
 
     /// No IPN node ID is configured on this BPA, so IPN services cannot register.
@@ -138,71 +143,63 @@ pub enum StatusNotify {
     Deleted,
 }
 
-impl From<crate::stream::BufferError> for Error {
-    fn from(e: crate::stream::BufferError) -> Self {
+impl From<BufferError> for Error {
+    fn from(e: BufferError) -> Self {
         match e {
-            crate::stream::BufferError::Cancelled => Error::StreamCancelled,
-            crate::stream::BufferError::TooLarge { size, max } => Error::PayloadTooLarge {
+            BufferError::Cancelled => Error::StreamCancelled,
+            BufferError::TooLarge { size, max } => Error::PayloadTooLarge {
                 size: size as u64,
                 max: max as u64,
             },
-            crate::stream::BufferError::Underrun { size, expected } => Error::PayloadUnderrun {
+            BufferError::Underrun { size, expected } => Error::PayloadUnderrun {
                 size: size as u64,
                 expected: expected as u64,
             },
-            crate::stream::BufferError::Unaddressable { total_len } => {
-                Error::PayloadUnaddressable { total_len }
-            }
+            BufferError::Unaddressable { total_len } => Error::PayloadUnaddressable { total_len },
         }
     }
 }
 
-/// High-level application trait for services that work with payloads only.
+/// A service that works with bundle payloads alone.
 ///
-/// Applications receive decoded payloads and send data that the BPA wraps in bundles.
-/// This hides bundle structure details, suitable for most user services.
+/// The BPA hands a delivered bundle's payload to the service and wraps
+/// sent data in a bundle of its own, so bundle structure never surfaces
+/// here. This is the contract most services want; one that must see or
+/// build the bundle itself implements [`Service`].
 ///
-/// For services that need raw bundle access, see [`Service`].
+/// # ApplicationSink Lifecycle
 ///
-/// # Sink Lifecycle
+/// The service receives a [`ApplicationSink`] in [`on_register`](Self::on_register)
+/// and must store it for its entire active lifetime: dropping the sink is
+/// how a service asks to be disconnected, so `on_register` has to store
+/// it before returning, or the BPA immediately calls
+/// [`on_unregister`](Self::on_unregister).
 ///
-/// The Application receives an [`ApplicationSink`] in [`on_register`](Self::on_register)
-/// which it **must store** for its entire active lifetime.
-///
-/// **Critical**: If the Sink is dropped (either explicitly or by not storing it), the BPA
-/// interprets this as the Application requesting disconnection and will call
-/// [`on_unregister`](Self::on_unregister). This means `on_register` must store the Sink
-/// before returning.
-///
-/// Two disconnection paths exist:
-/// - **App-initiated**: Application drops its Sink or calls `sink.unregister()` → BPA calls `on_unregister()`
-/// - **BPA-initiated**: BPA shuts down → calls `on_unregister()` → Sink becomes non-functional
+/// Disconnection runs in either direction. Application-initiated, the service
+/// drops its sink or calls `sink.unregister()`, and the BPA calls
+/// `on_unregister`. BPA-initiated, the BPA shuts down, calls
+/// `on_unregister`, and the sink stops functioning.
 #[async_trait]
 pub trait Application: Send + Sync {
-    /// Called when the Application is registered with the BPA.
+    /// Called when the service is registered with the BPA.
     ///
-    /// **Important**: The `sink` must be stored for the Application's entire active lifetime.
-    /// Dropping the sink triggers automatic unregistration.
+    /// The `sink` must be stored for the service's entire active
+    /// lifetime; dropping it triggers unregistration.
     ///
-    /// # Arguments
-    /// * `source` - The endpoint ID assigned to this application
-    /// * `sink` - Communication channel back to the BPA. Must be stored.
+    /// `source` is the endpoint ID assigned to this service, and the source
+    /// of every bundle it sends.
     async fn on_register(&self, source: &Eid, sink: Box<dyn ApplicationSink>);
 
-    /// Called when the Application is being unregistered.
-    ///
-    /// This is called in two scenarios:
-    /// 1. The Application dropped its Sink (app-initiated disconnection)
-    /// 2. The BPA is shutting down (BPA-initiated disconnection)
+    /// Called when the service is being unregistered, either because the
+    /// service dropped its sink or because the BPA is shutting down.
     async fn on_unregister(&self);
 
-    /// Called when a bundle payload is delivered to this application as a stream of segments.
+    /// Called when a bundle payload is delivered to this service as a stream of segments.
     ///
-    /// The implementation pulls
-    /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
-    /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
-    /// carry empty bytes) completes the delivery. The source endpoint of
-    /// the payload is `bundle_id.source`.
+    /// The implementation pulls [`Segment::Next`] items from `stream`
+    /// until [`Segment::Final`] (which may carry empty bytes) completes
+    /// the delivery. The source endpoint of the payload is
+    /// `bundle_id.source`.
     ///
     /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
     /// before `Final` means the producer aborted the delivery: the
@@ -217,25 +214,25 @@ pub trait Application: Send + Sync {
     /// buffers from it before pulling the first segment.
     ///
     /// An implementation that needs the whole payload in memory buffers the
-    /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
-    /// whose errors convert into this module's [`enum@Error`] via `?`.
+    /// stream with [`buffer_stream`], whose errors convert into this
+    /// module's [`enum@Error`] via `?`.
     async fn on_deliver(
         &self,
         bundle_id: &Id,
-        expiry: time::OffsetDateTime,
+        expiry: OffsetDateTime,
         ack_requested: bool,
         total_len: u64,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+        stream: &mut dyn Receiver<Segment>,
     ) -> Result<()>;
 
-    /// Called when a status report is received for a bundle sent by this application.
+    /// Called when a status report is received for a bundle sent by this service.
     async fn on_status_notify(
         &self,
         bundle_id: &Id,
         from: &Eid,
         kind: StatusNotify,
         reason: ReasonCode,
-        timestamp: Option<time::OffsetDateTime>,
+        timestamp: Option<OffsetDateTime>,
     );
 }
 
@@ -244,37 +241,40 @@ pub trait Application: Send + Sync {
 /// All fields default to `false`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SendOptions {
-    /// Set the "do not fragment" bundle processing flag (RFC 9171 Section 4.2.3).
+    /// Sets the "do not fragment" bundle processing flag (RFC 9171 Section 4.2.3).
     pub do_not_fragment: bool,
-    /// Request an application-level acknowledgement from the destination.
+    /// Requests an application-level acknowledgement from the destination.
     pub request_ack: bool,
-    /// Include timestamps in status reports (RFC 9171 Section 6.1.1).
+    /// Includes timestamps in status reports (RFC 9171 Section 6.1.1).
     pub report_status_time: bool,
-    /// Request a "received" status report from each forwarding node.
+    /// Requests a "received" status report from each forwarding node.
     pub notify_reception: bool,
-    /// Request a "forwarded" status report from each forwarding node.
+    /// Requests a "forwarded" status report from each forwarding node.
     pub notify_forwarding: bool,
-    /// Request a "delivered" status report when the bundle reaches its destination.
+    /// Requests a "delivered" status report when the bundle reaches its
+    /// destination.
     pub notify_delivery: bool,
-    /// Request a "deleted" status report if the bundle is deleted.
+    /// Requests a "deleted" status report if the bundle is deleted.
     pub notify_deletion: bool,
 }
 
-/// Sink for high-level applications to send payloads.
+/// The channel a [`Application`] sends payloads back through.
 ///
-/// This is provided to [`Application::on_register`] and must be stored for the
-/// Application's entire active lifetime. Dropping the Sink triggers automatic
-/// unregistration.
+/// This is handed to [`Application::on_register`] and must be stored for the
+/// service's entire active lifetime.
 ///
 /// # Lifecycle
 ///
-/// - **App drops Sink**: BPA detects the drop and calls [`Application::on_unregister`]
-/// - **BPA shuts down**: BPA calls [`Application::on_unregister`], then Sink operations return [`Error::Disconnected`]
+/// Dropping this sink is how a service unregisters: the BPA detects the
+/// drop and calls [`Application::on_unregister`]. When the BPA shuts down
+/// instead, it calls [`Application::on_unregister`] first, after which every
+/// operation here returns [`Error::Disconnected`].
 #[async_trait]
 pub trait ApplicationSink: Send + Sync {
-    /// Explicitly unregisters the associated Application from the BPA.
+    /// Unregisters the associated service from the BPA.
     ///
-    /// This is equivalent to dropping the Sink, but allows explicit cleanup timing.
+    /// Equivalent to dropping the sink, but lets the service choose when
+    /// the teardown happens.
     async fn unregister(&self);
 
     /// Sends a payload to a destination, wrapped in a bundle by the BPA.
@@ -302,76 +302,53 @@ pub trait ApplicationSink: Send + Sync {
     /// caller may resend).
     ///
     /// The provided implementation buffers the stream
-    /// ([`buffer_stream`](crate::stream::buffer_stream)) and delegates to
-    /// [`send`](Self::send), with the same error surface; the BPA's own
-    /// sink streams end to end.
+    /// ([`buffer_stream`]) and delegates to [`send`](Self::send), with the
+    /// same error surface; the BPA's own sink streams end to end.
     async fn send_streamed(
         &self,
         destination: Eid,
         total_len: u64,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+        stream: &mut dyn Receiver<Segment>,
         lifetime: Duration,
         options: Option<SendOptions>,
     ) -> Result<Id> {
-        let data = crate::stream::buffer_stream(stream, total_len).await?;
+        let data = buffer_stream(stream, total_len).await?;
         self.send(destination, data, lifetime, options).await
     }
 }
 
-/// Low-level service trait with raw bundle access.
+/// A service that works with whole bundles.
 ///
-/// Unlike [`Application`] which receives only payload, `Service` receives
-/// the raw bundle bytes. This enables system services like echo that need
-/// to inspect/modify bundle structure. Services can parse the bundle
-/// themselves with [`hardy_bpv7::parse::parse`] for a structural parse, then
-/// apply the [`hardy_bpv7::checks`] primitives (e.g. `verify`) if they have
-/// key access.
+/// Where [`Application`] receives only the payload, a raw
+/// service receives the bundle bytes, and builds the bundles it sends. It
+/// can parse them with [`hardy_bpv7::parse::parse`] for a structural
+/// parse, then apply the [`hardy_bpv7::checks`] primitives (e.g. `verify`)
+/// if it has key access.
 ///
-/// # Sink Lifecycle
+/// # ServiceSink Lifecycle
 ///
-/// The Service receives a [`ServiceSink`] in [`on_register`](Self::on_register)
-/// which it **must store** for its entire active lifetime.
+/// The service receives a [`ServiceSink`] in [`on_register`](Self::on_register)
+/// and must store it for its entire active lifetime: dropping the sink is
+/// how a service asks to be disconnected, so `on_register` has to store
+/// it before returning, or the BPA immediately calls
+/// [`on_unregister`](Self::on_unregister).
 ///
-/// **Critical**: If the Sink is dropped (either explicitly or by not storing it), the BPA
-/// interprets this as the Service requesting disconnection and will call
-/// [`on_unregister`](Self::on_unregister). This means `on_register` must store the Sink
-/// before returning.
-///
-/// Two disconnection paths exist:
-/// - **Service-initiated**: Service drops its Sink or calls `sink.unregister()` → BPA calls `on_unregister()`
-/// - **BPA-initiated**: BPA shuts down → calls `on_unregister()` → Sink becomes non-functional
-///
-/// # Example
-///
-/// ```ignore
-/// struct MyService {
-///     sink: Once<Box<dyn ServiceSink>>,
-/// }
-///
-/// impl Service for MyService {
-///     async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
-///         self.sink.call_once(|| sink);  // Store it
-///     }
-///     // ...
-/// }
-/// ```
+/// Disconnection runs in either direction. Service-initiated, the service
+/// drops its sink or calls `sink.unregister()`, and the BPA calls
+/// `on_unregister`. BPA-initiated, the BPA shuts down, calls
+/// `on_unregister`, and the sink stops functioning.
 #[async_trait]
 pub trait Service: Send + Sync {
-    /// Called when service is registered with the BPA.
+    /// Called when the service is registered with the BPA.
     ///
-    /// **Important**: The `sink` must be stored for the Service's entire active lifetime.
-    /// Dropping the sink triggers automatic unregistration.
+    /// The `sink` must be stored for the service's entire active
+    /// lifetime; dropping it triggers unregistration.
     ///
-    /// # Arguments
-    /// * `endpoint` - The endpoint ID assigned to this service
-    /// * `sink` - Communication channel back to the BPA. Must be stored.
+    /// `endpoint` is the endpoint ID assigned to this service.
     async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>);
 
-    /// Called when the Service is being unregistered.
-    ///
-    /// This is called in two scenarios:
-    /// 1. The Service dropped its Sink (service-initiated disconnection)
-    /// 2. The BPA is shutting down (BPA-initiated disconnection)
+    /// Called when the service is being unregistered, either because the
+    /// service dropped its sink or because the BPA is shutting down.
     async fn on_unregister(&self);
 
     /// Called when a bundle is delivered to this service as a stream of segments.
@@ -379,10 +356,9 @@ pub trait Service: Send + Sync {
     /// The stream carries the raw bundle bytes (the service can parse them
     /// if needed); `bundle_id` is the identity of the delivered bundle and
     /// `expiry` is calculated from bundle metadata by the dispatcher. The
-    /// implementation pulls
-    /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
-    /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
-    /// carry empty bytes) completes the delivery.
+    /// implementation pulls [`Segment::Next`] items from `stream` until
+    /// [`Segment::Final`] (which may carry empty bytes) completes the
+    /// delivery.
     ///
     /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
     /// before `Final` means the producer aborted the delivery: the
@@ -397,63 +373,65 @@ pub trait Service: Send + Sync {
     /// buffers from it before pulling the first segment.
     ///
     /// An implementation that needs the whole bundle in memory buffers the
-    /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
-    /// whose errors convert into this module's [`enum@Error`] via `?`.
+    /// stream with [`buffer_stream`], whose
+    /// errors convert into the parent module's
+    /// [`Error`](enum@Error) via `?`.
     async fn on_deliver(
         &self,
         bundle_id: &Id,
-        expiry: time::OffsetDateTime,
+        expiry: OffsetDateTime,
         total_len: u64,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+        stream: &mut dyn Receiver<Segment>,
     ) -> Result<()>;
 
-    /// Called when status report received for a sent bundle
+    /// Called when a status report is received for a bundle sent by this service.
     async fn on_status_notify(
         &self,
         bundle_id: &Id,
         from: &Eid,
         kind: StatusNotify,
         reason: ReasonCode,
-        timestamp: Option<time::OffsetDateTime>,
+        timestamp: Option<OffsetDateTime>,
     );
 }
 
-/// Sink for low-level services to send raw bundles.
+/// The channel a [`Service`] sends whole bundles back through.
 ///
-/// Unlike [`ApplicationSink`] which takes destination/payload/options,
-/// `ServiceSink` accepts raw bundle bytes. The service uses `bpv7::Builder`
-/// to construct bundles; BPA parses and validates (security boundary).
+/// Where [`ApplicationSink`] takes a destination, a payload and options,
+/// this takes bundle bytes: the service constructs them with
+/// `bpv7::Builder`, and the BPA parses and validates what arrives — a
+/// security boundary, since services are not trusted.
 ///
-/// This is provided to [`Service::on_register`] and must be stored for the
-/// Service's entire active lifetime. Dropping the Sink triggers automatic
-/// unregistration.
+/// This is handed to [`Service::on_register`] and must be stored for the
+/// service's entire active lifetime.
 ///
 /// # Lifecycle
 ///
-/// - **Service drops Sink**: BPA detects the drop and calls [`Service::on_unregister`]
-/// - **BPA shuts down**: BPA calls [`Service::on_unregister`], then Sink operations return [`Error::Disconnected`]
+/// Dropping this sink is how a service unregisters: the BPA detects the
+/// drop and calls [`Service::on_unregister`]. When the BPA shuts down
+/// instead, it calls [`Service::on_unregister`] first, after which every
+/// operation here returns
+/// [`Error::Disconnected`](Error::Disconnected).
 #[async_trait]
 pub trait ServiceSink: Send + Sync {
-    /// Explicitly unregisters the associated Service from the BPA.
+    /// Unregisters the associated service from the BPA.
     ///
-    /// This is equivalent to dropping the Sink, but allows explicit cleanup timing.
+    /// Equivalent to dropping the sink, but lets the service choose when
+    /// the teardown happens.
     async fn unregister(&self);
 
-    /// Sends a bundle as a stream of [`Segment`](crate::stream::Segment)s.
+    /// Sends a bundle as a stream of [`Segment`]s.
     ///
-    /// The service delivers `bpv7::Builder`-constructed bundle bytes segment
-    /// by segment, and the BPA parses and validates the assembled bundle
-    /// (security boundary - services are not trusted). Dropping the sender
-    /// before a [`Segment::Final`](crate::stream::Segment::Final) cancels
-    /// the send and returns [`Error::StreamCancelled`].
+    /// The service delivers `bpv7::Builder`-constructed bundle bytes
+    /// segment by segment, and the BPA parses and validates the assembled
+    /// bundle. Dropping the sender before a [`Segment::Final`] cancels the
+    /// send and returns
+    /// [`Error::StreamCancelled`](Error::StreamCancelled).
     ///
     /// A caller holding a complete bundle in memory sends it as a
-    /// one-segment stream, since `Bytes` implements [`stream::Receiver`](crate::stream::Receiver):
+    /// one-segment stream, since `Bytes` implements [`Receiver`]:
     /// `sink.send(&mut data).await`.
-    async fn send(
-        &self,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-    ) -> Result<Id>;
+    async fn send(&self, stream: &mut dyn Receiver<Segment>) -> Result<Id>;
 }
 
 #[cfg(test)]
@@ -469,9 +447,9 @@ pub(crate) mod tests {
         async fn on_deliver(
             &self,
             _: &Id,
-            _: time::OffsetDateTime,
+            _: OffsetDateTime,
             _: u64,
-            _: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+            _: &mut dyn Receiver<Segment>,
         ) -> Result<()> {
             Ok(())
         }
@@ -481,7 +459,7 @@ pub(crate) mod tests {
             _: &Eid,
             _: StatusNotify,
             _: ReasonCode,
-            _: Option<time::OffsetDateTime>,
+            _: Option<OffsetDateTime>,
         ) {
         }
     }

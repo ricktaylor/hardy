@@ -141,13 +141,14 @@ impl Dispatcher {
 mod tests {
     use hardy_bpv7::{
         bundle::Id,
-        eid::{Eid, IpnNodeId, NodeId},
+        eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     };
 
     use super::*;
     use crate::{
         bpa::{Bpa, BpaRegistration},
         cla::ClaInit,
+        service::{Service, ServiceSink},
         storage::{
             BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
@@ -176,13 +177,13 @@ mod tests {
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
+        ) -> cla::Result<cla::ForwardOutcome> {
             let _ = self.offers_tx.send(bundle_id.clone());
-            Ok(cla::ForwardBundleResult::Sent)
+            Ok(cla::ForwardOutcome::Sent)
         }
     }
 
@@ -370,7 +371,7 @@ mod tests {
             .get()
             .unwrap()
             .add_peer(
-                cla::ClaAddress::Private("peer-2".as_bytes().into()),
+                cla::Address::Private("peer-2".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 2,
@@ -460,7 +461,7 @@ mod tests {
             .get()
             .unwrap()
             .add_peer(
-                cla::ClaAddress::Private("peer-3".as_bytes().into()),
+                cla::Address::Private("peer-3".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 2,
@@ -483,13 +484,13 @@ mod tests {
     // bundle id.
     struct CapturingService {
         // Retained: dropping the sink unregisters the service.
-        sink: hardy_async::sync::spin::Once<Box<dyn crate::services::ServiceSink>>,
+        sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
         delivered_tx: flume::Sender<Id>,
     }
 
     #[async_trait]
-    impl crate::services::Service for CapturingService {
-        async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn crate::services::ServiceSink>) {
+    impl Service for CapturingService {
+        async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
             self.sink.call_once(|| sink);
         }
 
@@ -501,7 +502,7 @@ mod tests {
             _expiry: time::OffsetDateTime,
             _total_len: u64,
             stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-        ) -> crate::services::Result<()> {
+        ) -> crate::service::Result<()> {
             loop {
                 match stream.recv().await {
                     Ok(crate::stream::Segment::Final(_)) | Err(_) => break,
@@ -516,7 +517,7 @@ mod tests {
             &self,
             _bundle_id: &Id,
             _from: &Eid,
-            _kind: crate::services::StatusNotify,
+            _kind: crate::service::StatusNotify,
             _reason: hardy_bpv7::status_report::ReasonCode,
             _timestamp: Option<time::OffsetDateTime>,
         ) {
@@ -609,7 +610,7 @@ mod tests {
         // The service registers: its WaitingForService poll delivers both.
         let (delivered_tx, delivered_rx) = flume::bounded(16);
         bpa.register_service(
-            hardy_bpv7::eid::Service::Ipn(7),
+            ServiceId::Ipn(7),
             Arc::new(CapturingService {
                 sink: hardy_async::sync::spin::Once::new(),
                 delivered_tx,

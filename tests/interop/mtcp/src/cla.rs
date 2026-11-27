@@ -41,7 +41,7 @@ impl hardy_bpa::cla::Cla for Cla {
         if let (Some(peer_addr), Some(peer_node)) = (&self.config.peer, &self.config.peer_node) {
             if let Ok(addr) = peer_addr.parse::<std::net::SocketAddr>() {
                 if let Ok(node_id) = peer_node.parse::<NodeId>() {
-                    let cla_addr = hardy_bpa::cla::ClaAddress::Tcp(addr);
+                    let cla_addr = hardy_bpa::cla::Address::Tcp(addr);
                     match sink.add_peer(cla_addr, &[node_id]).await {
                         Ok(true) => info!("Registered peer {peer_node} at {peer_addr}"),
                         Ok(false) => warn!("Peer {peer_node} at {peer_addr} already registered"),
@@ -91,13 +91,13 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        cla_addr: &hardy_bpa::cla::Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr else {
-            return Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardOutcome> {
+        let hardy_bpa::cla::Address::Tcp(remote_addr) = cla_addr else {
+            return Ok(hardy_bpa::cla::ForwardOutcome::NoNeighbour);
         };
 
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
@@ -114,6 +114,6 @@ impl hardy_bpa::cla::Cla for Cla {
                 hardy_bpa::cla::Error::Internal(e.into())
             })?;
 
-        Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
+        Ok(hardy_bpa::cla::ForwardOutcome::Sent)
     }
 }

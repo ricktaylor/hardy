@@ -1,5 +1,8 @@
 use hardy_async::async_trait;
-use hardy_bpv7::eid::NodeId;
+// `eid::Service` is the service number inside an EID, not the service
+// trait registered here; it is aliased to the word the code already uses
+// for it.
+use hardy_bpv7::eid::{Eid, NodeId, Service as ServiceId};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
@@ -8,14 +11,15 @@ use crate::{
     builder::BpaBuilder,
     cla::{self, Cla, ClaInit, registry::ClaRegistry},
     dispatcher::Dispatcher,
+    node_ids::NodeIds,
     otel_metrics,
     policy::FlowControllerFactory,
-    routing::{self, Rib, RoutingAgent},
-    services::{self, Service, registry::ServiceRegistry},
+    routing::{self, Agent, Rib},
+    service::{self, Application, Service, registry::ServiceRegistry},
     storage::store::Store,
 };
 
-/// Trait for registering CLAs, services, and applications with a BPA.
+/// Trait for registering CLAs, services and routing agents with a BPA.
 ///
 /// This trait abstracts the registration interface, allowing components
 /// to work with either a local [`Bpa`] instance or a remote BPA via gRPC.
@@ -48,12 +52,12 @@ use crate::{
 ///
 /// ```ignore
 /// pub struct MyComponent {
-///     sink: spin::Once<Box<dyn Sink>>,
+///     sink: spin::Once<Box<dyn ApplicationSink>>,
 ///     // ... other fields
 /// }
 ///
 /// impl MyTrait for MyComponent {
-///     fn on_register(&self, sink: Box<dyn Sink>) {
+///     fn on_register(&self, sink: Box<dyn ApplicationSink>) {
 ///         // MUST store the sink - dropping it triggers unregistration
 ///         self.sink.set(sink);
 ///     }
@@ -109,99 +113,94 @@ use crate::{
 ///
 /// # For Routing Agent Implementors
 ///
-/// Routing agents receive [`routing::RoutingSink`] in
-/// [`routing::RoutingAgent::on_register`]. Key Sink methods:
+/// Routing agents receive [`routing::Sink`] in
+/// [`routing::Agent::on_register`]. Key Sink methods:
 ///
 /// - `add_route()` / `remove_route()` - Manage routes in the RIB (source auto-injected)
 /// - `unregister()` - Disconnect from the BPA
 ///
-/// For simple static route sets, use [`routing::StaticRoutingAgent`] instead
+/// For simple static route sets, use [`routing::StaticAgent`] instead
 /// of implementing the trait manually.
 ///
 /// # For Service Implementors
 ///
-/// Services receive [`services::ServiceSink`] (low-level, full bundle access) or
-/// [`services::ApplicationSink`] (high-level, payload-only), provided in their
-/// respective `on_register` methods.
+/// Services receive [`service::ServiceSink`] (whole bundles) or
+/// [`service::ApplicationSink`] (payloads only), provided in their respective
+/// `on_register` methods.
 #[async_trait]
 pub trait BpaRegistration: Send + Sync {
-    /// Register a Convergence Layer Adapter with the BPA.
+    /// Registers a Convergence Layer Adapter with the BPA.
     ///
-    /// The CLA will receive a [`cla::Sink`] via [`cla::Cla::on_register`]
-    /// for communicating back to the BPA.
+    /// The CLA receives a [`cla::Sink`] via [`cla::Cla::on_register`] to
+    /// communicate back to the BPA.
     ///
     /// Implementations must drive [`cla::Cla::on_register`] to completion
     /// before returning: once this method resolves, callers may rely on
     /// everything `on_register` delivers (the sink, the effective cap)
     /// having reached the CLA.
     ///
-    /// # Arguments
+    /// `name` identifies this CLA instance, and `policy` is the optional
+    /// egress policy that shapes its traffic.
     ///
-    /// * `name` - Unique name for this CLA instance
-    /// * `cla` - The CLA implementation
-    /// * `policy` - Optional egress policy for traffic shaping
-    /// * `init` - The CLA's set-once declarations ([`cla::ClaInit`]),
-    ///   snapshotted at registration. Its `max_bundle_size` is the CLA's
-    ///   declared receive limit; the BPA folds it with its own configured
-    ///   cap into the effective value delivered to
-    ///   [`cla::Cla::on_register`] — dispatch enforces the BPA's
-    ///   configured cap, not the folded per-CLA value.
+    /// `init` carries the CLA's set-once declarations
+    /// ([`cla::ClaInit`]), snapshotted at registration. Its
+    /// `max_bundle_size` is the CLA's declared receive limit; the BPA
+    /// folds it with its own configured cap into the effective value
+    /// delivered to [`cla::Cla::on_register`] — dispatch enforces the
+    /// BPA's configured cap, not the folded per-CLA value.
     ///
-    /// # Returns
-    ///
-    /// The BPA's node IDs on success
+    /// Returns the BPA's node IDs.
     async fn register_cla(
         &self,
         name: String,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn FlowControllerFactory>>,
         init: ClaInit,
-    ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
+    ) -> cla::Result<Vec<NodeId>>;
 
-    /// Register a low-level Service with full bundle access.
-    async fn register_service(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid>;
-
-    /// Register a high-level Application with payload-only access.
+    /// Registers a payload-only service with the BPA.
+    ///
+    /// The service receives a [`service::ApplicationSink`] via
+    /// [`Application::on_register`].
     async fn register_application(
         &self,
-        service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid>;
+        service_id: ServiceId,
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid>;
 
-    /// Register a low-level Service with a dynamically assigned service ID.
-    async fn register_dynamic_service(
+    /// Registers a whole-bundle service with the BPA.
+    ///
+    /// The service receives a [`service::ServiceSink`] via
+    /// [`service::Application::on_register`].
+    async fn register_service(
         &self,
+        service_id: ServiceId,
         service: Arc<dyn Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid>;
+    ) -> service::Result<Eid>;
 
-    /// Register a high-level Application with a dynamically assigned service ID.
+    /// Registers a payload-only service under a dynamically assigned service ID.
     async fn register_dynamic_application(
         &self,
-        application: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid>;
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid>;
 
-    /// Register a Routing Agent with the BPA.
+    /// Registers a whole-bundle service under a dynamically assigned service ID.
+    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid>;
+
+    /// Registers a routing agent with the BPA.
     ///
-    /// The routing agent will receive a [`routing::RoutingSink`] via
-    /// [`routing::RoutingAgent::on_register`] for managing routes in the RIB.
+    /// The agent receives a [`routing::Sink`] via
+    /// [`routing::Agent::on_register`] to manage routes in the RIB.
     ///
-    /// # Arguments
+    /// `name` identifies this agent instance, and is the source recorded
+    /// against every route it adds.
     ///
-    /// * `name` - Unique name for this routing agent instance (used as route source)
-    /// * `agent` - The routing agent implementation
-    ///
-    /// # Returns
-    ///
-    /// The BPA's node IDs on success
+    /// Returns the BPA's node IDs.
     async fn register_routing_agent(
         &self,
         name: String,
-        agent: Arc<dyn RoutingAgent>,
-    ) -> routing::Result<Vec<hardy_bpv7::eid::NodeId>>;
+        agent: Arc<dyn Agent>,
+    ) -> routing::Result<Vec<NodeId>>;
 }
 
 /// The core Bundle Processing Agent (RFC 9171).
@@ -212,7 +211,7 @@ pub trait BpaRegistration: Send + Sync {
 /// After construction, call [`start()`](Bpa::start) to begin processing and
 /// [`shutdown()`](Bpa::shutdown) for ordered teardown.
 pub struct Bpa {
-    node_ids: Arc<crate::node_ids::NodeIds>,
+    node_ids: Arc<NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
     cla_registry: Arc<ClaRegistry>,
@@ -222,7 +221,7 @@ pub struct Bpa {
 
 impl Bpa {
     pub(crate) fn from_parts(
-        node_ids: Arc<crate::node_ids::NodeIds>,
+        node_ids: Arc<NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
         cla_registry: Arc<ClaRegistry>,
@@ -243,7 +242,7 @@ impl Bpa {
         BpaBuilder::new()
     }
 
-    /// Start the BPA's background machinery.
+    /// Starts the BPA's background machinery.
     ///
     /// When `recover_storage` is set, storage crash recovery runs to
     /// completion before this returns: recovery's checkpoint resets assume
@@ -277,7 +276,7 @@ impl Bpa {
         //
         // 1. Routing agents - Remove dynamic routes (prevents new forwarding decisions)
         // 2. CLAs - Stop external bundle sources (network I/O)
-        // 3. Services - Stop internal bundle sources (applications calling sink.send())
+        // 3. Services - Stop internal bundle sources (services calling sink.send())
         // 4. Dispatcher - Drain remaining in-flight bundles (all sources now closed)
         // 5. RIB - No more routing lookups needed
         // 6. Store - No more data access needed
@@ -298,16 +297,16 @@ impl Bpa {
 
 #[async_trait]
 impl BpaRegistration for Bpa {
-    #[cfg_attr(feature = "instrument", instrument(skip(self, application)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
     async fn register_application(
         &self,
-        service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        service_id: ServiceId,
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid> {
         self.service_registry
             .register_application(
                 service_id,
-                application,
+                service,
                 &self.node_ids,
                 &self.rib,
                 &self.dispatcher,
@@ -318,9 +317,9 @@ impl BpaRegistration for Bpa {
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
     async fn register_service(
         &self,
-        service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn services::Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        service_id: ServiceId,
+        service: Arc<dyn Service>,
+    ) -> service::Result<Eid> {
         self.service_registry
             .register_service(
                 service_id,
@@ -346,22 +345,19 @@ impl BpaRegistration for Bpa {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
-    async fn register_dynamic_service(
+    async fn register_dynamic_application(
         &self,
-        service: Arc<dyn services::Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid> {
         self.service_registry
-            .register_dynamic_service(service, &self.node_ids, &self.rib, &self.dispatcher)
+            .register_dynamic_application(service, &self.node_ids, &self.rib, &self.dispatcher)
             .await
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, application)))]
-    async fn register_dynamic_application(
-        &self,
-        application: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
+    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
+    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid> {
         self.service_registry
-            .register_dynamic_application(application, &self.node_ids, &self.rib, &self.dispatcher)
+            .register_dynamic_service(service, &self.node_ids, &self.rib, &self.dispatcher)
             .await
     }
 
@@ -369,7 +365,7 @@ impl BpaRegistration for Bpa {
     async fn register_routing_agent(
         &self,
         name: String,
-        agent: Arc<dyn RoutingAgent>,
+        agent: Arc<dyn Agent>,
     ) -> routing::Result<Vec<NodeId>> {
         self.rib.register_agent(name, agent).await
     }
@@ -382,8 +378,7 @@ mod tests {
     use hardy_async::sync::spin::Once;
     use hardy_bpv7::{
         bundle::Id,
-        // Aliased: the glob import below brings in `services::Service`.
-        eid::{Eid, IpnNodeId, Service as ServiceId},
+        eid::{IpnNodeId, Service as ServiceId},
         status_report::ReasonCode,
     };
     use time::OffsetDateTime;
@@ -392,6 +387,7 @@ mod tests {
     use super::*;
     use crate::{
         Bytes,
+        service::ApplicationSink,
         stream::{Receiver, Segment},
     };
 
@@ -418,24 +414,24 @@ mod tests {
         async fn forward(
             &self,
             _lane: Option<u32>,
-            _cla_addr: &cla::ClaAddress,
+            _cla_addr: &cla::Address,
             bundle_id: &Id,
             _total_len: u64,
             _stream: &mut dyn Receiver<Segment>,
-        ) -> cla::Result<cla::ForwardBundleResult> {
+        ) -> cla::Result<cla::ForwardOutcome> {
             let _ = self.attempts_tx.send(bundle_id.clone());
             Err(cla::Error::StreamCancelled)
         }
     }
 
     /// Originates bundles; never has any delivered.
-    struct SendOnlyApp {
-        sink: Once<Box<dyn services::ApplicationSink>>,
+    struct SendOnlyService {
+        sink: Once<Box<dyn ApplicationSink>>,
     }
 
     #[async_trait]
-    impl services::Application for SendOnlyApp {
-        async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+    impl Application for SendOnlyService {
+        async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
             self.sink.call_once(|| sink);
         }
 
@@ -448,7 +444,7 @@ mod tests {
             _ack_requested: bool,
             _total_len: u64,
             _stream: &mut dyn Receiver<Segment>,
-        ) -> services::Result<()> {
+        ) -> service::Result<()> {
             Ok(())
         }
 
@@ -456,7 +452,7 @@ mod tests {
             &self,
             _bundle_id: &Id,
             _from: &Eid,
-            _kind: services::StatusNotify,
+            _kind: service::StatusNotify,
             _reason: ReasonCode,
             _timestamp: Option<OffsetDateTime>,
         ) {
@@ -484,7 +480,7 @@ mod tests {
             .get()
             .unwrap()
             .add_peer(
-                cla::ClaAddress::Private("peer-a".as_bytes().into()),
+                cla::Address::Private("peer-a".as_bytes().into()),
                 &[NodeId::Ipn(IpnNodeId {
                     allocator_id: 0,
                     node_number: 2,
@@ -493,8 +489,8 @@ mod tests {
             .await
             .unwrap();
 
-        let app = Arc::new(SendOnlyApp { sink: Once::new() });
-        bpa.register_application(ServiceId::Ipn(42), app.clone())
+        let service = Arc::new(SendOnlyService { sink: Once::new() });
+        bpa.register_application(ServiceId::Ipn(42), service.clone())
             .await
             .unwrap();
 
@@ -503,7 +499,7 @@ mod tests {
         // re-attempt it for a change that predates it. Let them finish.
         bpa.rib.poll_waiting_idle().await;
 
-        let sent = app
+        let sent = service
             .sink
             .get()
             .unwrap()

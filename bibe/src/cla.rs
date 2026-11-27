@@ -5,8 +5,8 @@ use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     Bytes, async_trait,
     cla::{
-        Acceptance, Cla, ClaAddress, Error as ClaError, ForwardBundleResult, Result as ClaResult,
-        Segment, Sink,
+        Acceptance, Address, Cla, Error as ClaError, ForwardOutcome, Result as ClaResult, Segment,
+        Sink,
     },
     stream::{Receiver, buffer_stream},
 };
@@ -33,8 +33,9 @@ struct Inner {
 /// BIBE CLA for encapsulation.
 ///
 /// Implements `forward()` to encapsulate bundles and re-inject them into the BPA.
-/// Virtual peers are registered via `add_tunnel()` with ClaAddress containing
-/// the CBOR-encoded destination EID for the outer bundle.
+/// Virtual peers are registered via `add_tunnel()` with an
+/// `Address::Private` carrying the CBOR-encoded destination EID of the
+/// outer bundle.
 pub struct BibeCla {
     tunnel_source: Eid,
     inner: Once<Inner>,
@@ -63,7 +64,7 @@ impl BibeCla {
     pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<(), Error> {
         // Encode the decap endpoint as CBOR
         let cbor_bytes = encode::emit(&decap_endpoint).0;
-        let cla_addr = ClaAddress::Private(cbor_bytes.into());
+        let cla_addr = Address::Private(cbor_bytes.into());
 
         // Register as a peer - this creates the local route entry
         self.inner
@@ -119,24 +120,24 @@ impl Cla for BibeCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        cla_addr: &ClaAddress,
+        cla_addr: &Address,
         _bundle_id: &Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> ClaResult<ForwardBundleResult> {
+    ) -> ClaResult<ForwardOutcome> {
         let bundle = buffer_stream(stream, total_len).await?;
 
-        // Decode destination EID from CBOR in ClaAddress
-        let ClaAddress::Private(dest_bytes) = cla_addr else {
-            warn!("BIBE forward called with non-Private ClaAddress");
-            return Ok(ForwardBundleResult::NoNeighbour);
+        // The outer bundle's destination is CBOR inside the peer address.
+        let Address::Private(dest_bytes) = cla_addr else {
+            warn!("BIBE forward called with a non-Private address");
+            return Ok(ForwardOutcome::NoNeighbour);
         };
 
         let outer_dest: Eid = match decode::parse(dest_bytes) {
             Ok(eid) => eid,
             Err(e) => {
-                warn!("Failed to decode destination EID from ClaAddress: {e}");
-                return Ok(ForwardBundleResult::NoNeighbour);
+                warn!("Failed to decode destination EID from Address: {e}");
+                return Ok(ForwardOutcome::NoNeighbour);
             }
         };
 
@@ -147,7 +148,7 @@ impl Cla for BibeCla {
             Ok(outer) => outer,
             Err(e) => {
                 warn!("BIBE encapsulation failed: {e}");
-                return Ok(ForwardBundleResult::NoNeighbour);
+                return Ok(ForwardOutcome::NoNeighbour);
             }
         };
 
@@ -170,12 +171,12 @@ impl Cla for BibeCla {
 
         // Dispatch the outer bundle back into the BPA
         match self.dispatch(outer).await {
-            Ok(Acceptance::Accepted) => Ok(ForwardBundleResult::Sent),
+            Ok(Acceptance::Accepted) => Ok(ForwardOutcome::Sent),
             // The BPA refused this bundle: a per-bundle verdict, reported as
             // such so the dispatcher parks this bundle alone.
             Ok(Acceptance::Refused) => Err(ClaError::Internal(Box::new(Error::Refused))),
             // The sink is genuinely gone — the one link-scoped outcome.
-            Err(Error::Dispatch(ClaError::Disconnected)) => Ok(ForwardBundleResult::NoNeighbour),
+            Err(Error::Dispatch(ClaError::Disconnected)) => Ok(ForwardOutcome::NoNeighbour),
             Err(Error::Dispatch(e)) => Err(e),
             Err(e) => Err(ClaError::Internal(Box::new(e))),
         }
@@ -206,7 +207,7 @@ mod tests {
         async fn dispatch(
             &self,
             _peer_node: Option<&NodeId>,
-            _peer_addr: Option<&ClaAddress>,
+            _peer_addr: Option<&Address>,
             stream: &mut dyn Receiver<Segment>,
         ) -> ClaResult<Acceptance> {
             // Drain the stream to completion, as a real dispatcher would.
@@ -219,11 +220,11 @@ mod tests {
             Ok(self.verdict)
         }
 
-        async fn add_peer(&self, _cla_addr: ClaAddress, _node_ids: &[NodeId]) -> ClaResult<bool> {
+        async fn add_peer(&self, _cla_addr: Address, _node_ids: &[NodeId]) -> ClaResult<bool> {
             Ok(true)
         }
 
-        async fn remove_peer(&self, _cla_addr: &ClaAddress) -> ClaResult<bool> {
+        async fn remove_peer(&self, _cla_addr: &Address) -> ClaResult<bool> {
             Ok(true)
         }
 
@@ -264,9 +265,9 @@ mod tests {
         (cla, dispatched)
     }
 
-    fn tunnel_addr() -> ClaAddress {
+    fn tunnel_addr() -> Address {
         let decap_endpoint: Eid = "ipn:4.1".parse().unwrap();
-        ClaAddress::Private(encode::emit(&decap_endpoint).0.into())
+        Address::Private(encode::emit(&decap_endpoint).0.into())
     }
 
     /// Encapsulation grows the bundle, so a cap equal to the inner bundle's
@@ -311,7 +312,7 @@ mod tests {
             .forward(None, &tunnel_addr(), &bundle_id, total_len, &mut stream)
             .await;
 
-        assert!(matches!(result, Ok(ForwardBundleResult::Sent)));
+        assert!(matches!(result, Ok(ForwardOutcome::Sent)));
         assert_eq!(dispatched.load(Ordering::Relaxed), 1);
     }
 

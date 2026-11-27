@@ -9,8 +9,14 @@ pub mod sinks;
 use core::num::NonZeroU64;
 use hardy_async::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{cla, routing, services};
-use hardy_bpv7::eid::NodeId;
+use hardy_bpa::{
+    cla, routing,
+    service::{self, Application, ApplicationSink, SendOptions, Service, ServiceSink},
+};
+// `eid::Service` is the service number inside an EID, not the service
+// trait registered here; it is aliased to the word the code already uses
+// for it.
+use hardy_bpv7::eid::{Eid, NodeId, Service as ServiceId};
 use sinks::*;
 use std::sync::Arc;
 
@@ -27,11 +33,11 @@ pub struct MockBpa {
     /// The declarations the last `register_cla` carried.
     pub declared_init: hardy_async::sync::spin::Mutex<Option<cla::ClaInit>>,
     pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
-    pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::RoutingAgent>>>,
+    pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::Agent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
     pub last_cla_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockClaSink>>>,
-    pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Service>>>,
-    pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Application>>>,
+    pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn Service>>>,
+    pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn Application>>>,
 }
 
 impl MockBpa {
@@ -93,10 +99,10 @@ impl BpaRegistration for MockBpa {
 
     async fn register_service(
         &self,
-        _service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn services::Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
+        _service_id: ServiceId,
+        service: Arc<dyn Service>,
+    ) -> service::Result<Eid> {
+        let endpoint: Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockServiceSink::new());
         *self.last_service.lock() = Some(service.clone());
         service
@@ -107,38 +113,33 @@ impl BpaRegistration for MockBpa {
 
     async fn register_application(
         &self,
-        _service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
+        _service_id: ServiceId,
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid> {
+        let endpoint: Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockApplicationSink::new());
-        *self.last_application.lock() = Some(application.clone());
-        application
+        *self.last_application.lock() = Some(service.clone());
+        service
             .on_register(&endpoint, Box::new(ApplicationSinkWrapper(sink)))
             .await;
         Ok(endpoint)
     }
 
-    async fn register_dynamic_service(
-        &self,
-        service: Arc<dyn services::Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        self.register_service(hardy_bpv7::eid::Service::Ipn(0), service)
-            .await
+    async fn register_dynamic_service(&self, service: Arc<dyn Service>) -> service::Result<Eid> {
+        self.register_service(ServiceId::Ipn(0), service).await
     }
 
     async fn register_dynamic_application(
         &self,
-        application: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        self.register_application(hardy_bpv7::eid::Service::Ipn(0), application)
-            .await
+        service: Arc<dyn Application>,
+    ) -> service::Result<Eid> {
+        self.register_application(ServiceId::Ipn(0), service).await
     }
 
     async fn register_routing_agent(
         &self,
         _name: String,
-        agent: Arc<dyn routing::RoutingAgent>,
+        agent: Arc<dyn routing::Agent>,
     ) -> routing::Result<Vec<NodeId>> {
         let sink = Arc::new(MockRoutingSink::new());
         *self.last_routing_sink.lock() = Some(sink.clone());
@@ -160,7 +161,7 @@ struct ServiceSinkWrapper(Arc<MockServiceSink>);
 struct ApplicationSinkWrapper(Arc<MockApplicationSink>);
 
 #[async_trait]
-impl routing::RoutingSink for RoutingSinkWrapper {
+impl routing::Sink for RoutingSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }
@@ -190,15 +191,15 @@ impl cla::Sink for ClaSinkWrapper {
     async fn dispatch(
         &self,
         pn: Option<&NodeId>,
-        pa: Option<&cla::ClaAddress>,
+        pa: Option<&cla::Address>,
         s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<cla::Acceptance> {
         self.0.dispatch(pn, pa, s).await
     }
-    async fn add_peer(&self, a: cla::ClaAddress, n: &[NodeId]) -> cla::Result<bool> {
+    async fn add_peer(&self, a: cla::Address, n: &[NodeId]) -> cla::Result<bool> {
         self.0.add_peer(a, n).await
     }
-    async fn remove_peer(&self, a: &cla::ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, a: &cla::Address) -> cla::Result<bool> {
         self.0.remove_peer(a).await
     }
     async fn transfer_outcome(
@@ -211,30 +212,30 @@ impl cla::Sink for ClaSinkWrapper {
 }
 
 #[async_trait]
-impl services::ServiceSink for ServiceSinkWrapper {
+impl ServiceSink for ServiceSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }
     async fn send(
         &self,
         s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
+    ) -> service::Result<hardy_bpv7::bundle::Id> {
         self.0.send(s).await
     }
 }
 
 #[async_trait]
-impl services::ApplicationSink for ApplicationSinkWrapper {
+impl ApplicationSink for ApplicationSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }
     async fn send(
         &self,
-        dest: hardy_bpv7::eid::Eid,
+        dest: Eid,
         data: hardy_bpa::Bytes,
         lt: core::time::Duration,
-        opts: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
+        opts: Option<SendOptions>,
+    ) -> service::Result<hardy_bpv7::bundle::Id> {
         self.0.send(dest, data, lt, opts).await
     }
 }

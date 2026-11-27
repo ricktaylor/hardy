@@ -4,9 +4,7 @@ use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     async_trait,
     cla::Acceptance,
-    services::{
-        Error as ServiceError, Result as ServiceResult, Service, ServiceSink, StatusNotify,
-    },
+    service::{self, Service, ServiceSink, StatusNotify},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -63,7 +61,7 @@ impl Service for DecapService {
         _expiry: OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> ServiceResult<()> {
+    ) -> service::Result<()> {
         let data = buffer_stream(stream, total_len).await?;
 
         // A malformed outer bundle is a permanent failure: log and accept it,
@@ -91,7 +89,7 @@ impl Service for DecapService {
             // bundle is parked and retried rather than dropped.
             Err(e) => {
                 warn!("Failed to dispatch decapsulated bundle: {e}");
-                Err(ServiceError::Internal(e.into()))
+                Err(service::Error::Internal(e.into()))
             }
         }
     }

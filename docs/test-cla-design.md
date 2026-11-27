@@ -129,7 +129,7 @@ Note the shape this takes in the current BPA: a rejection parks the peer's queue
 
 Per-link config selects the mode. Mechanics common to both:
 
-- **Addressing.** Each far node is a distinct peer keyed by a minted `ClaAddress::Private` whose bytes are the scenario node name; the emulator demultiplexes `ForwardBundleRequest.address` back to the directed link.
+- **Addressing.** Each far node is a distinct peer keyed by a minted `cla::Address::Private` whose bytes are the scenario node name; the emulator demultiplexes `ForwardBundleRequest.address` back to the directed link.
 - **Startup ordering.** The node-ids passed to `add_peer` are learned from each BPA's `RegisterClaResponse`, so the emulator registers with all configured BPAs first, then installs peers. This resolves the registration-ordering ambiguity at design time; what remains for Phase 0 is BPAs arriving late or restarting.
 - **Rejection wire form.** Enforce-mode rejections are an error `Status` with a distinct code per cause (e.g. `FAILED_PRECONDITION` for closed contact, `RESOURCE_EXHAUSTED` for channel occupancy) — not `no_neighbour`, which would be a lie while the peer is deliberately still registered. `no_neighbour` is reserved for discovery mode, where a forward can legitimately race a peer withdrawal. The BPA reacts identically to all of these today; whether it *should* distinguish them is exactly Q7.
 

@@ -59,42 +59,38 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
     async fn register_service(
         &self,
         service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), Some(service_id), service).await
+        service: Arc<dyn hardy_bpa::service::Service>,
+    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
+        service::register_service(self.grpc_addr.clone(), Some(service_id), service).await
     }
 
     async fn register_application(
         &self,
         service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(
-            self.grpc_addr.clone(),
-            Some(service_id),
-            application,
-        )
-        .await
+        application: Arc<dyn hardy_bpa::service::Application>,
+    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
+        application::register_application(self.grpc_addr.clone(), Some(service_id), application)
+            .await
     }
 
     async fn register_dynamic_service(
         &self,
-        service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), None, service).await
+        service: Arc<dyn hardy_bpa::service::Service>,
+    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
+        service::register_service(self.grpc_addr.clone(), None, service).await
     }
 
     async fn register_dynamic_application(
         &self,
-        application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(self.grpc_addr.clone(), None, application).await
+        application: Arc<dyn hardy_bpa::service::Application>,
+    ) -> hardy_bpa::service::Result<hardy_bpv7::eid::Eid> {
+        application::register_application(self.grpc_addr.clone(), None, application).await
     }
 
     async fn register_routing_agent(
         &self,
         name: String,
-        agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
+        agent: Arc<dyn hardy_bpa::routing::Agent>,
     ) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
         routing::register_routing_agent(self.grpc_addr.clone(), name, agent).await
     }

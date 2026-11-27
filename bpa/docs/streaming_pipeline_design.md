@@ -276,7 +276,7 @@ The target shape:
 
 - **Proto crate impact is minimal.** The remote Sink impl in proto already holds its own state and lifecycle; the same drop-detector pattern lives inside it, with the reconciler closing the gRPC stream when the local-side Sink is dropped. The split reader/writer `RpcProxy` is largely unchanged.
 
-The reconciler loop uses `Closeable` (§4) rather than a hand-rolled `select_biased!(cancel | recv)` shape. The same lifecycle design applies uniformly to `ServiceSink`, `ApplicationSink`, and `RoutingSink` — one pattern across all registries.
+The reconciler loop uses `Closeable` (§4) rather than a hand-rolled `select_biased!(cancel | recv)` shape. The same lifecycle design applies uniformly to `service::raw::Sink`, `service::Sink`, and `routing::Sink` — one pattern across all registries.
 
 Inverting the ownership — the component holding `Arc<dyn Sink>` and the registry a `Weak<dyn Sink>`, with one `alive: AtomicBool` replacing the per-call `Weak::upgrade()` — was considered and rejected: the component owns its Sink.
 
@@ -581,9 +581,9 @@ trait Cla {
     // Existing — full bundle in memory
     async fn forward(
         &self, queue: Option<u32>,
-        cla_addr: &ClaAddress,
+        cla_addr: &cla::Address,
         data: Bytes,
-    ) -> Result<ForwardBundleResult>;
+    ) -> Result<cla::ForwardOutcome>;
 
     // New — streaming forward. BPA passes a Receiver<Segment>;
     // CLA pulls Segment::Next(bytes) until Segment::Final (transfer
@@ -592,10 +592,10 @@ trait Cla {
     // a partial bundle).
     async fn write(
         &self, queue: Option<u32>,
-        cla_addr: &ClaAddress,
+        cla_addr: &cla::Address,
         stream: &dyn Receiver<Segment>,
         total_len: u64,
-    ) -> Result<ForwardBundleResult>;
+    ) -> Result<cla::ForwardOutcome>;
 }
 ```
 

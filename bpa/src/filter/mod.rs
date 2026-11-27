@@ -46,7 +46,7 @@
 //!
 //! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
 //! |---|---|---|---|
-//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | none — like Ingress, the chain runs on the door's own header decode |
+//! | Originate | the reason returns to the caller as `service::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | none — like Ingress, the chain runs on the door's own header decode |
 //! | Ingress | dropped before anything is stored, with one reception + deletion report per the bundle's request flags | the same, without the deletion assertion even when the flags request one (a requested reception report is still sent) | none — the chain decodes nothing itself: it runs on the gate's header decode, whose failures are the header pass's |
 //! | Deliver | dropped with a flag-gated deletion report | deleted silently | fatal (below) |
 //!
@@ -104,7 +104,7 @@ pub enum Verdict<T = ()> {
     /// RFC 9171 §5.10 deletion status report per the bundle's
     /// report-request flags; at Originate no report is ever sent (nothing
     /// is stored yet) and the reason returns to the caller in
-    /// [`services::Error::Dropped`](crate::services::Error). With `None`
+    /// [`service::Error::Dropped`](crate::service::Error). With `None`
     /// the drop is silent even when the bundle's flags request reporting —
     /// use `Some(ReasonCode::NoAdditionalInformation)` for a reported drop
     /// with nothing specific to say. The per-hook table in the
@@ -407,11 +407,12 @@ pub trait Classifier: Send + Sync {
 ///   (network-scoped — it writes extension blocks the next hops consume).
 /// - **Deliver**: strips transport-scoped extension blocks (network QoS,
 ///   custody — the "transport headers") before a bundle is handed to a local
-///   raw-bundle [`Service`](crate::services::Service), so the application
-///   receives only content. The chain runs for every local delivery, but
-///   only the raw-`Service` path observes the rewritten blocks: the
-///   payload-only `Application` path receives the decrypted payload alone,
-///   so a Rewriter's edits are invisible there.
+///   whole-bundle [`Service`](crate::service::Service), so the
+///   service receives only content. The chain runs for every local
+///   delivery, but only the whole-bundle path observes the rewritten
+///   blocks: a payload-only [`Service`](crate::service::Application) receives
+///   the decrypted payload alone, so a Rewriter's edits are invisible
+///   there.
 ///
 /// Its edits are confined to *extension* blocks — never the payload — so it
 /// runs before the payload's BPSec decrypt at Deliver; the reader decrypts
@@ -500,6 +501,6 @@ pub enum Boundary<'a> {
     },
     /// Stripping transport-scoped extension blocks before local delivery.
     /// Runs for every local delivery; the edits are observable only on the
-    /// raw-bundle [`Service`](crate::services::Service) path.
+    /// whole-bundle [`Service`](crate::service::Service) path.
     Deliver,
 }

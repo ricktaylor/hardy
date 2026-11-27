@@ -1,15 +1,23 @@
 use core::num::{NonZeroU32, NonZeroU64};
 
-use super::*;
-use hardy_bpv7::bundle::Id;
+use hardy_bpv7::{bundle::Id, eid::NodeId};
 use thiserror::Error;
 
-pub use crate::stream::Segment;
+use crate::{
+    async_trait,
+    stream::{BufferError, Receiver},
+};
+
+mod address;
+mod queue;
+mod sink;
 
 pub(crate) mod peers;
 pub(crate) mod registry;
 
-mod egress_queue;
+pub use crate::stream::Segment;
+pub use address::{Address, AddressType};
+pub use sink::Sink;
 
 /// A specialized `Result` type for CLA operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -58,112 +66,19 @@ pub enum Error {
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
 
-impl From<crate::stream::BufferError> for Error {
-    fn from(e: crate::stream::BufferError) -> Self {
+impl From<BufferError> for Error {
+    fn from(e: BufferError) -> Self {
         match e {
-            crate::stream::BufferError::Cancelled => Error::StreamCancelled,
-            crate::stream::BufferError::TooLarge { size, max } => Error::PayloadTooLarge {
+            BufferError::Cancelled => Error::StreamCancelled,
+            BufferError::TooLarge { size, max } => Error::PayloadTooLarge {
                 size: size as u64,
                 max: max as u64,
             },
-            crate::stream::BufferError::Underrun { size, expected } => Error::PayloadUnderrun {
+            BufferError::Underrun { size, expected } => Error::PayloadUnderrun {
                 size: size as u64,
                 expected: expected as u64,
             },
-            crate::stream::BufferError::Unaddressable { total_len } => {
-                Error::PayloadUnaddressable { total_len }
-            }
-        }
-    }
-}
-
-/// An enumeration of known CLA address types.
-///
-/// This is used to identify the protocol associated with a `ClaAddress`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ClaAddressType {
-    /// IPv4 and IPv6 address + port.
-    Tcp,
-    /// A private address type.
-    Private,
-}
-
-/// Represents a network address for a specific Convergence Layer Adapter.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ClaAddress {
-    /// An TCP address, represented as a standard socket address.
-    Tcp(core::net::SocketAddr),
-    /// An address for an unknown or custom CLA, containing the type identifier and the raw address bytes.
-    #[cfg_attr(feature = "serde", serde(with = "private_addr_serde"))]
-    Private(Bytes),
-}
-
-#[cfg(feature = "serde")]
-mod private_addr_serde {
-    use super::Bytes;
-    use base64::prelude::*;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &Bytes, s: S) -> Result<S::Ok, S::Error> {
-        BASE64_URL_SAFE_NO_PAD.encode(bytes).serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Bytes, D::Error> {
-        let s = String::deserialize(d)?;
-        BASE64_URL_SAFE_NO_PAD
-            .decode(&s)
-            .map(|v| v.into())
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-impl ClaAddress {
-    /// Returns the `ClaAddressType` corresponding to this address.
-    pub fn address_type(&self) -> ClaAddressType {
-        match self {
-            ClaAddress::Tcp(_) => ClaAddressType::Tcp,
-            ClaAddress::Private(_) => ClaAddressType::Private,
-        }
-    }
-}
-
-impl TryFrom<(ClaAddressType, Bytes)> for ClaAddress {
-    type Error = Error;
-
-    fn try_from((addr_type, addr): (ClaAddressType, Bytes)) -> Result<Self> {
-        match addr_type {
-            ClaAddressType::Tcp => Ok(ClaAddress::Tcp(
-                String::from_utf8(addr.into())
-                    .map_err(|e| Error::Internal(Box::new(e)))?
-                    .parse()
-                    .map_err(|e| Error::Internal(Box::new(e)))?,
-            )),
-            ClaAddressType::Private => Ok(ClaAddress::Private(addr)),
-        }
-    }
-}
-
-impl From<ClaAddress> for (ClaAddressType, Bytes) {
-    fn from(value: ClaAddress) -> Self {
-        match value {
-            ClaAddress::Tcp(socket_addr) => (
-                ClaAddressType::Tcp,
-                socket_addr.to_string().into_bytes().into(),
-            ),
-            ClaAddress::Private(bytes) => (ClaAddressType::Private, bytes),
-        }
-    }
-}
-
-impl core::fmt::Display for ClaAddress {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            ClaAddress::Tcp(socket_addr) => write!(f, "tcp:{socket_addr}"),
-            ClaAddress::Private(bytes) => {
-                write!(f, "private:{bytes:02x?}")
-            }
+            BufferError::Unaddressable { total_len } => Error::PayloadUnaddressable { total_len },
         }
     }
 }
@@ -181,7 +96,7 @@ impl core::fmt::Display for ClaAddress {
 /// outcome would serialize every lane on a wire round-trip. Local delivery
 /// has no analogue of `Accepted` because `on_deliver` completes in-process,
 /// with no round-trip to wait out.
-pub enum ForwardBundleResult {
+pub enum ForwardOutcome {
     /// The bundle was successfully sent, and no further outcome will be
     /// reported — the terminal, fire-and-forget answer of an unreliable
     /// convergence layer.
@@ -197,13 +112,13 @@ pub enum ForwardBundleResult {
 }
 
 /// The final outcome of a transfer previously answered
-/// [`ForwardBundleResult::Accepted`].
+/// [`ForwardOutcome::Accepted`].
 ///
 /// Today the outcome only resolves the retained bundle, but it is
 /// deliberately the peer-acceptance signal a future reliability /
 /// custody-transfer layer will consume — which is why reliable CLAs
 /// report it even though `Completed` and a fire-and-forget
-/// [`Sent`](ForwardBundleResult::Sent) currently resolve identically.
+/// [`Sent`](ForwardOutcome::Sent) currently resolve identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferOutcome {
     /// The bundle was handed to the far bundle node.
@@ -227,7 +142,7 @@ pub enum TransferOutcome {
 pub struct ClaInit {
     /// The address type this CLA handles, if any. The BPA records it
     /// against the CLA, but no lookup consults the record.
-    pub address_type: Option<ClaAddressType>,
+    pub address_type: Option<AddressType>,
 
     /// The CLA's lane count: its honest parallelism, the number of
     /// transfers it can usefully carry in flight at once.
@@ -331,22 +246,20 @@ pub trait Cla: Send + Sync {
     /// Dropping the sink triggers automatic unregistration. Convert to `Arc` for sharing:
     /// `let sink: Arc<dyn Sink> = sink.into();`
     ///
-    /// # Arguments
-    /// * `sink` - Communication channel back to the BPA. Must be stored.
-    /// * `node_ids` - The BPA's own node identifiers.
-    /// * `max_bundle_size` - The *effective* size-cap policy: the minimum
-    ///   of the BPA's configured cap (which the BPA enforces at dispatch)
-    ///   and the limit this CLA declared at registration; `None` means no
-    ///   cap was negotiated (neither side declared one, or a remote proxy
-    ///   could not learn the far BPA's cap). The CLA should propagate a
-    ///   `Some` cap into its transfer limits (e.g. an advertised transfer
-    ///   MRU) so an over-cap transfer is never offered — rejection is
-    ///   deterministic, so a peer that keeps offering the same bundle loops
-    ///   forever.
+    /// `node_ids` are the BPA's own node identifiers.
+    ///
+    /// `max_bundle_size` is the *effective* size cap: the minimum of the
+    /// BPA's configured cap, which the BPA enforces at dispatch, and the
+    /// limit this CLA declared at registration. `None` means no cap was
+    /// negotiated — neither side declared one, or a remote proxy could not
+    /// learn the far BPA's cap. The CLA should propagate a `Some` cap into
+    /// its own transfer limits, such as an advertised transfer MRU, so an
+    /// over-cap transfer is never offered: rejection is deterministic, so a
+    /// peer that keeps offering the same bundle loops forever.
     async fn on_register(
         &self,
         sink: Box<dyn Sink>,
-        node_ids: &[hardy_bpv7::eid::NodeId],
+        node_ids: &[NodeId],
         max_bundle_size: Option<NonZeroU64>,
     );
 
@@ -388,164 +301,20 @@ pub trait Cla: Send + Sync {
     /// the wire transfer from it before pulling the first segment.
     ///
     /// `bundle_id` identifies the transfer if the CLA defers its outcome: a
-    /// CLA answering [`ForwardBundleResult::Accepted`] echoes it back in
+    /// CLA answering [`ForwardOutcome::Accepted`] echoes it back in
     /// [`Sink::transfer_outcome`]. It is the correlation key, not data to
     /// transmit — CLAs that answer terminally may ignore it, and no CLA needs
     /// to parse the bundle to learn it.
     ///
     /// An implementation that needs the whole bundle in memory buffers the
-    /// stream with [`stream::buffer_stream`],
-    /// whose errors convert into this module's [`enum@Error`] via `?`.
+    /// stream with [`buffer_stream`](crate::stream::buffer_stream), whose
+    /// errors convert into this module's [`enum@Error`] via `?`.
     async fn forward(
         &self,
         lane: Option<u32>,
-        cla_addr: &ClaAddress,
+        cla_addr: &Address,
         bundle_id: &Id,
         total_len: u64,
-        stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<ForwardBundleResult>;
-}
-
-/// A communication channel from a CLA back to the main BPA components.
-///
-/// This trait provides an abstraction that allows a CLA to be decoupled from the
-/// internal implementation of the BPA. It provides a stable interface for a CLA to
-/// dispatch incoming bundles and manage peer connections without needing direct access
-/// to the BPA internals.
-///
-/// # Lifecycle
-///
-/// The Sink is provided to the CLA in [`Cla::on_register`]. The CLA **must store** this
-/// Sink for its entire active lifetime. When the Sink is dropped, the BPA interprets
-/// this as the CLA requesting disconnection.
-///
-/// Two disconnection paths exist:
-/// - **CLA drops Sink**: BPA detects the drop and calls [`Cla::on_unregister`]
-/// - **BPA shuts down**: BPA calls [`Cla::on_unregister`], then Sink operations return [`Error::Disconnected`]
-///
-/// After disconnection, all Sink operations return [`Error::Disconnected`].
-#[async_trait]
-pub trait Sink: Send + Sync {
-    /// Explicitly unregisters the associated CLA from the BPA.
-    ///
-    /// This is equivalent to dropping the Sink, but allows explicit cleanup timing.
-    /// After calling this, the BPA will call [`Cla::on_unregister`] and this Sink
-    /// becomes non-functional.
-    ///
-    /// Typically called when the CLA encounters a fatal error and needs to shut down.
-    async fn unregister(&self);
-
-    /// Dispatches a received bundle (as a stream of segments) to the BPA's `Dispatcher` for processing.
-    ///
-    /// Returns the [`Acceptance`] verdict for the transfer — its only
-    /// carrier: [`Accepted`](Acceptance::Accepted) means the CLA may
-    /// acknowledge the transfer to its peer, [`Refused`](Acceptance::Refused)
-    /// means it must not. `Err(_)` is reserved for faults that make the sink
-    /// unusable (the registration or the BPA has gone away) — never for a
-    /// verdict.
-    ///
-    /// The stream itself carries no verdict. The BPA may stop pulling — and
-    /// drop its end of `stream` — at any point: it may already have decided
-    /// to accept (a duplicate identified from the headers needs no further
-    /// bytes) or not yet have decided anything. A producer that sees
-    /// [`SendError`](crate::stream::SendError) must stop pushing segments and
-    /// then take the verdict from `dispatch`'s return value, never from the
-    /// stream closing.
-    ///
-    /// A producer that drops its sender before [`Segment::Final`] has
-    /// truncated the bundle; the implementation must surface that as
-    /// [`Refused`](Acceptance::Refused) (never a silent acceptance), so the
-    /// CLA withholds its transfer acknowledgement and the peer can
-    /// retransmit.
-    ///
-    /// A caller holding a complete bundle in memory dispatches it as a
-    /// one-segment stream, since `Bytes` implements [`stream::Receiver`]:
-    /// `sink.dispatch(&mut bundle, ..).await`.
-    ///
-    /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
-    /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
-    ///   (e.g., learned during TCPCLv4 session establishment).
-    /// - `peer_addr`: The convergence layer address of the peer, if applicable
-    ///   (e.g., remote socket address for TCP-based CLAs).
-    ///
-    /// These may be `None` for CLAs without peer concepts (e.g., file-based) or
-    /// unidirectional links.
-    async fn dispatch(
-        &self,
-        peer_node: Option<&hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<&ClaAddress>,
-        stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<Acceptance>;
-
-    /// Notifies the BPA that a new peer (or neighbour) has been discovered at a given `ClaAddress`.
-    ///
-    /// The `node_ids` slice provides the BPA-layer identifiers for the peer:
-    /// - An **empty slice** means the CLA has discovered a link-layer adjacency but does not yet
-    ///   know the remote node's EID (a "Neighbour"). The BPA records the adjacency but installs no
-    ///   routing entry, and no interface yet supplies the EID later, so a neighbour stays unroutable.
-    /// - A **non-empty slice** means the CLA knows one or more EIDs for the peer (a "Peer"). A node
-    ///   known under several EIDs (an `ipn` and a `dtn` one, say) lists them all at its CL address.
-    ///
-    /// The BPA will update its routing information accordingly.
-    async fn add_peer(
-        &self,
-        cla_addr: ClaAddress,
-        node_ids: &[hardy_bpv7::eid::NodeId],
-    ) -> Result<bool>;
-
-    /// Notifies the BPA that a peer is no longer reachable at a given `ClaAddress`.
-    /// The BPA will update its routing information to remove all paths through this address.
-    async fn remove_peer(&self, cla_addr: &ClaAddress) -> Result<bool>;
-
-    /// Reports the final outcome of a transfer previously answered
-    /// [`ForwardBundleResult::Accepted`].
-    ///
-    /// Every accepted transfer resolves exactly once: `Completed`, `Failed`,
-    /// or implicitly outcome-unknown when the CLA unregisters or the peer is
-    /// removed. An outcome is honoured only while the named bundle is still
-    /// awaiting one via a peer of the reporting CLA; anything else — already
-    /// resolved, expired, another CLA's transfer — is logged and dropped.
-    async fn transfer_outcome(&self, bundle_id: &Id, outcome: TransferOutcome) -> Result<()>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ClaAddress round-trips through (ClaAddressType, Bytes) conversion.
-    #[test]
-    fn test_address_parsing() {
-        // TCP address: parse from string representation
-        let tcp_addr: core::net::SocketAddr = "192.168.1.1:4556".parse().unwrap();
-        let cla_addr = ClaAddress::Tcp(tcp_addr);
-        assert_eq!(cla_addr.address_type(), ClaAddressType::Tcp);
-
-        // Round-trip: ClaAddress -> (type, bytes) -> ClaAddress
-        let (addr_type, bytes): (ClaAddressType, Bytes) = cla_addr.clone().into();
-        assert_eq!(addr_type, ClaAddressType::Tcp);
-        let recovered = ClaAddress::try_from((addr_type, bytes)).unwrap();
-        assert_eq!(recovered, cla_addr);
-
-        // IPv6 TCP address
-        let tcp_v6: core::net::SocketAddr = "[::1]:4556".parse().unwrap();
-        let cla_v6 = ClaAddress::Tcp(tcp_v6);
-        let (t, b): (ClaAddressType, Bytes) = cla_v6.clone().into();
-        let recovered = ClaAddress::try_from((t, b)).unwrap();
-        assert_eq!(recovered, cla_v6);
-
-        // Private address
-        let private_data = Bytes::from_static(b"\x01\x02\x03\x04");
-        let private_addr = ClaAddress::Private(private_data.clone());
-        assert_eq!(private_addr.address_type(), ClaAddressType::Private);
-
-        let (t, b): (ClaAddressType, Bytes) = private_addr.clone().into();
-        assert_eq!(t, ClaAddressType::Private);
-        let recovered = ClaAddress::try_from((t, b)).unwrap();
-        assert_eq!(recovered, private_addr);
-
-        // Invalid TCP bytes should error
-        let bad_bytes = Bytes::from_static(b"not-a-socket-addr");
-        let result = ClaAddress::try_from((ClaAddressType::Tcp, bad_bytes));
-        assert!(result.is_err());
-    }
+        stream: &mut dyn Receiver<Segment>,
+    ) -> Result<ForwardOutcome>;
 }

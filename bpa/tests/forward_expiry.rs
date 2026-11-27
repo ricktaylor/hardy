@@ -15,7 +15,7 @@ use hardy_bpa::{
     bpa::{Bpa, BpaRegistration},
     cla,
     node_ids::NodeIds,
-    services,
+    service::{self, Service, ServiceSink, StatusNotify},
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
@@ -23,7 +23,7 @@ use hardy_bpv7::{
     builder::Builder,
     bundle::{Flags, Id},
     creation_timestamp::CreationTimestamp,
-    eid::{Eid, IpnNodeId, NodeId, Service},
+    eid::{Eid, IpnNodeId, NodeId, Service as ServiceId},
     parse::parse,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
@@ -40,7 +40,7 @@ enum Event {
 // ---------------------------------------------------------------------------
 
 struct CaptureService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    sink: hardy_async::sync::spin::Once<Box<dyn ServiceSink>>,
     events_tx: flume::Sender<Event>,
 }
 
@@ -58,8 +58,8 @@ impl CaptureService {
 }
 
 #[async_trait]
-impl services::Service for CaptureService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
+impl Service for CaptureService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -71,7 +71,7 @@ impl services::Service for CaptureService {
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> services::Result<()> {
+    ) -> service::Result<()> {
         let mut segments = Vec::new();
         loop {
             match stream.recv().await {
@@ -80,7 +80,7 @@ impl services::Service for CaptureService {
                     segments.push(segment);
                     break;
                 }
-                Err(_) => return Err(services::Error::StreamCancelled),
+                Err(_) => return Err(service::Error::StreamCancelled),
             }
         }
         let _ = self.events_tx.send(Event::Streamed { segments });
@@ -91,7 +91,7 @@ impl services::Service for CaptureService {
         &self,
         _bundle_id: &Id,
         _from: &Eid,
-        _kind: services::StatusNotify,
+        _kind: StatusNotify,
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -139,14 +139,14 @@ impl cla::Cla for AcceptingCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         bundle_id: &Id,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
+    ) -> cla::Result<cla::ForwardOutcome> {
         buffer_stream(stream, total_len).await?;
         let _ = self.accepted_tx.send_async(bundle_id.clone()).await;
-        Ok(cla::ForwardBundleResult::Accepted)
+        Ok(cla::ForwardOutcome::Accepted)
     }
 }
 
@@ -179,12 +179,12 @@ impl cla::Cla for IngressCla {
     async fn forward(
         &self,
         _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
+        _cla_addr: &cla::Address,
         _bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        Ok(cla::ForwardBundleResult::Sent)
+    ) -> cla::Result<cla::ForwardOutcome> {
+        Ok(cla::ForwardOutcome::Sent)
     }
 }
 
@@ -256,7 +256,7 @@ async fn expiry_mid_transfer_rig() -> (
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = CaptureService::new();
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    bpa.register_service(ServiceId::Ipn(9), reports.clone())
         .await
         .unwrap();
 
@@ -274,7 +274,7 @@ async fn expiry_mid_transfer_rig() -> (
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 3,
@@ -469,7 +469,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
     bpa.start(false).await;
 
     let (reports, reports_rx) = CaptureService::new();
-    bpa.register_service(Service::Ipn(9), reports.clone())
+    bpa.register_service(ServiceId::Ipn(9), reports.clone())
         .await
         .unwrap();
 
@@ -486,7 +486,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .get()
         .unwrap()
         .add_peer(
-            cla::ClaAddress::Private("peer".as_bytes().into()),
+            cla::Address::Private("peer".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 3,

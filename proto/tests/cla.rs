@@ -9,7 +9,7 @@ use common::MockBpa;
 use core::num::{NonZeroU32, NonZeroU64};
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::cla::{self, ClaAddress, ClaInit, ForwardBundleResult};
+use hardy_bpa::cla::{self, Address, ClaInit, ForwardOutcome};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -71,16 +71,16 @@ impl cla::Cla for MockCla {
     async fn forward(
         &self,
         _queue: Option<u32>,
-        _cla_addr: &ClaAddress,
+        _cla_addr: &Address,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> cla::Result<ForwardBundleResult> {
+    ) -> cla::Result<ForwardOutcome> {
         self.forwarded.store(true, Ordering::Relaxed);
         Ok(if self.defer {
-            ForwardBundleResult::Accepted
+            ForwardOutcome::Accepted
         } else {
-            ForwardBundleResult::Sent
+            ForwardOutcome::Sent
         })
     }
 }
@@ -184,7 +184,7 @@ async fn cla_cli_03_forward_bundle() {
         .clone()
         .expect("BPA should have the server-side CLA");
 
-    let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
+    let addr = Address::Tcp("127.0.0.1:4556".parse().unwrap());
     let mut bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
     let total_len = bundle.len() as u64;
     let bundle_id = hardy_bpv7::bundle::Id {
@@ -198,7 +198,7 @@ async fn cla_cli_03_forward_bundle() {
         .expect("forward should succeed");
 
     assert!(
-        matches!(result, ForwardBundleResult::Sent),
+        matches!(result, ForwardOutcome::Sent),
         "forward should return Sent"
     );
     assert!(
@@ -232,7 +232,7 @@ async fn cla_cli_04_add_peer() {
 
     let sink = cla.take_sink().expect("CLA should have a sink");
 
-    let addr = ClaAddress::Tcp("192.168.1.1:4556".parse().unwrap());
+    let addr = Address::Tcp("192.168.1.1:4556".parse().unwrap());
     let peer_node: NodeId = "ipn:2.0".parse().unwrap();
     let added = sink
         .add_peer(addr, &[peer_node])
@@ -267,7 +267,7 @@ async fn cla_cli_05_remove_peer() {
 
     let sink = cla.take_sink().expect("CLA should have a sink");
 
-    let addr = ClaAddress::Tcp("192.168.1.1:4556".parse().unwrap());
+    let addr = Address::Tcp("192.168.1.1:4556".parse().unwrap());
     let removed = sink
         .remove_peer(&addr)
         .await
@@ -308,7 +308,7 @@ async fn cla_cli_06_deferred_outcome() {
         .expect("BPA should have the server-side CLA");
 
     // The forward is answered Accepted: ownership transferred, no outcome yet.
-    let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
+    let addr = Address::Tcp("127.0.0.1:4556".parse().unwrap());
     let mut bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
     let total_len = bundle.len() as u64;
     let bundle_id = hardy_bpv7::bundle::Id {
@@ -321,7 +321,7 @@ async fn cla_cli_06_deferred_outcome() {
         .await
         .expect("forward should succeed");
     assert!(
-        matches!(result, ForwardBundleResult::Accepted),
+        matches!(result, ForwardOutcome::Accepted),
         "forward should return Accepted"
     );
     let sink = bpa
@@ -363,7 +363,7 @@ async fn cla_cli_06_deferred_outcome() {
 #[tokio::test]
 async fn cla_cli_07_cla_init_round_trip() {
     let declared = ClaInit {
-        address_type: Some(hardy_bpa::cla::ClaAddressType::Tcp),
+        address_type: Some(hardy_bpa::cla::AddressType::Tcp),
         lane_count: Some(NonZeroU32::new(4).unwrap()),
         max_bundle_size: Some(NonZeroU64::new(1024 * 1024).unwrap()),
     };
