@@ -34,8 +34,8 @@ use crate::{
     Arc, HashMap, HashSet,
     bundle::Bundle,
     cla::{ClaAddressType, registry::Cla},
+    claim_table::ClaimTable,
     dispatcher::Dispatcher,
-    hash_map::Entry as HashMapEntry,
     node_ids::NodeIds,
     services::registry::Service,
     storage::store::Store,
@@ -143,7 +143,7 @@ pub struct Rib {
     snapshot: ArcSwap<RouteTable>,
     table: Mutex<RouteTable>,
     address_types: spin::Mutex<HashMap<ClaAddressType, Arc<Cla>>>,
-    agents: spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
+    agents: ClaimTable<String, Arc<dyn RoutingAgent>>,
     node_ids: Arc<NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
     // Random across BPA instances (unpredictable), but consistent within
@@ -204,7 +204,7 @@ impl Rib {
             snapshot: ArcSwap::from_pointee(table.clone()),
             table: Mutex::new(table),
             address_types: Default::default(),
-            agents: Default::default(),
+            agents: ClaimTable::new(),
             node_ids,
             ecmp_hash_state: RandomState::default(),
             tasks: TaskPool::new(),
@@ -578,23 +578,29 @@ impl Rib {
         .await
     }
 
-    // Builds the agent, files it under `name`, and activates it. Configured
-    // and runtime registrations all arrive here. The build is wiring only,
-    // so the name is checked once the agent exists: a duplicate drops an
-    // agent that was never filed.
+    // Claims `name`, builds the agent, files it under the claim, and
+    // activates it. Configured and runtime registrations all arrive here.
+    // The name is claimed before the factory runs, so a taken name is
+    // refused before anything is built.
     pub(crate) async fn register_agent(
         self: &Arc<Self>,
         name: String,
         factory: BoxFactory,
     ) -> Result<Vec<NodeId>> {
+        if !self.agents.claim(name.clone()) {
+            return Err(Error::AlreadyExists(name));
+        }
         let sink = Arc::new(Sink::new(name.clone(), self.clone()));
-        let agent = factory.build(AgentContext::new(sink.clone(), self.node_ids.clone()))?;
-        {
-            let mut agents = self.agents.lock();
-            let HashMapEntry::Vacant(e) = agents.entry(name.clone()) else {
-                return Err(Error::AlreadyExists(name));
-            };
-            e.insert(agent.clone());
+        let agent = match factory.build(AgentContext::new(sink.clone(), self.node_ids.clone())) {
+            Ok(agent) => agent,
+            Err(e) => {
+                self.agents.release(&name);
+                return Err(e);
+            }
+        };
+        if !self.agents.file(&name, agent.clone()) {
+            // A shutdown ran while the factory did and took the claim.
+            return Err(Error::Disconnected);
         }
         sink.file();
 
@@ -611,7 +617,7 @@ impl Rib {
     }
 
     pub(crate) async fn unregister_agent(&self, name: &str) {
-        let agent = self.agents.lock().remove(name);
+        let agent = self.agents.remove(name);
 
         if let Some(agent) = agent {
             metrics::gauge!("bpa.rib.agents").decrement(1.0);
@@ -622,12 +628,7 @@ impl Rib {
     }
 
     pub(crate) async fn shutdown_agents(&self) {
-        let agents = {
-            let mut locked = self.agents.lock();
-            let mut v = Vec::with_capacity(locked.len());
-            v.extend(locked.drain());
-            v
-        };
+        let agents = self.agents.drain();
 
         if !agents.is_empty() {
             metrics::gauge!("bpa.rib.agents").decrement(agents.len() as f64);
@@ -649,7 +650,7 @@ impl Rib {
     }
 
     pub(super) fn has_agent(&self, name: &str) -> bool {
-        self.agents.lock().contains_key(name)
+        self.agents.contains(name)
     }
 
     fn expand_pattern(&self, pattern: EidPattern) -> EidPattern {

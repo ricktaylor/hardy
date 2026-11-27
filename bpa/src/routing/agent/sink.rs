@@ -9,8 +9,8 @@ use crate::{
 
 // One registration's channel back to the RIB, shared by the factory's
 // context and the handle `on_register` receives. It acts under the agent's
-// name only once that agent is filed: the sink of a build refused as a
-// duplicate must never touch the agent already holding the name.
+// name only once that agent is filed: the sink of a build that failed must
+// never touch an agent registered under the name afterwards.
 pub struct Sink {
     name: String,
     rib: Arc<Rib>,
@@ -117,5 +117,81 @@ impl RoutingSink for SinkHandle {
         priority: u32,
     ) -> Result<bool> {
         self.0.remove_route(pattern, action, priority).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpv7::eid::NodeId;
+
+    use super::*;
+    use crate::{
+        bpa::Bpa,
+        routing::{AgentContext, AgentFactory, RoutingAgent, agent::factory::BoxFactory},
+    };
+
+    /// Keeps its sink once registered.
+    struct TestAgent {
+        sink: Once<Box<dyn RoutingSink>>,
+    }
+
+    #[async_trait]
+    impl RoutingAgent for TestAgent {
+        async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+            self.sink.call_once(|| sink);
+        }
+
+        async fn on_unregister(&self) {}
+    }
+
+    /// Keeps the context's sink, then refuses to build.
+    struct RefusingFactory {
+        sink_tx: flume::Sender<Arc<dyn RoutingSink>>,
+    }
+
+    impl AgentFactory for RefusingFactory {
+        fn build(self, cx: AgentContext) -> Result<Arc<dyn RoutingAgent>> {
+            let _ = self.sink_tx.send(cx.sink);
+            Err(Error::Disconnected)
+        }
+    }
+
+    // A factory that fails releases its name, and the sink it kept never
+    // acts for, or unregisters, the agent registered under the name next.
+    #[tokio::test]
+    async fn a_failed_build_frees_the_name_and_its_sink_stays_dead() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        bpa.start(false).await;
+        let rib = bpa.rib();
+
+        let (sink_tx, sink_rx) = flume::bounded(1);
+        let result = rib
+            .register_agent("agent".into(), BoxFactory::new(RefusingFactory { sink_tx }))
+            .await;
+        assert!(matches!(result, Err(Error::Disconnected)), "{result:?}");
+        let stale = sink_rx.try_recv().expect("the factory ran");
+
+        let agent = Arc::new(TestAgent { sink: Once::new() });
+        rib.register_agent("agent".into(), BoxFactory::new(agent.clone()))
+            .await
+            .expect("the failed build released the name");
+
+        let pattern: EidPattern = "ipn:0.9.*".parse().unwrap();
+        assert!(matches!(
+            stale
+                .add_route(pattern.clone(), RouteAction::Drop(None), 10)
+                .await,
+            Err(Error::Disconnected)
+        ));
+        stale.unregister().await;
+        let live = agent.sink.get().expect("on_register ran");
+        assert!(
+            live.add_route(pattern, RouteAction::Drop(None), 10)
+                .await
+                .unwrap(),
+            "the stale sink's unregister must leave the new agent registered"
+        );
+
+        bpa.shutdown().await;
     }
 }

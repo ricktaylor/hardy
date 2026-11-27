@@ -67,10 +67,21 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 | `reassemble_basic_happy_path` | `src/storage/adu_reassembly.rs` | §3.5 | Two fragments → complete bundle via Builder + Editor |
 | `test_duplicate_reg` | `src/services/registry.rs` | §3.4 | Duplicate explicit IPN service number rejected |
 | `test_cleanup` | `src/services/registry.rs` | §3.4 | Service ID freed after sink unregister, re-registration succeeds |
+| `the_factory_runs_against_a_claim_outside_the_lock` | `src/services/registry/mod.rs` | §3.4 | A service factory runs while its id is claimed and the registry's lock is free |
+| `a_taken_service_id_is_refused_before_the_build` | `src/services/registry/mod.rs` | §3.4 | A taken service id is `ServiceIdInUse` without running the factory |
 | `test_address_parsing` | `src/cla/mod.rs` | §3.8 | ClaAddress round-trip (TCP, IPv6, Private) |
 | `test_duplicate_registration` | `src/cla/registry.rs` | §3.8 | Duplicate CLA name rejected |
 | `test_peer_lifecycle` | `src/cla/registry.rs` | §3.8 | add_peer/remove_peer + double-remove |
 | `test_cascading_cleanup` | `src/cla/registry.rs` | §3.8 | CLA unregister removes all peers, name freed |
+| `the_factory_runs_against_a_claim_outside_the_lock` | `src/cla/registry/mod.rs` | §3.8 | A CLA factory runs while its name is claimed and the registry's lock is free |
+| `a_taken_name_is_refused_before_the_build` | `src/cla/registry/mod.rs` | §3.8 | A taken CLA name is `AlreadyExists` without running the factory |
+| `a_failed_build_frees_the_name_and_its_sink_stays_dead` | `src/routing/agent/sink.rs` | §3.2 | A failed agent build releases its name; the sink it kept is `Disconnected` and its `unregister` leaves the next agent registered |
+| `a_held_key_cannot_be_claimed` | `src/claim_table.rs` | §3.8 | A claim or a registration holds its key |
+| `a_released_claim_frees_the_key` | `src/claim_table.rs` | §3.8 | Releasing a failed build's claim frees the key |
+| `release_never_removes_a_registration` | `src/claim_table.rs` | §3.8 | Release only drops a claim |
+| `a_drained_claim_cannot_be_filed` | `src/claim_table.rs` | §3.8 | A build still running at shutdown cannot file |
+| `a_claim_is_not_a_registration` | `src/claim_table.rs` | §3.8 | A claim is neither visible nor removable as a registration |
+| `remove_if_takes_only_the_accepted_registration` | `src/claim_table.rs` | §3.8 | A stale holder cannot remove a later registration |
 | `test_exact_match` | `src/rib/find.rs` | §3.2 | Exact EID route lookup |
 | `test_default_route` | `src/rib/find.rs` | §3.2 | Catch-all Via route |
 | `test_no_route` | `src/rib/find.rs` | §3.2 | No routes → None |
@@ -107,7 +118,7 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 
 ### Builder Registration Tests
 
-14 tests in `tests/builder_registration.rs` — `BpaBuilder`'s configured factories for CLAs, services, applications and routing agents.
+15 tests in `tests/builder_registration.rs` — `BpaBuilder`'s configured factories for CLAs, services, applications and routing agents.
 
 | Test Function | Scope |
 | :--- | :--- |
@@ -115,6 +126,7 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 | `context_sink_reaches_the_registration` | The `Context` sink adds and removes a peer once the CLA is registered, and is `Disconnected` after shutdown |
 | `registration_is_a_factory_for_a_built_cla` | A built CLA paired with its declarations as a `Registration` registers at `start()` with them |
 | `refused_terms_leave_the_name_free` | A factory refusing its terms leaves the name free for the next registration |
+| `refused_endpoint_leaves_the_service_id_free` | A service factory refusing its endpoint at `start()` leaves the service id free |
 | `duplicate_cla_name_is_an_error_not_a_panic` | A repeated name is `Error::Cla` with `cla::Error::AlreadyExists` |
 | `service_and_application_register_at_start` | Both go live at `start()` on their resolved EIDs |
 | `service_id_taken_by_an_application_is_refused` | Services and applications share one id space: `ServiceIdInUse` |
@@ -124,7 +136,7 @@ All LLRs assigned to this module pass (8 pass, 3 pass via bpv7).
 | `service_factory_builds_at_start_at_its_endpoint` | A service factory runs at `start()` at its resolved EID; its `ServiceContext` sink is `Disconnected` after shutdown |
 | `application_factory_builds_at_start_at_its_endpoint` | An application factory runs at `start()` at its resolved EID |
 | `agent_factory_sink_installs_routes` | A routing agent factory gets the node ids, and its `AgentContext` sink adds and removes a route |
-| `duplicate_agent_sink_never_acts_for_the_holder` | A second agent under a taken name fails `build()` with `Error::Routing(AlreadyExists)`, and its sink stays `Disconnected` |
+| `duplicate_agent_name_is_refused_before_the_build` | A second agent under a taken name fails `build()` with `Error::Routing(AlreadyExists)`, and its factory never runs |
 
 ### Criterion Benchmark
 

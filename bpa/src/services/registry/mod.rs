@@ -6,21 +6,15 @@ use tracing::{error, info};
 pub use self::record::{Service, ServiceImpl};
 use self::sink::{Sink, SinkHandle};
 use crate::{
-    Arc, Bytes, HashMap, Weak, bundle, dispatcher, node_ids, routing,
+    Arc, Bytes, Weak, bundle,
+    claim_table::ClaimTable,
+    dispatcher, node_ids, routing,
     services::{self, ApplicationContext, ServiceContext, factory::BoxFactory},
     storage,
 };
 
 mod record;
 mod sink;
-
-// ServiceRegistry uses hardy_async::sync::spin::Mutex because:
-// 1. All operations are O(1) HashMap lookups/inserts
-// 2. RNG for auto-generated IDs is called OUTSIDE the lock
-// 3. Lock only protects contains_key + insert (both O(1))
-// 4. No blocking/sleeping while holding lock
-
-type ServiceMap = HashMap<hardy_bpv7::eid::Service, Arc<Service>>;
 
 // Runs a factory at its resolved endpoint, handing it the shared sink.
 fn build(factory: BoxFactory, sink: &Arc<Sink>, eid: &Eid) -> services::Result<ServiceImpl> {
@@ -77,7 +71,7 @@ impl ServiceRegistryBuilder {
     // Constructs the registry with the configured registrations parked.
     pub fn build(self) -> Arc<ServiceRegistry> {
         Arc::new(ServiceRegistry {
-            services: hardy_async::sync::spin::Mutex::new(Default::default()),
+            services: ClaimTable::new(),
             pending: hardy_async::sync::spin::Mutex::new(self.services),
             next_dynamic: AtomicU32::new(DYNAMIC_SERVICE_BASE),
             tasks: hardy_async::TaskPool::new(),
@@ -90,7 +84,7 @@ impl ServiceRegistryBuilder {
 const DYNAMIC_SERVICE_BASE: u32 = 0x8000_0000;
 
 pub struct ServiceRegistry {
-    services: hardy_async::sync::spin::Mutex<ServiceMap>,
+    services: ClaimTable<hardy_bpv7::eid::Service, Arc<Service>>,
     // Builder-configured registrations, parked until `start` builds and
     // activates them after storage recovery.
     pending: hardy_async::sync::spin::Mutex<Vec<PendingService>>,
@@ -112,7 +106,8 @@ impl ServiceRegistry {
         let pending = core::mem::take(&mut *self.pending.lock());
         for (service_id, factory) in pending {
             // The service id was validated at build, so a failure here is a
-            // factory refusing its endpoint.
+            // factory refusing its endpoint, or an id a runtime registration
+            // claimed first.
             if let Err(e) = self
                 .register(&service_id, factory, node_ids, rib, dispatcher)
                 .await
@@ -122,18 +117,13 @@ impl ServiceRegistry {
         }
     }
     pub async fn shutdown(&self, rib: &Arc<routing::Rib>) {
-        let services = self
-            .services
-            .lock()
-            .drain()
-            .map(|(_, v)| v)
-            .collect::<Vec<_>>();
+        let services = self.services.drain();
 
         if !services.is_empty() {
             metrics::gauge!("bpa.service.registered").decrement(services.len() as f64);
         }
 
-        for service in services {
+        for (_, service) in services {
             if let Err(e) = self.unregister_service(service, rib).await {
                 error!("Failed to unregister service: {e}");
             }
@@ -209,8 +199,13 @@ impl ServiceRegistry {
         hardy_bpv7::eid::Service::Ipn(id)
     }
 
-    // Builds the component at its resolved endpoint, publishes it, and
-    // activates it. Configured and runtime registrations all arrive here.
+    // Claims the service id, builds the component at its resolved
+    // endpoint, publishes it, and activates it. Configured and runtime
+    // registrations all arrive here.
+    //
+    // The id is claimed before the factory runs, so a taken id is refused
+    // before anything is built, and the factory runs outside the registry's
+    // lock.
     async fn register(
         self: &Arc<Self>,
         service_id: &hardy_bpv7::eid::Service,
@@ -225,9 +220,10 @@ impl ServiceRegistry {
             ));
         }
         let eid = node_ids.resolve_eid(service_id)?;
+        if !self.services.claim(service_id.clone()) {
+            return Err(services::Error::ServiceIdInUse(service_id.to_string()));
+        }
 
-        // The build is wiring only, so it runs before the duplicate check:
-        // a duplicate drops a component that was never published.
         let sink = Arc::new(Sink {
             service: Once::new(),
             eid: eid.clone(),
@@ -235,7 +231,13 @@ impl ServiceRegistry {
             rib: rib.clone(),
             dispatcher: dispatcher.clone(),
         });
-        let service = build(factory, &sink, &eid)?;
+        let service = match build(factory, &sink, &eid) {
+            Ok(service) => service,
+            Err(e) => {
+                self.services.release(service_id);
+                return Err(e);
+            }
+        };
         let service = self.publish(service, service_id, &eid, dispatcher)?;
         sink.service.call_once(|| Arc::downgrade(&service));
 
@@ -263,11 +265,11 @@ impl ServiceRegistry {
     }
 
     // Constructs the service complete — the delivery queue and canonical
-    // EID are constructor arguments — then publishes it atomically with the
-    // duplicate check: nothing reachable is ever half-built, and the RIB
-    // only ever sees a deliverable service. The channel's creation-time poll
-    // recovers any DeliverPending bundles left over from a previous
-    // registration under the same EID.
+    // EID are constructor arguments — then files it against the claim on
+    // its id: nothing reachable is ever half-built, and the RIB only ever
+    // sees a deliverable service. The channel's creation-time poll recovers
+    // any DeliverPending bundles left over from a previous registration
+    // under the same EID.
     fn publish(
         &self,
         service: ServiceImpl,
@@ -277,17 +279,13 @@ impl ServiceRegistry {
     ) -> services::Result<Arc<Service>> {
         let (tx, rx) = dispatcher.new_delivery_channel(eid);
         let service = Service::new(service, service_id.clone(), eid.clone(), tx);
-        {
-            let mut services = self.services.lock();
-            if services.contains_key(service_id) {
-                // The loser closes the channel it opened: the channel
-                // spawns its storage poller at creation, and dropping the
-                // sender does not close it — an unclosed loser parks that
-                // poller until store shutdown.
-                service.close_queue();
-                return Err(services::Error::ServiceIdInUse(service_id.to_string()));
-            }
-            services.insert(service_id.clone(), service.clone());
+        if !self.services.file(service_id, service.clone()) {
+            // A shutdown ran while the factory did and took the claim with
+            // it. The service was never reached; close the channel it
+            // opened, because the channel spawns its storage poller at
+            // creation and dropping the sender does not close it.
+            service.close_queue();
+            return Err(services::Error::Disconnected);
         }
         dispatcher.start_delivery_queue(service.clone(), rx);
         Ok(service)
@@ -298,7 +296,11 @@ impl ServiceRegistry {
         service: Arc<Service>,
         rib: &Arc<routing::Rib>,
     ) -> services::Result<()> {
-        let service = self.services.lock().remove(&service.service_id);
+        // Only this registration: a stale sink must not take a later
+        // registration under the same id.
+        let service = self
+            .services
+            .remove_if(&service.service_id, |filed| Arc::ptr_eq(filed, &service));
 
         if let Some(service) = service {
             metrics::gauge!("bpa.service.registered").decrement(1.0);
@@ -475,6 +477,69 @@ mod tests {
             _timestamp: Option<time::OffsetDateTime>,
         ) {
         }
+    }
+
+    // Sends whether the service id is claimed, seen through a free lock,
+    // while the factory runs.
+    struct ProbeFactory {
+        registry: Weak<ServiceRegistry>,
+        seen_tx: flume::Sender<Option<bool>>,
+    }
+
+    impl services::ServiceFactory for ProbeFactory {
+        fn build(self, _cx: ServiceContext) -> services::Result<Arc<dyn services::Service>> {
+            let registry = self
+                .registry
+                .upgrade()
+                .expect("the registry outlives the build");
+            let _ = self.seen_tx.send(registry.services.is_building(&ID));
+            Ok(Arc::new(TestService))
+        }
+    }
+
+    const ID: hardy_bpv7::eid::Service = hardy_bpv7::eid::Service::Ipn(42);
+
+    // Registers a probe at `ID`, answering the result and what the probe saw.
+    async fn register_probe(bpa: &Bpa) -> (services::Result<Eid>, Option<Option<bool>>) {
+        let (registry, node_ids, rib, dispatcher) = bpa.service_registry();
+        let (seen_tx, seen_rx) = flume::bounded(1);
+        let factory = BoxFactory::service(ProbeFactory {
+            registry: Arc::downgrade(registry),
+            seen_tx,
+        });
+        let result = registry
+            .register(&ID, factory, node_ids, rib, dispatcher)
+            .await;
+        (result, seen_rx.try_recv().ok())
+    }
+
+    // The factory runs against a claim on its service id, outside the
+    // registry's lock.
+    #[tokio::test]
+    async fn the_factory_runs_against_a_claim_outside_the_lock() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        bpa.start(false).await;
+        let (result, seen) = register_probe(&bpa).await;
+        result.expect("registration should succeed");
+        assert_eq!(seen, Some(Some(true)), "claimed, through a free lock");
+        bpa.shutdown().await;
+    }
+
+    // A service id already registered is refused before its factory runs.
+    #[tokio::test]
+    async fn a_taken_service_id_is_refused_before_the_build() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        bpa.start(false).await;
+        bpa.register_service(ID, Arc::new(TestService))
+            .await
+            .unwrap();
+        let (result, seen) = register_probe(&bpa).await;
+        assert!(
+            matches!(result, Err(services::Error::ServiceIdInUse(ref id)) if id == "42"),
+            "{result:?}"
+        );
+        assert_eq!(seen, None, "the factory must never run");
+        bpa.shutdown().await;
     }
 
     // The admin endpoint's service ids cannot be claimed: ipn service 0 and

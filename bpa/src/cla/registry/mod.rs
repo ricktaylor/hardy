@@ -3,82 +3,16 @@ use core::num::NonZeroU32;
 use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::{Eid, NodeId};
 
+pub use self::record::Cla;
 use self::sink::{Sink, SinkHandle};
 use super::{
     factory::{BoxFactory, Context, Terms},
     *,
 };
+use crate::claim_table::ClaimTable;
 
+mod record;
 mod sink;
-
-// CLA registry uses hardy_async::sync::spin::Mutex because:
-// 1. All operations are O(1) HashMap lookups/inserts
-// 2. No read-only access pattern (RwLock not needed)
-// 3. No blocking/RNG/iteration while holding lock
-// 4. Avoids OS mutex overhead on CLA lifecycle operations
-
-pub struct Cla {
-    pub cla: Arc<dyn cla::Cla>,
-    pub policy: Arc<dyn policy::FlowControllerFactory>,
-    // Snapshotted from the factory's `ClaInit` declarations at registration.
-    pub address_type: Option<ClaAddressType>,
-    pub lane_count: Option<NonZeroU32>,
-
-    name: Arc<str>,
-    // Cancelled at unregistration; every in-flight stream of this
-    // registration races it and fails immediately.
-    cancel: hardy_async::CancellationToken,
-    // sync::spin::Mutex for O(1) peer HashMap operations
-    // Key: ClaAddress (primary key for a link-layer adjacency)
-    // Value: (known EIDs for the peer, peer_id in PeerTable)
-    // An empty EID vec means a Neighbour (EID not yet known; no RIB entry installed)
-    peers: hardy_async::sync::spin::Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
-}
-
-impl PartialEq for Cla {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-    }
-}
-
-impl Eq for Cla {}
-
-impl PartialOrd for Cla {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Cla {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.name.cmp(&other.name)
-    }
-}
-
-impl core::hash::Hash for Cla {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-    }
-}
-
-impl core::fmt::Debug for Cla {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Cla")
-            .field("name", &self.name)
-            .field("peers", &self.peers)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Cla {
-    // Whether `peer_id` is one of this CLA's peers — the ownership check for
-    // deferred transfer outcomes.
-    pub fn owns_peer(&self, peer_id: u32) -> bool {
-        self.peers.lock().values().any(|(_, id)| *id == peer_id)
-    }
-}
-
-type ClaMap = HashMap<String, Arc<Cla>>;
 
 // A configured CLA, built when the registry starts.
 struct PendingCla {
@@ -131,7 +65,7 @@ impl ClaRegistryBuilder {
         let peers = Arc::new(cla::peers::PeerTable::new());
         Arc::new(ClaRegistry {
             node_ids: node_ids.clone(),
-            clas: hardy_async::sync::spin::Mutex::new(Default::default()),
+            clas: ClaimTable::new(),
             pending: hardy_async::sync::spin::Mutex::new(self.clas),
             rib: rib.clone(),
             store: store.clone(),
@@ -145,7 +79,7 @@ impl ClaRegistryBuilder {
 // CLA registry in the running phase — full register/unregister available.
 pub struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
-    clas: hardy_async::sync::spin::Mutex<ClaMap>,
+    clas: ClaimTable<String, Arc<Cla>>,
     // Builder-configured CLAs, parked until `start` builds and activates
     // them after storage recovery.
     pending: hardy_async::sync::spin::Mutex<Vec<PendingCla>>,
@@ -169,7 +103,8 @@ impl ClaRegistry {
         } in pending
         {
             // The builder refused duplicate names, so a failure here is a
-            // factory refusing its terms.
+            // factory refusing its terms, or a name a runtime registration
+            // claimed first.
             if let Err(e) = self
                 .register(name.clone(), factory, dispatcher, policy)
                 .await
@@ -192,25 +127,27 @@ impl ClaRegistry {
     }
 
     pub async fn shutdown(&self) {
-        let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
+        let clas = self.clas.drain();
 
         if !clas.is_empty() {
             metrics::gauge!("bpa.cla.registered").decrement(clas.len() as f64);
         }
 
-        for cla in clas {
+        for (_, cla) in clas {
             self.unregister_cla(cla).await;
         }
 
         self.tasks.shutdown().await;
     }
 
-    // Full registration in one step: builds the CLA against the settled
-    // terms, files it under `name`, and activates it. Configured CLAs and
-    // runtime registrations (in-process or via gRPC) all arrive here.
+    // Full registration in one step: claims `name`, builds the CLA against
+    // the settled terms, files it under the claim, and activates it.
+    // Configured CLAs and runtime registrations (in-process or via gRPC)
+    // all arrive here.
     //
-    // The build is wiring only, so the name is checked once the CLA exists:
-    // a duplicate drops a CLA that was never filed or started.
+    // The name is claimed before the factory runs, so a taken name is
+    // refused before anything is built, and the factory runs outside the
+    // registry's lock.
     pub async fn register(
         self: &Arc<Self>,
         name: String,
@@ -218,6 +155,9 @@ impl ClaRegistry {
         dispatcher: &Arc<dispatcher::Dispatcher>,
         policy: Option<Arc<dyn policy::FlowControllerFactory>>,
     ) -> cla::Result<Vec<NodeId>> {
+        if !self.clas.claim(name.clone()) {
+            return Err(cla::Error::AlreadyExists(name));
+        }
         let address_type = factory.init.address_type;
         let terms = Terms::negotiate(&factory.init, dispatcher.max_bundle_size());
         let sink = Arc::new(Sink {
@@ -225,7 +165,13 @@ impl ClaRegistry {
             registry: self.clone(),
             dispatcher: dispatcher.clone(),
         });
-        let cla = factory.build(Context::new(sink.clone(), self.node_ids.clone(), terms))?;
+        let cla = match factory.build(Context::new(sink.clone(), self.node_ids.clone(), terms)) {
+            Ok(cla) => cla,
+            Err(e) => {
+                self.clas.release(&name);
+                return Err(e);
+            }
+        };
 
         let entry = self.file(name.clone(), cla, address_type, terms.lane_count, policy)?;
         sink.cla.call_once(|| Arc::downgrade(&entry));
@@ -248,7 +194,10 @@ impl ClaRegistry {
         Ok(node_ids)
     }
 
-    // Files a built CLA under `name`, the only way one becomes reachable.
+    // Files a built CLA against the claim on `name`, the only way one
+    // becomes reachable. A shutdown that ran while the factory did took the
+    // claim with it; the CLA was never reached, so dropping it is the whole
+    // teardown.
     fn file(
         &self,
         name: String,
@@ -257,11 +206,7 @@ impl ClaRegistry {
         lane_count: Option<NonZeroU32>,
         policy: Option<Arc<dyn policy::FlowControllerFactory>>,
     ) -> cla::Result<Arc<Cla>> {
-        let mut clas = self.clas.lock();
-        let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
-            return Err(cla::Error::AlreadyExists(name));
-        };
-        Ok(e.insert(Arc::new(Cla {
+        let entry = Arc::new(Cla {
             cancel: hardy_async::CancellationToken::new(),
             cla,
             address_type,
@@ -270,12 +215,19 @@ impl ClaRegistry {
             name: Arc::from(name.as_str()),
             policy: policy
                 .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
-        }))
-        .clone())
+        });
+        if !self.clas.file(&name, entry.clone()) {
+            return Err(cla::Error::Disconnected);
+        }
+        Ok(entry)
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {
-        let cla = self.clas.lock().remove(&*cla.name);
+        // Only this registration: a stale sink must not take a later
+        // registration under the same name.
+        let cla = self
+            .clas
+            .remove_if(&*cla.name, |filed| Arc::ptr_eq(filed, &cla));
 
         if let Some(cla) = cla {
             metrics::gauge!("bpa.cla.registered").decrement(1.0);
@@ -429,6 +381,89 @@ mod tests {
         ) -> cla::Result<cla::ForwardBundleResult> {
             Ok(cla::ForwardBundleResult::Sent)
         }
+    }
+
+    // Sends what the registry says about the CLA's name while the factory
+    // runs: `Some(true)` is a claim seen through a free lock.
+    struct ProbeFactory {
+        registry: Weak<ClaRegistry>,
+        name: &'static str,
+        seen_tx: flume::Sender<Option<bool>>,
+    }
+
+    impl Factory for ProbeFactory {
+        fn build(self, _cx: Context) -> cla::Result<Arc<dyn cla::Cla>> {
+            let registry = self
+                .registry
+                .upgrade()
+                .expect("the registry outlives the build");
+            let _ = self.seen_tx.send(registry.clas.is_building(self.name));
+            Ok(Arc::new(TestCla::new()))
+        }
+    }
+
+    fn probe(
+        registry: &Arc<ClaRegistry>,
+        name: &'static str,
+    ) -> (BoxFactory, flume::Receiver<Option<bool>>) {
+        let (seen_tx, seen_rx) = flume::bounded(1);
+        let factory = BoxFactory::new(ProbeFactory {
+            registry: Arc::downgrade(registry),
+            name,
+            seen_tx,
+        });
+        (factory, seen_rx)
+    }
+
+    // The factory runs against a claim on its name, outside the registry's
+    // lock: a factory may log, allocate or reach back into the registry,
+    // any of which would spin against a lock still held.
+    #[tokio::test]
+    async fn the_factory_runs_against_a_claim_outside_the_lock() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        bpa.start(false).await;
+        let (registry, dispatcher) = bpa.cla_registry();
+
+        let (factory, seen_rx) = probe(registry, "probe-cla");
+        registry
+            .register("probe-cla".into(), factory, dispatcher, None)
+            .await
+            .expect("registration should succeed");
+        assert_eq!(
+            seen_rx.try_recv().unwrap(),
+            Some(true),
+            "the factory must see its name claimed (Some(true)), not the lock held (None) or the name free (Some(false))"
+        );
+
+        bpa.shutdown().await;
+    }
+
+    // A name already registered is refused before its factory runs.
+    #[tokio::test]
+    async fn a_taken_name_is_refused_before_the_build() {
+        let bpa = Bpa::builder().build().await.unwrap();
+        bpa.start(false).await;
+        bpa.register_cla(
+            "taken".to_string(),
+            Arc::new(TestCla::new()),
+            None,
+            ClaInit::default(),
+        )
+        .await
+        .unwrap();
+        let (registry, dispatcher) = bpa.cla_registry();
+
+        let (factory, seen_rx) = probe(registry, "taken");
+        let result = registry
+            .register("taken".into(), factory, dispatcher, None)
+            .await;
+        assert!(
+            matches!(result, Err(cla::Error::AlreadyExists(ref name)) if name == "taken"),
+            "{result:?}"
+        );
+        assert!(seen_rx.is_empty(), "the factory must never run");
+
+        bpa.shutdown().await;
     }
 
     // Registering a CLA with an already-in-use name should fail.

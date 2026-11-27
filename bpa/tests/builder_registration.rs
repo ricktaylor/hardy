@@ -428,6 +428,35 @@ async fn service_and_application_register_at_start() {
     bpa.shutdown().await;
 }
 
+/// Refuses whatever endpoint it is offered.
+struct RefusingServiceFactory;
+
+impl ServiceFactory for RefusingServiceFactory {
+    fn build(self, _cx: ServiceContext) -> services::Result<Arc<dyn Service>> {
+        Err(services::Error::Disconnected)
+    }
+}
+
+// A service factory refusing its endpoint at start() leaves the service id
+// free: the next registration on it succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_endpoint_leaves_the_service_id_free() {
+    let (service, service_rx) = service();
+    let bpa = Bpa::builder()
+        .node_ids(ipn_node_ids())
+        .service(ServiceId::Ipn(1), RefusingServiceFactory)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    bpa.register_service(ServiceId::Ipn(1), service)
+        .await
+        .expect("the refused build released the service id");
+    assert!(service_rx.try_recv().is_ok());
+    bpa.shutdown().await;
+}
+
 // A service and an application share one service-id space.
 #[tokio::test]
 async fn service_id_taken_by_an_application_is_refused() {
@@ -611,10 +640,10 @@ async fn agent_factory_sink_installs_routes() {
     bpa.shutdown().await;
 }
 
-// An agent built under a name already taken is dropped unfiled: build()
-// refuses it, and its sink never acts for the agent holding the name.
+// A name already taken is refused before the second factory runs: build()
+// fails, and nothing is built under the holder's name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn duplicate_agent_sink_never_acts_for_the_holder() {
+async fn duplicate_agent_name_is_refused_before_the_build() {
     let (first_built_tx, _first_built_rx) = flume::bounded(1);
     let (first_registered_tx, _first_registered_rx) = flume::bounded(1);
     let (built_tx, built_rx) = flume::bounded(1);
@@ -643,18 +672,9 @@ async fn duplicate_agent_sink_never_acts_for_the_holder() {
         matches!(&err, Error::Routing(routing::Error::AlreadyExists(name)) if name == "same"),
         "{err:?}"
     );
+    assert!(built_rx.is_empty(), "the second factory never runs");
     assert!(
         registered_rx.is_empty(),
         "the refused agent never registers"
-    );
-
-    let (_, sink) = built_rx.try_recv().expect("the second factory ran");
-    let pattern: EidPattern = "ipn:0.9.*".parse().unwrap();
-    assert!(
-        matches!(
-            sink.add_route(pattern, RouteAction::Drop(None), 10).await,
-            Err(routing::Error::Disconnected)
-        ),
-        "the unfiled agent's sink must not act under the holder's name"
     );
 }
