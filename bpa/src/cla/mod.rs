@@ -4,8 +4,10 @@ use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
 
+pub use self::factory::{Context, Factory, Registration, Terms};
 pub use crate::stream::Segment;
 
+pub(crate) mod factory;
 pub(crate) mod peers;
 pub(crate) mod registry;
 
@@ -218,8 +220,9 @@ pub enum TransferOutcome {
 
 /// A CLA's set-once registration declarations.
 ///
-/// Passed to [`BpaRegistration::register_cla`](crate::bpa::BpaRegistration::register_cla)
-/// alongside the CLA and sampled exactly once: the BPA snapshots every
+/// Returned by [`Factory::request`], or passed to
+/// [`BpaRegistration::register_cla`](crate::bpa::BpaRegistration::register_cla)
+/// alongside the CLA, and sampled exactly once: the BPA snapshots every
 /// field at registration, so none of them can change — or be re-read —
 /// for the lifetime of the registration. A CLA with nothing to declare
 /// registers with `ClaInit::default()`.

@@ -10,6 +10,8 @@ or consume raw bundle files.
 */
 
 use hardy_async::sync::spin::Once;
+// Aliased: this crate's own `Cla` and `Result` are the file CLA's.
+use hardy_bpa::cla::{Cla as BpaCla, Context, Factory, Result as ClaResult};
 use hardy_bpv7::eid::NodeId;
 use std::{
     collections::HashMap,
@@ -151,6 +153,17 @@ impl Cla {
         if let Some(sink) = self.sink.get() {
             sink.unregister().await;
         }
+    }
+}
+
+/// A built CLA is the factory
+/// [`BpaBuilder::cla`](hardy_bpa::builder::BpaBuilder::cla) takes: its
+/// directories are resolved by [`Cla::new`]. It declares nothing (no
+/// address type, lanes, or receive limit) and takes its sink in
+/// `on_register`.
+impl Factory for Cla {
+    fn build(self, _cx: Context) -> ClaResult<Arc<dyn BpaCla>> {
+        Ok(Arc::new(self))
     }
 }
 

@@ -3,14 +3,19 @@ use hardy_bpv7::eid::NodeId;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+// Aliased: the CLA and routing-agent kinds each have an erased `BoxFactory`.
 use crate::{
     Arc,
     builder::BpaBuilder,
-    cla::{self, Cla, ClaInit, registry::ClaRegistry},
+    cla::{
+        self, Cla, ClaInit, Registration, factory::BoxFactory as ClaBoxFactory,
+        registry::ClaRegistry,
+    },
     dispatcher::Dispatcher,
+    node_ids::NodeIds,
     otel_metrics,
     policy::FlowControllerFactory,
-    routing::{self, Rib, RoutingAgent},
+    routing::{self, Rib, RoutingAgent, agent::factory::BoxFactory as AgentBoxFactory},
     services::{self, Service, registry::ServiceRegistry},
     storage::store::Store,
 };
@@ -212,7 +217,7 @@ pub trait BpaRegistration: Send + Sync {
 /// After construction, call [`start()`](Bpa::start) to begin processing and
 /// [`shutdown()`](Bpa::shutdown) for ordered teardown.
 pub struct Bpa {
-    node_ids: Arc<crate::node_ids::NodeIds>,
+    node_ids: Arc<NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
     cla_registry: Arc<ClaRegistry>,
@@ -222,7 +227,7 @@ pub struct Bpa {
 
 impl Bpa {
     pub(crate) fn from_parts(
-        node_ids: Arc<crate::node_ids::NodeIds>,
+        node_ids: Arc<NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
         cla_registry: Arc<ClaRegistry>,
@@ -237,6 +242,36 @@ impl Bpa {
             service_registry,
             dispatcher,
         }
+    }
+
+    // The CLA registry and the dispatcher it registers against, for the
+    // registry's own unit tests: a factory running against its claim is
+    // otherwise unobservable from there.
+    #[cfg(test)]
+    pub(crate) fn cla_registry(&self) -> (&Arc<ClaRegistry>, &Arc<Dispatcher>) {
+        (&self.cla_registry, &self.dispatcher)
+    }
+
+    // The RIB, for the routing agent sink's unit tests: a factory that
+    // fails is otherwise unreachable, because a configured one fails
+    // `build()`.
+    #[cfg(test)]
+    pub(crate) fn rib(&self) -> &Arc<Rib> {
+        &self.rib
+    }
+
+    // The service registry and what it registers against, for the same
+    // purpose as `cla_registry`.
+    #[cfg(test)]
+    pub(crate) fn service_registry(
+        &self,
+    ) -> (&Arc<ServiceRegistry>, &NodeIds, &Arc<Rib>, &Arc<Dispatcher>) {
+        (
+            &self.service_registry,
+            &self.node_ids,
+            &self.rib,
+            &self.dispatcher,
+        )
     }
 
     pub fn builder() -> BpaBuilder {
@@ -340,8 +375,9 @@ impl BpaRegistration for Bpa {
         policy: Option<Arc<dyn FlowControllerFactory>>,
         init: ClaInit,
     ) -> cla::Result<Vec<NodeId>> {
+        let factory = ClaBoxFactory::new(Registration::new(cla, init));
         self.cla_registry
-            .register(name, cla, &self.dispatcher, policy, init)
+            .register(name, factory, &self.dispatcher, policy)
             .await
     }
 
@@ -371,7 +407,9 @@ impl BpaRegistration for Bpa {
         name: String,
         agent: Arc<dyn RoutingAgent>,
     ) -> routing::Result<Vec<NodeId>> {
-        self.rib.register_agent(name, agent).await
+        self.rib
+            .register_agent(name, AgentBoxFactory::new(agent))
+            .await
     }
 }
 

@@ -298,6 +298,22 @@ This separation keeps the BPA library independent of specific observability back
 
 Storage backends (`metadata_storage`, `bundle_storage`) are injected programmatically rather than configured, allowing the embedding application to select appropriate backends for its deployment context.
 
+### Configured registrations
+
+`BpaBuilder::cla`, `service`, `application` and `routing_agent` configure the components the BPA registers, beside the setters. Each takes a factory for its kind of component: `cla::Factory`, `services::ServiceFactory`, `services::ApplicationFactory` or `routing::AgentFactory`. When the BPA registers the component it runs the factory's `build` with a context holding what the BPA settled for it:
+
+- **CLA:** the sink, the node ids, and the `cla::Terms` negotiated from the factory's `request()` declarations (a `ClaInit`) against the BPA's own cap.
+- **Service or application:** the sink and the endpoint its service id resolves to.
+- **Routing agent:** the sink and the node ids.
+
+The context's sink is the same channel `on_register` delivers next, so a component that takes its sink at construction needs no set-once cell, and one written for `on_register` ignores the context. An already-built component is a factory whose `build` returns it: any `Arc<S>` for a service, application or agent, and `cla::Registration` (a built CLA paired with its `ClaInit`) for a CLA. A CLA has no blanket impl, because it would register with no declarations; `Tcpclv4` and the file CLA implement `cla::Factory` themselves, declaring their own.
+
+A build is wiring only. Anything that can fail on the environment, such as binding a listener or loading TLS material, happens before the factory reaches the builder, so the embedder sees the error where it configures the component (bpa-server builds each configured CLA from its config, then hands it over). `build()` validates the configuration and returns a duplicate CLA name, a refused service id (taken, the administrative endpoint, or a scheme with no node id), or a routing agent failure as a typed `builder::Error` naming the component, never a panic. CLAs, services and applications are built and activated in `Bpa::start`, after storage recovery; routing agents are built and registered in `build()`, as before. A factory refusing its context at start is logged against the component's name, and the name stays free.
+
+A registration claims its name or service id before the factory runs and files the built component against that claim. A taken name is therefore refused before anything is built, the factory runs outside the registry's lock, and a failed build releases its claim. A sink handed to a factory acts only once its component is filed, so the sink of a failed build never acts under a name registered afterwards. A shutdown that overtakes a running build drops the claim, and the built component is dropped unreached.
+
+The builder is for components known when the BPA is constructed. `BpaRegistration::register_*` remains the path for a component registering afterwards, such as a remote CLA over gRPC or a service created at runtime. It takes a built component and goes through the same factory path inside the registry. The two never share a name: the builder's methods configure, `register_*` registers.
+
 ## Future Work
 
 ### Key Provider Infrastructure

@@ -8,7 +8,9 @@ pub(crate) mod table;
 use serde::{Deserialize, Serialize};
 
 pub use self::action::RouteAction;
-pub use self::agent::{Error, Result, RoutingAgent, RoutingSink, StaticRoutingAgent};
+pub use self::agent::{
+    AgentContext, AgentFactory, Error, Result, RoutingAgent, RoutingSink, StaticRoutingAgent,
+};
 
 pub(crate) use self::rib::RibBuilder;
 pub(crate) use self::rib::{Decision, DispatchAction, Rib, RibSnapshot, RoutingKey};

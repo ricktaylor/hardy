@@ -39,20 +39,26 @@ The BPA is constructed via `BpaBuilder` and exposes a `BpaRegistration` trait th
 use hardy_bpa::bpa::Bpa;
 use hardy_bpa::node_ids::NodeIds;
 
-// Build a BPA with default in-memory storage
+// Build a BPA with default in-memory storage, configuring the components
+// it registers. Each is a factory the BPA builds with its sink in hand; a
+// built component is one. Building the TCPCLv4 entity binds its listeners
+// here, so a socket error surfaces before the BPA exists. build()
+// reports a clash, such as a duplicate CLA name, as an error.
+let tcpclv4 = Tcpclv4::try_from(tcpclv4_config)?;
 let bpa = Bpa::builder()
     .node_ids(node_ids)
     .status_reports(true)
+    .cla("tcp", tcpclv4, None)
+    .application(service_id, Arc::new(app))
     .build()
     .await?;
 
-// Start processing
+// Start processing: the configured components go live
 bpa.start(false).await;
 
-// Register components via the BpaRegistration trait
-bpa.register_cla(name, cla, policy).await?;
+// Components that arrive later register via the BpaRegistration trait
+bpa.register_cla(name, cla, policy, init).await?;
 bpa.register_routing_agent(name, agent).await?;
-bpa.register_application(service_id, app).await?;
 
 // Clean shutdown
 bpa.shutdown().await;

@@ -112,7 +112,7 @@ The poller re-opens the fast path only when a drain cycle finds nothing more in 
 
 A `FlowControllerFactory` is code linked in by the embedder; configuration only selects among the factories a build contains. Following the Linux `tc` model, it is bound per CLA — a queuing discipline attached to an interface — and instantiated per peer.
 
-- **At build time**, `BpaBuilder::cla(name, cla, policy, init)` binds a configured CLA's factory. bpa-server resolves each CLA's `policy` key against its named `policies` table; it compiles in no policy types, so every entry is ignored with a warning and a CLA naming one fails startup.
+- **At build time**, `BpaBuilder::cla(name, cla, policy)` binds a configured CLA's factory. bpa-server resolves each CLA's `policy` key against its named `policies` table; it compiles in no policy types, so every entry is ignored with a warning and a CLA naming one fails startup.
 - **At runtime**, `BpaRegistration::register_cla(name, cla, policy, init)` takes the factory from the caller, so an in-process CLA brings its own.
 - **With no factory**, the registry binds the null policy. A CLA registered over gRPC always takes this path, since the wire carries no policy.
 

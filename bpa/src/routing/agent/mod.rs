@@ -1,6 +1,8 @@
+pub(crate) mod factory;
 pub(crate) mod sink;
 mod static_agent;
 
+pub use self::factory::{AgentContext, AgentFactory};
 pub use self::static_agent::StaticRoutingAgent;
 
 use hardy_bpv7::eid::{Eid, NodeId};

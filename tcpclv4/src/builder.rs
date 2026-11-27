@@ -4,6 +4,7 @@ use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 
+use hardy_bpa::cla::{self, Cla, ClaInit, Context, Factory};
 use tracing::{debug, warn};
 
 use crate::{
@@ -198,6 +199,22 @@ impl Tcpclv4Builder {
             self.max_outstanding_transfers,
             tls,
         ))
+    }
+}
+
+/// A built entity is the factory
+/// [`BpaBuilder::cla`](hardy_bpa::builder::BpaBuilder::cla) takes: the
+/// listeners are bound and the TLS material is loaded by
+/// [`Tcpclv4Builder::build`], so registering it cannot fail on the
+/// environment. It declares its [`Tcpclv4::cla_init`] and takes its sink
+/// in `on_register`.
+impl Factory for Tcpclv4 {
+    fn request(&self) -> ClaInit {
+        self.cla_init()
+    }
+
+    fn build(self, _cx: Context) -> cla::Result<Arc<dyn Cla>> {
+        Ok(Arc::new(self))
     }
 }
 
