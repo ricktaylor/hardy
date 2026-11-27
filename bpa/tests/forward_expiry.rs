@@ -63,10 +63,11 @@ impl services::Service for CaptureService {
         self.sink.call_once(|| sink);
     }
 
-    async fn on_unregister(&self) {}
+    async fn on_unregister(&self, _endpoint: &Eid) {}
 
     async fn on_deliver(
         &self,
+        _endpoint: &Eid,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _total_len: u64,

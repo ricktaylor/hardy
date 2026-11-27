@@ -1,7 +1,10 @@
 pub(crate) mod factory;
 pub(crate) mod registry;
 
-pub use self::factory::{ApplicationContext, ApplicationFactory, ServiceContext, ServiceFactory};
+pub use self::factory::{
+    ApplicationContext, ApplicationEndpoint, ApplicationFactory, ServiceContext, ServiceEndpoint,
+    ServiceFactory,
+};
 
 use core::{
     fmt::{self, Display, Formatter},
@@ -20,9 +23,14 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Errors that can occur during service registration and bundle sending.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The requested service id is already registered by another service.
+    /// The requested service id is already registered by another service,
+    /// or repeated within one multi-endpoint registration.
     #[error("There is already a service registered as {0}")]
     ServiceIdInUse(String),
+
+    /// A multi-endpoint registration named no service ids.
+    #[error("A registration needs at least one service id")]
+    NoServiceIds,
 
     /// The provided DTN service name is syntactically invalid.
     #[error("Invalid dtn service name {0}")]
@@ -180,32 +188,42 @@ impl From<crate::stream::BufferError> for Error {
 /// Two disconnection paths exist:
 /// - **App-initiated**: Application drops its Sink or calls `sink.unregister()` → BPA calls `on_unregister()`
 /// - **BPA-initiated**: BPA shuts down → calls `on_unregister()` → Sink becomes non-functional
+///
+/// # Multiple endpoints
+///
+/// One Application may be registered on several endpoints, through
+/// [`BpaRegistration::register_application_endpoints`](crate::bpa::BpaRegistration::register_application_endpoints).
+/// Each endpoint is its own registration: `on_register` is called once per
+/// endpoint with that endpoint's own sink, each delivery names the endpoint
+/// it arrived at, and `on_unregister` names the endpoint that went away.
 #[async_trait]
 pub trait Application: Send + Sync {
-    /// Called when the Application is registered with the BPA.
+    /// Called when the Application is registered on an endpoint.
     ///
-    /// **Important**: The `sink` must be stored for the Application's entire active lifetime.
-    /// Dropping the sink triggers automatic unregistration.
+    /// **Important**: The `sink` must be stored for the registration's entire active lifetime.
+    /// Dropping the sink triggers automatic unregistration of this endpoint.
     ///
     /// # Arguments
-    /// * `source` - The endpoint ID assigned to this application
+    /// * `source` - The endpoint ID assigned to this registration; bundles
+    ///   sent through `sink` originate from it
     /// * `sink` - Communication channel back to the BPA. Must be stored.
     async fn on_register(&self, source: &Eid, sink: Box<dyn ApplicationSink>);
 
-    /// Called when the Application is being unregistered.
+    /// Called when the Application's registration on `endpoint` ends.
     ///
     /// This is called in two scenarios:
-    /// 1. The Application dropped its Sink (app-initiated disconnection)
+    /// 1. The Application dropped that endpoint's Sink (app-initiated disconnection)
     /// 2. The BPA is shutting down (BPA-initiated disconnection)
-    async fn on_unregister(&self);
+    async fn on_unregister(&self, endpoint: &Eid);
 
     /// Called when a bundle payload is delivered to this application as a stream of segments.
     ///
     /// The implementation pulls
     /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
     /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
-    /// carry empty bytes) completes the delivery. The source endpoint of
-    /// the payload is `bundle_id.source`.
+    /// carry empty bytes) completes the delivery. `endpoint` is the
+    /// registered endpoint the bundle was delivered to; the source endpoint
+    /// of the payload is `bundle_id.source`.
     ///
     /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
     /// before `Final` means the producer aborted the delivery: the
@@ -224,6 +242,7 @@ pub trait Application: Send + Sync {
     /// whose errors convert into this module's [`enum@Error`] via `?`.
     async fn on_deliver(
         &self,
+        endpoint: &Eid,
         bundle_id: &Id,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
@@ -358,29 +377,40 @@ pub trait ApplicationSink: Send + Sync {
 ///     // ...
 /// }
 /// ```
+///
+/// # Multiple endpoints
+///
+/// One Service may be registered on several endpoints, through
+/// [`BpaRegistration::register_service_endpoints`](crate::bpa::BpaRegistration::register_service_endpoints).
+/// Each endpoint is its own registration: `on_register` is called once per
+/// endpoint with that endpoint's own sink (which originates bundles only
+/// from that endpoint), each delivery names the endpoint it arrived at, and
+/// `on_unregister` names the endpoint that went away.
 #[async_trait]
 pub trait Service: Send + Sync {
-    /// Called when service is registered with the BPA.
+    /// Called when the Service is registered on an endpoint.
     ///
-    /// **Important**: The `sink` must be stored for the Service's entire active lifetime.
-    /// Dropping the sink triggers automatic unregistration.
+    /// **Important**: The `sink` must be stored for the registration's entire active lifetime.
+    /// Dropping the sink triggers automatic unregistration of this endpoint.
     ///
     /// # Arguments
-    /// * `endpoint` - The endpoint ID assigned to this service
+    /// * `endpoint` - The endpoint ID assigned to this registration; bundles
+    ///   sent through `sink` must carry it as their source
     /// * `sink` - Communication channel back to the BPA. Must be stored.
     async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>);
 
-    /// Called when the Service is being unregistered.
+    /// Called when the Service's registration on `endpoint` ends.
     ///
     /// This is called in two scenarios:
-    /// 1. The Service dropped its Sink (service-initiated disconnection)
+    /// 1. The Service dropped that endpoint's Sink (service-initiated disconnection)
     /// 2. The BPA is shutting down (BPA-initiated disconnection)
-    async fn on_unregister(&self);
+    async fn on_unregister(&self, endpoint: &Eid);
 
     /// Called when a bundle is delivered to this service as a stream of segments.
     ///
     /// The stream carries the raw bundle bytes (the service can parse them
-    /// if needed); `bundle_id` is the identity of the delivered bundle and
+    /// if needed); `endpoint` is the registered endpoint the bundle was
+    /// delivered to, `bundle_id` is the identity of the delivered bundle and
     /// `expiry` is calculated from bundle metadata by the dispatcher. The
     /// implementation pulls
     /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
@@ -404,6 +434,7 @@ pub trait Service: Send + Sync {
     /// whose errors convert into this module's [`enum@Error`] via `?`.
     async fn on_deliver(
         &self,
+        endpoint: &Eid,
         bundle_id: &Id,
         expiry: time::OffsetDateTime,
         total_len: u64,
@@ -468,9 +499,10 @@ pub(crate) mod tests {
     #[async_trait]
     impl Service for NullService {
         async fn on_register(&self, _: &Eid, _: Box<dyn ServiceSink>) {}
-        async fn on_unregister(&self) {}
+        async fn on_unregister(&self, _: &Eid) {}
         async fn on_deliver(
             &self,
+            _: &Eid,
             _: &Id,
             _: time::OffsetDateTime,
             _: u64,

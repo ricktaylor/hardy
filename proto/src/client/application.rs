@@ -3,6 +3,7 @@ use proto::service::*;
 
 async fn receive(
     service: &dyn hardy_bpa::services::Application,
+    endpoint: &eid::Eid,
     mut request: AppReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
     let expiry = request
@@ -19,6 +20,7 @@ async fn receive(
     let total_len = request.payload.len() as u64;
     service
         .on_deliver(
+            endpoint,
             &bundle_id,
             expiry,
             request.ack_requested,
@@ -76,7 +78,7 @@ async fn status_notify(
 }
 
 struct Sink {
-    proxy: RpcProxy<AppToBpa, BpaToApp>,
+    proxy: Arc<RpcProxy<AppToBpa, BpaToApp>>,
 }
 
 impl Sink {
@@ -170,6 +172,8 @@ impl hardy_bpa::services::ApplicationSink for Sink {
 
 struct Handler {
     service: Weak<dyn hardy_bpa::services::Application>,
+    // The endpoint this stream registered.
+    endpoint: eid::Eid,
 }
 
 #[async_trait]
@@ -181,7 +185,7 @@ impl ProxyHandler for Handler {
         match msg {
             bpa_to_app::Msg::Receive(request) => {
                 if let Some(service) = self.service.upgrade() {
-                    match receive(service.as_ref(), request).await {
+                    match receive(service.as_ref(), &self.endpoint, request).await {
                         Ok(msg) => Some(app_to_bpa::Msg::Receive(msg)),
                         Err(e) => Some(app_to_bpa::Msg::Status(e.into())),
                     }
@@ -212,7 +216,7 @@ impl ProxyHandler for Handler {
 
     async fn on_close(&self) {
         if let Some(service) = self.service.upgrade() {
-            service.on_unregister().await;
+            service.on_unregister(&self.endpoint).await;
         }
     }
 }
@@ -221,7 +225,7 @@ pub async fn register_application_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
     service: Arc<dyn hardy_bpa::services::Application>,
-) -> hardy_bpa::services::Result<eid::Eid> {
+) -> hardy_bpa::services::Result<(eid::Eid, Registration)> {
     let mut app_client = application_client::ApplicationClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
@@ -274,7 +278,7 @@ pub async fn register_application_service(
         }
     };
 
-    let eid = response
+    let eid: eid::Eid = response
         .endpoint_id
         .parse()
         .map_err(|e: hardy_bpv7::eid::Error| {
@@ -285,14 +289,27 @@ pub async fn register_application_service(
     // Now we have got here, we can create a Sink proxy and call on_register()
     let handler = Box::new(Handler {
         service: Arc::downgrade(&service),
+        endpoint: eid.clone(),
     });
 
     // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
+    let proxy = Arc::new(RpcProxy::run(
+        channel_sender,
+        channel_receiver,
+        handler,
+        Side::Client,
+    ));
 
     // Call on_register()
-    service.on_register(&eid, Box::new(Sink { proxy })).await;
+    service
+        .on_register(
+            &eid,
+            Box::new(Sink {
+                proxy: proxy.clone(),
+            }),
+        )
+        .await;
 
     info!("Proxy Application service {eid} started");
-    Ok(eid)
+    Ok((eid, Registration::new(proxy)))
 }

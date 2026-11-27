@@ -314,6 +314,12 @@ A registration claims its name or service id before the factory runs and files t
 
 The builder is for components known when the BPA is constructed. `BpaRegistration::register_*` remains the path for a component registering afterwards, such as a remote CLA over gRPC or a service created at runtime. It takes a built component and goes through the same factory path inside the registry. The two never share a name: the builder's methods configure, `register_*` registers.
 
+### Multi-endpoint services
+
+One Service or Application may be registered on several endpoints, through `BpaRegistration::register_service_endpoints` / `register_application_endpoints`, or `BpaBuilder::service_endpoints` / `application_endpoints`. The factory is built once, and its context lists every endpoint with that endpoint's sink, in the order the ids were given; a single-id registration is the same with a list of one. Each endpoint is then its own registration, exactly as if registered alone: its own delivery queue, its own route, and its own sink, which originates bundles only from that endpoint. The service learns of each separately. `on_register` is called once per endpoint, every `on_deliver` names the endpoint the bundle was delivered to, and `on_unregister` names the endpoint that went away, so dropping one endpoint's sink unregisters that endpoint alone.
+
+A multi-endpoint registration is all or none. The local registry resolves every id and claims the whole set before the factory runs, so an id that is taken, repeated, the administrative endpoint, or has no node id for its scheme refuses the set before anything is built. The built registrations are filed against the claims together, so none goes live unless all do. A gRPC stream carries one endpoint, so `RemoteBpa` registers one stream per id instead; it cannot be atomic at the BPA, and on a failed id it closes the endpoints it already registered before returning the error, so the service sees `on_register` and then `on_unregister` for each of them. Carrying several endpoints on one stream is a `service.proto` change, rejected for now in favour of keeping the wire protocol unchanged.
+
 ## Future Work
 
 ### Key Provider Infrastructure

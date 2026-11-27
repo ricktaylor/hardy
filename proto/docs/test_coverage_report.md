@@ -51,6 +51,7 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | `svc_cli_02_send_bundle` | SVC-CLI-02 | Send raw bundle via sink, verify error from mock BPA |
 | `svc_cli_03_receive_bundle` | SVC-CLI-03 | Receive bundle (BPA→Service) via server-side push to client |
 | `svc_cli_04_status_notify` | SVC-CLI-04 | Status notification (BPA→Service) via server-side push to client |
+| `svc_cli_07_multi_endpoint_rolls_back_on_a_failed_id` | SVC-CLI-07 | Multi-endpoint registration, one stream per id: a refused id closes the endpoints already registered |
 
 ### Suite 4: Routing Agent Client (`tests/routing_agent_tests.rs`)
 

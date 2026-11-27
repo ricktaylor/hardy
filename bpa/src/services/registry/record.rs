@@ -1,6 +1,7 @@
 use super::*;
 
 /// Distinguishes between low-level Service and high-level Application registrations
+#[derive(Clone)]
 pub enum ServiceImpl {
     /// Low-level service with full bundle access
     LowLevel(Arc<dyn services::Service>),

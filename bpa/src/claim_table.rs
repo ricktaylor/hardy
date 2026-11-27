@@ -43,6 +43,23 @@ impl<K: Hash + Eq, V> ClaimTable<K, V> {
         }
     }
 
+    // Claims every key in `keys` for one build, all or none: answers the
+    // first key already held, having claimed nothing. The keys must be
+    // distinct.
+    pub fn claim_all<'a>(&self, keys: &'a [K]) -> Result<(), &'a K>
+    where
+        K: Clone,
+    {
+        let mut slots = self.slots.lock();
+        if let Some(held) = keys.iter().find(|key| slots.contains_key(*key)) {
+            return Err(held);
+        }
+        for key in keys {
+            slots.insert(key.clone(), Slot::Building);
+        }
+        Ok(())
+    }
+
     // Releases the claim of a build that failed.
     pub fn release<Q>(&self, key: &Q)
     where
@@ -52,6 +69,16 @@ impl<K: Hash + Eq, V> ClaimTable<K, V> {
         let mut slots = self.slots.lock();
         if matches!(slots.get(key), Some(Slot::Building)) {
             slots.remove(key);
+        }
+    }
+
+    // Releases every claim of a build that failed.
+    pub fn release_all(&self, keys: &[K]) {
+        let mut slots = self.slots.lock();
+        for key in keys {
+            if matches!(slots.get(key), Some(Slot::Building)) {
+                slots.remove(key);
+            }
         }
     }
 
@@ -70,6 +97,24 @@ impl<K: Hash + Eq, V> ClaimTable<K, V> {
             }
             _ => false,
         }
+    }
+
+    // Files one value per key against the claims `claim_all` took, all or
+    // none: answers `false`, filing nothing, if a shutdown took any of them
+    // while the factory ran. The caller then releases the rest with
+    // `release_all`, as a failed single build does with `release`.
+    pub fn file_all(&self, entries: Vec<(K, V)>) -> bool {
+        let mut slots = self.slots.lock();
+        let claimed = entries
+            .iter()
+            .all(|(key, _)| matches!(slots.get(key), Some(Slot::Building)));
+        if !claimed {
+            return false;
+        }
+        for (key, value) in entries {
+            slots.insert(key, Slot::Registered(value));
+        }
+        true
     }
 
     // Whether a registration is filed under `key`; a claim answers `false`.
@@ -149,6 +194,27 @@ mod tests {
         assert!(!table.claim("a"), "a claim holds the key");
         assert!(table.file("a", 1));
         assert!(!table.claim("a"), "a registration holds the key");
+    }
+
+    #[test]
+    fn claim_all_claims_nothing_when_one_key_is_held() {
+        let table = ClaimTable::<&str, u32>::new();
+        assert!(table.claim("b"));
+        assert_eq!(table.claim_all(&["a", "b", "c"]), Err(&"b"));
+        assert!(table.claim("a"), "the set claimed nothing");
+        assert!(table.claim("c"), "the set claimed nothing");
+    }
+
+    #[test]
+    fn file_all_files_nothing_when_one_claim_was_drained() {
+        let table = ClaimTable::<&str, u32>::new();
+        assert_eq!(table.claim_all(&["a", "b"]), Ok(()));
+        // A shutdown drains the table while the factory runs.
+        assert!(table.drain().is_empty());
+        assert!(!table.file_all(vec![("a", 1), ("b", 2)]));
+        assert!(!table.contains("a"), "a was not filed");
+        table.release_all(&["a", "b"]);
+        assert!(table.claim("a"), "release_all freed a");
     }
 
     #[test]
