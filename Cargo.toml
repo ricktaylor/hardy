@@ -22,6 +22,7 @@ members = [
     "eid-patterns/fuzz",
     "file-cla",
     "localdisk-storage",
+    "metrics",
     "otel",
     "s3-storage",
     "proto",

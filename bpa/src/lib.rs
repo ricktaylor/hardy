@@ -18,14 +18,6 @@ DTN node.
 - **`critical-section`**: Forwards to hardy-bpv7. Required on targets
   without native 64-bit atomics (e.g. thumbv6m / Cortex-M0).
 
-## Current Limitations
-
-Full `no_std` support is blocked by:
-- `metrics` (observability) - std-only
-
-This is planned for future work via a `hardy-metrics` facade crate
-that provides no-op shims under `no_std`.
-
 ## Embedded Targets
 
 When targeting embedded platforms without OS-provided entropy, you must provide a custom

@@ -30,6 +30,7 @@ std = [
     "serde?/std",
     "base64?/std",
     "foldhash/std",
+    "metrics/metrics",
 ]
 instrument = ["tracing/attributes"]
 
@@ -45,7 +46,7 @@ hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-featur
 time = { version = "0.3", default-features = false, features = ["serde-human-readable"] }
 bytes = "1"
 tracing = { version = "0.1", default-features = false }
-metrics = "0.24"
+metrics = { package = "hardy-metrics", version = "0.1", path = "../metrics", default-features = false }
 trace-err = "1"
 rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
 hashbrown = "0.17"
